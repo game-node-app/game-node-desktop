@@ -12,6 +12,7 @@ fn ready() -> Achievement {
         icon_gray_url: "https://cdn.example/a_gray.jpg".into(),
         unlocked: true,
         unlocked_at: Some(1_700_000_000),
+        global_percent: None,
     }
 }
 
@@ -29,6 +30,7 @@ fn sdk_contract_round_trips_ready_none_and_failed_outcomes() {
                 icon_gray_url: "https://cdn.example/a_gray.jpg".into(),
                 unlocked: true,
                 unlocked_at: Some(1_700_000_000),
+                global_percent: Some(420),
             }],
         },
         models::AchievementOutcome::None {

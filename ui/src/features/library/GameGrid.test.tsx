@@ -8,6 +8,10 @@ import {
   columnsForWidth,
   GRID_GROUP_HEADER_HEIGHT,
   GRID_LINE_HEIGHT,
+  gridItemHeight,
+  gridLineHeight,
+  gridTileHeight,
+  gridTileWidth,
 } from './libraryGroups';
 import { makeLibrary, renderControls, spyLibraryInput, setInputs } from './controlsTestUtils';
 
@@ -161,6 +165,29 @@ describe('GameGrid geometry helpers', () => {
     expect(GRID_GROUP_HEADER_HEIGHT).toBe(36);
     expect(GRID_LINE_HEIGHT).toBe(286);
   });
+
+  it('derives the tile and line sizes from the cover-size preference', () => {
+    expect(gridTileWidth('small')).toBe(140);
+    expect(gridTileWidth('medium')).toBe(172);
+    expect(gridTileWidth('large')).toBe(216);
+
+    expect(gridTileHeight('small')).toBe(227);
+    expect(gridTileHeight('medium')).toBe(270);
+    expect(gridTileHeight('large')).toBe(329);
+    expect(gridLineHeight('small')).toBe(243);
+    expect(gridLineHeight('medium')).toBe(286);
+    expect(gridLineHeight('large')).toBe(345);
+
+    const line = buildGridItems([makeRow()], [], 1)[0];
+    expect(gridItemHeight(line, 'large')).toBe(345);
+    expect(gridItemHeight(line)).toBe(286);
+  });
+
+  it('fits fewer covers per row as the cover size grows', () => {
+    expect(columnsForWidth(1200, 'small')).toBe(7);
+    expect(columnsForWidth(1200, 'medium')).toBe(6);
+    expect(columnsForWidth(1200, 'large')).toBe(5);
+  });
 });
 
 describe('tilePrimaryAction', () => {
@@ -248,6 +275,42 @@ describe('GameGrid', () => {
       expect(setInputs(input)).toContainEqual({ setColumns: 4 }),
     );
   });
+
+  it.each([
+    ['small', 7, 'h-[227px]', 'w-[140px]', 156],
+    ['medium', 6, 'h-[270px]', 'w-[172px]', 188],
+    ['large', 5, 'h-[329px]', 'w-[216px]', 232],
+  ] as const)(
+    'renders %s covers with the matching column count and tile size',
+    async (coverSize, columns, heightClass, widthClass, step) => {
+      const input = spyLibraryInput();
+      const rows = [makeRow({ key: 'a' }), makeRow({ key: 'b' }), makeRow({ key: 'c' })];
+      setClientSize(1200, 600);
+
+      renderControls(
+        <GameGrid />,
+        gridLibrary(rows, {
+          selected: ['a'],
+          layout: { ...makeLibrary().layout, coverSize },
+        }),
+      );
+
+      await waitFor(() =>
+        expect(setInputs(input)).toContainEqual({ setColumns: columns }),
+      );
+
+      const tile = screen.getByTestId('game-tile-a');
+      expect(tile).toHaveClass(heightClass, widthClass);
+      expect(tile).toHaveAttribute('data-selected', 'true');
+      expect(tile.parentElement).toHaveStyle({
+        transform: 'translate(0px, 0px)',
+      });
+      expect(screen.getByTestId('game-tile-b').parentElement).toHaveStyle({
+        transform: `translate(${step}px, 0px)`,
+      });
+      expect(screen.getAllByRole('listitem')).toHaveLength(3);
+    },
+  );
 
   it('sends SetColumns from the measured width, debounced and only on change', async () => {
     let resizeCallback!: (entries: ResizeObserverEntry[]) => void;

@@ -175,6 +175,10 @@ impl LibraryMachine {
                 title.to_owned()
             },
             release_year: existing.as_ref().and_then(|game| game.release_year),
+            platforms: existing
+                .as_ref()
+                .map(|game| game.platforms.clone())
+                .unwrap_or_default(),
             cover_url: cover_url.or_else(|| existing.and_then(|game| game.cover_url)),
         };
         let mut effects = Vec::new();

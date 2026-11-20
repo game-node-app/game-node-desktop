@@ -17,6 +17,7 @@ function account(overrides: Partial<StoreAccountView> = {}): StoreAccountView {
     sharedLabel: null,
     installedCount: 0,
     lastCheckedAt: null,
+    lastSyncedAt: null,
     storage: 'secretService',
     persistFailed: false,
     catalogError: null,
@@ -31,19 +32,26 @@ function account(overrides: Partial<StoreAccountView> = {}): StoreAccountView {
   };
 }
 
-const steamName = 'Steam';
-const epicName = 'Epic Games Store';
-
 function renderCard(
   value: StoreAccountView,
-  locale = 'en',
-  providerName = steamName,
-  onSignOut?: () => void,
+  options: {
+    locale?: string;
+    providerName?: string;
+    includeShared?: boolean;
+    onIncludeSharedChange?: (checked: boolean) => void;
+    onSignOut?: () => void;
+  } = {},
 ) {
   return render(
     <MantineProvider theme={appTheme} defaultColorScheme="dark">
-      <I18nProvider initialLocale={locale}>
-        <StoreAccountCard account={value} providerName={providerName} onSignOut={onSignOut} />
+      <I18nProvider initialLocale={options.locale ?? 'en'}>
+        <StoreAccountCard
+          account={value}
+          providerName={options.providerName ?? 'Steam'}
+          includeShared={options.includeShared}
+          onIncludeSharedChange={options.onIncludeSharedChange}
+          onSignOut={options.onSignOut}
+        />
       </I18nProvider>
     </MantineProvider>,
   );
@@ -54,296 +62,317 @@ describe('StoreAccountCard', () => {
     vi.restoreAllMocks();
   });
 
-  it('shows the connected identity, counts, last check and storage method', () => {
-    renderCard(account({
-      state: 'connected',
-      accountId: '76561198000000000',
-      accountName: 'cassi',
-      ownedCount: 312,
-      sharedCount: 8,
-      sharedLabel: 'Steam Family',
-      installedCount: 18,
-      lastCheckedAt: 1_700_000_000,
-      storage: 'secretService',
-      canCheck: true,
-      canSignOut: true,
-    }));
+  it('shows the connected identity, sync time, counts and shared switch', () => {
+    const includeShared = vi.fn();
+    renderCard(
+      account({
+        state: 'connected',
+        accountId: '76561198000000000',
+        accountName: 'cassi',
+        ownedCount: 312,
+        sharedCount: 8,
+        sharedLabel: 'Steam Family',
+        installedCount: 18,
+        lastCheckedAt: 1_700_000_000,
+        lastSyncedAt: Math.floor(Date.now() / 1000) - 120,
+        canCheck: true,
+        canSignOut: true,
+      }),
+      { onIncludeSharedChange: includeShared },
+    );
 
-    expect(screen.getByRole('region', { name: 'Steam account' })).toBeInTheDocument();
-    expect(screen.getByText('Signed in as cassi')).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Steam' })).toBeInTheDocument();
+    expect(screen.getByText(/Account cassi · synced/)).toBeInTheDocument();
     expect(screen.getByText('Connected')).toBeInTheDocument();
     expect(screen.getByText('312')).toBeInTheDocument();
-    expect(screen.getByText('Steam Family')).toBeInTheDocument();
+    expect(screen.getByText('in library')).toBeInTheDocument();
     expect(screen.getByText('8')).toBeInTheDocument();
+    expect(screen.getByText('shared (Steam Family)')).toBeInTheDocument();
     expect(screen.getByText('18')).toBeInTheDocument();
-    expect(screen.getByText(/Last check:/)).toBeInTheDocument();
-    expect(screen.getByText('Credential storage: Secret Service')).toBeInTheDocument();
-    expect(screen.getByText('18 installed games')).toBeInTheDocument();
-    expect(screen.getByText(/never sees your Steam password/)).toBeInTheDocument();
+    expect(screen.getByText('installed on this PC')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Sync now' })).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole('switch', { name: 'Include family-shared games' }),
+    );
+    expect(includeShared).toHaveBeenCalledWith(false);
   });
 
-  it('offers sign-in when there is no account', () => {
-    const signIn = vi.spyOn(commands, 'providerSignIn');
-    renderCard(account({ canSignIn: true }));
-
-    expect(screen.getByText('Not connected')).toBeInTheDocument();
-    expect(screen.getByText(/even when they are not installed on this PC/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Sign in with Steam' }));
-    expect(signIn).toHaveBeenCalledWith('steam');
-  });
-
-  it('shows progress without actions while checking', () => {
-    renderCard(account({ state: 'checking', accountName: 'cassi', ...checkedCounts() }));
-
-    expect(screen.getByText('Checking…')).toBeInTheDocument();
-    expect(screen.getByRole('region', { name: 'Steam account' })).toHaveAttribute('aria-busy', 'true');
-    expect(screen.queryAllByRole('button')).toHaveLength(0);
-  });
-
-  it('offers focus and cancel while signing in', () => {
-    const focus = vi.spyOn(commands, 'providerFocusSignIn');
-    const cancel = vi.spyOn(commands, 'providerCancelSignIn');
-    renderCard(account({
-      state: 'signingIn',
-      canFocusSignIn: true,
-      canCancelSignIn: true,
-    }));
-
-    expect(screen.getByText('Waiting for sign-in')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Bring window to front' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(focus).toHaveBeenCalledWith('steam');
-    expect(cancel).toHaveBeenCalledWith('steam');
-  });
-
-  it('offers sync and sign out when connected', () => {
-    const check = vi.spyOn(commands, 'providerCheck');
-    const signOut = vi.spyOn(commands, 'providerSignOut');
-    const onSignOut = vi.fn();
+  it('starts a store check from the primary action', () => {
+    const check = vi.spyOn(commands, 'providerCheck').mockResolvedValue(undefined);
     renderCard(
-      account({ state: 'connected', canCheck: true, canSignOut: true }),
-      'en',
-      steamName,
-      onSignOut,
+      account({
+        state: 'connected',
+        accountName: 'cassi',
+        canCheck: true,
+        canSignOut: true,
+      }),
     );
 
     fireEvent.click(screen.getByRole('button', { name: 'Sync now' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
     expect(check).toHaveBeenCalledWith('steam');
+  });
+
+  it('opens the overflow menu and signs out only this provider', async () => {
+    const signOut = vi.spyOn(commands, 'providerSignOut').mockResolvedValue(undefined);
+    const onSignOut = vi.fn();
+    renderCard(
+      account({
+        state: 'connected',
+        accountName: 'cassi',
+        canCheck: true,
+        canSignOut: true,
+      }),
+      { onSignOut },
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+    fireEvent.click(
+      await screen.findByRole('menuitem', { name: 'Sign out of store' }),
+    );
+
     expect(signOut).toHaveBeenCalledWith('steam');
     expect(onSignOut).toHaveBeenCalledTimes(1);
   });
 
-  it('offers sign in again and sign out when expired and keeps the installed-games explanation', () => {
-    const signIn = vi.spyOn(commands, 'providerSignIn');
-    const signOut = vi.spyOn(commands, 'providerSignOut');
-    renderCard(account({
-      state: 'expired',
-      accountName: 'cassi',
-      catalogError: 'expired',
-      canSignIn: true,
-      canSignOut: true,
-    }));
+  it('offers sign-in when there is no account', () => {
+    const signIn = vi.spyOn(commands, 'providerSignIn').mockResolvedValue(undefined);
+    renderCard(account({ canSignIn: true }));
 
-    expect(screen.getByText('Session expired')).toBeInTheDocument();
-    expect(screen.getByText(/Installed games still work/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Sign in again' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+    expect(screen.getByText('Not connected')).toBeInTheDocument();
+    expect(
+      screen.getByText(/even when they are not installed on this PC/),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
     expect(signIn).toHaveBeenCalledWith('steam');
-    expect(signOut).toHaveBeenCalledWith('steam');
   });
 
-  it('offers retry and sign out when the store is unreachable', () => {
-    const check = vi.spyOn(commands, 'providerCheck');
-    const signOut = vi.spyOn(commands, 'providerSignOut');
-    renderCard(account({
-      state: 'unreachable',
-      accountName: 'cassi',
-      catalogError: 'unreachable',
-      canCheck: true,
-      canSignOut: true,
-    }));
+  it('shows progress without actions while checking', () => {
+    renderCard(
+      account({
+        state: 'checking',
+        accountName: 'cassi',
+        ownedCount: 312,
+        installedCount: 18,
+      }),
+    );
+
+    expect(screen.getByText('Checking…')).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Steam' })).toHaveAttribute(
+      'aria-busy',
+      'true',
+    );
+    expect(screen.queryAllByRole('button')).toHaveLength(0);
+  });
+
+  it('offers the sign-in window and cancels it while signing in', async () => {
+    const focus = vi
+      .spyOn(commands, 'providerFocusSignIn')
+      .mockResolvedValue(undefined);
+    const cancel = vi
+      .spyOn(commands, 'providerCancelSignIn')
+      .mockResolvedValue(undefined);
+    renderCard(
+      account({
+        state: 'signingIn',
+        canFocusSignIn: true,
+        canCancelSignIn: true,
+      }),
+    );
+
+    expect(screen.getByText('Signing in…')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Show sign-in window' }));
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+    fireEvent.click(
+      await screen.findByRole('menuitem', { name: 'Cancel sign-in' }),
+    );
+
+    expect(focus).toHaveBeenCalledWith('steam');
+    expect(cancel).toHaveBeenCalledWith('steam');
+  });
+
+  it('keeps the installed-games explanation and the remove row when expired', async () => {
+    const signIn = vi.spyOn(commands, 'providerSignIn').mockResolvedValue(undefined);
+    const signOut = vi.spyOn(commands, 'providerSignOut').mockResolvedValue(undefined);
+    renderCard(
+      account({
+        state: 'expired',
+        accountName: 'cassi',
+        ownedCount: 52,
+        canSignIn: true,
+        canSignOut: true,
+      }),
+    );
+
+    const card = screen.getByRole('region', { name: 'Steam' });
+    expect(card.className).toContain('border-warning');
+    expect(screen.getByText('Session expired')).toBeInTheDocument();
+    expect(screen.getByText(/Showing your saved library \(52 games\)/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Installed games still work\. Sign in again/),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Remove saved sign-in')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in again' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    expect(signIn).toHaveBeenCalledWith('steam');
+    expect(signOut).toHaveBeenCalledWith('steam');
+
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+    expect(
+      await screen.findByRole('menuitem', { name: 'Remove saved sign-in' }),
+    ).toBeInTheDocument();
+  });
+
+  it('offers Try again and Sign out of store when unreachable', async () => {
+    const check = vi.spyOn(commands, 'providerCheck').mockResolvedValue(undefined);
+    const signOut = vi.spyOn(commands, 'providerSignOut').mockResolvedValue(undefined);
+    renderCard(
+      account({
+        state: 'unreachable',
+        accountName: 'cassi',
+        canCheck: true,
+        canSignOut: true,
+      }),
+    );
 
     expect(screen.getByText('Steam unreachable')).toBeInTheDocument();
     expect(screen.getByText(/Showing your saved library/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+    fireEvent.click(
+      await screen.findByRole('menuitem', { name: 'Sign out of store' }),
+    );
+
     expect(check).toHaveBeenCalledWith('steam');
     expect(signOut).toHaveBeenCalledWith('steam');
   });
 
-  it('offers retry, sign in again and removing the saved credential on a credential error', () => {
-    const check = vi.spyOn(commands, 'providerCheck');
-    const signIn = vi.spyOn(commands, 'providerSignIn');
-    const signOut = vi.spyOn(commands, 'providerSignOut');
-    renderCard(account({
-      state: 'credentialError',
-      canCheck: true,
-      canSignIn: true,
-      canRemoveCredential: true,
-    }));
+  it('uses the danger border and offers the credential actions', async () => {
+    const check = vi.spyOn(commands, 'providerCheck').mockResolvedValue(undefined);
+    const signIn = vi.spyOn(commands, 'providerSignIn').mockResolvedValue(undefined);
+    renderCard(
+      account({
+        state: 'credentialError',
+        canCheck: true,
+        canSignIn: true,
+        canRemoveCredential: true,
+        canSignOut: false,
+      }),
+    );
 
+    const card = screen.getByRole('region', { name: 'Steam' });
+    expect(card.className).toContain('border-danger');
     expect(screen.getByText('Credential error')).toBeInTheDocument();
     expect(screen.getByText(/Unlock your keyring and retry/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Sign in again' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Remove saved sign-in' }));
+    expect(screen.getByRole('button', { name: 'Remove' })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+    fireEvent.click(
+      await screen.findByRole('menuitem', { name: 'Sign in again' }),
+    );
     expect(check).toHaveBeenCalledWith('steam');
     expect(signIn).toHaveBeenCalledWith('steam');
-    expect(signOut).toHaveBeenCalledWith('steam');
   });
 
-  it('keeps the connected actions and warns when the credential could not be saved', () => {
-    renderCard(account({
-      state: 'connected',
-      accountName: 'cassi',
-      persistFailed: true,
-      canCheck: true,
-      canSignOut: true,
-    }));
+  it('warns when the credential could not be saved', () => {
+    renderCard(
+      account({
+        state: 'connected',
+        accountName: 'cassi',
+        persistFailed: true,
+        canCheck: true,
+        canSignOut: true,
+      }),
+    );
 
     expect(screen.getByText('Connected')).toBeInTheDocument();
-    expect(screen.getByText(/will not be restored when you restart GameNode/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/will not be restored when you restart GameNode/),
+    ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Sync now' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Sign out' })).toBeInTheDocument();
   });
 
-  it('shows a non-blocking shared warning named by the declared label', () => {
-    renderCard(account({
-      state: 'connected',
-      accountName: 'cassi',
-      sharedCount: 8,
-      sharedLabel: 'Steam Family',
-      sharedError: 'sharedUnavailable',
-      canCheck: true,
-      canSignOut: true,
-    }));
+  it('shows the shared warning with the declared label', () => {
+    renderCard(
+      account({
+        state: 'connected',
+        accountName: 'cassi',
+        sharedCount: 8,
+        sharedLabel: 'Steam Family',
+        sharedError: 'sharedUnavailable',
+        canCheck: true,
+      }),
+    );
 
-    expect(screen.getByText(/Steam Family could not be synced/)).toBeInTheDocument();
-    expect(screen.getByText('8')).toBeInTheDocument();
-    expect(screen.getByText('Steam Family')).toBeInTheDocument();
+    expect(
+      screen.getByText(/Steam Family could not be synced/),
+    ).toBeInTheDocument();
   });
 
-  it('accepts the legacy shared-catalog error name', () => {
-    renderCard(account({
-      state: 'connected',
-      accountName: 'cassi',
-      sharedCount: 8,
-      sharedLabel: 'Steam Family',
-      sharedError: 'familyUnavailable',
-      canCheck: true,
-    }));
+  it('never shows shared data for a provider without shared access', () => {
+    renderCard(
+      account({
+        provider: 'epic',
+        state: 'connected',
+        accountName: 'EpicPlayer',
+        ownedCount: 4,
+        sharedCount: 5,
+        sharedLabel: null,
+        installedCount: 2,
+        sharedError: 'sharedUnavailable',
+        canCheck: true,
+      }),
+      { providerName: 'Epic Games Store' },
+    );
 
-    expect(screen.getByText(/Steam Family could not be synced/)).toBeInTheDocument();
-  });
-
-  it('warns about the plain-text private file before sign-in and while connected', () => {
-    const { unmount } = renderCard(account({ storage: 'privateFile', canSignIn: true }));
-    expect(screen.getByText(/The file is not encrypted/)).toBeInTheDocument();
-    expect(screen.getByText('Credential storage: private file (not encrypted)')).toBeInTheDocument();
-    unmount();
-
-    renderCard(account({
-      state: 'connected',
-      accountName: 'cassi',
-      storage: 'privateFile',
-      canCheck: true,
-      canSignOut: true,
-    }));
-    expect(screen.getByText(/The file is not encrypted/)).toBeInTheDocument();
-  });
-
-  it('does not show the plain-text warning for keyring storage', () => {
-    renderCard(account({
-      state: 'connected',
-      accountName: 'cassi',
-      storage: 'windowsCredentialManager',
-      canCheck: true,
-      canSignOut: true,
-    }));
-
-    expect(screen.queryByText(/The file is not encrypted/)).toBeNull();
-    expect(screen.getByText('Credential storage: Windows Credential Manager')).toBeInTheDocument();
-  });
-
-  it('accepts both the legacy and the renamed credential catalog error', () => {
-    const { unmount } = renderCard(account({
-      state: 'connected',
-      accountName: 'cassi',
-      catalogError: 'invalidCookies',
-      canCheck: true,
-    }));
-    expect(screen.getByText(/The last Steam library sync did not finish/)).toBeInTheDocument();
-    unmount();
-
-    renderCard(account({
-      state: 'connected',
-      accountName: 'cassi',
-      catalogError: 'invalidCredential',
-      canCheck: true,
-    }));
-    expect(screen.getByText(/The last Steam library sync did not finish/)).toBeInTheDocument();
-  });
-
-  it('renders an Epic Games Store account without shared rows', () => {
-    renderCard(account({
-      provider: 'epic',
-      state: 'connected',
-      accountId: 'epic-account-1',
-      accountName: 'EpicPlayer',
-      ownedCount: 4,
-      sharedCount: 5,
-      sharedLabel: null,
-      sharedError: 'sharedUnavailable',
-      installedCount: 2,
-      lastCheckedAt: 1_700_000_000,
-      canCheck: true,
-      canSignOut: true,
-    }), 'en', epicName);
-
-    expect(screen.getByRole('region', { name: 'Epic Games Store account' })).toBeInTheDocument();
-    expect(screen.getByText('Signed in as EpicPlayer')).toBeInTheDocument();
-    expect(screen.queryByText('Steam Family')).toBeNull();
-    expect(screen.queryByText('5')).toBeNull();
+    expect(
+      screen.getByRole('region', { name: 'Epic Games Store' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('shared (Steam Family)')).toBeNull();
     expect(screen.queryByText(/could not be synced/)).toBeNull();
+    expect(
+      screen.queryByRole('switch', { name: 'Include family-shared games' }),
+    ).toBeNull();
   });
 
-  it('routes an Epic card action only to the Epic provider', () => {
-    const signOut = vi.spyOn(commands, 'providerSignOut');
-    renderCard(account({
-      provider: 'epic',
-      state: 'connected',
-      accountName: 'EpicPlayer',
-      canCheck: true,
-      canSignOut: true,
-    }), 'en', epicName);
+  it('keeps private-file credential copy in the credential card, not the account card', () => {
+    renderCard(
+      account({
+        state: 'connected',
+        accountName: 'cassi',
+        storage: 'privateFile',
+        canCheck: true,
+      }),
+    );
 
-    fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
-    expect(signOut).toHaveBeenCalledWith('epic');
+    expect(screen.queryByText('Private file (not encrypted)')).toBeNull();
+    expect(screen.queryByText(/The file is not encrypted/)).toBeNull();
   });
 
-  it('localizes the status and actions in pt-BR', () => {
-    renderCard(account({
-      state: 'connected',
-      accountName: 'cassi',
-      storage: 'secretService',
-      canCheck: true,
-      canSignOut: true,
-    }), 'pt-BR');
+  it('localizes the state, stats and actions in pt-BR', async () => {
+    renderCard(
+      account({
+        state: 'connected',
+        accountName: 'cassi',
+        ownedCount: 3,
+        sharedLabel: 'Steam Family',
+        sharedCount: 1,
+        installedCount: 2,
+        canCheck: true,
+        canSignOut: true,
+      }),
+      { locale: 'pt-BR' },
+    );
 
     expect(screen.getByText('Conectado')).toBeInTheDocument();
-    expect(screen.getByText('Conectado como cassi')).toBeInTheDocument();
+    expect(screen.getByText('na biblioteca')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Sincronizar agora' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Sair' })).toBeInTheDocument();
-    expect(screen.getByText(/O GameNode nunca vê sua senha de Steam/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Mais ações' }));
+    expect(
+      await screen.findByRole('menuitem', { name: 'Desconectar' }),
+    ).toBeInTheDocument();
   });
 });
-
-function checkedCounts() {
-  return {
-    ownedCount: 312,
-    sharedCount: 8,
-    installedCount: 18,
-    lastCheckedAt: 1_700_000_000,
-  };
-}

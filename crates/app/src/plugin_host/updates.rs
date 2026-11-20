@@ -877,7 +877,7 @@ impl PluginUpdateService {
                 capabilities: Vec::new(),
                 session: "stopped".to_owned(),
                 native_access: report.manifest.native_access.clone(),
-                version: Some(package.version),
+                version: package.version,
                 enabled: Some(enabled),
                 runtime_available: Some(runtime_available),
                 compatibility_details: Some(report.compatibility_review()),

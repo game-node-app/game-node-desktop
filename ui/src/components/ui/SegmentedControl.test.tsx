@@ -72,4 +72,50 @@ describe('SegmentedControl', () => {
     );
     expect(screen.getByRole('radio', { name: 'List' })).toBeDisabled();
   });
+
+  it('defaults to 6px segment padding for the library', () => {
+    renderUi(
+      <SegmentedControl
+        aria-label="View"
+        data={[
+          { value: 'grid', label: 'Grid' },
+          { value: 'list', label: 'List' },
+        ]}
+      />,
+    );
+    expect(labelFor('Grid')).toHaveClass('px-[6px]');
+  });
+
+  it('supports regular and filter segment paddings for Settings', () => {
+    renderUi(
+      <SegmentedControl
+        aria-label="Playtime source"
+        segmentPadding="regular"
+        data={[
+          { value: 'store', label: 'Store' },
+          { value: 'internal', label: 'Internal' },
+        ]}
+      />,
+    );
+    expect(labelFor('Store')).toHaveClass('px-[12px]');
+  });
+
+  it('uses 10px segment padding for the Plugins origin filter', () => {
+    renderUi(
+      <SegmentedControl
+        aria-label="Plugin origin"
+        segmentPadding="filter"
+        data={[
+          { value: 'all', label: 'All' },
+          { value: 'official', label: 'Official' },
+        ]}
+      />,
+    );
+    expect(labelFor('All')).toHaveClass('px-[10px]');
+  });
 });
+
+function labelFor(name: string): HTMLElement | null {
+  const radio = screen.getByRole('radio', { name });
+  return document.querySelector(`label[for="${radio.id}"]`);
+}

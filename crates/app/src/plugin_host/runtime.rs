@@ -6,7 +6,8 @@ use super::{
     login::LoginBroker,
     managed_packages::{ManagedPackageLifecycle, PackageLifecycleError, lock_publisher_identity},
     process::{
-        ExtensionIntent, ExtensionLaunch, ExtensionTarget, ProcessConfig, ProviderProcesses,
+        ExtensionIntent, ExtensionLaunch, ExtensionTarget, PLUGIN_STOPPED, ProcessConfig,
+        ProviderProcesses,
     },
     profile::{PluginProfiles, PluginStateLayout},
     provider::{Completion, ProviderApi, Registration},
@@ -123,6 +124,19 @@ pub trait ProviderRuntime: Send + Sync {
         _request: models::AchievementsRequest,
     ) -> Result<Completion, Status> {
         Err(Status::unimplemented("achievement reads are unavailable"))
+    }
+    /// Stops the provider for this run, refusing later calls with the stable
+    /// `plugin stopped` error. The default host has no supervised process to stop.
+    async fn stop(&self, provider: &str) -> Result<(), Status> {
+        Err(Status::unimplemented(format!(
+            "the {provider} plugin cannot be stopped"
+        )))
+    }
+    /// Starts a stopped provider with a fresh session, restoring its account.
+    async fn start(&self, provider: &str) -> Result<(), Status> {
+        Err(Status::unimplemented(format!(
+            "the {provider} plugin cannot be started"
+        )))
     }
     async fn shutdown(&self);
 }
@@ -539,7 +553,7 @@ impl ThirdPartyPluginLifecycle {
         if let [provider_id] = provider_ids.as_slice()
             && self.api.is_extension(provider_id)
         {
-            self.processes.stop_provider(provider_id).await;
+            self.processes.terminate_provider(provider_id).await;
         }
         let state = self.state.clone();
         let registry = self.registry.clone();
@@ -1029,7 +1043,7 @@ impl ThirdPartyPluginLifecycle {
                 ));
             }
             if !enabled {
-                self.processes.stop_provider(&config.provider_id).await;
+                self.processes.terminate_provider(&config.provider_id).await;
             }
             let registry = self.registry.clone();
             let transaction_to_commit = transaction.clone();
@@ -1059,7 +1073,7 @@ impl ThirdPartyPluginLifecycle {
         .await;
 
         if let Err(error) = result {
-            self.processes.stop_provider(&config.provider_id).await;
+            self.processes.terminate_provider(&config.provider_id).await;
             let registry = self.registry.clone();
             let transaction_to_rollback = transaction;
             let rollback = tokio::task::spawn_blocking(move || {
@@ -1143,7 +1157,7 @@ impl ThirdPartyPluginLifecycle {
                     return Err(Status::unavailable("extension runtime is unavailable"));
                 }
             } else {
-                self.processes.stop_provider(id).await;
+                self.processes.terminate_provider(id).await;
             }
         }
         let state = self.state.clone();
@@ -1163,7 +1177,7 @@ impl ThirdPartyPluginLifecycle {
         if !enabled {
             for provider_id in process_ids {
                 if !self.api.is_extension(&provider_id) {
-                    self.processes.stop_provider(&provider_id).await;
+                    self.processes.terminate_provider(&provider_id).await;
                     self.api.disconnect(&provider_id).await;
                 }
             }
@@ -1183,7 +1197,7 @@ impl ThirdPartyPluginLifecycle {
             }
             if let Err(error) = self.processes.ensure_started(provider_id).await {
                 for provider_id in &process_ids {
-                    self.processes.stop_provider(provider_id).await;
+                    self.processes.terminate_provider(provider_id).await;
                     self.api.disconnect(provider_id).await;
                 }
                 let state = self.state.clone();
@@ -1215,7 +1229,7 @@ impl ThirdPartyPluginLifecycle {
         }
         let provider_ids = self.api.third_party_provider_ids_for_plugin(&plugin_id);
         for id in provider_ids.iter().filter(|id| self.api.is_extension(id)) {
-            self.processes.stop_provider(id).await;
+            self.processes.terminate_provider(id).await;
         }
 
         let state = self.state.clone();
@@ -1232,7 +1246,7 @@ impl ThirdPartyPluginLifecycle {
         .await
         .map_err(|_| Status::internal("plugin activation worker failed"))??;
         for provider_id in provider_ids.iter().filter(|id| !self.api.is_extension(id)) {
-            self.processes.stop_provider(provider_id).await;
+            self.processes.terminate_provider(provider_id).await;
             self.api.disconnect(provider_id).await;
         }
         if !provider_ids.is_empty() {
@@ -1285,7 +1299,7 @@ impl ThirdPartyPluginLifecycle {
                 lifecycle.api.fence_third_party_sessions().await;
                 for provider_id in lifecycle.api.third_party_provider_ids() {
                     if !lifecycle.api.is_extension(&provider_id) {
-                        lifecycle.processes.stop_provider(&provider_id).await;
+                        lifecycle.processes.terminate_provider(&provider_id).await;
                     }
                 }
                 if lifecycle.api.profiles().current().is_some()
@@ -1549,7 +1563,7 @@ impl HostedProviders {
                 session: "stopped".to_owned(),
                 native_access: report.manifest.native_access.clone(),
                 publisher_fingerprint: Some(publisher_fingerprint.clone()),
-                version: Some(installed.version.clone()),
+                version: installed.version.clone(),
                 enabled: None,
                 runtime_available: None,
                 compatibility_details: Some(report.compatibility_review()),
@@ -1661,6 +1675,11 @@ impl HostedProviders {
         if !self.endpoint_available {
             return "unavailable";
         }
+        // A deliberate stop is a session state, not a fault: the plugin stays installed so Settings
+        // can offer Start. Crashes and initialization failures still surface as `failed`.
+        if self.processes.is_stopped(id) {
+            return "installed";
+        }
         if let Some(reason) = lock(&self.failures).get(id) {
             return if reason == "incompatible" {
                 "incompatible"
@@ -1713,6 +1732,9 @@ impl HostedProviders {
             Ok(_) => {
                 lock(&self.failures).remove(id);
             }
+            // Stopping is intentional. Calls refused with `plugin stopped` must not turn the
+            // plugin into a failed one, otherwise Settings loses the Start action.
+            Err(error) if self.processes.is_stopped(id) || error.message() == PLUGIN_STOPPED => {}
             Err(error)
                 if !matches!(
                     error.code(),
@@ -1790,7 +1812,7 @@ impl ProviderRuntime for HostedProviders {
             .and_then(|e| e.services.status().or_else(|| e.services.initial_status()))
     }
     fn available(&self, id: &str) -> bool {
-        matches!(self.availability(id), "installed" | "failed")
+        !self.processes.is_stopped(id) && matches!(self.availability(id), "installed" | "failed")
     }
     fn availability(&self, id: &str) -> &'static str {
         HostedProviders::availability(self, id)
@@ -1990,6 +2012,35 @@ impl ProviderRuntime for HostedProviders {
         .await;
         self.record_result(id, &result);
         result
+    }
+    async fn stop(&self, id: &str) -> Result<(), Status> {
+        if !self.entries.contains_key(id) {
+            return Err(Status::not_found("provider is not registered"));
+        }
+        // A pending sign-in owns a native window; ask the plugin to close it before the process
+        // ends. The call is bounded so a wedged plugin cannot delay the stop indefinitely.
+        if self.processes.process_id(id).await.is_some() {
+            let _ = tokio::time::timeout(
+                Duration::from_secs(5),
+                self.processes.execute(id, ProviderOperation::CancelSignIn),
+            )
+            .await;
+        }
+        self.processes.stop_provider(id).await;
+        self.notify();
+        Ok(())
+    }
+    async fn start(&self, id: &str) -> Result<(), Status> {
+        if !self.entries.contains_key(id) {
+            return Err(Status::not_found("provider is not registered"));
+        }
+        self.processes.start_provider(id).await?;
+        // The fresh process runs its initialization path, which restores the stored account.
+        self.initialized(id).await?;
+        // A successful fresh session clears a previous crash/failure marker.
+        lock(&self.failures).remove(id);
+        self.notify();
+        Ok(())
     }
     async fn shutdown(&self) {
         self.processes.shutdown().await;
@@ -2878,3 +2929,6 @@ mod managed_runtime_tests {
         );
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests;

@@ -1,0 +1,35 @@
+# S3 · Jogos DRM-free — frame 5374:5012, modal 5374:5251
+F [Título do painel] row gap12 ai:max FH
+ F col gap4 FH > T "Jogos DRM-free" 22/600; T "Pastas monitoradas e descobertas locais." 13/400 text/secondary
+ C <Button Variant=Secondary Size=SM> "Verificar tudo agora" icons=icon/refresh
+F [Card: Pastas monitoradas] col FH bg=color/secondary bd1=color/border/subtle r10
+ F [header] 660x56 row gap12 p12/16 ai:center
+  T "Pastas monitoradas" 11/600 color/text/muted ls0.8 upper FH
+  C <Button Variant=Primary Size=SM> "Adicionar pasta…" icons=icon/plus
+ F [folder row] row gap14 p12/16 ai:center bdT1=color/border/subtle
+  I icon/folder 18:color/text/secondary
+  F col gap3 FH
+   T "D:\Jogos" 13/500 color/text/primary ellipsis
+   T "18 jogos · última verificação 14:32" 12/400 color/text-dimmed lh17
+  C <Pill Tone=Success> "Monitorando"                    # no icon
+  C <Button Variant=Ghost Size=SM> "Verificar" icons=icon/refresh
+  C <Button Variant=Ghost Size=SM> "Parar de monitorar" icons=icon/x
+ F [folder row] ... T "E:\Itch"; T "9 jogos · última verificação 14:32"; Pill Success "Monitorando"; Ghost "Verificar"; Ghost "Parar de monitorar"
+ F [folder row — unavailable]
+  I icon/alert-triangle 18:color/warning
+  F col gap3 FH > T "F:\Portáteis" 13/500; T "5 jogos · unidade desconectada desde ontem" 12/400 text-dimmed
+  C <Pill Tone=Warning> "Indisponível"
+  C <Button Variant=Ghost Size=SM> "Parar de monitorar" icons=icon/x
+F [Card: Descoberta] col FH bg=color/secondary bd1=color/border/subtle r10
+ F [header] > T "Descoberta" 11/600 upper
+ F [settingsRow] > "Verificar ao iniciar o GameNode" [NOVO annotation] / "Procura executáveis novos nas pastas monitoradas." C <Switch State=On>
+ F [settingsRow] > "Acompanhar mudanças em tempo real" / "Detecta jogos copiados ou removidos sem precisar verificar." C <Switch State=On>
+ F [settingsRow] > "Descobertas ignoradas" / "4 itens marcados como “não importar”." C <Button Variant=Secondary Size=SM> "Redefinir descobertas ignoradas" icons=icon/arrow-back-up
+F [Card: Adicionar manualmente] col FH bg=color/secondary bd1=color/border/subtle r10
+ F [header] > T "Adicionar manualmente" 11/600 upper
+ F row gap14 p14/16 ai:center bdT1=color/border/subtle
+  I icon/plus 18:color/text/secondary
+  F col gap3 FH
+   T "Adicionar a partir do executável" 14/500 color/text/primary
+   T "Adicione um jogo sem DRM a partir do executável sem escolher uma correspondência do GameNode primeiro." 12/400 text-dimmed lh17 XH(400)
+  C <Button Variant=Secondary Size=SM> "Escolher executável…" icons=icon/file-text

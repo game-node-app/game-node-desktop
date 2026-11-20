@@ -47,6 +47,8 @@ pub enum Effect {
         key: String,
         play_period: String,
         last_gameplay_exit: i64,
+        /// Length of the session that just ended, from its start to the last exit.
+        play_seconds: u32,
     },
     Watch(ProcessInfo),
     OpenSession(Session),
@@ -219,12 +221,17 @@ impl Tracker {
                         if !manual || at >= running.last_exit.saturating_add(10) {
                             let ended = running.last_exit;
                             let period = running.play_period.clone();
+                            let play_seconds = ended
+                                .saturating_sub(running.started_at)
+                                .clamp(0, u32::MAX as i64)
+                                as u32;
                             self.close(&key, ended, &mut effects, &mut next_id);
                             if manual {
                                 effects.push(Effect::GameStopped {
                                     key,
                                     play_period: period,
                                     last_gameplay_exit: ended,
+                                    play_seconds,
                                 });
                             }
                         }

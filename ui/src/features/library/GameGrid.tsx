@@ -15,10 +15,10 @@ import { useI18n } from '../../i18n';
 import { providerIcon } from './libraryControlIcons';
 import {
   GRID_GAP,
-  GRID_TILE_WIDTH,
   buildGridItems,
   columnsForWidth,
   gridItemHeight,
+  gridTileWidth,
   groupCountLabel,
   groupIcon,
   groupLabel,
@@ -76,7 +76,9 @@ function revealIndex(
 }
 
 /**
- * Virtualized cover grid on the fixed 172×270 `GameTile`. Group headers are
+ * Virtualized cover grid. The tile is 172×270 at the default Medium cover size
+ * and grows from `layout.coverSize` (Small 140, Large 216 wide, same cover
+ * aspect), so the column count follows the preference. Group headers are
  * full-width virtual items and lines are chunked inside a group, so a line
  * never crosses a group boundary. The engine owns rows, group order and
  * counts; this view only renders them and sends inputs.
@@ -93,6 +95,8 @@ export const GameGrid: React.FC<GameGridProps> = ({
   const rows: Row[] = library?.rows ?? EMPTY_ROWS;
   const groups = library?.groups ?? EMPTY_GROUPS;
   const group = library?.layout?.group ?? 'none';
+  const coverSize = library?.layout?.coverSize ?? 'medium';
+  const tileWidth = gridTileWidth(coverSize);
   const { selectedKeys, handlers } = useLibrarySelection();
   const focusedKey = library?.focused;
 
@@ -106,7 +110,7 @@ export const GameGrid: React.FC<GameGridProps> = ({
   // Track the column count (not the raw width): ResizeObserver fires every
   // frame while resizing, but React bails out when the count is unchanged.
   const [columns, setColumns] = useState<number>(() =>
-    columnsForWidth(INITIAL_WIDTH),
+    columnsForWidth(INITIAL_WIDTH, coverSize),
   );
 
   useEffect(() => {
@@ -114,7 +118,9 @@ export const GameGrid: React.FC<GameGridProps> = ({
     if (!el) return;
 
     const measure = () => {
-      if (el.clientWidth > 0) setColumns(columnsForWidth(el.clientWidth));
+      if (el.clientWidth > 0) {
+        setColumns(columnsForWidth(el.clientWidth, coverSize));
+      }
     };
     measure();
 
@@ -135,7 +141,7 @@ export const GameGrid: React.FC<GameGridProps> = ({
         if (pendingWidth > 0 && !frame) {
           frame = requestAnimationFrame(() => {
             frame = 0;
-            setColumns(columnsForWidth(pendingWidth));
+            setColumns(columnsForWidth(pendingWidth, coverSize));
           });
         }
       });
@@ -147,7 +153,7 @@ export const GameGrid: React.FC<GameGridProps> = ({
       ro?.disconnect();
       if (frame) cancelAnimationFrame(frame);
     };
-  }, []);
+  }, [coverSize]);
 
   // Tell the engine the real column count, debounced. The engine starts at one
   // column, so the first measured count is always sent; later calls only happen
@@ -167,8 +173,8 @@ export const GameGrid: React.FC<GameGridProps> = ({
     [rows, groups, columns],
   );
   const estimateSize = useCallback(
-    (index: number) => gridItemHeight(items[index]),
-    [items],
+    (index: number) => gridItemHeight(items[index], coverSize),
+    [coverSize, items],
   );
   const getItemKey = useCallback(
     (index: number) => items[index]?.key ?? index,
@@ -255,11 +261,12 @@ export const GameGrid: React.FC<GameGridProps> = ({
           data-row-group={item.groupId ?? undefined}
           className="absolute left-0 top-0"
           style={{
-            transform: `translate(${column * (GRID_TILE_WIDTH + GRID_GAP)}px, ${virtualItem.start}px)`,
+            transform: `translate(${column * (tileWidth + GRID_GAP)}px, ${virtualItem.start}px)`,
           }}
         >
           <GameTile
             row={row}
+            size={coverSize}
             selected={selectedKeys.has(row.key)}
             focused={focusedKey === row.key}
             primaryAction={primaryAction}

@@ -326,6 +326,7 @@ fn a_reinstalled_game_returns_with_its_match_and_cover() {
         cover_url: Some("https://images.igdb.com/igdb/image/upload/t_cover_big/x.jpg".to_owned()),
         cover_file: Some("42.jpg".to_owned()),
         cover_failed_at: None,
+        platforms: Vec::new(),
     };
     let cache = LibraryCache {
         entries: vec![stored("steam", "2", "Two", false)],
@@ -1003,6 +1004,7 @@ fn clearing_the_catalog_keeps_entries_matches_and_covers() {
         cover_url: None,
         cover_file: Some("7.jpg".to_owned()),
         cover_failed_at: None,
+        platforms: Vec::new(),
     };
     let cache = LibraryCache {
         entries: vec![
@@ -1321,6 +1323,7 @@ fn matched_cache() -> LibraryCache {
             cover_url: None,
             cover_file: None,
             cover_failed_at: None,
+            platforms: Vec::new(),
         }],
         ..LibraryCache::default()
     }

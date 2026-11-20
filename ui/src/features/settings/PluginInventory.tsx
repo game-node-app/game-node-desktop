@@ -33,7 +33,15 @@ function scopeChoiceKey(snapshot: PluginPermissionSnapshot, permissionId: string
   return JSON.stringify([snapshot.pluginId, snapshot.publisherFingerprint, snapshot.profileId, snapshot.grantRevision, permissionId, scope]);
 }
 
-export const PluginInventory: React.FC = () => {
+interface PluginInventoryProps {
+  renderCards?: (options: {
+    selectedPluginId: string | null;
+    selectPlugin: (pluginId: string | null) => void;
+    details: React.ReactNode;
+  }) => React.ReactNode;
+}
+
+export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards }) => {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const [selectedPluginId, setSelectedPluginId] = useState<string | null>(null);
@@ -95,7 +103,7 @@ export const PluginInventory: React.FC = () => {
     queryFn: commands.pluginPlaytimeInventory,
     staleTime: 30_000,
   });
-  const selectedPlugin = data.find((plugin) => plugin.pluginId === selectedPluginId) ?? data[0];
+  const selectedPlugin = data.find((plugin) => plugin.pluginId === selectedPluginId) ?? (renderCards ? undefined : data[0]);
   const { data: rollbackPackages = [], refetch: refetchRollbacks } = useQuery({
     queryKey: ['plugin-rollback-available'],
     queryFn: commands.pluginRollbackAvailable,
@@ -408,9 +416,128 @@ export const PluginInventory: React.FC = () => {
       ? settingsPillWarning
       : settingsPill;
 
+  const selectPlugin = (pluginId: string | null) => {
+    setScopeChoices({});
+    setManagementError(false);
+    setSelectedPluginId(pluginId);
+  };
+
+  const details = selectedPlugin && (
+    <article className={renderCards ? "flex flex-col gap-sm" : `${settingsCard} self-start`} aria-label={t('plugins.details')}>
+      {!renderCards && <>
+      <div className="flex flex-wrap items-center gap-compact">
+        <h3 className={settingsRowTitle}>{providerLabel(selectedPlugin.providerId, selectedPlugin.name, t)}</h3>
+        <span className={settingsPill}>{selectedPlugin.source === 'official' ? t('plugins.official') : t('plugins.community')}</span>
+        <span className={stateClass(selectedPlugin.status)}>{statusLabel(selectedPlugin.status, t)}</span>
+      </div>
+      <p className={settingsRowDescription}>{t('plugins.identifier')}: {selectedPlugin.pluginId}</p>
+      <p className={settingsRowDescription}>{t('plugins.session')}: {selectedPlugin.session === 'active' ? t('plugins.sessionActive') : t('plugins.sessionStopped')}</p>
+      {managed && selectedPlugin.version && <p className={settingsRowDescription}>{t('plugins.import.version')}: {selectedPlugin.version}</p>}
+      </>}
+      {managed && selectedPlugin.compatibilityDetails && <PluginCompatibilityReview details={selectedPlugin.compatibilityDetails} />}
+      {managed && selectedPlugin.pluginKind === 'extension' && selectedPlugin.runtimeAvailable !== true && <p className={settingsRowDescription} role="status">{t('plugins.import.extensionRuntimeUnavailable')}</p>}
+      {managed && selectedPlugin.pluginKind !== 'extension' && selectedPlugin.runtimeAvailable === false && <p className={settingsRowDescription} role="status">{t('plugins.import.restartRequired')}</p>}
+      {managed && profileId === null && <p className={settingsRowDescription} role="status">{t('plugins.signInRequired')}</p>}
+      {(canManageRuntime || canManageAccount) && <div className="mt-compact flex flex-wrap gap-compact">
+        {canManageRuntime && (selectedPlugin.enabled ? <button type="button" className="rounded-sm border border-border-subtle px-sm py-1 text-sm" disabled={busy} onClick={() => void setPluginEnabled(selectedPlugin.pluginId, false)}>{t('plugins.disable')}</button> : <button type="button" className="rounded-sm border border-border-subtle px-sm py-1 text-sm" disabled={busy || selectedPlugin.status === 'incompatible'} onClick={() => void setPluginEnabled(selectedPlugin.pluginId, true)}>{t('plugins.enable')}</button>)}
+        {canManageAccount && <button type="button" className="rounded-sm border border-warning px-sm py-1 text-sm" disabled={busy} onClick={() => setConfirmRemove(true)}>{t('plugins.remove')}</button>}
+      </div>}
+      {managed && profileId && permissionSnapshot && permissionSnapshot.pluginId === selectedPlugin.pluginId && <div className="mt-compact border-t border-border-subtle pt-compact" aria-label={t('plugins.permissionScopes')}>
+        <p className={settingsRowTitle}>{t('plugins.permissionScopes')}</p>
+        <p className={`${settingsRowDescription} mt-1 break-all`}>{t('plugins.publisherFingerprint')}: {permissionSnapshot.publisherFingerprint}</p>
+        <p className={`${settingsRowDescription} mt-1`}>{t('plugins.requestedGrantedEffectiveDescription')}</p>
+        {permissionSnapshot.requestedPermissions.map((request) => <fieldset key={request.permission_id} className="mt-compact">
+          <legend className={settingsRowDescription}>{request.permission_id}{request.required ? ` · ${t('plugins.required')}` : ''} · {t('plugins.permissionRequested')}</legend>
+          {request.allowed_scopes.map((scope) => {
+            const key = scopeChoiceKey(permissionSnapshot, request.permission_id, scope);
+            const effective = permissionSnapshot.effectiveGrants.find((grant) => grant.permission_id === request.permission_id && JSON.stringify(grant.scope) === JSON.stringify(scope));
+            const active = effective?.state === 'granted';
+            return <label key={key} className="flex items-center gap-compact py-1 text-sm">
+              <input type="checkbox" disabled={!canManageRuntime || busy} checked={scopeChoices[key] ?? active} onChange={(event) => {
+                const checked = event.currentTarget.checked;
+                setScopeChoices((current) => ({ ...current, [key]: checked }));
+              }} />
+              <span>{scope.scope}{'category' in scope ? ` · ${scope.category}` : 'value' in scope ? ` · ${scope.value}` : ''} · {t('plugins.permissionEffective')}: {t(`plugins.permissionState.${effective?.state ?? 'denied'}`)}</span>
+            </label>;
+          })}
+        </fieldset>)}
+        <button type="button" className="mt-compact rounded-sm border border-border-subtle px-sm py-1 text-sm" disabled={!canManageRuntime || busy} onClick={() => void savePermissions(permissionSnapshot)}>{t('plugins.permissions.save')}</button>
+      </div>}
+
+      {managed && selectedPlugin.pluginKind === 'provider' && <div className="mt-compact border-t border-border-subtle pt-compact">
+        <button
+          type="button"
+          aria-expanded={reviewingPluginId === selectedPlugin.pluginId}
+          aria-controls={`plugin-activation-review-${selectedPlugin.pluginId}`}
+          className="rounded-sm border border-border-subtle px-sm py-1 text-sm hover:bg-[#2e2e2e]"
+          onClick={() => setReviewingPluginId((current) => current === selectedPlugin.pluginId ? null : selectedPlugin.pluginId)}
+        >
+          {t('plugins.activation.openReview')}
+        </button>
+        {reviewingPluginId === selectedPlugin.pluginId && (
+          <div id={`plugin-activation-review-${selectedPlugin.pluginId}`} className="mt-compact border-t border-border-subtle pt-compact">
+            <p className={`${settingsRowDescription} mb-compact`}>
+              {t('plugins.activation.reviewFor', { plugin: providerLabel(selectedPlugin.providerId, selectedPlugin.name, t) })}
+            </p>
+            {sharedDataError && <p className="mb-compact text-sm text-warning" role="alert">{t('plugins.management.failed')}</p>}
+            {sharedDataSnapshot && sharedDataInitialValue && sharedDataSnapshot.pluginId === selectedPlugin.pluginId ? (
+              <PluginActivationPermissions
+                key={JSON.stringify([sharedDataSnapshot.profileId, sharedDataSnapshot.pluginId, sharedDataSnapshot.publisherFingerprint])}
+                pluginId={selectedPlugin.pluginId}
+                catalog={sharedDataSnapshot.catalog}
+                initialValue={sharedDataInitialValue}
+                busy={busy}
+                onSave={(value) => void saveSharedDataPermissions(sharedDataSnapshot, value)}
+              />
+            ) : <p className={settingsRowDescription} role="status">{profileId ? t('plugins.activation.loading') : t('plugins.signInRequired')}</p>}
+          </div>
+        )}
+      </div>}
+
+      {!renderCards && <>
+      <div>
+        <p className={settingsRowDescription}>{selectedPlugin.source === 'official' ? t('plugins.grants') : t('plugins.import.permissions')}</p>
+        <ul className="mt-1 flex flex-wrap gap-1" aria-label={t('plugins.grants')}>
+          {selectedPlugin.capabilities.map((grant) => (
+            <li key={grant} className={settingsPill}>{grant}</li>
+          ))}
+        </ul>
+      </div>
+      <div>
+        <p className={settingsRowDescription}>{t('plugins.nativeAccess')}</p>
+        <ul className="mt-1 flex flex-wrap gap-1" aria-label={t('plugins.nativeAccess')}>
+          {selectedPlugin.nativeAccess.map((access) => (
+            <li key={access} className={settingsPill}>{t(`plugins.native.${access}`)}</li>
+          ))}
+        </ul>
+        <p className={`${settingsRowDescription} mt-1`}>{t('plugins.nativeAccessNote')}</p>
+      </div>
+      </>}
+      <section className="mt-compact" aria-label={t('plugins.settings.title')}>
+        <PluginConfigurationSurface
+          plugin={selectedPlugin}
+          choice={configurationChoice}
+          loading={configurationQuery.isPending && !configurationQuery.isError}
+        />
+      </section>
+      {selectedPlugin.publisherFingerprint && (
+        <>
+          <RememberedConfirmations
+            pluginId={selectedPlugin.pluginId}
+            publisherFingerprint={selectedPlugin.publisherFingerprint}
+          />
+          <PluginFolderApprovals
+            pluginId={selectedPlugin.pluginId}
+            publisherFingerprint={selectedPlugin.publisherFingerprint}
+          />
+        </>
+      )}
+    </article>
+  );
+
   return (
-    <section aria-label={t('plugins.inventoryTitle')}>
-      <p className={`${settingsRowDescription} mb-compact`}>{t('plugins.inventoryDescription')}</p>
+    <section className="flex flex-col gap-sm" aria-label={t('plugins.inventoryTitle')}>
+      {!renderCards && <p className={`${settingsRowDescription} mb-compact`}>{t('plugins.inventoryDescription')}</p>}
       <div className={`${settingsCard} mb-compact`}>
         <form aria-label={t('plugins.import.title')} onSubmit={(event) => { event.preventDefault(); void reviewImport(); }}>
           <label className="block text-sm">
@@ -581,7 +708,7 @@ export const PluginInventory: React.FC = () => {
         )}
       </div>
       {managementError && <p className="mt-compact text-sm text-warning" role="alert">{t('plugins.management.failed')}</p>}
-      {isPending ? (
+      {renderCards ? renderCards({ selectedPluginId, selectPlugin, details }) : isPending ? (
         <div className={settingsCard}>
           <p className={settingsRowDescription} role="status">{t('plugins.loading')}</p>
         </div>
@@ -602,11 +729,7 @@ export const PluginInventory: React.FC = () => {
                 type="button"
                 aria-pressed={selectedPlugin?.pluginId === plugin.pluginId}
                 className={`flex w-full flex-col items-start gap-1 rounded-sm border px-sm py-compact text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${selectedPlugin?.pluginId === plugin.pluginId ? 'border-brand bg-accent-subtle' : 'border-border-subtle bg-raised hover:bg-[#2e2e2e]'}`}
-                onClick={() => {
-                  setScopeChoices({});
-                  setManagementError(false);
-                  setSelectedPluginId(plugin.pluginId);
-                }}
+                onClick={() => selectPlugin(plugin.pluginId)}
               >
                 <span className={settingsRowTitle}>{providerLabel(plugin.providerId, plugin.name, t)}</span>
                 <span className="flex flex-wrap gap-1">
@@ -616,114 +739,7 @@ export const PluginInventory: React.FC = () => {
               </button>
             ))}
           </div>
-          {selectedPlugin && (
-            <article className={`${settingsCard} self-start`} aria-label={t('plugins.details')}>
-              <div className="flex flex-wrap items-center gap-compact">
-                <h3 className={settingsRowTitle}>{providerLabel(selectedPlugin.providerId, selectedPlugin.name, t)}</h3>
-                <span className={settingsPill}>{selectedPlugin.source === 'official' ? t('plugins.official') : t('plugins.community')}</span>
-                <span className={stateClass(selectedPlugin.status)}>{statusLabel(selectedPlugin.status, t)}</span>
-              </div>
-              <p className={settingsRowDescription}>{t('plugins.identifier')}: {selectedPlugin.pluginId}</p>
-              <p className={settingsRowDescription}>{t('plugins.session')}: {selectedPlugin.session === 'active' ? t('plugins.sessionActive') : t('plugins.sessionStopped')}</p>
-              {managed && selectedPlugin.version && <p className={settingsRowDescription}>{t('plugins.import.version')}: {selectedPlugin.version}</p>}
-              {managed && selectedPlugin.compatibilityDetails && <PluginCompatibilityReview details={selectedPlugin.compatibilityDetails} />}
-              {managed && selectedPlugin.pluginKind === 'extension' && selectedPlugin.runtimeAvailable !== true && <p className={settingsRowDescription} role="status">{t('plugins.import.extensionRuntimeUnavailable')}</p>}
-              {managed && selectedPlugin.pluginKind !== 'extension' && selectedPlugin.runtimeAvailable === false && <p className={settingsRowDescription} role="status">{t('plugins.import.restartRequired')}</p>}
-              {managed && profileId === null && <p className={settingsRowDescription} role="status">{t('plugins.signInRequired')}</p>}
-              {(canManageRuntime || canManageAccount) && <div className="mt-compact flex flex-wrap gap-compact">
-                {canManageRuntime && (selectedPlugin.enabled ? <button type="button" className="rounded-sm border border-border-subtle px-sm py-1 text-sm" disabled={busy} onClick={() => void setPluginEnabled(selectedPlugin.pluginId, false)}>{t('plugins.disable')}</button> : <button type="button" className="rounded-sm border border-border-subtle px-sm py-1 text-sm" disabled={busy || selectedPlugin.status === 'incompatible'} onClick={() => void setPluginEnabled(selectedPlugin.pluginId, true)}>{t('plugins.enable')}</button>)}
-                {canManageAccount && <button type="button" className="rounded-sm border border-warning px-sm py-1 text-sm" disabled={busy} onClick={() => setConfirmRemove(true)}>{t('plugins.remove')}</button>}
-              </div>}
-              {managed && profileId && permissionSnapshot && permissionSnapshot.pluginId === selectedPlugin.pluginId && <div className="mt-compact border-t border-border-subtle pt-compact" aria-label={t('plugins.permissionScopes')}>
-                <p className={settingsRowTitle}>{t('plugins.permissionScopes')}</p>
-                <p className={`${settingsRowDescription} mt-1 break-all`}>{t('plugins.publisherFingerprint')}: {permissionSnapshot.publisherFingerprint}</p>
-                <p className={`${settingsRowDescription} mt-1`}>{t('plugins.requestedGrantedEffectiveDescription')}</p>
-                {permissionSnapshot.requestedPermissions.map((request) => <fieldset key={request.permission_id} className="mt-compact">
-                  <legend className={settingsRowDescription}>{request.permission_id}{request.required ? ` · ${t('plugins.required')}` : ''} · {t('plugins.permissionRequested')}</legend>
-                  {request.allowed_scopes.map((scope) => {
-                    const key = scopeChoiceKey(permissionSnapshot, request.permission_id, scope);
-                    const effective = permissionSnapshot.effectiveGrants.find((grant) => grant.permission_id === request.permission_id && JSON.stringify(grant.scope) === JSON.stringify(scope));
-                    const active = effective?.state === 'granted';
-                    return <label key={key} className="flex items-center gap-compact py-1 text-sm">
-                      <input type="checkbox" disabled={!canManageRuntime || busy} checked={scopeChoices[key] ?? active} onChange={(event) => {
-                        const checked = event.currentTarget.checked;
-                        setScopeChoices((current) => ({ ...current, [key]: checked }));
-                      }} />
-                      <span>{scope.scope}{'category' in scope ? ` · ${scope.category}` : 'value' in scope ? ` · ${scope.value}` : ''} · {t('plugins.permissionEffective')}: {t(`plugins.permissionState.${effective?.state ?? 'denied'}`)}</span>
-                    </label>;
-                  })}
-                </fieldset>)}
-                <button type="button" className="mt-compact rounded-sm border border-border-subtle px-sm py-1 text-sm" disabled={!canManageRuntime || busy} onClick={() => void savePermissions(permissionSnapshot)}>{t('plugins.permissions.save')}</button>
-              </div>}
-
-              {managed && selectedPlugin.pluginKind === 'provider' && <div className="mt-compact border-t border-border-subtle pt-compact">
-                <button
-                  type="button"
-                  aria-expanded={reviewingPluginId === selectedPlugin.pluginId}
-                  aria-controls={`plugin-activation-review-${selectedPlugin.pluginId}`}
-                  className="rounded-sm border border-border-subtle px-sm py-1 text-sm hover:bg-[#2e2e2e]"
-                  onClick={() => setReviewingPluginId((current) => current === selectedPlugin.pluginId ? null : selectedPlugin.pluginId)}
-                >
-                  {t('plugins.activation.openReview')}
-                </button>
-                {reviewingPluginId === selectedPlugin.pluginId && (
-                  <div id={`plugin-activation-review-${selectedPlugin.pluginId}`} className="mt-compact border-t border-border-subtle pt-compact">
-                    <p className={`${settingsRowDescription} mb-compact`}>
-                      {t('plugins.activation.reviewFor', { plugin: providerLabel(selectedPlugin.providerId, selectedPlugin.name, t) })}
-                    </p>
-                    {sharedDataError && <p className="mb-compact text-sm text-warning" role="alert">{t('plugins.management.failed')}</p>}
-                    {sharedDataSnapshot && sharedDataInitialValue && sharedDataSnapshot.pluginId === selectedPlugin.pluginId ? (
-                      <PluginActivationPermissions
-                        key={JSON.stringify([sharedDataSnapshot.profileId, sharedDataSnapshot.pluginId, sharedDataSnapshot.publisherFingerprint])}
-                        pluginId={selectedPlugin.pluginId}
-                        catalog={sharedDataSnapshot.catalog}
-                        initialValue={sharedDataInitialValue}
-                        busy={busy}
-                        onSave={(value) => void saveSharedDataPermissions(sharedDataSnapshot, value)}
-                      />
-                    ) : <p className={settingsRowDescription} role="status">{profileId ? t('plugins.activation.loading') : t('plugins.signInRequired')}</p>}
-                  </div>
-                )}
-              </div>}
-
-              <div>
-                <p className={settingsRowDescription}>{selectedPlugin.source === 'official' ? t('plugins.grants') : t('plugins.import.permissions')}</p>
-                <ul className="mt-1 flex flex-wrap gap-1" aria-label={t('plugins.grants')}>
-                  {selectedPlugin.capabilities.map((grant) => (
-                    <li key={grant} className={settingsPill}>{grant}</li>
-                  ))}
-                </ul>
-              </div>
-              <div>
-                <p className={settingsRowDescription}>{t('plugins.nativeAccess')}</p>
-                <ul className="mt-1 flex flex-wrap gap-1" aria-label={t('plugins.nativeAccess')}>
-                  {selectedPlugin.nativeAccess.map((access) => (
-                    <li key={access} className={settingsPill}>{t(`plugins.native.${access}`)}</li>
-                  ))}
-                </ul>
-                <p className={`${settingsRowDescription} mt-1`}>{t('plugins.nativeAccessNote')}</p>
-              </div>
-              <section className="mt-compact" aria-label={t('plugins.settings.title')}>
-                <PluginConfigurationSurface
-                  plugin={selectedPlugin}
-                  choice={configurationChoice}
-                  loading={configurationQuery.isPending && !configurationQuery.isError}
-                />
-              </section>
-              {selectedPlugin.publisherFingerprint && (
-                <>
-                  <RememberedConfirmations
-                    pluginId={selectedPlugin.pluginId}
-                    publisherFingerprint={selectedPlugin.publisherFingerprint}
-                  />
-                  <PluginFolderApprovals
-                    pluginId={selectedPlugin.pluginId}
-                    publisherFingerprint={selectedPlugin.publisherFingerprint}
-                  />
-                </>
-              )}
-            </article>
-          )}
+          {details}
         </div>
       )}
       <AppModal.Root opened={choosingReadinessTarget} onClose={() => void declineUpdate()} closeOnEscape={updateOperation === null} closeOnClickOutside={updateOperation === null}>

@@ -6,8 +6,8 @@ use async_trait::async_trait;
 use gamenode_core::SessionCredential;
 use gamenode_core::callback::NATIVE_ORIGIN;
 use gamenode_core::game_api::{
-    AccountEntry, ApiError, Collection, CoverError, ExternalMatch, FavoriteError, GameApi,
-    GameSummary, LibraryEntry, MAX_COVER_BYTES,
+    AccountEntry, ApiError, Collection, CoverError, CreateCollectionError, ExternalMatch,
+    FavoriteError, GameApi, GameSummary, LibraryEntry, MAX_COVER_BYTES,
 };
 use gamenode_core::library::cover::{CoverUrl, artwork_download_url};
 use gamenode_core::library::membership::EntryStatus;
@@ -316,6 +316,18 @@ fn year_of(date: &str) -> Option<i32> {
     date.get(..4)?.parse().ok()
 }
 
+/// Splits the search answer's `platformsAbbreviations` comma-separated list, trimming each entry
+/// and dropping blanks. A missing or empty field yields no platforms.
+fn split_platforms(value: Option<&str>) -> Vec<String> {
+    value
+        .into_iter()
+        .flat_map(|value| value.split(','))
+        .map(str::trim)
+        .filter(|platform| !platform.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
 impl LookupRow {
     fn into_match(self) -> ExternalMatch {
         let (name, date, cover_url) = match self.game {
@@ -333,6 +345,8 @@ impl LookupRow {
                 name: name.unwrap_or_default(),
                 release_year: date.as_deref().and_then(year_of).or(self.year),
                 cover_url,
+                // A store-id lookup carries no platform abbreviations.
+                platforms: Vec::new(),
             },
         }
     }
@@ -361,6 +375,8 @@ struct SearchItem {
     first_release_date: Option<String>,
     #[serde(rename = "coverUrl", default)]
     cover_url: Option<String>,
+    #[serde(rename = "platformsAbbreviations", default)]
+    platforms_abbreviations: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -370,6 +386,13 @@ struct CollectionRow {
     name: String,
     #[serde(rename = "defaultEntryStatus", default)]
     default_entry_status: Option<String>,
+}
+
+/// A refused collection create, whose `code` distinguishes the account limit.
+#[derive(Deserialize)]
+struct CreateCollectionFailure {
+    #[serde(default)]
+    code: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -485,6 +508,7 @@ impl GameApi for GameNodeClient {
                 name: item.name,
                 release_year: item.first_release_date.as_deref().and_then(year_of),
                 cover_url: item.cover_url.filter(|url| !url.is_empty()),
+                platforms: split_platforms(item.platforms_abbreviations.as_deref()),
             })
             .collect();
         Ok(gamenode_core::game_api::SearchPage { games, complete })
@@ -544,6 +568,49 @@ impl GameApi for GameNodeClient {
                 id: row.id,
             })
             .collect())
+    }
+
+    async fn create_collection(
+        &self,
+        credential: &SessionCredential,
+        name: &str,
+    ) -> Result<(), CreateCollectionError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(CreateCollectionError::Failed);
+        }
+        let response = self
+            .authorized(self.http.post(self.v1("collections", |_| {})), credential)
+            .json(&serde_json::json!({ "name": name }))
+            .send()
+            .await
+            .map_err(|_| CreateCollectionError::Failed)?;
+        match response.status() {
+            // The server answers 201 with no body; the caller re-lists to find the new id.
+            StatusCode::CREATED | StatusCode::OK => Ok(()),
+            StatusCode::UNAUTHORIZED => Err(CreateCollectionError::Rejected),
+            StatusCode::FORBIDDEN => {
+                let limit = response
+                    .json::<CreateCollectionFailure>()
+                    .await
+                    .is_ok_and(|failure| {
+                        failure.code.as_deref() == Some("collection_limit_reached")
+                    });
+                if limit {
+                    Err(CreateCollectionError::LimitReached)
+                } else {
+                    tracing::warn!("creating a collection was refused");
+                    Err(CreateCollectionError::Failed)
+                }
+            }
+            status => {
+                tracing::warn!(
+                    status = status.as_u16(),
+                    "creating a collection was refused"
+                );
+                Err(CreateCollectionError::Failed)
+            }
+        }
     }
 
     async fn list_library_entries(

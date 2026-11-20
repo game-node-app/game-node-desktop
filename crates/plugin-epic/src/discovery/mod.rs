@@ -9,7 +9,7 @@ use serde::Deserialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt, io,
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 pub trait Files: Send + Sync {
@@ -82,6 +82,15 @@ impl fmt::Display for ScanError {
 
 impl std::error::Error for ScanError {}
 
+/// One successful installed scan: the games plus the launcher data directory they were read from.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Scan {
+    pub records: Vec<Installed>,
+    /// The launcher data directory the scan read, as resolved. Absent when the launcher is not
+    /// installed.
+    pub install_root: Option<String>,
+}
+
 impl Manifest {
     /// Candidate data directories in declaration order. The registry value is the primary root and
     /// the portable path is the fallback; discovery uses the first candidate that exists.
@@ -114,13 +123,25 @@ impl Manifest {
         files: &dyn Files,
         resolver: &dyn RootResolver,
     ) -> Result<Vec<Installed>, ScanError> {
+        Ok(self.scan_with_root(files, resolver)?.records)
+    }
+
+    /// Scans like [`Manifest::scan`] and also reports the launcher data directory it used.
+    pub fn scan_with_root(
+        &self,
+        files: &dyn Files,
+        resolver: &dyn RootResolver,
+    ) -> Result<Scan, ScanError> {
         for root in self.resolve_roots(resolver) {
-            let root = PathBuf::from(root);
-            if files.is_dir(&root) {
-                return scan_data_dir(files, &root);
+            if files.is_dir(Path::new(&root)) {
+                let records = scan_data_dir(files, Path::new(&root))?;
+                return Ok(Scan {
+                    records,
+                    install_root: Some(root),
+                });
             }
         }
-        Ok(Vec::new())
+        Ok(Scan::default())
     }
 }
 

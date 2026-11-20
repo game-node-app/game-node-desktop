@@ -12,7 +12,11 @@ use tracing::span;
 use tracing::{Event, Metadata, Subscriber};
 use url::Url;
 
-use super::{ACHIEVEMENT_SCHEMA_PATH, OWNED_GAMES_PATH, PLAYER_ACHIEVEMENTS_PATH, SteamClient};
+use super::{
+    ACHIEVEMENT_SCHEMA_PATH, GLOBAL_ACHIEVEMENTS_PATH, OWNED_GAMES_PATH, PLAYER_ACHIEVEMENTS_PATH,
+    SteamClient,
+};
+use crate::steam::SteamAchievementGlobal;
 
 const STEAM_ID: &str = "76561198000000001";
 const TOKEN: &str = "webapi-token-secret";
@@ -1091,6 +1095,46 @@ async fn achievement_reads_send_the_token_and_an_empty_key() {
     assert_eq!(states[0].display_name, "Vitória");
     assert!(states[0].achieved);
     assert_eq!(states[0].unlock_time, Some(1_700_000_000));
+}
+
+#[tokio::test]
+async fn global_percentages_are_public_and_accept_numbers_and_strings() {
+    let server = MockServer::start_async().await;
+    let mock = server.mock(|when, then| {
+        when.method(GET)
+            .path(GLOBAL_ACHIEVEMENTS_PATH)
+            .is_true(exact_params(&[("gameid", "620"), ("format", "json")]));
+        then.status(200).json_body(json!({
+            "achievementpercentages": {
+                "achievements": [
+                    {"name": "ACH_WIN", "percent": "4.2"},
+                    {"name": "ACH_TWO", "percent": 18.9},
+                    {"name": "ACH_BAD", "percent": "not a number"},
+                    {"percent": 50},
+                    {}
+                ]
+            }
+        }));
+    });
+    let percentages = client(&server)
+        .achievement_global_percentages("620")
+        .await
+        .unwrap();
+    mock.assert_async().await;
+    assert_eq!(
+        percentages,
+        vec![
+            SteamAchievementGlobal {
+                api_name: "ACH_WIN".into(),
+                percent: 420,
+            },
+            SteamAchievementGlobal {
+                api_name: "ACH_TWO".into(),
+                percent: 1_890,
+            },
+        ],
+        "a string percent becomes hundredths and unusable rows are ignored"
+    );
 }
 
 #[tokio::test]

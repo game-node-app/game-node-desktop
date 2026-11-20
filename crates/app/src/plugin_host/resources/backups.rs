@@ -67,6 +67,7 @@ fn local(_: impl std::fmt::Display) -> domain::LocalError {
 fn status(error: domain::LocalError) -> Status {
     match error {
         domain::LocalError::Unsupported => unavailable(),
+        domain::LocalError::Busy => Status::failed_precondition("backup engine is busy"),
         domain::LocalError::Cancelled => Status::cancelled("backup cancelled"),
         domain::LocalError::InvalidTarget => Status::failed_precondition("invalid backup target"),
         domain::LocalError::Failed(_) => {
@@ -359,6 +360,7 @@ impl ResourceApi {
             registry: vec![],
             support: domain::SaveSupport::Supported,
             automatic: Some(false),
+            retention: None,
         };
         let destination = destination.unwrap_or(context.destination);
         let protected = frozen

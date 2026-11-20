@@ -16,6 +16,7 @@ reqwest = { version = "0.13.5", default-features = false, features = ["blocking"
 ring = "0.17.14"
 gamenode-core.workspace = true
 dirs = "7.0.0"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
 getrandom.workspace = true
 open.workspace = true
 rusqlite = { version = "0.41.1", features = ["bundled"] }
@@ -32,7 +33,6 @@ semver = "1.0.27"
 base64 = "0.22.1"
 sevenz-rust2 = "0.20"
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1.1.6", features = ["fs", "process", "system"] }

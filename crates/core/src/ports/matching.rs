@@ -232,6 +232,7 @@ mod tests {
                 name: (*name).into(),
                 release_year: None,
                 cover_url: None,
+                platforms: Vec::new(),
             })
             .collect()
     }
@@ -386,6 +387,7 @@ mod tests {
             removed: false,
             rediscovery_allowed: false,
             transferred_from: None,
+            custom_cover: None,
             available: true,
         };
         let input = PortMatchInput::GameNodeId { game_id: 42 };

@@ -498,6 +498,10 @@ impl LibraryStore for SqliteLibraryStore {
                     provider,
                     last_success_at: row.get(1)?,
                     last_error: row.get(2)?,
+                    // The scan location is live data reported with the scan; it is not stored.
+                    install_root: None,
+                    library_folders: None,
+                    last_detected: None,
                 })
             })
             .map_err(failed)?
@@ -565,11 +569,18 @@ impl LibraryStore for SqliteLibraryStore {
 
         let games = conn
             .prepare(
-                "SELECT game_id, name, release_year, cover_url, cover_file, cover_failed_at
+                "SELECT game_id, name, release_year, cover_url, cover_file, cover_failed_at,
+                        platforms
                  FROM games ORDER BY game_id",
             )
             .map_err(failed)?
             .query_map([], |row| {
+                let platforms_json: String = row.get(6)?;
+                let platforms: Vec<String> = serde_json::from_str(&platforms_json)
+                    .inspect_err(
+                        |error| tracing::warn!(%error, "ignored unreadable game platforms"),
+                    )
+                    .unwrap_or_default();
                 Ok((
                     row.get::<_, i64>(0)?,
                     GameRecord {
@@ -579,6 +590,7 @@ impl LibraryStore for SqliteLibraryStore {
                         cover_url: row.get(3)?,
                         cover_file: row.get(4)?,
                         cover_failed_at: row.get(5)?,
+                        platforms,
                     },
                 ))
             })
@@ -1980,8 +1992,8 @@ impl LibraryStore for SqliteLibraryStore {
             // is compared with the old URL.
             let mut put = tx
                 .prepare(
-                    "INSERT INTO games (game_id, name, release_year, cover_url)
-                     VALUES (?1, ?2, ?3, ?4)
+                    "INSERT INTO games (game_id, name, release_year, cover_url, platforms)
+                     VALUES (?1, ?2, ?3, ?4, ?5)
                      ON CONFLICT(game_id) DO UPDATE SET
                         name = excluded.name,
                         release_year = excluded.release_year,
@@ -1989,7 +2001,8 @@ impl LibraryStore for SqliteLibraryStore {
                                           THEN games.cover_file ELSE NULL END,
                         cover_failed_at = CASE WHEN games.cover_url IS excluded.cover_url
                                                THEN games.cover_failed_at ELSE NULL END,
-                        cover_url = excluded.cover_url",
+                        cover_url = excluded.cover_url,
+                        platforms = excluded.platforms",
                 )
                 .map_err(failed)?;
             for game in games {
@@ -1997,7 +2010,8 @@ impl LibraryStore for SqliteLibraryStore {
                     db_id(game.game_id)?,
                     game.name,
                     game.release_year,
-                    game.cover_url
+                    game.cover_url,
+                    serde_json::to_string(&game.platforms).map_err(failed)?
                 ])
                 .map_err(failed)?;
             }

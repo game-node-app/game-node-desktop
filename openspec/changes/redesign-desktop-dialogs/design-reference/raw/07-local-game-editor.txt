@@ -1,0 +1,22 @@
+### 5370:3171 Configurações do jogo  (wrapper 5370:3272 "Configurações do jogo (LocalGameEditor)")
+### Annotation: Capa e identidade no topo; caminhos agrupados; detecção de processo recolhida em "Avançado".
+F [Configurações do jogo] 640x605 col (same shell)
+ F [Cabeçalho] I dots-vertical ; col gap2 [T "Configurações do jogo" 16/600 ; T "Distant Skies: Recompiled · DRM-free" 12/400 text-dimmed] ; I x
+ F [Corpo] col gap16 p20
+  F row gap16
+   F col gap8 ai:center ; REC cover 108x144 r6 ; T "Trocar capa… (NOVO)" 12/500 primary (text button)
+   F col gap12 FH
+    F [field] T "Título" ; input T "Distant Skies: Recompiled"
+    F row gap8 ai:max
+     F [field FH] T "Executável" ; input [I file-text ; T "D:\Jogos\DistantSkies\skies.exe"]
+     C <Button Secondary MD> "Localizar executável"
+    F row gap8 ai:center ; I info-circle 14:warning ; T "Vários executáveis possíveis; escolha um abaixo." 12/400 warning
+  F row gap12
+   F [field FH] T "Pasta do jogo" ; input [I folder ; T "D:\Jogos\DistantSkies"]
+   F [field FH] T "Diretório de trabalho" ; input [I folder ; T "D:\Jogos\DistantSkies"]
+  F [field] T "Argumentos" ; input [I terminal-2 ; T "--windowed --fps 120"]
+  F row gap8 ai:center (collapsible header, button) ; I chevron-down 14:text-dimmed ; T "Avançado · detecção de processo" 11/600 text/muted ls0.8 upper
+  F row gap12 (collapsed by default)
+   F [field FH] T "Executáveis do jogo (um por linha)" ; textarea 64h p8/10/0/10 bg=surface bd1=border/subtle r6 ; T 13/400 lh19 "skies.exe\nskies_vk.exe"
+   F [field FH] T "Executáveis de inicialização (um por linha)" ; textarea "launcher.exe"
+ F [Rodapé] C <Button Ghost SM> "Remover da biblioteca…" icons=trash ; spacer ; C <Button Secondary SM> "Cancelar" ; C <Button Primary SM> "Salvar" icons=check

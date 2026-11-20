@@ -1,0 +1,29 @@
+### 5369:3062 Conquistas  (wrapper 5369:3161 "Conquistas (AchievementsDialog)")
+### Annotation: Progresso no topo, filtros com contagem, raridade e ordenação (NOVO).
+F [Conquistas] 640x549 col (same shell)
+ F [Cabeçalho] I dots-vertical ; col gap2 [T "Conquistas" 16/600 ; T "Emberfall: Iron Trail · Steam" 12/400 text-dimmed] ; I x
+ F [Corpo] col gap16 p20
+  F [summary] row gap14 p12 ai:center bg=background bd1=border/subtle r8
+   I trophy 24:warning
+   F col gap6 FH
+    F row ; T "31 de 58 desbloqueadas" 14/600 text/primary ; spacer ; T "53%" 13/600 primary
+    F [track] 534x6 bg=bg/raised r3 ; F [fill] 280x6 bg=primary r3
+  F row gap8 ai:center
+   F [segmented] row gap2 p3 bg=bg/canvas bd1=border/subtle r8
+    segments h26 p0/10/0/10 r5:
+    active   bg=bg/raised ; T "Todas · 58" 12/600 text/primary
+    inactive T "Desbloqueadas · 31" 12/400 text/secondary
+    inactive T "Bloqueadas · 27" 12/400 text/secondary
+   spacer
+   F [sort select] 117x32 row gap6 p0/10/0/10 ai:center bg=bg/raised bd1=border/subtle r6
+    I arrows-sort 14:text/secondary ; T "Mais raras" 12/400 text-default ; I chevron-down 12:text-dimmed
+  F [list] col  (virtualized)
+   rows 598x65 row gap12 p10/0/10/0 ai:center bd-bottom=border/subtle:
+   F [icon] 44x44 r6 (achievement image; locked: bg=bg/raised + I lock 18:text/muted, or the gray icon)
+   F col gap2 FH ; T name 13/600 (unlocked text/primary · locked text/secondary) ; T description 12/400 text-dimmed (wraps, max 340w)
+   F col gap2 ai:max ; T date 12/400 text-default (locked: "Bloqueada" text-dimmed) ; T 11/400 text-dimmed (rarity / progress)
+   "Coração de brasa" / "Derrote o guardião da fornalha sem levar dano." / "12 mar. 2026" / "Rara · 4,2% dos jogadores"
+   "Trilho completo" / "Conclua todas as rotas da ferrovia de ferro." / "2 fev. 2026" / "18,9% dos jogadores"
+   (locked, hidden) "Conquista oculta" / "Desbloqueie esta conquista para revelá-la." / "Bloqueada" / "7,1% dos jogadores"
+   (locked) "Mestre ferreiro" / "Forje 50 itens lendários." / "Bloqueada" / "Progresso 32/50"
+ F [Rodapé] I clock 14:text-dimmed ; T "Atualizado da Steam há 5 min" 12/400 text-dimmed ; spacer ; C <Button Secondary SM> "Abrir na Steam" icons=external-link

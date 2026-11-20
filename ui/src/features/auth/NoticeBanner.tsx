@@ -1,6 +1,7 @@
-import { IconX } from '@tabler/icons-react';
+import { IconAlertTriangle } from '@tabler/icons-react';
 import type { Notice } from '../../api/types';
 import { useI18n } from '../../i18n';
+import { Banner } from '../../components/ui/Banner';
 
 export const NOTICE_MSGID_MAP: Record<Notice, string> = {
   browserLaunchFailed: 'Could not open your browser. Please try again.',
@@ -23,6 +24,7 @@ export interface NoticeBannerProps {
   onDismiss?: () => void;
 }
 
+/** A sign-in problem, rendered with the shared Banner. */
 export function NoticeBanner({ notice, className, onDismiss }: NoticeBannerProps) {
   const { t } = useI18n();
 
@@ -34,23 +36,14 @@ export function NoticeBanner({ notice, className, onDismiss }: NoticeBannerProps
   const message = msgid ? t(msgid) : String(notice);
 
   return (
-    <div
-      role="alert"
-      data-testid="notice-banner"
-      data-notice={notice}
-      className={`flex items-center justify-between gap-sm rounded-md border border-danger bg-danger-subtle px-md py-sm text-sm leading-[1.4] text-text-default ${className ?? ''}`}
-    >
-      <span>{message}</span>
-      {onDismiss && (
-        <button
-          type="button"
-          onClick={onDismiss}
-          aria-label="Dismiss notice"
-          className="cursor-pointer border-0 bg-transparent px-[6px] py-[2px] text-sm text-text-dimmed transition-colors hover:text-text-default"
-        >
-          <IconX size={14} stroke={2} aria-hidden="true" />
-        </button>
-      )}
+    <div data-testid="notice-banner" data-notice={notice} className={className}>
+      <Banner
+        tone="danger"
+        icon={IconAlertTriangle}
+        title={message}
+        onDismiss={onDismiss}
+        dismissLabel={onDismiss ? t('auth.dismissNotice') : undefined}
+      />
     </div>
   );
 }

@@ -1,0 +1,26 @@
+### 5370:2923 Proteção local dos saves  (wrapper 5370:3058 "Proteção local dos saves (SaveProtectionModal)")
+### Annotation: Status, destino e retenção num só lugar; o histórico mostra o motivo de cada cópia e o espaço usado (NOVO).
+F [Proteção local dos saves] 580x647 col (same shell)
+ F [Cabeçalho] I dots-vertical ; col gap2 [T "Proteção local dos saves" 16/600 ; T "Distant Skies: Recompiled · DRM-free" 12/400 text-dimmed] ; I x
+ F [Corpo] col gap16 p20
+  F [status card] row gap12 p12 ai:center bg=background bd1=border/subtle r8
+   I shield-check 20:success
+   F col gap2 FH ; T "Proteção ativa" 14/600 text/primary ; T "Cria uma cópia local após cada sessão de jogo." 12/400 text-dimmed
+   C <Switch On> 34x20 p3 bg=primary r999
+  F row gap8 ai:max
+   F [field] FH ; T "Pasta de saves" 12/500 text/secondary ; input [I folder 14:text-dimmed ; T "%APPDATA%\DistantSkies\saves" 13/400 text/primary ellipsis]
+   C <Button Secondary MD> 86x36 "Alterar…"
+  F row gap12
+   F [field] FH ; T "Manter" ; select [T "12 cópias mais recentes" 13/400 text/primary ; I chevron-down 14:text-dimmed]
+   F [field] FH ; T "Espaço usado (NOVO)" ; read-only input [I database 14:text-dimmed ; T "84 MB de 1 GB" 13/400 text/primary]
+  F col gap4
+   T "Histórico de backups" 11/600 text/muted ls0.8 upper
+   T "Restaure uma cópia anterior. Um backup de recuperação é criado antes de substituir os arquivos." 12/400 text-dimmed lh17
+  F [history] col bd1=border/subtle r8 clip
+   rows row gap12 p10/12/10/12 ai:center bd-bottom=border/subtle (last row no border):
+   I 16 ; F col gap2 FH [T time 13/500 text/primary ; T reason 11/400 text-dimmed] ; T size 12/400 text-dimmed ; C <Button Secondary SM> "Restaurar" icons=arrow-back-up
+   I history 16:text/secondary ; "Hoje, 14:20" ; "Após sessão de jogo · 42 min" ; "7,1 MB"
+   I history 16:text/secondary ; "Ontem, 22:05" ; "Após sessão de jogo · 1 h 12 min" ; "7,0 MB"
+   I archive 16:text/secondary ; "Ontem, 18:30" ; "Manual" ; "6,8 MB"
+   I shield-check 16:warning ; "10 nov., 21:44" ; "Backup de recuperação" ; "6,8 MB"
+ F [Rodapé] C <Button Secondary SM> "Fazer cópia agora" icons=archive ; C <Button Ghost SM> "Abrir pasta" icons=folder-open ; spacer ; C <Button Primary SM> "Fechar"

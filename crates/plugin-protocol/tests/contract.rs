@@ -35,6 +35,7 @@ fn operation_contract_distinguishes_empty_failure_interruption_and_stale_results
         discovery: Some(DiscoveryResult {
             provider_id: "steam".into(),
             records: vec![],
+            ..Default::default()
         }),
         ..Default::default()
     };
@@ -72,6 +73,40 @@ fn operation_contract_distinguishes_empty_failure_interruption_and_stale_results
         OperationDisposition::Superseded as i32
     );
     assert!(ProviderOperation::try_from(999).is_err());
+}
+
+#[test]
+fn discovery_location_round_trips_and_stays_absent_when_not_reported() {
+    let located = DiscoveryResult {
+        provider_id: "steam".into(),
+        records: vec![DiscoveryRecord {
+            id: "620".into(),
+            name: "Portal 2".into(),
+            install_dir: r"C:\Program Files (x86)\Steam\steamapps\common\Portal 2".into(),
+            fields: Default::default(),
+        }],
+        install_root: Some(r"C:\Program Files (x86)\Steam".into()),
+        library_folders: Some(4),
+    };
+    let decoded = DiscoveryResult::decode(located.encode_to_vec().as_slice()).unwrap();
+    assert_eq!(decoded, located);
+    assert_eq!(
+        decoded.install_root.as_deref(),
+        Some(r"C:\Program Files (x86)\Steam")
+    );
+    assert_eq!(decoded.library_folders, Some(4));
+
+    // A plugin built before the fields existed sends neither, which is exactly
+    // the encoding above without fields 3 and 4; the host must read that as
+    // "not reported" instead of inventing a location.
+    let legacy = DiscoveryResult {
+        provider_id: "steam".into(),
+        records: vec![],
+        ..Default::default()
+    };
+    let decoded = DiscoveryResult::decode(legacy.encode_to_vec().as_slice()).unwrap();
+    assert_eq!(decoded.install_root, None);
+    assert_eq!(decoded.library_folders, None);
 }
 
 #[test]
@@ -381,6 +416,40 @@ fn achievement_outcomes_reject_unrequested_ids_and_oversized_batches() {
         })
         .collect::<Vec<_>>();
     assert!(parse_outcomes(&oversized, &requested, false).is_err());
+}
+
+#[test]
+fn achievement_rarity_is_optional_in_legacy_json_and_round_trips_on_the_wire() {
+    use gamenode_plugin_protocol::models::Achievement;
+
+    let legacy: Achievement = serde_json::from_value(serde_json::json!({
+        "id": "ACH_WIN",
+        "name": "Win",
+        "description": "Win once",
+        "hidden": false,
+        "iconUrl": "https://cdn.example/a.jpg",
+        "iconGrayUrl": "https://cdn.example/a_gray.jpg",
+        "unlocked": true,
+        "unlockedAt": 1_700_000_000
+    }))
+    .unwrap();
+    assert_eq!(legacy.global_percent, None, "an old payload has no rarity");
+
+    let with_rarity = Achievement {
+        global_percent: Some(420),
+        ..legacy
+    };
+    let wire = gamenode_plugin_protocol::proto::Achievement::from(with_rarity.clone());
+    assert_eq!(wire.global_percent, Some(420));
+    let restored = Achievement::try_from(wire).unwrap();
+    assert_eq!(restored, with_rarity);
+    assert_eq!(restored.global_percent, Some(420));
+
+    let too_large = gamenode_plugin_protocol::proto::Achievement {
+        global_percent: Some(u32::from(u16::MAX) + 1),
+        ..gamenode_plugin_protocol::proto::Achievement::default()
+    };
+    assert!(Achievement::try_from(too_large).is_err());
 }
 
 #[test]

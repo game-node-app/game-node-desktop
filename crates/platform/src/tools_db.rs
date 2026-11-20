@@ -553,23 +553,47 @@ impl ToolStore for SqliteToolStore {
 
         let tx = conn.transaction().map_err(failed)?;
         {
-            let mut existing_cached = std::collections::HashMap::new();
+            // Cached rows are local state: an upstream refresh can drop an older version while its
+            // archive is still on disk, and Settings must keep listing it until the cache is
+            // cleared or the file disappears. Read the full rows before replacing the list.
+            let mut existing_cached = Vec::new();
             {
                 let mut stmt = tx
                     .prepare(
-                        "SELECT version, cached_path
+                        "SELECT tool_id, channel, version, tag_name, name, published_at,
+                                download_url, asset_name, size_bytes, sha256, cached_path
                          FROM tool_releases_cache
                          WHERE tool_id = ?1 AND channel = ?2 AND cached_path IS NOT NULL",
                     )
                     .map_err(failed)?;
                 let rows = stmt
                     .query_map(params![tool_id.as_str(), channel.as_str()], |row| {
-                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                        let channel_str: String = row.get(1)?;
+                        let channel = ToolChannel::from_str(&channel_str).map_err(|e| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                1,
+                                rusqlite::types::Type::Text,
+                                Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+                            )
+                        })?;
+                        let size_bytes_raw: i64 = row.get(8)?;
+                        Ok(ToolRelease {
+                            tool_id: ToolId::new(row.get::<_, String>(0)?),
+                            channel,
+                            version: row.get(2)?,
+                            tag_name: row.get(3)?,
+                            name: row.get(4)?,
+                            published_at: row.get(5)?,
+                            download_url: row.get(6)?,
+                            asset_name: row.get(7)?,
+                            size_bytes: size_bytes_raw as u64,
+                            sha256: row.get(9)?,
+                            cached_path: row.get(10)?,
+                        })
                     })
                     .map_err(failed)?;
-                for r in rows {
-                    let (v, p) = r.map_err(failed)?;
-                    existing_cached.insert(v, p);
+                for row in rows {
+                    existing_cached.push(row.map_err(failed)?);
                 }
             }
 
@@ -588,11 +612,15 @@ impl ToolStore for SqliteToolStore {
                 )
                 .map_err(failed)?;
 
+            let mut incoming_versions = std::collections::BTreeSet::new();
             for r in releases {
-                let cached_path = r
-                    .cached_path
-                    .as_deref()
-                    .or_else(|| existing_cached.get(&r.version).map(|s| s.as_str()));
+                incoming_versions.insert(r.version.clone());
+                let cached_path = r.cached_path.as_deref().or_else(|| {
+                    existing_cached
+                        .iter()
+                        .find(|existing| existing.version == r.version)
+                        .and_then(|existing| existing.cached_path.as_deref())
+                });
                 let size_bytes = i64::try_from(r.size_bytes).unwrap_or(i64::MAX);
 
                 insert
@@ -612,6 +640,31 @@ impl ToolStore for SqliteToolStore {
                     ])
                     .map_err(failed)?;
             }
+
+            // Reinsert cached versions the upstream list no longer offers, with their persisted
+            // path, size and digest. `fetched_at` is refreshed so the metadata still looks current.
+            for existing in existing_cached {
+                if incoming_versions.contains(&existing.version) {
+                    continue;
+                }
+                let size_bytes = i64::try_from(existing.size_bytes).unwrap_or(i64::MAX);
+                insert
+                    .execute(params![
+                        existing.tool_id.as_str(),
+                        channel.as_str(),
+                        existing.version,
+                        existing.tag_name,
+                        existing.name,
+                        existing.published_at,
+                        existing.download_url,
+                        existing.asset_name,
+                        size_bytes,
+                        existing.sha256,
+                        existing.cached_path,
+                        now,
+                    ])
+                    .map_err(failed)?;
+            }
         }
         tx.commit().map_err(failed)
     }
@@ -625,6 +678,61 @@ impl ToolStore for SqliteToolStore {
             )
             .map_err(failed)?;
         Ok(cleared)
+    }
+
+    fn list_cached_releases(&self) -> Result<Vec<ToolRelease>, ToolError> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare(
+                "SELECT tool_id, channel, version, tag_name, name, published_at,
+                        download_url, asset_name, size_bytes, sha256, cached_path
+                 FROM tool_releases_cache
+                 WHERE cached_path IS NOT NULL
+                 ORDER BY tool_id ASC, channel ASC, version ASC",
+            )
+            .map_err(failed)?;
+        let rows = stmt
+            .query_map([], |row| {
+                let channel_str: String = row.get(1)?;
+                let channel = ToolChannel::from_str(&channel_str).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        1,
+                        rusqlite::types::Type::Text,
+                        Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+                    )
+                })?;
+                let size_bytes_raw: i64 = row.get(8)?;
+                Ok(ToolRelease {
+                    tool_id: ToolId::new(row.get::<_, String>(0)?),
+                    channel,
+                    version: row.get(2)?,
+                    tag_name: row.get(3)?,
+                    name: row.get(4)?,
+                    published_at: row.get(5)?,
+                    download_url: row.get(6)?,
+                    asset_name: row.get(7)?,
+                    size_bytes: size_bytes_raw as u64,
+                    sha256: row.get(9)?,
+                    cached_path: row.get(10)?,
+                })
+            })
+            .map_err(failed)?;
+
+        let mut result = Vec::new();
+        for row in rows {
+            let release = row.map_err(failed)?;
+            // Persisted metadata alone is not proof that the archive is still on disk: the cache
+            // directory can be cleaned outside the application. List only archives whose file is
+            // present, so Settings never shows a version that cannot be used.
+            if release
+                .cached_path
+                .as_deref()
+                .is_some_and(|path| std::path::Path::new(path).is_file())
+            {
+                result.push(release);
+            }
+        }
+        Ok(result)
     }
 }
 
@@ -1002,6 +1110,10 @@ mod tests {
     fn test_release_catalog_caching_and_clearing() {
         let dir = TempDir::new().unwrap();
         let (_settings, store) = open_test_store(&dir);
+        let cache_dir = TempDir::new().unwrap();
+        let cached_file = cache_dir.path().join("OptiScaler-v0.7.9.7z");
+        std::fs::write(&cached_file, b"cached archive").unwrap();
+        let cached_path = cached_file.to_string_lossy().into_owned();
 
         let opti_id = ToolId::new("optiscaler");
 
@@ -1025,7 +1137,7 @@ mod tests {
                 asset_name: "OptiScaler-v0.7.9.7z".to_string(),
                 size_bytes: 5242880,
                 sha256: Some("sha_stable_1".to_string()),
-                cached_path: Some("/cache/OptiScaler-v0.7.9.7z".to_string()),
+                cached_path: Some(cached_path.clone()),
             },
             ToolRelease {
                 tool_id: opti_id.clone(),
@@ -1057,10 +1169,7 @@ mod tests {
         let loaded = store.load_releases(&opti_id, ToolChannel::Stable).unwrap();
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].version, "0.7.9");
-        assert_eq!(
-            loaded[0].cached_path.as_deref(),
-            Some("/cache/OptiScaler-v0.7.9.7z")
-        );
+        assert_eq!(loaded[0].cached_path.as_deref(), Some(cached_path.as_str()));
         assert_eq!(loaded[1].version, "0.7.8");
         assert!(loaded[1].cached_path.is_none());
 
@@ -1087,8 +1196,21 @@ mod tests {
         assert_eq!(reloaded.len(), 1);
         assert_eq!(
             reloaded[0].cached_path.as_deref(),
-            Some("/cache/OptiScaler-v0.7.9.7z")
+            Some(cached_path.as_str())
         );
+
+        // The Settings cache listing reads only rows whose archive is present, across tools and
+        // channels, with the persisted path, size and digest.
+        let cached = store.list_cached_releases().unwrap();
+        assert_eq!(cached.len(), 1);
+        assert_eq!(cached[0].version, "0.7.9");
+        assert_eq!(cached[0].channel, ToolChannel::Stable);
+        assert_eq!(cached[0].size_bytes, 5242880);
+        assert_eq!(cached[0].sha256.as_deref(), Some("sha_stable_1"));
+
+        // An archive removed outside the application disappears from the listing.
+        std::fs::remove_file(&cached_file).unwrap();
+        assert!(store.list_cached_releases().unwrap().is_empty());
 
         // Clear cached archives metadata
         let cleared = store.clear_cached_archives_metadata().unwrap();
@@ -1097,6 +1219,94 @@ mod tests {
         let after_clear = store.load_releases(&opti_id, ToolChannel::Stable).unwrap();
         assert_eq!(after_clear.len(), 1);
         assert!(after_clear[0].cached_path.is_none());
+        assert!(store.list_cached_releases().unwrap().is_empty());
+    }
+
+    #[test]
+    fn cached_versions_survive_upstream_refresh_until_the_archive_is_cleared() {
+        let dir = TempDir::new().unwrap();
+        let (_settings, store) = open_test_store(&dir);
+        let cache_dir = TempDir::new().unwrap();
+        let opti_id = ToolId::new("optiscaler");
+        let old_file = cache_dir.path().join("0.7.3.7z");
+        let installed_file = cache_dir.path().join("0.7.9.7z");
+        std::fs::write(&old_file, b"old cached archive").unwrap();
+        std::fs::write(&installed_file, b"installed cached archive").unwrap();
+        let old_path = old_file.to_string_lossy().into_owned();
+        let installed_path = installed_file.to_string_lossy().into_owned();
+
+        let release = |version: &str, size_bytes: u64, cached_path: Option<String>| ToolRelease {
+            tool_id: opti_id.clone(),
+            channel: ToolChannel::Stable,
+            version: version.to_string(),
+            tag_name: format!("v{version}"),
+            name: format!("OptiScaler v{version}"),
+            published_at: "2026-01-01T00:00:00Z".to_string(),
+            download_url: format!("https://example.com/{version}.7z"),
+            asset_name: format!("OptiScaler-v{version}.7z"),
+            size_bytes,
+            sha256: Some(format!("sha_{version}")),
+            cached_path,
+        };
+
+        store
+            .save_releases(
+                &opti_id,
+                ToolChannel::Stable,
+                &[
+                    release("0.7.3", 100, Some(old_path.clone())),
+                    release("0.7.9", 200, Some(installed_path.clone())),
+                ],
+            )
+            .unwrap();
+        assert_eq!(store.list_cached_releases().unwrap().len(), 2);
+
+        // Upstream now publishes a newer release and drops 0.7.3 entirely. Its archive is still on
+        // disk, so the cache listing must keep the row and its metadata.
+        store
+            .save_releases(
+                &opti_id,
+                ToolChannel::Stable,
+                &[release("0.7.10", 300, None)],
+            )
+            .unwrap();
+        let cached = store.list_cached_releases().unwrap();
+        assert_eq!(cached.len(), 2, "both local archives stay listed");
+        assert!(
+            cached.iter().any(|release| release.version == "0.7.3"),
+            "a version dropped by upstream remains until its cache is cleared"
+        );
+        assert!(
+            cached.iter().any(|release| release.version == "0.7.9"),
+            "the other cached archive is preserved too"
+        );
+
+        let loaded = store.load_releases(&opti_id, ToolChannel::Stable).unwrap();
+        assert_eq!(loaded.len(), 3, "upstream list plus preserved cached rows");
+        assert_eq!(loaded[0].version, "0.7.10");
+
+        // A cached version still offered by upstream keeps its persisted path on refresh.
+        store
+            .save_releases(
+                &opti_id,
+                ToolChannel::Stable,
+                &[release("0.7.9", 200, None), release("0.7.10", 300, None)],
+            )
+            .unwrap();
+        let cached = store.list_cached_releases().unwrap();
+        assert_eq!(cached.len(), 2);
+        assert!(cached.iter().any(|release| release.version == "0.7.9"
+            && release.cached_path.as_deref() == Some(installed_path.as_str())));
+
+        // An archive removed outside the application disappears from the list; the other stays.
+        std::fs::remove_file(&old_file).unwrap();
+        let cached = store.list_cached_releases().unwrap();
+        assert_eq!(cached.len(), 1);
+        assert_eq!(cached[0].version, "0.7.9");
+
+        // Clearing the cache metadata removes the remaining row from the listing.
+        assert_eq!(store.clear_cached_archives_metadata().unwrap(), 2);
+        assert!(store.list_cached_releases().unwrap().is_empty());
     }
 
     #[test]

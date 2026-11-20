@@ -594,6 +594,7 @@ async fn clearing_the_port_cache_keeps_installed_ports_and_provenance() {
         removed: false,
         rediscovery_allowed: false,
         transferred_from: None,
+        custom_cover: None,
         available: true,
     };
     let installation = PortInstallation {
@@ -1013,6 +1014,7 @@ async fn removing_a_port_registration_keeps_the_files_and_provenance() {
         removed: false,
         rediscovery_allowed: false,
         transferred_from: None,
+        custom_cover: None,
         available: true,
     };
     let installation = PortInstallation {
@@ -1319,6 +1321,7 @@ async fn a_completed_install_appears_in_the_library_without_a_manual_rescan() {
         removed: false,
         rediscovery_allowed: false,
         transferred_from: None,
+        custom_cover: None,
         available: true,
     };
     // An entry the sign-in scan must find: seeing it proves that scan already read the store, so

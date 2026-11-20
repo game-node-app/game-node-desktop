@@ -1,0 +1,38 @@
+# S6 · Plugins — frame 5376:6506, modal 5376:6745
+F [Título do painel] row gap12 ai:max FH
+ F col gap4 FH > T "Plugins" 22/600; T "Integrações de loja que rodam isoladas, com permissões explícitas." 13/400 text/secondary
+ F [segmented filter] row gap2 p3 bg=bg/canvas bd1=border/subtle r8      # segments p0/10
+  [bg=bg/raised r5 T "Todos · 3" 12/600 text/primary] [T "Oficiais · 2" 12/400 text/secondary] [T "Comunidade · 1" 12/400 text/secondary]
+F [Plugin card] col FH bg=color/secondary bd1=color/border/subtle r10
+ F row gap14 p16 ai:center
+  F [icon box] 40x40 bg=color/bg/raised bd1=color/border/subtle r8 > I icon/brand-steam 20:color/text/primary
+  F col gap4 FH
+   F row gap8 ai:center
+    T "Steam" 15/600 color/text/primary
+    T "1.4.2" 12/400 color/text-dimmed                      # plugin version (new field)
+    C <Pill Tone=Brand> "Oficial" icons=icon/shield-check
+   F row gap6 ai:center > I icon/copy 12:color/text-dimmed; T "com.gamenode.steam" 12/400 color/text-dimmed     # plugin id; click copies
+  C <Pill Tone=Success> "Sessão ativa" icons=icon/circle-check
+  C <Button Variant=Secondary Size=SM> "Parar" icons=icon/square
+ F [permissions] row gap8 p12/16 ai:center bdT1=color/border/subtle
+  T "Permissões" 12/400 color/text/secondary
+  C <Pill Tone=Neutral> "Rede" icons=icon/world
+  C <Pill Tone=Neutral> "Arquivos" icons=icon/folder
+  C <Pill Tone=Neutral> "Processos" icons=icon/cpu
+  C <Pill Tone=Neutral> "Registro" icons=icon/database
+  F [spacer] FF
+  T "Detalhes" 12/500 color/primary          # text link → expands the detail section (grants vs native access, session)
+F [Plugin card — expired store] col FH bg=color/secondary bd1=color/warning r10
+ F row gap14 p16 > icon box I icon/device-gamepad-2; "Epic Games Store" "2.0.1" Pill Brand "Oficial"; id "com.gamenode.epic"; Pill Success "Sessão ativa"; Button Secondary SM "Parar"
+ F [strip] row gap8 p10/16 ai:center bg=warning-subtle bdT1=color/border/subtle
+  I icon/alert-triangle 14:color/warning
+  T "A sessão desta loja expirou. Entre de novo em Lojas." 12/400 color/text-default      # "Lojas" may be a link to the Stores topic
+ F [permissions] ... "Rede" "Arquivos"
+F [Plugin card — community, stopped]
+ F row > icon box I icon/puzzle; "Prateleira Local" "0.3.1" C <Pill Tone=Neutral> "Comunidade" icons=icon/users-group; id "dev.prateleira.local"
+  C <Pill Tone=Neutral> "Parada" icons=icon/circle-x
+  C <Button Variant=Secondary Size=SM> "Iniciar" icons=icon/player-play
+ F [permissions] ... "Arquivos"
+F [Nota] row gap10 p12 ai:start bg=color/surface bd1=color/border/subtle r8
+ I icon/info-circle 16:color/text/secondary
+ T "Plugins da comunidade não são revisados pelo GameNode. Conceda só as permissões que fizerem sentido." 12/400 color/text/secondary lh17

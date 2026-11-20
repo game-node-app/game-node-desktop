@@ -70,6 +70,16 @@ pub fn library_page_url(web: &Url, user_id: &str) -> Url {
     web_page_url(web, &["library", user_id])
 }
 
+/// The signed-in user's public profile page: `<web>/profile/<userId>`.
+pub fn profile_page_url(web: &Url, user_id: &str) -> Url {
+    web_page_url(web, &["profile", user_id])
+}
+
+/// One of the application's fixed website pages, such as `terms` or `privacy`.
+pub fn site_page_url(web: &Url, page: &str) -> Url {
+    web_page_url(web, &[page])
+}
+
 /// Appends path segments to a website base, keeping a development base path and clearing any
 /// query or fragment. Segments are percent-encoded, so an id can never add a path of its own.
 fn web_page_url(web: &Url, segments: &[&str]) -> Url {

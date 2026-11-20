@@ -52,6 +52,32 @@ describe('GameTile', () => {
     expect(screen.queryByTestId('game-cover-placeholder')).not.toBeInTheDocument();
   });
 
+  it('renders the small and large cover sizes', () => {
+    const { rerender } = renderUiWithI18n(
+      <GameTile row={makeRow()} size="small" />,
+    );
+
+    expect(screen.getByTestId('game-tile-steam:1')).toHaveClass(
+      'h-[227px]',
+      'w-[140px]',
+    );
+    expect(screen.getByTestId('game-tile-cover').parentElement).toHaveClass(
+      'h-[171px]',
+      'w-[128px]',
+    );
+
+    rerender(<GameTile row={makeRow()} size="large" />);
+
+    expect(screen.getByTestId('game-tile-steam:1')).toHaveClass(
+      'h-[329px]',
+      'w-[216px]',
+    );
+    expect(screen.getByTestId('game-tile-cover').parentElement).toHaveClass(
+      'h-[273px]',
+      'w-[204px]',
+    );
+  });
+
   it('shows installed, family, favorite and hidden badges', () => {
     const row = makeRow({
       installed: true,

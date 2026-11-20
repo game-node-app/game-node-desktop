@@ -98,6 +98,10 @@ pub enum AuthState {
     Pending {
         provider: Provider,
         stage: Stage,
+        /// The address the browser was opened with, once the host reported it.
+        browser_url: Option<String>,
+        /// The most recent reopen attempt failed. Cleared by the next reopen or by leaving Pending.
+        reopen_failed: bool,
     },
     Verifying(Purpose),
     SignedIn(User),
@@ -119,6 +123,10 @@ pub enum Effect {
         provider: Provider,
         success_url: String,
         failure_url: String,
+    },
+    /// Open the pending attempt's address again, without starting a new attempt.
+    OpenBrowser {
+        url: String,
     },
     VerifySession {
         op: u64,
@@ -150,11 +158,18 @@ pub enum Input {
     /// The browser was opened for the attempt started by `BeginSignIn { op }`.
     BrowserOpened {
         op: u64,
+        url: String,
     },
     SignInFailed {
         op: u64,
         reason: SignInFailure,
     },
+    /// Opening the pending attempt's address again failed.
+    BrowserReopenFailed {
+        url: String,
+    },
+    /// The user asked to open the pending attempt's address again.
+    ReopenBrowser,
     /// A raw `app.gamenode://` URL from the OS or another process.
     CallbackReceived(String),
     SessionChecked {
@@ -264,17 +279,44 @@ impl AuthMachine {
             Input::CredentialLoaded { op, result } => self.on_credential_loaded(op, result),
             Input::StartSignIn(provider) => self.on_start_sign_in(provider, now),
             Input::CancelSignIn => self.on_cancel(),
-            Input::BrowserOpened { op } => {
+            Input::BrowserOpened { op, url } => {
                 if let AuthState::Pending {
                     provider,
                     stage: Stage::Preparing,
+                    ..
                 } = self.state
                     && op == self.op
                 {
                     self.state = AuthState::Pending {
                         provider,
                         stage: Stage::AwaitingBrowser,
+                        browser_url: Some(url),
+                        reopen_failed: false,
                     };
+                }
+                vec![]
+            }
+            Input::ReopenBrowser => {
+                if let AuthState::Pending {
+                    browser_url: Some(url),
+                    reopen_failed,
+                    ..
+                } = &mut self.state
+                {
+                    *reopen_failed = false;
+                    return vec![Effect::OpenBrowser { url: url.clone() }];
+                }
+                vec![]
+            }
+            Input::BrowserReopenFailed { url } => {
+                if let AuthState::Pending {
+                    browser_url: Some(open),
+                    reopen_failed,
+                    ..
+                } = &mut self.state
+                    && *open == url
+                {
+                    *reopen_failed = true;
                 }
                 vec![]
             }
@@ -399,6 +441,8 @@ impl AuthMachine {
         self.state = AuthState::Pending {
             provider,
             stage: Stage::Preparing,
+            browser_url: None,
+            reopen_failed: false,
         };
         vec![effect]
     }
@@ -555,6 +599,9 @@ mod tests {
         format!("app.gamenode://home?desktop_attempt={nonce}&cookie={enc}")
     }
 
+    const BEGIN_URL: &str =
+        "https://server.test/v1/auth/capacitor-authorization-proxy?state=nonce1";
+
     /// Starts the machine signed out.
     fn signed_out(m: &mut AuthMachine, t: Instant) {
         let [Effect::LoadCredential { op }] = m.handle(Input::Start, t)[..] else {
@@ -591,12 +638,20 @@ mod tests {
         assert!(success_url.starts_with("app.gamenode://home?desktop_attempt=nonce"));
         assert!(failure_url.contains("/sign-in-failed?desktop_attempt=nonce"));
         let op = *op;
-        m.handle(Input::BrowserOpened { op }, t);
+        m.handle(
+            Input::BrowserOpened {
+                op,
+                url: BEGIN_URL.into(),
+            },
+            t,
+        );
         assert_eq!(
             m.state(),
             &AuthState::Pending {
                 provider: Provider::Google,
-                stage: Stage::AwaitingBrowser
+                stage: Stage::AwaitingBrowser,
+                browser_url: Some(BEGIN_URL.into()),
+                reopen_failed: false,
             }
         );
         op
@@ -774,7 +829,13 @@ mod tests {
         let [Effect::BeginSignIn { op, .. }] = effects[..] else {
             panic!()
         };
-        m.handle(Input::BrowserOpened { op }, t);
+        m.handle(
+            Input::BrowserOpened {
+                op,
+                url: BEGIN_URL.into(),
+            },
+            t,
+        );
     }
 
     #[test]
@@ -788,6 +849,167 @@ mod tests {
         assert_eq!(m.last_rejection(), Some(CallbackError::CorrelationMismatch));
         let effects = m.handle(Input::CallbackReceived(cb("nonce2", "tok")), t);
         assert!(matches!(effects[..], [Effect::VerifySession { .. }]));
+    }
+
+    #[test]
+    fn reopening_keeps_the_operation_nonce_and_expiry() {
+        let mut m = machine();
+        let t = Instant::now();
+        signed_out(&mut m, t);
+        let op = begin(&mut m, t);
+        let attempts_before = m.attempt.as_ref().map(|a| (a.nonce.clone(), a.created));
+        let state_before = m.state().clone();
+
+        let effects = m.handle(Input::ReopenBrowser, t + Duration::from_secs(30));
+        assert_eq!(
+            effects,
+            [Effect::OpenBrowser {
+                url: BEGIN_URL.into()
+            }]
+        );
+        assert_eq!(m.op, op, "reopening does not issue a new operation");
+        assert_eq!(
+            m.attempt.as_ref().map(|a| (a.nonce.clone(), a.created)),
+            attempts_before,
+            "the attempt nonce and start time are unchanged"
+        );
+        assert_eq!(m.state(), &state_before);
+
+        // The same nonce still completes the attempt.
+        let effects = m.handle(Input::CallbackReceived(cb("nonce1", "tok")), t);
+        assert!(matches!(effects[..], [Effect::VerifySession { .. }]));
+
+        // Expiry still counts from the original start, not from the reopen.
+        let mut expiring = machine();
+        signed_out(&mut expiring, t);
+        begin(&mut expiring, t);
+        expiring.handle(
+            Input::ReopenBrowser,
+            t + ATTEMPT_TTL - Duration::from_secs(1),
+        );
+        expiring.handle(Input::Tick, t + ATTEMPT_TTL);
+        assert_eq!(expiring.state(), &AuthState::SignedOut);
+        assert_eq!(expiring.notice(), Some(Notice::AttemptExpired));
+    }
+
+    #[test]
+    fn reopening_is_ignored_outside_a_pending_attempt_with_a_known_url() {
+        let mut m = machine();
+        let t = Instant::now();
+        signed_out(&mut m, t);
+        assert!(m.handle(Input::ReopenBrowser, t).is_empty());
+        assert_eq!(m.state(), &AuthState::SignedOut);
+
+        // Preparing: the address is not known yet.
+        m.handle(Input::StartSignIn(Provider::Google), t);
+        assert!(matches!(
+            m.state(),
+            AuthState::Pending {
+                browser_url: None,
+                ..
+            }
+        ));
+        assert!(m.handle(Input::ReopenBrowser, t).is_empty());
+
+        m.handle(Input::CancelSignIn, t);
+        sign_in(&mut m, t, "nonce2");
+        assert!(matches!(m.state(), AuthState::SignedIn(_)));
+        assert!(m.handle(Input::ReopenBrowser, t).is_empty());
+    }
+
+    #[test]
+    fn callback_after_reopening_completes_the_same_attempt() {
+        let mut m = machine();
+        let t = Instant::now();
+        signed_out(&mut m, t);
+        begin(&mut m, t);
+        m.handle(Input::ReopenBrowser, t);
+        let effects = m.handle(Input::CallbackReceived(cb("nonce1", "tok")), t);
+        assert!(matches!(effects[..], [Effect::VerifySession { .. }]));
+        assert_eq!(m.state(), &AuthState::Verifying(Purpose::SignIn));
+        assert!(!m.has_attempt());
+    }
+
+    #[test]
+    fn cancel_after_reopening_ignores_the_callback() {
+        let mut m = machine();
+        let t = Instant::now();
+        signed_out(&mut m, t);
+        begin(&mut m, t);
+        m.handle(Input::ReopenBrowser, t);
+        m.handle(Input::CancelSignIn, t);
+        assert_eq!(m.state(), &AuthState::SignedOut);
+        assert_eq!(m.notice(), Some(Notice::SignInCancelled));
+        assert!(
+            m.handle(Input::CallbackReceived(cb("nonce1", "tok")), t)
+                .is_empty()
+        );
+        assert_eq!(m.last_rejection(), Some(CallbackError::NoActiveAttempt));
+        assert!(!m.has_attempt());
+    }
+
+    #[test]
+    fn reopen_failure_is_transient_and_does_not_leak_into_the_next_attempt() {
+        let mut m = machine();
+        let t = Instant::now();
+        signed_out(&mut m, t);
+        begin(&mut m, t);
+        m.handle(
+            Input::BrowserReopenFailed {
+                url: BEGIN_URL.into(),
+            },
+            t,
+        );
+        assert!(matches!(
+            m.state(),
+            AuthState::Pending {
+                reopen_failed: true,
+                ..
+            }
+        ));
+        assert!(matches!(m.state(), AuthState::Pending { .. }));
+
+        // A new reopen clears the previous failure before the host answers.
+        let effects = m.handle(Input::ReopenBrowser, t);
+        assert!(matches!(effects[..], [Effect::OpenBrowser { .. }]));
+        assert!(
+            matches!(
+                m.state(),
+                AuthState::Pending {
+                    reopen_failed: false,
+                    ..
+                }
+            ),
+            "the pending attempt is still accepting its callback"
+        );
+
+        m.handle(Input::CancelSignIn, t);
+        let [Effect::BeginSignIn { op, .. }] =
+            m.handle(Input::StartSignIn(Provider::Discord), t)[..]
+        else {
+            panic!()
+        };
+        m.handle(
+            Input::BrowserOpened {
+                op,
+                url: "https://server.test/other-attempt".into(),
+            },
+            t,
+        );
+        // A late failure for the previous attempt's address is ignored.
+        m.handle(
+            Input::BrowserReopenFailed {
+                url: BEGIN_URL.into(),
+            },
+            t,
+        );
+        assert!(matches!(
+            m.state(),
+            AuthState::Pending {
+                reopen_failed: false,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -837,7 +1059,13 @@ mod tests {
         };
         m.handle(Input::CancelSignIn, t);
         assert_eq!(m.notice(), Some(Notice::SignInCancelled));
-        m.handle(Input::BrowserOpened { op }, t);
+        m.handle(
+            Input::BrowserOpened {
+                op,
+                url: BEGIN_URL.into(),
+            },
+            t,
+        );
         assert_eq!(m.state(), &AuthState::SignedOut);
         m.handle(
             Input::SignInFailed {

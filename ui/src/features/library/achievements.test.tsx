@@ -202,18 +202,33 @@ function achievement(id: string, overrides: Partial<AchievementRecord> = {}): Ac
     iconGrayUrl: '',
     unlocked: false,
     unlockedAt: null,
+    globalPercent: null,
     position: 0,
     ...overrides,
   };
 }
 
-function list(achievements: AchievementRecord[], state: 'ready' | 'none' | 'failed' = 'ready'): AchievementListView {
+function list(
+  achievements: AchievementRecord[],
+  state: 'ready' | 'none' | 'failed' = 'ready',
+  overrides: Partial<AchievementListView> = {},
+): AchievementListView {
   return {
     connected: true,
     state,
     lastSuccessAt: 1_700_000_100,
+    refreshedAt: 1_700_000_100,
     failure: state === 'failed' ? 'privacy' : null,
+    counts: {
+      all: achievements.length,
+      unlocked: achievements.filter((entry) => entry.unlocked).length,
+      locked: achievements.filter((entry) => !entry.unlocked).length,
+    },
+    hasRarity: achievements.some((entry) => entry.globalPercent != null),
+    providerName: 'Steam',
+    hasProviderPage: true,
     achievements,
+    ...overrides,
   };
 }
 
@@ -352,7 +367,11 @@ describe('Achievement list window', () => {
   it('opens by keyboard, filters, closes with Escape and restores focus', async () => {
     const records = [
       achievement('ACH_NEW', { unlocked: true, unlockedAt: 1_700_000_000 }),
-      achievement('ACH_HIDDEN', { hidden: true }),
+      achievement('ACH_HIDDEN', {
+        hidden: true,
+        name: 'A secret',
+        description: 'A spoiler description.',
+      }),
     ];
     const listSpy = vi
       .spyOn(commands, 'achievementList')
@@ -363,7 +382,7 @@ describe('Achievement list window', () => {
     open.focus();
     await user.keyboard('{Enter}');
     expect(await screen.findByTestId('achievement-list-modal')).toBeInTheDocument();
-    expect(listSpy).toHaveBeenCalledWith('steam:620', 'all');
+    expect(listSpy).toHaveBeenCalledWith('steam:620', 'all', 'mostRecent');
     const ordered = (await screen.findAllByTestId('achievement-row')).map(
       (row) => row.getAttribute('data-achievement-id'),
     );
@@ -371,10 +390,14 @@ describe('Achievement list window', () => {
 
     // The backend masks a locked hidden achievement's text; the UI supplies the generic label.
     expect(screen.getByText('Hidden achievement')).toBeInTheDocument();
+    expect(screen.getByText('Unlock this achievement to reveal it.')).toBeInTheDocument();
     expect(screen.queryByText('A secret')).toBeNull();
+    expect(screen.queryByText('A spoiler description.')).toBeNull();
 
-    await user.click(screen.getByRole('radio', { name: 'Unlocked' }));
-    await waitFor(() => expect(listSpy).toHaveBeenLastCalledWith('steam:620', 'unlocked'));
+    await user.click(screen.getByRole('radio', { name: /^Unlocked/ }));
+    await waitFor(() =>
+      expect(listSpy).toHaveBeenLastCalledWith('steam:620', 'unlocked', 'mostRecent'),
+    );
 
     await user.keyboard('{Escape}');
     await waitFor(() =>
@@ -449,5 +472,247 @@ describe('Achievement list window', () => {
     fireEvent.error(image!);
     expect(row.querySelector('img')).toBeNull();
     expect(row.querySelector('svg')).not.toBeNull();
+  });
+
+  it('shows the unlocked count, percentage, counted segments and relative refresh time', async () => {
+    const now = Math.floor(Date.now() / 1000);
+    vi.spyOn(commands, 'achievementList').mockResolvedValue(
+      list(
+        [
+          achievement('A', { unlocked: true, unlockedAt: now - 60 }),
+          achievement('B', { unlocked: true, unlockedAt: now - 120 }),
+          achievement('C'),
+        ],
+        'ready',
+        {
+          counts: { all: 3, unlocked: 2, locked: 1 },
+          refreshedAt: now - 300,
+        },
+      ),
+    );
+    renderDetail(snapshotWith('connected', detail({ achievements: summary() })));
+    fireEvent.click(screen.getByTestId('detail-achievements-open'));
+
+    expect(await screen.findByText('2 of 3 unlocked')).toBeInTheDocument();
+    expect(screen.getByText('67%')).toBeInTheDocument();
+    expect(
+      within(screen.getByTestId('achievement-list-modal')).getByRole('progressbar', {
+        name: 'Achievement progress',
+      }),
+    ).toHaveAttribute(
+      'aria-valuenow',
+      '2',
+    );
+    expect(screen.getByRole('radio', { name: 'All · 3' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'Unlocked · 2' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'Locked · 1' })).toBeInTheDocument();
+    expect(await screen.findByText(/Updated from Steam .*minute/)).toBeInTheDocument();
+  });
+
+  it('uses a 65px virtualized row', async () => {
+    vi.spyOn(commands, 'achievementList').mockResolvedValue(
+      list([achievement('A', { unlocked: true, name: 'One' })]),
+    );
+    renderDetail(snapshotWith('connected', detail({ achievements: summary() })));
+    fireEvent.click(screen.getByTestId('detail-achievements-open'));
+    const row = await screen.findByTestId('achievement-row');
+    expect(row.parentElement).toHaveStyle({ height: '65px' });
+  });
+
+  it('changes the sort through the menu and applies it to the query', async () => {
+    const listSpy = vi.spyOn(commands, 'achievementList').mockResolvedValue(
+      list(
+        [
+          achievement('A', { unlocked: true, globalPercent: 420 }),
+          achievement('B', { globalPercent: 1_890 }),
+        ],
+        'ready',
+        { hasRarity: true },
+      ),
+    );
+    renderDetail(snapshotWith('connected', detail({ achievements: summary() })));
+    const user = userEvent.setup();
+    fireEvent.click(screen.getByTestId('detail-achievements-open'));
+
+    await user.click(await screen.findByRole('button', { name: 'Sort' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Rarest' }));
+    await waitFor(() =>
+      expect(listSpy).toHaveBeenLastCalledWith('steam:620', 'all', 'rarest'),
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Sort' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Name' }));
+    await waitFor(() =>
+      expect(listSpy).toHaveBeenLastCalledWith('steam:620', 'all', 'name'),
+    );
+  });
+
+  it('does not offer rarity sorts when the provider publishes no rarity', async () => {
+    vi.spyOn(commands, 'achievementList').mockResolvedValue(
+      list([achievement('A')], 'ready', { hasRarity: false }),
+    );
+    renderDetail(snapshotWith('connected', detail({ achievements: summary() })));
+    const user = userEvent.setup();
+    fireEvent.click(screen.getByTestId('detail-achievements-open'));
+    await user.click(await screen.findByRole('button', { name: 'Sort' }));
+
+    expect(await screen.findByRole('menuitem', { name: 'Most recent' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Name' })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: 'Rarest' })).toBeNull();
+    expect(screen.queryByRole('menuitem', { name: 'Most common' })).toBeNull();
+  });
+
+  it('marks values below ten percent as rare and formats both rarities', async () => {
+    vi.spyOn(commands, 'achievementList').mockResolvedValue(
+      list(
+        [
+          achievement('RARE', {
+            unlocked: true,
+            name: 'Very rare',
+            globalPercent: 999,
+          }),
+          achievement('COMMON', {
+            unlocked: true,
+            name: 'Common enough',
+            globalPercent: 1_000,
+          }),
+        ],
+        'ready',
+        { hasRarity: true },
+      ),
+    );
+    renderDetail(snapshotWith('connected', detail({ achievements: summary() })));
+    fireEvent.click(screen.getByTestId('detail-achievements-open'));
+
+    expect(await screen.findByText('Rare · 9.99% of players')).toBeInTheDocument();
+    expect(screen.getByText('10% of players')).toBeInTheDocument();
+  });
+
+  it('opens the provider page through the host command', async () => {
+    const openPage = vi
+      .spyOn(commands, 'openAchievementsPage')
+      .mockResolvedValue(undefined);
+    vi.spyOn(commands, 'achievementList').mockResolvedValue(
+      list([achievement('A')], 'ready', { hasProviderPage: true }),
+    );
+    renderDetail(snapshotWith('connected', detail({ achievements: summary() })));
+    const user = userEvent.setup();
+    fireEvent.click(screen.getByTestId('detail-achievements-open'));
+
+    await user.click(await screen.findByRole('button', { name: 'Open in Steam' }));
+    expect(openPage).toHaveBeenCalledWith('steam:620');
+  });
+
+  it('hides the provider page button when the provider has none', async () => {
+    const epicRow = row({
+      key: 'epic:1',
+      provider: 'epic',
+      providerName: 'Epic Games Store',
+    });
+    vi.spyOn(commands, 'achievementList').mockResolvedValue(
+      list([achievement('A')], 'ready', {
+        providerName: 'Epic Games Store',
+        hasProviderPage: false,
+      }),
+    );
+    renderDetail(
+      snapshotWith('connected', detail({ row: epicRow, achievements: summary() })),
+    );
+    fireEvent.click(screen.getByTestId('detail-achievements-open'));
+
+    expect(await screen.findByTestId('achievement-list-modal')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Open in / })).toBeNull();
+  });
+
+  it('keeps the list open and localizes a browser failure', async () => {
+    vi.spyOn(commands, 'achievementList').mockResolvedValue(list([achievement('A')]));
+    vi.spyOn(commands, 'openAchievementsPage').mockRejectedValue({
+      code: 'browser',
+    });
+    renderDetail(snapshotWith('connected', detail({ achievements: summary() })));
+    const user = userEvent.setup();
+    fireEvent.click(screen.getByTestId('detail-achievements-open'));
+
+    await user.click(await screen.findByRole('button', { name: 'Open in Steam' }));
+    expect(
+      await screen.findByTestId('achievement-page-error'),
+    ).toHaveTextContent('Could not open the achievements page.');
+    expect(screen.getByTestId('achievement-list-modal')).toBeInTheDocument();
+  });
+
+  it('keeps the loading, none, failed and empty states', async () => {
+    vi.spyOn(commands, 'achievementList').mockImplementation(
+      () => new Promise(() => undefined),
+    );
+    const loading = renderDetail(
+      snapshotWith('connected', detail({ achievements: summary() })),
+    );
+    fireEvent.click(screen.getByTestId('detail-achievements-open'));
+    expect(await screen.findByTestId('achievement-list-loading')).toBeInTheDocument();
+    loading.unmount();
+
+    vi.spyOn(commands, 'achievementList').mockResolvedValue(list([], 'none'));
+    const none = renderDetail(
+      snapshotWith('connected', detail({ achievements: summary() })),
+    );
+    fireEvent.click(screen.getByTestId('detail-achievements-open'));
+    expect(await screen.findByTestId('achievement-list-none')).toBeInTheDocument();
+    none.unmount();
+
+    vi.spyOn(commands, 'achievementList').mockResolvedValue(
+      list([], 'failed', { failure: 'unreachable' }),
+    );
+    const failed = renderDetail(
+      snapshotWith('connected', detail({ achievements: summary() })),
+    );
+    fireEvent.click(screen.getByTestId('detail-achievements-open'));
+    expect(await screen.findByTestId('achievement-list-failed')).toHaveTextContent(
+      'Achievements could not be loaded.',
+    );
+    failed.unmount();
+
+    vi.spyOn(commands, 'achievementList').mockResolvedValue(list([]));
+    renderDetail(snapshotWith('connected', detail({ achievements: summary() })));
+    fireEvent.click(screen.getByTestId('detail-achievements-open'));
+    expect(await screen.findByTestId('achievement-list-empty')).toBeInTheDocument();
+  });
+
+  it('renders the counts, rarity and provider actions in Brazilian Portuguese', async () => {
+    const now = Math.floor(Date.now() / 1000);
+    vi.spyOn(commands, 'achievementList').mockResolvedValue(
+      list(
+        [
+          achievement('RARE', {
+            unlocked: true,
+            name: 'Coração de brasa',
+            unlockedAt: now - 60,
+            globalPercent: 420,
+          }),
+          achievement('LOCKED'),
+        ],
+        'ready',
+        {
+          counts: { all: 2, unlocked: 1, locked: 1 },
+          refreshedAt: now - 300,
+          hasRarity: true,
+        },
+      ),
+    );
+    renderDetail(
+      snapshotWith('connected', detail({ achievements: summary() })),
+      'pt-BR',
+    );
+    fireEvent.click(screen.getByTestId('detail-achievements-open'));
+
+    expect(await screen.findByText('1 de 2 desbloqueadas')).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'Todas · 2' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'Desbloqueadas · 1' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'Bloqueadas · 1' })).toBeInTheDocument();
+    expect(screen.getByText('Rara · 4,2% dos jogadores')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Ordenar' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Abrir na Steam' })).toBeInTheDocument();
+    expect(
+      await screen.findByText('Atualizado da Steam há 5 minutos'),
+    ).toBeInTheDocument();
   });
 });

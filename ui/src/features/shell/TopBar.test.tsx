@@ -45,7 +45,7 @@ function snapshot(overrides: Partial<Snapshot> = {}): Snapshot {
   return {
     ...createDefaultSnapshot(),
     auth: signedInAuth,
-    sync: { enabled: true, explained: true },
+    sync: { enabled: true, explained: true, summary: null, running: false },
     library: library(),
     ...overrides,
   };
@@ -132,7 +132,7 @@ describe('features/shell/TopBar', () => {
   it('shows Sync off when synchronization is disabled', () => {
     renderTopBar(
       snapshot({
-        sync: { enabled: false, explained: true },
+        sync: { enabled: false, explained: true, summary: null, running: false },
         library: library({ access: 'offline' }),
       }),
     );

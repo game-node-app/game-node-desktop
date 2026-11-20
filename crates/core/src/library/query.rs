@@ -59,8 +59,12 @@ pub struct Row {
     /// owned.
     pub shared: bool,
     pub status: MatchStatus,
-    /// File name of the cached cover under the per-user `covers/` folder.
+    /// File name of the cached cover under the per-user `covers/` folder. For a DRM-free entry
+    /// with a custom cover this is that file; otherwise it is the matched GameNode cover.
     pub cover_file: Option<String>,
+    /// The matched GameNode game's cover, even while a DRM-free custom cover is shown.
+    #[serde(default)]
+    pub game_cover_file: Option<String>,
     /// The matched game's release year; unknown for unmatched entries and games without one.
     pub release_year: Option<i32>,
     /// Unix seconds of the scan that first detected the entry.
@@ -109,6 +113,17 @@ pub struct ProviderCount {
     /// The provider's declared shared-access label, if it declares any. Only labelled providers
     /// offer the Shared filter, counts and warnings.
     pub shared_label: Option<String>,
+    /// Where the provider's last successful scan found the store, when it reported a location.
+    /// Informational only: it never changes which folders are scanned.
+    #[serde(default)]
+    pub install_root: Option<String>,
+    /// How many library folders that scan reported, when it reported them.
+    #[serde(default)]
+    pub library_folders: Option<u32>,
+    /// Whether the last local scan found the store. Derived only from the scan outcome and local
+    /// records, never from owned/shared catalog facts or UI filters.
+    #[serde(default)]
+    pub detected: bool,
 }
 
 /// One store option of the Store facet: how many rows it would leave under every other facet.
@@ -326,6 +341,7 @@ impl LibraryMachine {
         self.artwork_overrides
             .get(key)
             .and_then(|over| over.file.clone())
+            .or_else(|| self.local_covers.get(key).cloned())
             .or_else(|| game.and_then(|game| game.cover_file.clone()))
     }
 
@@ -361,6 +377,7 @@ impl LibraryMachine {
                     entry_id: entry.id.clone(),
                 })
         });
+        let game_cover_file = game.and_then(|game| game.cover_file.clone());
         Row {
             playtime: self.playtime.get(&entry.key).copied().unwrap_or_default(),
             running: self.running.contains_key(&entry.key),
@@ -385,6 +402,7 @@ impl LibraryMachine {
             shared: entry.shared && !entry.owned,
             status,
             cover_file: self.cover_for(&entry.key, game),
+            game_cover_file,
             release_year: game.and_then(|game| game.release_year),
             added_at: entry.first_seen,
             is_favorite,
@@ -393,9 +411,11 @@ impl LibraryMachine {
         }
     }
 
-    /// Every visible entry as a row, unsorted.
+    /// Every visible entry as a row, unsorted. Shared-only entries of an excluded provider are
+    /// left out here, so scopes, facets, groups, counts and search never see them.
     pub fn all_rows(&self) -> Vec<Row> {
         self.visible_entries()
+            .filter(|entry| !self.shared_excluded_entry(entry))
             .map(|entry| self.row(entry))
             .collect()
     }
@@ -469,7 +489,9 @@ impl LibraryMachine {
         self.provider_counts_from(&query.filter_counts.stores)
     }
 
-    /// Builds the legacy provider cards from the store counts of one query.
+    /// Builds the legacy provider cards from the store counts of one query. The raw facts come
+    /// from every visible entry, so the shared count still includes entries the shared-games
+    /// preference leaves out of the rows and the store tile adds up.
     pub fn provider_counts_from(&self, stores: &[StoreCount]) -> Vec<ProviderCount> {
         let mut facts = BTreeMap::<&str, (usize, usize, usize)>::new();
         for entry in self.visible_entries() {
@@ -491,6 +513,7 @@ impl LibraryMachine {
             .map(|store| {
                 let (installed, owned, shared) =
                     facts.get(store.id.as_str()).copied().unwrap_or_default();
+                let scan = self.scans.get(&store.id);
                 ProviderCount {
                     id: store.id.clone(),
                     name: store.name.clone(),
@@ -502,6 +525,9 @@ impl LibraryMachine {
                         .provider(&store.id)
                         .and_then(|provider| provider.shared_label())
                         .map(str::to_owned),
+                    install_root: scan.and_then(|state| state.install_root.clone()),
+                    library_folders: scan.and_then(|state| state.library_folders),
+                    detected: scan.and_then(|state| state.last_detected).unwrap_or(false),
                 }
             })
             .collect()
@@ -1583,6 +1609,9 @@ pub fn counts<'a>(
             owned_count: 0,
             shared_count: 0,
             shared_label: None,
+            install_root: None,
+            library_folders: None,
+            detected: false,
         })
         .collect()
 }

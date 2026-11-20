@@ -312,6 +312,7 @@ impl ProviderPlugin for FixturePlugin {
                 discovery: Some(DiscoveryResult {
                     provider_id: "fixture".into(),
                     records: vec![],
+                    ..Default::default()
                 }),
                 ..Default::default()
             },

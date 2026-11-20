@@ -1,5 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createMockHost, MOCK_CATALOG_GAMES, MOCK_COLLECTIONS, MOCK_HIDDEN_KEY } from './host';
+import {
+  createMockHost,
+  MOCK_CATALOG_GAMES,
+  MOCK_COLLECTIONS,
+  MOCK_COVER_WALL,
+  MOCK_HIDDEN_KEY,
+  MOCK_LIMIT_COLLECTION_NAME,
+  mockHostOptionsFromSearch,
+} from './host';
 import { groupRows, runLibraryQuery, sortRows, type ProviderRef } from './query';
 import {
   createDefaultFilters,
@@ -25,6 +33,20 @@ async function waitForViewWrite(
 }
 
 describe('UI mock host', () => {
+  it('maps the documented Settings query fixtures', () => {
+    const options = mockHostOptionsFromSearch(
+      '?steam=notConnected&epic=expired&watches=unavailable&platform=linux',
+    );
+    expect(options).toMatchObject({
+      storeAccount: 'notConnected',
+      epicAccount: 'expired',
+      watches: 'unavailable',
+      platform: 'linux',
+    });
+    expect(mockHostOptionsFromSearch('?epic=bogus').epicAccount).toBeUndefined();
+    expect(mockHostOptionsFromSearch('?watches=other').watches).toBeUndefined();
+  });
+
   it('starts with a verified mock session and deterministic games', async () => {
     const host = createMockHost();
     const snapshot = await host.invoke('get_snapshot') as Snapshot;
@@ -51,6 +73,34 @@ describe('UI mock host', () => {
     expect(snapshot.tracking.sessionStartedAt[runningKey]).toBeLessThanOrEqual(
       Math.floor(Date.now() / 1000) - 2500,
     );
+  });
+
+  it('serves the tracking conflict fixture and lets the user keep or move tracking', async () => {
+    const host = createMockHost({ claim: true });
+    let snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    const claim = snapshot.localGames.pendingClaim;
+    expect(claim?.storeKey).toBe('steam:9');
+    expect(claim?.storeEntry).toMatchObject({
+      title: 'Infinite Coast',
+      provider: 'steam',
+      coverFile: 'mock-8.svg',
+      playtimeSeconds: 8 * 3600 + 16 * 60,
+    });
+    expect(claim?.registration).toMatchObject({
+      title: 'Infinite Coast',
+      root: 'D:\\Jogos\\Infinite Coast',
+      coverFile: 'mock-2.svg',
+    });
+
+    await host.invoke('resolve_local_claim', { transfer: false });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.localGames.pendingClaim).toBeNull();
+    expect(snapshot.library?.selected).toContain('steam:9');
+
+    const canceled = createMockHost({ claim: true });
+    await canceled.invoke('cancel_local_claim');
+    snapshot = (await canceled.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.localGames.pendingClaim).toBeNull();
   });
 
   it('mirrors the cached account library statuses, collections and last check', async () => {
@@ -107,6 +157,65 @@ describe('UI mock host', () => {
     ).toBe(snapshot.library!.rows.length);
   });
 
+  it('persists application preferences and reports the effective language', async () => {
+    const host = createMockHost({ locale: 'pt-BR' });
+    let snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.preferences).toMatchObject({
+      startWithWindows: true,
+      startMinimized: true,
+      closeToTray: true,
+      locale: 'system',
+      showStatusBar: true,
+      startScope: 'last',
+      toolDefaultChannel: 'stable',
+      sharedExcluded: [],
+    });
+    expect((await host.invoke('get_app_info') as AppInfo).locale).toBe('pt-BR');
+
+    const listener = vi.fn();
+    const unsubscribe = host.subscribe(listener);
+
+    await host.invoke('set_app_preference', { patch: { locale: 'en' } });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.preferences.locale).toBe('en');
+    let appInfo = (await host.invoke('get_app_info')) as AppInfo;
+    expect(appInfo.locale).toBe('en');
+    expect(appInfo.systemLocale).toBe('pt-BR');
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    await host.invoke('set_app_preference', { patch: { closeToTray: false } });
+    await host.invoke('set_app_preference', {
+      patch: { sharedExcluded: ['steam', 'epic'] },
+    });
+    await host.invoke('set_app_preference', { patch: { startScope: 'installed' } });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.preferences.closeToTray).toBe(false);
+    expect(snapshot.preferences.sharedExcluded).toEqual(['steam', 'epic']);
+    expect(snapshot.preferences.startScope).toBe('installed');
+    expect(snapshot.preferences.locale).toBe('en');
+
+    await expect(
+      host.invoke('set_app_preference', { patch: { locale: 'klingon' } }),
+    ).rejects.toBe('invalidPreference');
+    await expect(
+      host.invoke('set_app_preference', { patch: { sharedExcluded: ['not a store'] } }),
+    ).rejects.toBe('invalidPreference');
+    expect((await host.invoke('get_snapshot') as Snapshot).preferences.locale).toBe('en');
+
+    unsubscribe();
+  });
+
+  it('persists the grid cover size in the layout through library_input', async () => {
+    const host = createMockHost();
+    let snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.library?.layout.coverSize).toBe('medium');
+
+    await host.invoke('library_input', { input: { setCoverSize: 'large' } });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.library?.layout.coverSize).toBe('large');
+    expect(snapshot.library?.rows).toHaveLength(12);
+  });
+
   it('publishes interactions and resets on sign out and sign in', async () => {
     const host = createMockHost({ signedOut: true, locale: 'pt-BR' });
     expect((await host.invoke('get_app_info') as AppInfo).locale).toBe('pt-BR');
@@ -136,6 +245,43 @@ describe('UI mock host', () => {
     expect(listener).not.toHaveBeenCalled();
   });
 
+  it('serves the sign-in cover wall and the pending reopen flow', async () => {
+    const host = createMockHost({
+      signedOut: true,
+      signInPending: true,
+      signInReopenFails: true,
+    });
+    expect(await host.invoke('sign_in_cover_wall')).toEqual(MOCK_COVER_WALL);
+    expect(MOCK_COVER_WALL).toHaveLength(12);
+
+    await host.invoke('dispatch_auth', { input: { startSignIn: 'discord' } });
+    let snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.auth).toEqual({
+      pending: {
+        provider: 'discord',
+        awaitingBrowser: true,
+        canReopen: true,
+        reopenFailed: false,
+      },
+    });
+
+    await host.invoke('dispatch_auth', { input: 'reopenBrowser' });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.auth).toEqual({
+      pending: {
+        provider: 'discord',
+        awaitingBrowser: true,
+        canReopen: true,
+        reopenFailed: true,
+      },
+    });
+
+    await host.invoke('dispatch_auth', { input: 'cancelSignIn' });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.auth).toBe('signedOut');
+    expect(snapshot.notice).toBe('signInCancelled');
+  });
+
   it('serves achievement summaries and filtered lists', async () => {
     const host = createMockHost();
     const snapshot = await host.invoke('get_snapshot') as Snapshot;
@@ -146,26 +292,83 @@ describe('UI mock host', () => {
     const selected = await host.invoke('get_snapshot') as Snapshot;
     expect(selected.library?.detail?.achievementBackend).toBe(true);
     expect(selected.library?.detail?.achievements?.state).toBe('ready');
-    expect(selected.library?.detail?.achievements?.total).toBe(5);
+    expect(selected.library?.detail?.achievements?.total).toBe(58);
+    expect(selected.library?.detail?.achievements?.unlocked).toBe(31);
 
+    type MockList = {
+      achievements: Array<{
+        name: string;
+        unlocked: boolean;
+        hidden: boolean;
+        globalPercent: number | null;
+      }>;
+      counts: { all: number; unlocked: number; locked: number };
+      hasRarity: boolean;
+      providerName: string;
+      hasProviderPage: boolean;
+      refreshedAt: number | null;
+    };
     const all = await host.invoke('achievement_list', {
       key: row.key,
       filter: 'all',
-    }) as { achievements: Array<{ unlocked: boolean; hidden: boolean }> };
-    expect(all.achievements).toHaveLength(5);
+      sort: 'mostRecent',
+    }) as MockList;
+    expect(all.achievements).toHaveLength(58);
+    expect(all.counts).toEqual({ all: 58, unlocked: 31, locked: 27 });
+    expect(all.hasRarity).toBe(true);
+    expect(all.providerName).toBe('Steam');
+    expect(all.hasProviderPage).toBe(true);
+    expect(all.refreshedAt).toBeGreaterThan(0);
+    expect(all.achievements[0].unlocked).toBe(true);
+    expect(all.achievements.at(-1)?.unlocked).toBe(false);
+
     const unlocked = await host.invoke('achievement_list', {
       key: row.key,
       filter: 'unlocked',
-    }) as { achievements: Array<{ unlocked: boolean }> };
-    expect(unlocked.achievements).toHaveLength(2);
+      sort: 'mostRecent',
+    }) as MockList;
+    expect(unlocked.achievements).toHaveLength(31);
     expect(unlocked.achievements.every((entry) => entry.unlocked)).toBe(true);
     const locked = await host.invoke('achievement_list', {
       key: row.key,
       filter: 'locked',
-    }) as { achievements: Array<{ unlocked: boolean; hidden: boolean }> };
-    expect(locked.achievements).toHaveLength(3);
+      sort: 'mostRecent',
+    }) as MockList;
+    expect(locked.achievements).toHaveLength(27);
     expect(locked.achievements.some((entry) => entry.hidden)).toBe(true);
+
+    const rarest = await host.invoke('achievement_list', {
+      key: row.key,
+      filter: 'all',
+      sort: 'rarest',
+    }) as MockList;
+    const percents = rarest.achievements
+      .map((entry) => entry.globalPercent)
+      .filter((percent): percent is number => percent != null);
+    expect(percents).toEqual([...percents].sort((left, right) => left - right));
+    expect(
+      rarest.achievements.slice(percents.length).every(
+        (entry) => entry.globalPercent == null,
+      ),
+    ).toBe(true);
+
+    const byName = await host.invoke('achievement_list', {
+      key: row.key,
+      filter: 'all',
+      sort: 'name',
+    }) as MockList;
+    const names = byName.achievements.map((entry) =>
+      entry.hidden && !entry.unlocked ? 'Hidden achievement' : entry.name,
+    );
+    expect(names).toEqual([...names].sort((left, right) => left.localeCompare(right)));
+
     expect(await host.invoke('achievement_list', { key: 'gog:2', filter: 'all' })).toBeNull();
+    await expect(
+      host.invoke('open_achievements_page', { entryKey: row.key }),
+    ).resolves.toBeUndefined();
+    await expect(
+      host.invoke('open_achievements_page', { entryKey: 'gog:2' }),
+    ).rejects.toEqual({ code: 'unsupported' });
   });
 
   it('does not route unsupported commands to any real service', async () => {
@@ -210,6 +413,19 @@ describe('UI mock host', () => {
     expect(snapshot.library!.providers.find((provider) => provider.id === 'steam')!.ownedCount).toBe(5);
   });
 
+  it('exposes the expired Epic fixture while Steam stays connected', async () => {
+    const snapshot = await createMockHost({ epicAccount: 'expired' })
+      .invoke('get_snapshot') as Snapshot;
+    const epic = snapshot.storeAccounts.find((account) => account.provider === 'epic')!;
+    const steam = snapshot.storeAccounts.find((account) => account.provider === 'steam')!;
+    expect(epic.state).toBe('expired');
+    expect(epic.canSignIn).toBe(true);
+    expect(epic.canSignOut).toBe(true);
+    expect(epic.accountName).toBe('EpicPlayer');
+    expect(epic.sharedLabel).toBeNull();
+    expect(steam.state).toBe('connected');
+  });
+
   it('returns trusted plugin inventory without credential data and respects the mock platform', async () => {
     const windowsPlugins = await createMockHost({ platform: 'windows' }).invoke('plugin_inventory') as PluginInfo[];
     const windowsPlugin = windowsPlugins[0];
@@ -233,6 +449,57 @@ describe('UI mock host', () => {
     expect(packagePlugin?.nativeAccess).toEqual(['files', 'process', 'dbus']);
     expect((await createMockHost({ platform: 'windows' }).invoke('plugin_inventory') as PluginInfo[])
       .some((plugin) => plugin.providerId === 'packagekit')).toBe(false);
+  });
+
+  it('serves a stopped community plugin alongside the official inventory', async () => {
+    const windowsPlugins = await createMockHost({ platform: 'windows' })
+      .invoke('plugin_inventory') as PluginInfo[];
+    const windowsCommunity = windowsPlugins.find(
+      (plugin) => plugin.source === 'community',
+    );
+    expect(windowsCommunity).toMatchObject({
+      providerId: 'community',
+      pluginId: 'dev.prateleira.local',
+      name: 'Prateleira Local',
+      version: '0.3.1',
+      status: 'installed',
+      session: 'stopped',
+      capabilities: ['provider.context.read'],
+      nativeAccess: ['files', 'network'],
+    });
+    expect(windowsPlugins.filter((plugin) => plugin.source === 'official')).toHaveLength(2);
+
+    const linuxPlugins = await createMockHost({ platform: 'linux' })
+      .invoke('plugin_inventory') as PluginInfo[];
+    expect(linuxPlugins.filter((plugin) => plugin.source === 'official')).toHaveLength(2);
+    expect(linuxPlugins.find((plugin) => plugin.source === 'community')).toMatchObject({
+      name: 'Prateleira Local',
+      session: 'stopped',
+      nativeAccess: ['files', 'dbus'],
+    });
+  });
+
+  it('lists trusted plugin versions and lets Stop/Start change the session', async () => {
+    const host = createMockHost({ platform: 'windows' });
+    let plugins = await host.invoke('plugin_inventory') as PluginInfo[];
+    expect(plugins.map((plugin) => plugin.version)).toEqual(['0.1.0', '0.1.0', '0.3.1', '1.0.0']);
+    expect(plugins.find((plugin) => plugin.providerId === 'community')?.session)
+      .toBe('stopped');
+
+    await host.invoke('plugin_stop', { providerId: 'epic' });
+    let snapshot = await host.invoke('get_snapshot') as Snapshot;
+    plugins = await host.invoke('plugin_inventory') as PluginInfo[];
+    expect(plugins.find((plugin) => plugin.providerId === 'epic')?.session).toBe('stopped');
+    expect(plugins.find((plugin) => plugin.providerId === 'steam')?.session).toBe('active');
+    expect(snapshot.storeAccounts.find((account) => account.provider === 'epic')?.canCheck)
+      .toBe(false);
+
+    await host.invoke('plugin_start', { providerId: 'epic' });
+    snapshot = await host.invoke('get_snapshot') as Snapshot;
+    plugins = await host.invoke('plugin_inventory') as PluginInfo[];
+    expect(plugins.find((plugin) => plugin.providerId === 'epic')?.session).toBe('active');
+    expect(snapshot.storeAccounts.find((account) => account.provider === 'epic')?.canCheck)
+      .toBe(true);
   });
 
   it.each(['en', 'pt-BR'] as const)('keeps Steam account and PC ports state together in the %s snapshot', async (locale) => {
@@ -1233,12 +1500,14 @@ describe('mock GameNode batch writes', () => {
         target: { row: 'steam:3' },
         entryKey: 'steam:3',
         title: 'Clockwork Harbor',
+        coverFile: 'mock-2.svg',
         matched: false,
       },
       {
         target: { row: 'epic:8' },
         entryKey: 'epic:8',
         title: 'Hollow Mountain',
+        coverFile: 'mock-7.svg',
         matched: true,
       },
     ]);
@@ -1326,6 +1595,329 @@ describe('mock GameNode batch writes', () => {
     });
     snapshot = await host.invoke('get_snapshot') as Snapshot;
     expect(snapshot.library!.rows.find((row) => row.key === 'steam:1')!.isFavorite).toBe(false);
+  });
+
+  it('creates a collection inline, selects it and reports the account limit', async () => {
+    const host = createMockHost();
+    await host.invoke('library_input', {
+      input: { select: { key: 'epic:8', mode: 'replace' } },
+    });
+    await host.invoke('library_input', { input: 'openAdd' });
+    let snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.library!.addDialog!.collections).toMatchObject({
+      loaded: MOCK_COLLECTIONS.map((collection) => ({
+        id: collection.id,
+        name: collection.name,
+        picked: false,
+      })),
+    });
+
+    await host.invoke('library_input', { input: 'startNewCollection' });
+    await host.invoke('library_input', {
+      input: { setNewCollectionName: 'Coop de domingo' },
+    });
+    snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.library!.addDialog!.newCollection).toMatchObject({
+      name: 'Coop de domingo',
+      creating: false,
+      canCreate: true,
+      error: null,
+    });
+
+    await host.invoke('library_input', { input: 'createCollection' });
+    snapshot = await host.invoke('get_snapshot') as Snapshot;
+    const dialog = snapshot.library!.addDialog!;
+    expect(dialog.newCollection).toBeNull();
+    const created = (dialog.collections as { loaded: Array<{ id: string; name: string; picked: boolean; entryCount: number | null }> }).loaded.find(
+      (collection) => collection.name === 'Coop de domingo',
+    )!;
+    expect(created.picked).toBe(true);
+    expect(created.entryCount).toBe(0);
+    // Creating a collection writes no entry and adds no game.
+    expect(snapshot.library!.addSummary).toBeNull();
+    expect(
+      snapshot.library!.rows.find((row) => row.key === 'epic:8')!.gamenode,
+    ).toBeNull();
+
+    await host.invoke('library_input', { input: 'startNewCollection' });
+    await host.invoke('library_input', {
+      input: { setNewCollectionName: MOCK_LIMIT_COLLECTION_NAME },
+    });
+    await host.invoke('library_input', { input: 'createCollection' });
+    snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.library!.addDialog!.newCollection).toMatchObject({
+      name: MOCK_LIMIT_COLLECTION_NAME,
+      error: 'limitReached',
+      canCreate: true,
+    });
+    expect(
+      snapshot.library!.addDialog!.collections,
+    ).toMatchObject({ loaded: expect.any(Array) });
+  });
+
+  it('keeps a hidden three-game batch adding with one unmatched game', async () => {
+    vi.useFakeTimers();
+    try {
+      const host = createMockHost({ addBatchDelayMs: 10 });
+      for (const key of ['steam:3', 'steam:1', 'epic:8']) {
+        await host.invoke('library_input', {
+          input: { select: { key, mode: key === 'steam:3' ? 'replace' : 'toggle' } },
+        });
+      }
+      await host.invoke('library_input', { input: 'openAdd' });
+      await host.invoke('library_input', { input: 'confirmAdd' });
+      let snapshot = await host.invoke('get_snapshot') as Snapshot;
+      expect(snapshot.library!.addDialog!.progress).toMatchObject({ total: 3 });
+      expect(snapshot.library!.addDialog!.items).toHaveLength(3);
+
+      await host.invoke('library_input', { input: 'hideAdd' });
+      snapshot = await host.invoke('get_snapshot') as Snapshot;
+      expect(snapshot.library!.addDialog).toBeNull();
+      expect(snapshot.library!.addSummary).toBeNull();
+
+      await vi.advanceTimersByTimeAsync(100);
+      snapshot = await host.invoke('get_snapshot') as Snapshot;
+      const summary = snapshot.library!.addSummary!;
+      expect(summary).toMatchObject({
+        added: 1,
+        alreadyPresent: 1,
+        skipped: 1,
+        undoable: true,
+      });
+      const runId = summary.runId;
+      expect(
+        snapshot.library!.rows.find((row) => row.key === 'epic:8')!.gamenode,
+      ).not.toBeNull();
+
+      // The notification is raised once: a late hide or a second confirm cannot re-run it.
+      await host.invoke('library_input', { input: 'hideAdd' });
+      await host.invoke('library_input', { input: 'confirmAdd' });
+      snapshot = await host.invoke('get_snapshot') as Snapshot;
+      expect(snapshot.library!.addSummary!.runId).toBe(runId);
+      expect(snapshot.library!.addSummary!.added).toBe(1);
+
+      // A new Add after the run finished starts a fresh dialog instead of the old progress.
+      await host.invoke('library_input', { input: 'openAdd' });
+      snapshot = await host.invoke('get_snapshot') as Snapshot;
+      expect(snapshot.library!.addDialog!.summary).toBeNull();
+      expect(snapshot.library!.addDialog!.progress).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps a hidden batch outcome after sign-out in the notice channel', async () => {
+    vi.useFakeTimers();
+    try {
+      const host = createMockHost({ addBatchDelayMs: 10 });
+      for (const key of ['steam:3', 'steam:1', 'epic:8']) {
+        await host.invoke('library_input', {
+          input: { select: { key, mode: key === 'steam:3' ? 'replace' : 'toggle' } },
+        });
+      }
+      await host.invoke('library_input', { input: 'openAdd' });
+      await host.invoke('library_input', { input: 'confirmAdd' });
+      await host.invoke('library_input', { input: 'hideAdd' });
+      await host.invoke('dispatch_auth', { input: 'signOut' });
+
+      let snapshot = await host.invoke('get_snapshot') as Snapshot;
+      expect(snapshot.library).toBeNull();
+      const notice = snapshot.addNotice!;
+      expect(notice).toMatchObject({
+        accountId: 'mock-user',
+        batch: true,
+        summary: { added: 0, failed: 3 },
+      });
+      const runId = notice.summary.runId;
+
+      // The stopped timer cannot add anything after sign-out or change the reported counts.
+      await vi.advanceTimersByTimeAsync(100);
+      snapshot = await host.invoke('get_snapshot') as Snapshot;
+      expect(snapshot.addNotice!.summary.runId).toBe(runId);
+      expect(snapshot.addNotice!.summary).toMatchObject({ added: 0, failed: 3 });
+      expect(snapshot.library).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('opens game tools through the usual action and mirrors picker, anti-cheat and install', async () => {
+    const host = createMockHost();
+
+    await host.invoke('library_input', {
+      input: { select: { key: 'steam:3', mode: 'replace' } },
+    });
+    await host.invoke('open_tools_for_selected');
+    let snapshot = await host.invoke('get_snapshot') as Snapshot;
+    let modal = snapshot.tools.modal!;
+    expect(modal).toMatchObject({
+      entryKey: 'steam:3',
+      title: 'Clockwork Harbor',
+      activeToolId: 'optiscaler',
+      selectedChannel: 'stable',
+    });
+    expect(modal.availableVersions.map((release) => release.version)).toEqual([
+      '0.7.9',
+      '0.7.2',
+    ]);
+    expect(modal.inspection!.candidates.length).toBeGreaterThan(0);
+    expect(modal.inspection!.anticheat.detected).toEqual([]);
+    expect(snapshot.tools.catalog[0].name).toBe('OptiScaler');
+
+    await host.invoke('select_tool_channel', { channel: 'nightly' });
+    await host.invoke('select_tool_version', { version: '0.8.0-pre1' });
+    await host.invoke('select_tool_proxy', { proxy: 'version' });
+    await host.invoke('select_tool_target_exe', {
+      relativeExe: 'bin/x64/Launcher.exe',
+    });
+    await host.invoke('set_tool_reset_config', { reset: true });
+    await host.invoke('pick_tool_target_exe');
+    snapshot = await host.invoke('get_snapshot') as Snapshot;
+    modal = snapshot.tools.modal!;
+    expect(modal.selectedChannel).toBe('nightly');
+    expect(modal.selectedVersion).toBe('0.8.0-pre1');
+    expect(modal.selectedProxy).toBe('version');
+    expect(modal.inspection!.selectedExe).toBe('bin/x64/picked.exe');
+
+    // The clean game installs, clears cached archives, and uninstalls without an anti-cheat confirmation.
+    await host.invoke('install_or_update_tool', { isUpdate: false });
+    snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.tools.installedByEntry['steam:3']).toHaveLength(1);
+    expect(snapshot.tools.installedByEntry['steam:3'][0]).toMatchObject({
+      version: '0.8.0-pre1',
+      proxyDll: 'version.dll',
+      targetExe: 'bin/x64/picked.exe',
+    });
+    await host.invoke('clear_tool_cache');
+    snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.tools.totalCacheBytes).toBe(0);
+    expect(snapshot.tools.achievementIconCacheBytes).toBe(0);
+    expect(snapshot.tools.totalCacheArchives).toBe(0);
+    await host.invoke('uninstall_tool');
+    snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.tools.installedByEntry['steam:3']).toBeUndefined();
+
+    // The anti-cheat fixture reaches the danger callout and blocks install until confirmed.
+    await host.invoke('open_tools', { entryKey: 'steam:9' });
+    snapshot = await host.invoke('get_snapshot') as Snapshot;
+    modal = snapshot.tools.modal!;
+    expect(modal.inspection!.anticheat.detected).toEqual(['easyAntiCheat']);
+    expect(modal.anticheatConfirmed).toBe(false);
+    await host.invoke('install_or_update_tool', { isUpdate: false });
+    snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.tools.installedByEntry['steam:9']).toBeUndefined();
+    expect(snapshot.tools.modal!.operation).toMatchObject({
+      failed: { message: expect.stringContaining('Anti-cheat') },
+    });
+
+    await host.invoke('set_tool_anticheat_confirmed', { confirmed: true });
+    await host.invoke('install_or_update_tool', { isUpdate: false });
+    snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.tools.modal!.anticheatConfirmed).toBe(true);
+    expect(snapshot.tools.modal!.operation).toBeNull();
+    expect(snapshot.tools.installedByEntry['steam:9']).toHaveLength(1);
+  });
+
+  it('lists cached tool versions and preselects the configured default channel', async () => {
+    const host = createMockHost();
+    let snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.tools.cacheEntries).toHaveLength(3);
+    expect(snapshot.tools.installedByEntry['epic:6']).toHaveLength(1);
+    expect(snapshot.tools.installedByEntry['epic:8']).toHaveLength(1);
+    expect(snapshot.tools.cacheEntries.find((entry) => entry.version === '0.7.9'))
+      .toMatchObject({ channel: 'stable', sha256Verified: true, inUse: true });
+    expect(snapshot.tools.cacheEntries.find((entry) => entry.version === '0.7.2'))
+      .toMatchObject({ channel: 'stable', sha256Verified: false, inUse: false });
+    expect(snapshot.tools.cacheEntries.find((entry) => entry.version === '0.8.0-pre1'))
+      .toMatchObject({ channel: 'nightly', sha256Verified: true });
+    expect(snapshot.tools.totalCacheBytes).toBe(
+      snapshot.tools.cacheEntries.reduce((total, entry) => total + entry.bytes, 0),
+    );
+
+    await host.invoke('open_tools', { entryKey: 'steam:3' });
+    snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.tools.modal!.selectedChannel).toBe('stable');
+
+    await host.invoke('set_app_preference', {
+      patch: { toolDefaultChannel: 'nightly' },
+    });
+    await host.invoke('open_tools', { entryKey: 'steam:3' });
+    snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.tools.modal!.selectedChannel).toBe('nightly');
+    expect(snapshot.tools.modal!.selectedVersion).toBe('0.8.0-pre1');
+
+    // Installing marks the cached version in use; clearing empties the listing.
+    await host.invoke('install_or_update_tool', { isUpdate: false });
+    snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.tools.cacheEntries.find((entry) => entry.version === '0.8.0-pre1')?.inUse)
+      .toBe(true);
+    await host.invoke('clear_tool_cache');
+    snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.tools.cacheEntries).toEqual([]);
+  });
+
+  it('keeps the target on picker cancel and reports picker or outside-folder failures', async () => {
+    const canceled = createMockHost({ toolPick: 'cancel' });
+    await canceled.invoke('open_tools', { entryKey: 'steam:3' });
+    let snapshot = await canceled.invoke('get_snapshot') as Snapshot;
+    const initial = snapshot.tools.modal!.inspection!.selectedExe;
+    expect(initial).toBeTruthy();
+    await canceled.invoke('pick_tool_target_exe');
+    snapshot = await canceled.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.tools.modal!.inspection!.selectedExe).toBe(initial);
+    expect(snapshot.tools.modal!.operation).toBeNull();
+
+    const failing = createMockHost({ toolPick: 'fail' });
+    await failing.invoke('open_tools', { entryKey: 'steam:3' });
+    await failing.invoke('pick_tool_target_exe');
+    snapshot = await failing.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.tools.modal!.inspection!.selectedExe).toBe(initial);
+    expect(snapshot.tools.modal!.operation).toMatchObject({
+      failed: {
+        code: 'pickerFailed',
+        message: expect.stringContaining('could not open'),
+      },
+    });
+
+    const outside = createMockHost({ toolPick: 'outside' });
+    await outside.invoke('open_tools', { entryKey: 'steam:3' });
+    await outside.invoke('pick_tool_target_exe');
+    snapshot = await outside.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.tools.modal!.inspection!.selectedExe).toBe(initial);
+    expect(snapshot.tools.modal!.operation).toMatchObject({
+      failed: {
+        code: 'targetOutsideInstallDir',
+      },
+    });
+  });
+
+  it('serves the first-sync explanation only when opted in and applies keep-on and turn-off in order', async () => {
+    const regular = createMockHost();
+    expect((await regular.invoke('get_snapshot') as Snapshot).sync).toEqual({
+      enabled: true,
+      explained: true,
+      summary: null,
+      running: false,
+    });
+
+    const keep = createMockHost({ syncFirstRun: true });
+    let snapshot = await keep.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.sync).toEqual({ enabled: true, explained: false, summary: null, running: false });
+    await keep.invoke('dismiss_sync_explanation');
+    snapshot = await keep.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.sync).toEqual({ enabled: true, explained: true, summary: null, running: false });
+
+    const off = createMockHost({ syncFirstRun: true });
+    await off.invoke('set_sync_enabled', { enabled: false });
+    await off.invoke('dismiss_sync_explanation');
+    snapshot = await off.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.sync).toEqual({ enabled: false, explained: true, summary: null, running: false });
+
+    // The explanation stays explained for this mock session across sign-out and sign-in.
+    await off.invoke('dispatch_auth', { input: 'signOut' });
+    await off.invoke('dispatch_auth', { input: { startSignIn: 'google' } });
+    snapshot = await off.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.sync).toEqual({ enabled: false, explained: true, summary: null, running: false });
   });
 
   it('simulates failed GameNode writes without losing local favorites', async () => {
@@ -1535,5 +2127,460 @@ describe('mock catalog, suggestions, scan progress and palette', () => {
     expect(info).toHaveBeenCalledWith('[UI mock] openGameNodePage', 'library');
     expect(info).toHaveBeenCalledWith('[UI mock] openGameNodePage', { game: { id: 42 } });
     info.mockRestore();
+  });
+
+  it('reports build facts, redacted system information and fixed website links', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const host = createMockHost();
+    const appInfo = (await host.invoke('get_app_info')) as AppInfo;
+    expect(appInfo).toMatchObject({
+      buildDate: '2026-01-01',
+      osVersion: 'Windows 11 Pro (build 26100)',
+      arch: 'x86_64',
+    });
+
+    const text = (await host.invoke('system_info_text')) as string;
+    expect(text).toContain('Build 2026-01-01');
+    expect(text).toContain('Windows 11 Pro (build 26100) x86_64');
+    expect(text).toContain('Steam 0.1.0 (official, installed)');
+    expect(text).not.toMatch(/token|credential|cookie|Users/i);
+
+    await host.invoke('open_gamenode_link', { kind: 'profile' });
+    expect(info).toHaveBeenCalledWith('[UI mock] openGameNodeLink', 'profile');
+    info.mockRestore();
+  });
+});
+
+describe('mock match dialog selection', () => {
+  it('preselects the best of three candidates, selects without matching and confirms the choice', async () => {
+    const host = createMockHost();
+    let snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    const row = snapshot.library!.rows.find((item) => item.status === 'unmatched');
+    expect(row).toBeTruthy();
+
+    await host.invoke('library_input', {
+      input: { select: { key: row!.key, mode: 'replace' } },
+    });
+    await host.invoke('library_input', { input: 'openMatch' });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    const dialog = snapshot.library!.matchDialog!;
+    expect(dialog.candidates).toHaveLength(3);
+    expect(dialog.candidates.map((candidate) => candidate.confidence)).toEqual([
+      96, 74, 38,
+    ]);
+    expect(dialog.candidates[0].tone).toBe('success');
+    expect(dialog.selected?.gameId).toBe(dialog.candidates[0].gameId);
+
+    // Selecting only moves the preview.
+    const second = dialog.candidates[1];
+    await host.invoke('library_input', {
+      input: { selectMatch: { gameId: second.gameId } },
+    });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.library!.matchDialog!.selected?.gameId).toBe(second.gameId);
+    expect(
+      snapshot.library!.rows.find((item) => item.key === row!.key)?.status,
+    ).toBe('unmatched');
+
+    // Confirming matches the entry to the selected game and closes the dialog.
+    await host.invoke('library_input', {
+      input: { confirmMatch: { now: 1 } },
+    });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.library!.matchDialog).toBeNull();
+    expect(
+      snapshot.library!.rows.find((item) => item.key === row!.key)?.status,
+    ).toEqual({ matched: { gameId: second.gameId, source: 'chosen' } });
+  });
+
+  it('keeps the search results in the server order and lets a result be selected', async () => {
+    const host = createMockHost();
+    let snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    const row = snapshot.library!.rows.find((item) => item.status === 'unmatched')!;
+    await host.invoke('library_input', {
+      input: { select: { key: row.key, mode: 'replace' } },
+    });
+    await host.invoke('library_input', { input: 'openMatch' });
+    await host.invoke('library_input', { input: 'searchMatch' });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    const dialog = snapshot.library!.matchDialog!;
+    expect(dialog.results.map((result) => result.confidence)).toEqual([60, 30]);
+
+    const result = dialog.results[1];
+    await host.invoke('library_input', {
+      input: { selectMatch: { gameId: result.gameId } },
+    });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.library!.matchDialog!.selected?.gameId).toBe(result.gameId);
+    expect(snapshot.library!.matchDialog!.selected?.name).toBe(result.name);
+  });
+
+  it('serves backup origins, retention and the history totals for the variant fixture', async () => {
+    const host = createMockHost({ variantLibrary: true });
+    const snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    const { versions, settings, historyBytes, historyCount } = snapshot.localGames;
+    expect(settings.retention).toBe(10);
+    expect(versions).toHaveLength(4);
+    expect(versions.map((version) => version.reason)).toEqual([
+      'afterSession',
+      'afterSession',
+      'manual',
+      'recovery',
+    ]);
+    expect(versions[0].playSeconds).toBe(42 * 60);
+    expect(versions[3].profile).toContain('_recovery_');
+    expect(historyCount).toBe(4);
+    expect(historyBytes).toBe(
+      versions.reduce((total, version) => total + version.bytes, 0),
+    );
+  });
+
+  it('updates retention per game, appends manual copies and keeps history in sync', async () => {
+    const host = createMockHost({ variantLibrary: true });
+    await host.invoke('set_local_backup_retention', {
+      entryKey: 'manual:brasa',
+      retention: 50,
+    });
+    let snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(
+      snapshot.localGames.profiles.find((profile) => profile.id === 'brasa-profile')
+        ?.retention,
+    ).toBe(50);
+    expect(snapshot.localGames.versions).toHaveLength(4);
+
+    await host.invoke('load_local_history', { id: 'brasa' });
+    await host.invoke('backup_local_now', { id: 'brasa' });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.localGames.versions).toHaveLength(5);
+    expect(snapshot.localGames.versions[0].reason).toBe('manual');
+    expect(snapshot.localGames.historyCount).toBe(5);
+    expect(snapshot.localGames.historyBytes).toBe(
+      snapshot.localGames.versions.reduce(
+        (total, version) => total + version.bytes,
+        0,
+      ),
+    );
+
+    await expect(
+      host.invoke('set_local_backup_retention', {
+        entryKey: 'manual:brasa',
+        retention: 7,
+      }),
+    ).rejects.toBeDefined();
+  });
+
+  it('picks a bundled sample cover and mirrors save, cancel and clear on the DRM-free row', async () => {
+    const host = createMockHost({ variantLibrary: true });
+    let snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    const registration = snapshot.localGames.registrations.find(
+      (item) => item.id === 'drift',
+    )!;
+    const rowBefore = snapshot.library!.rows.find(
+      (item) => item.key === 'manual:drift',
+    )!;
+    const gameNodeCover = rowBefore.coverFile;
+    expect(registration.customCover).toBeNull();
+
+    const picked = await host.invoke('pick_local_cover', {
+      entryKey: 'manual:drift',
+    });
+    expect(picked).toMatch(/^mock-\d+\.svg$/);
+
+    // Cancelling leaves the committed cover untouched.
+    await host.invoke('discard_local_cover', { entryKey: 'manual:drift' });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(
+      snapshot.localGames.registrations.find((item) => item.id === 'drift')
+        ?.customCover,
+    ).toBeNull();
+    expect(
+      snapshot.library!.rows.find((item) => item.key === 'manual:drift')
+        ?.coverFile,
+    ).toBe(gameNodeCover);
+
+    await host.invoke('edit_local_game', {
+      value: { ...registration, customCover: picked },
+    });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    const savedRow = snapshot.library!.rows.find(
+      (item) => item.key === 'manual:drift',
+    )!;
+    expect(
+      snapshot.localGames.registrations.find((item) => item.id === 'drift')
+        ?.customCover,
+    ).toBe(picked);
+    expect(savedRow.coverFile).toBe(picked);
+    expect(savedRow.gameCoverFile).toBe(gameNodeCover);
+
+    await host.invoke('edit_local_game', {
+      value: {
+        ...snapshot.localGames.registrations.find((item) => item.id === 'drift')!,
+        customCover: null,
+      },
+    });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(
+      snapshot.library!.rows.find((item) => item.key === 'manual:drift')
+        ?.coverFile,
+    ).toBe(gameNodeCover);
+  });
+});
+
+describe('mock discovery review', () => {
+  it('serves three Figma-shaped rows with the non-game unchecked by default', async () => {
+    const host = createMockHost({ discoveries: true });
+    const snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    const candidates = snapshot.localGames.candidates;
+    expect(candidates).toHaveLength(3);
+    expect(candidates.find((item) => item.title === 'Moss & Machine')?.suggestion).toMatchObject({
+      title: 'Moss & Machine',
+      year: 2023,
+      tone: 'success',
+    });
+    expect(
+      candidates.find((item) => item.title === 'Frostbyte Arcade')?.suggestion,
+    ).toBeNull();
+    expect(candidates.find((item) => item.title === 'setup_redist')).toMatchObject({
+      likelyNonGame: true,
+      selectedTarget: 'D:\\Jogos\\Instaladores\\vc_redist.x64.exe',
+    });
+    expect(snapshot.localGames.reviewSelected).toEqual([
+      'candidate-moss-machine',
+      'candidate-frostbyte-arcade',
+    ]);
+  });
+
+  it('toggles a row selection', async () => {
+    const host = createMockHost({ discoveries: true });
+    await host.invoke('select_local_candidate', {
+      fingerprint: 'candidate-frostbyte-arcade',
+    });
+    let snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.localGames.reviewSelected).toEqual(['candidate-moss-machine']);
+
+    await host.invoke('select_local_candidate', {
+      fingerprint: 'candidate-frostbyte-arcade',
+    });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.localGames.reviewSelected).toEqual([
+      'candidate-moss-machine',
+      'candidate-frostbyte-arcade',
+    ]);
+  });
+
+  it('adds the selected rows and clears their selection', async () => {
+    const host = createMockHost({ discoveries: true });
+    await host.invoke('review_selected_local_candidates', {
+      add: true,
+      allowRediscovery: true,
+    });
+    const snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.localGames.candidates.map((item) => item.title)).toEqual([
+      'setup_redist',
+    ]);
+    expect(snapshot.localGames.reviewSelected).toEqual([]);
+  });
+
+  it('ignores with rediscovery by forgetting the rows, and without by marking them', async () => {
+    const rediscoverable = createMockHost({ discoveries: true });
+    await rediscoverable.invoke('review_selected_local_candidates', {
+      add: false,
+      allowRediscovery: true,
+    });
+    let snapshot = (await rediscoverable.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.localGames.candidates.map((item) => item.title)).toEqual([
+      'setup_redist',
+    ]);
+
+    const permanent = createMockHost({ discoveries: true });
+    await permanent.invoke('review_selected_local_candidates', {
+      add: false,
+      allowRediscovery: false,
+    });
+    snapshot = (await permanent.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.localGames.candidates).toHaveLength(3);
+    expect(
+      snapshot.localGames.candidates
+        .filter((item) => item.ignored)
+        .map((item) => item.title),
+    ).toEqual(['Moss & Machine', 'Frostbyte Arcade']);
+    expect(snapshot.localGames.reviewSelected).toEqual([]);
+  });
+
+  it('resets ignored rows and restores the non-game-aware defaults', async () => {
+    const host = createMockHost({ discoveries: true });
+    await host.invoke('review_selected_local_candidates', {
+      add: false,
+      allowRediscovery: false,
+    });
+    await host.invoke('reset_local_ignores');
+    const snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.localGames.candidates.every((item) => !item.ignored)).toBe(true);
+    expect(snapshot.localGames.reviewSelected).toEqual([
+      'candidate-moss-machine',
+      'candidate-frostbyte-arcade',
+    ]);
+  });
+});
+
+describe('UI mock host settings data', () => {
+  it('runs Sync now, shows progress and records the last pass', async () => {
+    const host = createMockHost();
+    await host.invoke('set_sync_enabled', { enabled: false });
+    await expect(host.invoke('sync_now')).rejects.toBe('syncUnavailable');
+    await host.invoke('set_sync_enabled', { enabled: true });
+    await host.invoke('sync_now');
+    let snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.sync.running).toBe(true);
+    await vi.waitFor(
+      async () => {
+        snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+        expect(snapshot.sync.running).toBe(false);
+      },
+      { timeout: 1_000 },
+    );
+    expect(snapshot.sync.summary).toMatchObject({ held: 0 });
+    expect(snapshot.sync.summary!.acceptedGames).toBeGreaterThan(0);
+    expect(snapshot.sync.summary!.stores).toBeGreaterThan(0);
+  });
+
+  it('seeds the unavailable watched-folder fixture without the variant library', async () => {
+    const host = createMockHost({ watches: 'unavailable' });
+    const snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.localGames.watches).toHaveLength(2);
+    expect(snapshot.localGames.watches.find((watch) => watch.id === 'watched-games'))
+      .toMatchObject({ path: 'D:\\Jogos', state: 'idle', entryCount: 2 });
+    expect(snapshot.localGames.watches.find((watch) => watch.id === 'watched-itch'))
+      .toMatchObject({
+        path: 'E:\\Itch',
+        state: 'unavailable',
+        entryCount: 6,
+      });
+    expect(snapshot.library!.rows).toHaveLength(12);
+  });
+
+  it('checks one watched folder and keeps an unavailable folder alone', async () => {
+    const host = createMockHost({ variantLibrary: true });
+    let snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    const unavailable = snapshot.localGames.watches.find(
+      (watch) => watch.state === 'unavailable',
+    )!;
+    await host.invoke('check_local_watch', { id: unavailable.id });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(
+      snapshot.localGames.watches.find((watch) => watch.id === unavailable.id)!
+        .state,
+    ).toBe('unavailable');
+
+    const idle = snapshot.localGames.watches.find((watch) => watch.state === 'idle')!;
+    await host.invoke('check_local_watch', { id: idle.id });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(
+      snapshot.localGames.watches.find((watch) => watch.id === idle.id)!.state,
+    ).toBe('checking');
+    await vi.waitFor(
+      async () => {
+        snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+        expect(
+          snapshot.localGames.watches.find((watch) => watch.id === idle.id)!.state,
+        ).toBe('idle');
+      },
+      { timeout: 1_000 },
+    );
+    expect(
+      snapshot.localGames.watches.find((watch) => watch.id === idle.id)!
+        .lastCheckedAt,
+    ).toBeGreaterThan(0);
+  });
+
+  it('leaves shared-only entries out without losing the store shared count', async () => {
+    const host = createMockHost();
+    let snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    const before = snapshot.library!;
+    const shared = before.rows.find(
+      (row) => row.provider === 'steam' && row.shared && !row.owned && !row.installed,
+    )!;
+    expect(shared).toBeDefined();
+    const steamBefore = before.providers.find((provider) => provider.id === 'steam')!;
+    expect(before.filterCounts.availability.shared).toBe(1);
+
+    await host.invoke('set_app_preference', {
+      patch: { sharedExcluded: ['steam'] },
+    });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    const after = snapshot.library!;
+    expect(after.rows.some((row) => row.key === shared.key)).toBe(false);
+    expect(after.rows).toHaveLength(before.rows.length - 1);
+    const steamAfter = after.providers.find((provider) => provider.id === 'steam')!;
+    expect(steamAfter.count).toBe(steamBefore.count - 1);
+    expect(steamAfter.sharedCount).toBe(steamBefore.sharedCount);
+    expect(steamAfter.ownedCount).toBe(steamBefore.ownedCount);
+    expect(after.filterCounts.availability.shared).toBe(0);
+    expect(
+      after.rows.some((row) => row.provider === 'steam' && row.owned),
+    ).toBe(true);
+
+    await host.invoke('set_app_preference', { patch: { sharedExcluded: [] } });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.library!.rows.some((row) => row.key === shared.key)).toBe(true);
+    expect(snapshot.library!.rows).toHaveLength(before.rows.length);
+  });
+
+  it('reports detected store locations and keeps unreported ones without a path', async () => {
+    const host = createMockHost();
+    const snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    const steam = snapshot.library!.providers.find(
+      (provider) => provider.id === 'steam',
+    )!;
+    expect(steam.installRoot).toBe('C:\\Program Files (x86)\\Steam');
+    expect(steam.libraryFolders).toBe(4);
+    const epic = snapshot.library!.providers.find(
+      (provider) => provider.id === 'epic',
+    )!;
+    expect(epic.installedCount).toBeGreaterThan(0);
+    expect(epic.installRoot).toBeNull();
+    expect(epic.libraryFolders).toBeNull();
+  });
+
+  it('saves the default retention with the other backup fields and reports usage', async () => {
+    const host = createMockHost({ variantLibrary: true });
+    await host.invoke('set_local_backup_settings', {
+      automatic: false,
+      destination: 'D:\\Backups',
+      retention: 20,
+    });
+    let snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.localGames.settings).toEqual({
+      automatic: false,
+      destination: 'D:\\Backups',
+      retention: 20,
+    });
+    await expect(
+      host.invoke('set_local_backup_settings', {
+        automatic: true,
+        destination: 'D:\\Backups',
+        retention: 7,
+      }),
+    ).rejects.toMatchObject({ code: 'invalidRetention' });
+    await expect(
+      host.invoke('set_local_backup_settings', {
+        automatic: true,
+        destination: '   ',
+        retention: 10,
+      }),
+    ).rejects.toMatchObject({ code: 'invalidDestination' });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.localGames.settings.retention).toBe(20);
+    expect(snapshot.localGames.settings.destination).toBe('D:\\Backups');
+
+    const usage = (await host.invoke('local_backup_usage')) as {
+      totalBytes: number;
+      totalVersions: number;
+      games: { title: string; bytes: number; versions: number }[];
+    };
+    expect(usage.totalVersions).toBe(4);
+    expect(usage.totalBytes).toBe(7_100_000 + 7_000_000 + 6_800_000 + 6_800_000);
+    expect(usage.games[0].title).toBe('Brasa');
+    expect(usage.games[0].versions).toBe(4);
   });
 });

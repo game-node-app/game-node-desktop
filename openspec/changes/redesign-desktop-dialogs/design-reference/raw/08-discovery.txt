@@ -1,0 +1,15 @@
+### 5370:3276 Jogos descobertos  (wrapper 5370:3374 "Jogos descobertos (DiscoveryModal)")
+### Annotation: Revisão em tabela: executável escolhido por linha e sugestão de correspondência; prováveis não-jogos vêm desmarcados (NOVO).
+F [Jogos descobertos] 720x361 col (same shell)
+ F [Cabeçalho] I dots-vertical ; col gap2 [T "Jogos descobertos" 16/600 ; T "3 jogos novos nas pastas monitoradas" 12/400 text-dimmed] ; I x
+ F [Corpo] col p8/20/8/20
+  F [table header] row gap12 p8/0/8/0 ai:center bd-bottom=border/subtle
+   C <Checkbox Mixed> ; T "Jogo" FH ; T "Executável" 190w ; T "GameNode" 170w   (11/600 text/muted ls0.6 upper)
+  rows row gap12 p10/0/10/0 ai:center bd-bottom=border/subtle:
+   checkbox ; REC cover 30x40 r3 ; F col gap2 FH(224) [T title 13/600 text/primary ; T path 11/400 text-dimmed ellipsis]
+   F [exe select] 190x30 row gap6 p0/8/0/8 ai:center bg=surface bd1=border/subtle r6 [T exe 12/400 text-default ellipsis FH ; I chevron-down 12:text-dimmed]
+   F [170 cell] pill
+   Checked   "Moss & Machine"   "D:\Jogos\MossMachine"     "MossMachine.exe"   C <Pill Success> "Moss & Machine (2023)" icons=link
+   Checked   "Frostbyte Arcade" "D:\Jogos\FrostbyteArcade" "frostbyte.exe"     C <Pill Warning> "Sem correspondência" icons=alert-triangle
+   Unchecked "setup_redist"     "D:\Jogos\Instaladores"    "vc_redist.x64.exe" C <Pill Neutral> "Provavelmente não é jogo" icons=alert-triangle
+ F [Rodapé] F row gap8 ai:center [C <Checkbox Checked> ; T "Permitir redescoberta em verificações futuras" 12/400 text/secondary] ; spacer ; C <Button Ghost SM> "Ignorar selecionados" ; C <Button Primary SM> "Adicionar 2 jogos" icons=plus

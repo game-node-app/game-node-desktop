@@ -57,9 +57,12 @@ impl From<String> for ToolId {
 }
 
 /// Release channel for a tool.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 #[serde(rename_all = "camelCase")]
 pub enum ToolChannel {
+    #[default]
     Stable,
     Nightly,
 }

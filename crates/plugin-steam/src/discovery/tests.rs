@@ -8,6 +8,7 @@ use super::{Installed as Record, Manifest, Platform, path};
 const PORTAL2: &str = include_str!("fixtures/appmanifest_portal2.acf");
 const MALFORMED: &str = include_str!("fixtures/appmanifest_malformed.acf");
 const LIBRARIES_WINDOWS: &str = include_str!("fixtures/libraryfolders_windows.vdf");
+const LIBRARIES_FOUR: &str = include_str!("fixtures/libraryfolders_four.vdf");
 const LIBRARIES_OLD: &str = include_str!("fixtures/libraryfolders_old.vdf");
 const LIBRARIES_LINUX: &str = include_str!("fixtures/libraryfolders_linux.vdf");
 
@@ -106,6 +107,59 @@ fn windows_with_two_library_folders() {
 }
 
 #[test]
+fn the_scan_reports_the_steam_root_and_four_library_folders() {
+    let main = "C:\\Program Files (x86)\\Steam";
+    let mut files = MemoryFiles::new().with_file(
+        &format!("{main}\\steamapps\\libraryfolders.vdf"),
+        LIBRARIES_FOUR,
+    );
+    for library in [
+        main,
+        "D:\\SteamLibrary",
+        "E:\\SteamLibrary",
+        "F:\\SteamLibrary",
+    ] {
+        files = files.with_dir(&format!("{library}\\steamapps"));
+    }
+    let roots = FixedRoots::with_home("C:\\Users\\me").with_registry(
+        "Software\\Valve\\Steam",
+        "SteamPath",
+        "C:/Program Files (x86)/Steam",
+    );
+
+    let scan = steam_provider(Platform::Windows)
+        .scan_with_location(Platform::Windows, &files, &roots)
+        .unwrap();
+    assert_eq!(scan.install_root.as_deref(), Some(main));
+    assert_eq!(scan.library_folders, Some(4));
+    assert!(scan.records.is_empty());
+}
+
+#[test]
+fn offline_library_folders_are_not_counted() {
+    // The D: library is present and the E: one is not, so Steam uses two folders.
+    let main = "C:\\Program Files (x86)\\Steam";
+    let files = MemoryFiles::new()
+        .with_file(
+            &format!("{main}\\steamapps\\libraryfolders.vdf"),
+            LIBRARIES_WINDOWS,
+        )
+        .with_dir(&format!("{main}\\steamapps"))
+        .with_dir("D:\\SteamLibrary\\steamapps");
+    let roots = FixedRoots::with_home("C:\\Users\\me").with_registry(
+        "Software\\Valve\\Steam",
+        "SteamPath",
+        "C:/Program Files (x86)/Steam",
+    );
+
+    let scan = steam_provider(Platform::Windows)
+        .scan_with_location(Platform::Windows, &files, &roots)
+        .unwrap();
+    assert_eq!(scan.install_root.as_deref(), Some(main));
+    assert_eq!(scan.library_folders, Some(2));
+}
+
+#[test]
 fn an_offline_library_folder_is_skipped_and_the_rest_appear() {
     // D: exists in the list but the drive is not there (and E: never was).
     let main = "C:\\Program Files (x86)\\Steam";
@@ -123,6 +177,17 @@ fn an_offline_library_folder_is_skipped_and_the_rest_appear() {
 fn steam_not_installed_is_an_empty_scan() {
     assert!(windows_scan(&MemoryFiles::new()).is_empty());
     assert!(linux_scan(&MemoryFiles::new()).is_empty());
+
+    let scan = steam_provider(Platform::Linux)
+        .scan_with_location(
+            Platform::Linux,
+            &MemoryFiles::new(),
+            &FixedRoots::with_home("/home/me"),
+        )
+        .unwrap();
+    assert!(scan.records.is_empty());
+    assert_eq!(scan.install_root, None);
+    assert_eq!(scan.library_folders, None);
 }
 
 #[test]

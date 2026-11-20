@@ -1,107 +1,310 @@
-import React, { useEffect, useRef } from 'react';
-import { IconAlertTriangle, IconX } from '@tabler/icons-react';
+import React, {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { IconSettings } from '@tabler/icons-react';
 import { FloatingModal } from '../../components/FloatingModal';
+import { Kbd } from '../../components/ui/Kbd';
+import { NavItem } from '../../components/ui/NavItem';
+import { cx } from '../../components/ui/cx';
 import {
   closeSettingsModal,
+  pushToast,
   setSettingsTopic,
   uiStore,
   useUiStore,
   type SettingsTopic,
 } from '../../store/uiStore';
-import { useAppInfo, useAuth, useLibraryView, useLocalGames, useSnapshot } from '../../api';
+import {
+  commands,
+  useAppInfo,
+  useLibraryView,
+  useLocalGames,
+  useSnapshot,
+} from '../../api';
 import { useI18n } from '../../i18n';
 import { providerLabel } from '../../i18n/providerLabel';
 
 import { AccountPanel } from './panels/AccountPanel';
 import { StoresPanel } from './panels/StoresPanel';
-import { PluginInventory } from './PluginInventory';
+import { DrmFreePanel } from './panels/DrmFreePanel';
 import { BackupsPanel } from './panels/BackupsPanel';
+import { GeneralPanel } from './panels/GeneralPanel';
 import { ToolsPanel } from './panels/ToolsPanel';
+import {
+  PluginsPanel,
+  PLUGIN_INVENTORY_QUERY_KEY,
+} from './panels/PluginsPanel';
 import { AboutPanel } from './panels/AboutPanel';
 import { DiscardChangesDialog } from './DiscardChangesDialog';
 import { LicenseNoticesModal } from './LicenseNoticesModal';
-import { settingsCloseButton } from './settingsClasses';
+import {
+  ScrollFade,
+  SettingsSearch,
+  SettingsSearchProvider,
+  UnsavedChangesBar,
+} from './components';
+import { normalizeSettingsSearch } from './search';
+import {
+  BACKUP_DRAFT_FIELD_LABEL_KEYS,
+  backupDraftChangedFields,
+  backupDraftValue,
+} from './settingsDraft';
+import {
+  settingsNavGroupsForSearch,
+  settingsTopicsForSearch,
+} from './topics';
 
-interface TopicItem {
-  id: SettingsTopic;
-  titleKey: string;
-  descKey: string;
-}
-
-const TOPICS: TopicItem[] = [
-  {
-    id: 'account',
-    titleKey: 'Account',
-    descKey: 'Your GameNode connection and what this PC syncs.',
-  },
-  {
-    id: 'stores',
-    titleKey: 'Stores',
-    descKey: 'Stores found on this PC and how playtime is read.',
-  },
-  {
-    id: 'plugins',
-    titleKey: 'plugins.navTitle',
-    descKey: 'plugins.navDescription',
-  },
-  {
-    id: 'backups',
-    titleKey: 'Backups',
-    descKey: 'Local protection for your DRM-free game saves.',
-  },
-  {
-    id: 'tools',
-    titleKey: 'Tools',
-    descKey: 'Upscalers, frame generation tools, and local download cache.',
-  },
-  {
-    id: 'about',
-    titleKey: 'About',
-    descKey: 'Version, license and third-party notices.',
-  },
-];
-
+/**
+ * The Settings shell (design D3): 48px title bar used as the drag handle,
+ * 232px grouped navigation with search, a scroller whose panel owns its title,
+ * the bottom scroll fade and the pinned unsaved-changes bar. Geometry, overlay,
+ * Escape/focus handling and the modal layer stay on the shared primitives.
+ */
 export const SettingsModal: React.FC = () => {
   const { t } = useI18n();
-  const settingsOpen = useUiStore((s) => s.settingsOpen);
-  const settingsTopic = useUiStore((s) => s.settingsTopic);
-  const licenseModalOpen = useUiStore((s) => s.licenseModalOpen);
-  const discardBackupConfirmOpen = useUiStore((s) => s.discardBackupConfirmOpen);
-  const backupDestinationDraft = useUiStore((s) => s.backupDestinationDraft);
+  const settingsOpen = useUiStore((state) => state.settingsOpen);
+  const settingsTopic = useUiStore((state) => state.settingsTopic);
+  const licenseModalOpen = useUiStore((state) => state.licenseModalOpen);
+  const discardConfirmOpen = useUiStore(
+    (state) => state.discardBackupConfirmOpen,
+  );
+  const settingsDraft = useUiStore((state) => state.settingsDraft);
 
-  const { auth } = useAuth();
   const { data: appInfo } = useAppInfo();
   const localGames = useLocalGames();
   const library = useLibraryView();
-  const { data: storeAccounts } = useSnapshot((s) => s.storeAccounts);
+  const { data: storeAccounts } = useSnapshot((state) => state.storeAccounts);
+  const { data: plugins } = useQuery({
+    queryKey: PLUGIN_INVENTORY_QUERY_KEY,
+    queryFn: commands.pluginInventory,
+    staleTime: 30_000,
+    enabled: settingsOpen,
+  });
+
   const attentionAccount = (storeAccounts ?? []).find(
-    (account) => account.state === 'expired' || account.state === 'credentialError' || account.persistFailed,
+    (account) =>
+      account.state === 'expired' ||
+      account.state === 'credentialError' ||
+      account.persistFailed,
   );
   const attentionProvider = attentionAccount
     ? providerLabel(
         attentionAccount.provider,
-        library?.providers.find((provider) => provider.id === attentionAccount.provider)?.name,
+        library?.providers.find(
+          (provider) => provider.id === attentionAccount.provider,
+        )?.name,
         t,
       )
     : '';
-  const storesNeedsAttention = attentionAccount !== undefined;
-  const storesAttentionLabel = t('settings.storeNeedsAttention', {
-    provider: attentionProvider,
-  });
+  const storesAttentionLabel = attentionAccount
+    ? t('settings.storeNeedsAttention', { provider: attentionProvider })
+    : undefined;
 
+  const [searchQuery, setSearchQuery] = useState('');
+  const [saving, setSaving] = useState(false);
+  // The state flag drives the button; the ref stops a second Ctrl+S before React re-renders.
+  const savingRef = useRef(false);
+
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const navRef = useRef<HTMLElement>(null);
   const contentPaneRef = useRef<HTMLDivElement>(null);
   const showLicenseNoticesButtonRef = useRef<HTMLButtonElement>(null);
+  const lastAutoSelectedQuery = useRef('');
 
-  const currentDestination = localGames?.settings?.destination ?? '';
-  const isDirty =
-    backupDestinationDraft !== null && backupDestinationDraft !== currentDestination;
+  const baseline = localGames.settings;
+  const changedFields = backupDraftChangedFields(settingsDraft, baseline);
+  const changeCount = changedFields.length;
+  const isDirty = changeCount > 0;
 
-  // Reset scroll position when topic changes
+  const requestTopicChange = useCallback(
+    (target: SettingsTopic): boolean => {
+      if (target === settingsTopic) return false;
+
+      if (isDirty) {
+        uiStore.setState((prev) => ({
+          ...prev,
+          discardBackupConfirmOpen: true,
+          pendingSettingsAction: () => {
+            uiStore.setState((pending) => ({
+              ...pending,
+              settingsDraft: null,
+              settingsDraftError: null,
+            }));
+            setSettingsTopic(target);
+          },
+        }));
+        return false;
+      }
+
+      setSettingsTopic(target);
+      return true;
+    },
+    [isDirty, settingsTopic],
+  );
+
+  const saveDraft = useCallback(async () => {
+    if (savingRef.current) return;
+    if (!settingsDraft || !isDirty) return;
+
+    const submitted = {
+      automatic: backupDraftValue(settingsDraft, baseline, 'automatic'),
+      destination: backupDraftValue(settingsDraft, baseline, 'destination'),
+      retention: backupDraftValue(settingsDraft, baseline, 'retention'),
+    };
+    savingRef.current = true;
+    setSaving(true);
+    uiStore.setState((prev) => ({ ...prev, settingsDraftError: null }));
+    try {
+      await commands.setLocalBackupSettings(
+        submitted.automatic,
+        submitted.destination,
+        submitted.retention,
+      );
+      uiStore.setState((prev) => {
+        const current = prev.settingsDraft;
+        if (!current || current.topic !== 'backups') {
+          return { ...prev, settingsDraftError: null };
+        }
+        // Remove only the values this save wrote. Edits made while the command
+        // was in flight stay pending instead of being erased by the late answer.
+        const remaining = { ...current.values };
+        for (const field of [
+          'automatic',
+          'destination',
+          'retention',
+        ] as const) {
+          if (remaining[field] === submitted[field]) {
+            delete remaining[field];
+          }
+        }
+        return {
+          ...prev,
+          settingsDraft:
+            Object.keys(remaining).length > 0
+              ? { topic: 'backups', values: remaining }
+              : null,
+          settingsDraftError: null,
+        };
+      });
+      pushToast('success', t('settings.unsaved.saved'));
+    } catch (error) {
+      const detail =
+        typeof error === 'string'
+          ? error
+          : (error as { message?: unknown } | null)?.message;
+      const message =
+        typeof detail === 'string' && detail.length > 0
+          ? detail
+          : t('settings.unsaved.saveFailed');
+      uiStore.setState((prev) => {
+        // A discarded draft has no field to mark; a newer destination edit is
+        // not the value that failed, so only the submitted one keeps the error.
+        if (!prev.settingsDraft) return prev;
+        if (
+          prev.settingsDraft.values.destination !== undefined &&
+          prev.settingsDraft.values.destination !== submitted.destination
+        ) {
+          return prev;
+        }
+        return { ...prev, settingsDraftError: message };
+      });
+      pushToast('danger', t('settings.unsaved.saveFailed'));
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
+  }, [baseline, isDirty, settingsDraft, t]);
+
+  // The search is component state: closing Settings forgets it.
+  useEffect(() => {
+    if (!settingsOpen) {
+      setSearchQuery('');
+      setSaving(false);
+    }
+  }, [settingsOpen]);
+
+  // Reset the panel scroll when the topic changes.
   useEffect(() => {
     if (contentPaneRef.current) {
       contentPaneRef.current.scrollTop = 0;
     }
   }, [settingsTopic]);
+
+  // A non-empty query selects the first matching topic through the same
+  // discard-aware path as a click (D2). Only a query change re-selects, so the
+  // user can still pick another matching topic afterwards.
+  useEffect(() => {
+    if (!settingsOpen) {
+      lastAutoSelectedQuery.current = '';
+      return;
+    }
+    const normalized = normalizeSettingsSearch(searchQuery);
+    if (normalized.length === 0) {
+      lastAutoSelectedQuery.current = '';
+      return;
+    }
+    if (discardConfirmOpen) return;
+    if (lastAutoSelectedQuery.current === normalized) return;
+
+    const matches = settingsTopicsForSearch(searchQuery, t);
+    if (matches.length === 0) return;
+
+    lastAutoSelectedQuery.current = normalized;
+    requestTopicChange(matches[0].id);
+  }, [
+    discardConfirmOpen,
+    requestTopicChange,
+    searchQuery,
+    settingsOpen,
+    t,
+  ]);
+
+  // Bring the first highlighted row into view.
+  useEffect(() => {
+    if (!settingsOpen) return;
+    if (normalizeSettingsSearch(searchQuery).length === 0) return;
+    const match = contentPaneRef.current?.querySelector<HTMLElement>(
+      '[data-search-match="true"]',
+    );
+    match?.scrollIntoView?.({ block: 'nearest' });
+  }, [searchQuery, settingsOpen, settingsTopic]);
+
+  // Ctrl/Cmd+F focuses the settings search (the library shortcut is inert behind
+  // the modal) and Ctrl/Cmd+S saves the pending group while the bar is visible.
+  useEffect(() => {
+    if (!settingsOpen) return undefined;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing) return;
+      if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+
+      const key = event.key.toLowerCase();
+      if (key === 'f' && !event.shiftKey) {
+        if (discardConfirmOpen || licenseModalOpen) return;
+        event.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+        return;
+      }
+      if (key === 's' && !event.shiftKey && isDirty) {
+        event.preventDefault();
+        void saveDraft();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [
+    discardConfirmOpen,
+    isDirty,
+    licenseModalOpen,
+    saveDraft,
+    settingsOpen,
+  ]);
 
   const handleRequestClose = () => {
     if (isDirty) {
@@ -110,29 +313,9 @@ export const SettingsModal: React.FC = () => {
         discardBackupConfirmOpen: true,
         pendingSettingsAction: () => closeSettingsModal(),
       }));
-    } else {
-      closeSettingsModal();
+      return;
     }
-  };
-
-  const handleSelectTopic = (targetTopic: SettingsTopic) => {
-    if (targetTopic === settingsTopic) return;
-
-    if (isDirty) {
-      uiStore.setState((prev) => ({
-        ...prev,
-        discardBackupConfirmOpen: true,
-        pendingSettingsAction: () => {
-          uiStore.setState((p) => ({ ...p, backupDestinationDraft: null }));
-          setSettingsTopic(targetTopic);
-        },
-      }));
-    } else {
-      setSettingsTopic(targetTopic);
-      if (contentPaneRef.current) {
-        contentPaneRef.current.scrollTop = 0;
-      }
-    }
+    closeSettingsModal();
   };
 
   const handleCancelDiscard = () => {
@@ -147,13 +330,20 @@ export const SettingsModal: React.FC = () => {
     const pendingAction = uiStore.state.pendingSettingsAction;
     uiStore.setState((prev) => ({
       ...prev,
-      backupDestinationDraft: null,
+      settingsDraft: null,
+      settingsDraftError: null,
       discardBackupConfirmOpen: false,
       pendingSettingsAction: null,
     }));
-    if (pendingAction) {
-      pendingAction();
-    }
+    pendingAction?.();
+  };
+
+  const handleRevert = () => {
+    uiStore.setState((prev) => ({
+      ...prev,
+      settingsDraft: null,
+      settingsDraftError: null,
+    }));
   };
 
   const handleCloseLicenseModal = () => {
@@ -164,16 +354,75 @@ export const SettingsModal: React.FC = () => {
     showLicenseNoticesButtonRef.current?.focus();
   };
 
+  const handleNavKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+    if (event.target instanceof HTMLInputElement) return;
+
+    const nav = navRef.current;
+    if (!nav) return;
+    const wrappers = Array.from(
+      nav.querySelectorAll<HTMLElement>('[data-settings-topic]'),
+    );
+    const buttons = wrappers
+      .map((wrapper) => wrapper.querySelector<HTMLButtonElement>('button'))
+      .filter((button): button is HTMLButtonElement => button !== null);
+    if (buttons.length === 0) return;
+
+    const activeIndex = buttons.findIndex(
+      (button) => button === document.activeElement,
+    );
+    const delta = event.key === 'ArrowDown' ? 1 : -1;
+    const nextIndex =
+      activeIndex < 0
+        ? delta > 0
+          ? 0
+          : buttons.length - 1
+        : (activeIndex + delta + buttons.length) % buttons.length;
+    const nextButton = buttons[nextIndex];
+    const nextTopic = wrappers[nextIndex]?.dataset
+      .settingsTopic as SettingsTopic | undefined;
+    if (!nextButton || !nextTopic) return;
+
+    event.preventDefault();
+    if (requestTopicChange(nextTopic)) {
+      nextButton.focus();
+    }
+  };
+
   if (!settingsOpen) {
     return null;
   }
 
-  const isSignedIn = typeof auth === 'object' && auth !== null && 'signedIn' in auth;
-  const user = isSignedIn ? auth.signedIn.user : null;
-  const identity = user?.username ?? user?.email ?? user?.id ?? '';
-  const initial = identity ? identity[0].toUpperCase() : 'U';
+  const visibleGroups = settingsNavGroupsForSearch(searchQuery, t);
+  const pluginCount = Array.isArray(plugins) ? plugins.length : undefined;
+  const pendingChanges = changedFields.map((field) =>
+    t(BACKUP_DRAFT_FIELD_LABEL_KEYS[field]),
+  );
 
-  const activeTopic = TOPICS.find((t) => t.id === settingsTopic) ?? TOPICS[0];
+  const renderActivePanel = () => {
+    switch (settingsTopic) {
+      case 'account':
+        return <AccountPanel />;
+      case 'stores':
+        return <StoresPanel />;
+      case 'drmFree':
+        return <DrmFreePanel />;
+      case 'backups':
+        return <BackupsPanel />;
+      case 'general':
+        return <GeneralPanel />;
+      case 'tools':
+        return <ToolsPanel />;
+      case 'plugins':
+        return <PluginsPanel />;
+      case 'about':
+        return (
+          <AboutPanel showLicenseNoticesButtonRef={showLicenseNoticesButtonRef} />
+        );
+      default:
+        return <AccountPanel />;
+    }
+  };
 
   return (
     <>
@@ -188,136 +437,120 @@ export const SettingsModal: React.FC = () => {
         closeOnClickOutside
       >
         <FloatingModal.Overlay backgroundOpacity={0.62} />
-        <FloatingModal.Content
-          aria-label={t('settings.settings') || 'Settings'}
-          className="flex flex-row bg-[var(--settings-bg-base)] p-0 text-white"
-        >
-          {/* Left Sidebar */}
-          <aside className="flex w-sidebar shrink-0 flex-col gap-sm border-r border-border-subtle bg-chrome px-sm py-md">
-            {/* User Block */}
-            <div
-              data-floating-modal-handle=""
-              className="flex cursor-grab touch-none items-center gap-[10px] rounded-sm bg-secondary p-compact select-none active:cursor-grabbing"
+        <FloatingModal.Content className="flex flex-col overflow-hidden rounded-dialog border border-border-overlay !bg-canvas shadow-dialog !shadow-alert">
+          <FloatingModal.Header className="!h-[48px] !gap-xs !py-0 border-b border-border-subtle bg-chrome pr-xs pl-[14px]">
+            <IconSettings
+              size={16}
+              stroke={2}
+              aria-hidden="true"
+              className="shrink-0 text-text-secondary"
+            />
+            <FloatingModal.Title className="!text-sm font-semibold text-text-primary">
+              {t('settings.shell.title')}
+            </FloatingModal.Title>
+            <Kbd aria-hidden="true" className="ml-auto">
+              Esc
+            </Kbd>
+            <FloatingModal.CloseButton
+              aria-label={t('settings.shell.close')}
+              className="!h-[32px] !w-[32px] rounded-control"
+            />
+          </FloatingModal.Header>
+
+          <div className="flex min-h-0 flex-1">
+            <nav
+              ref={navRef}
+              aria-label={t('settings.shell.title')}
+              onKeyDown={handleNavKeyDown}
+              className="flex w-settings-nav shrink-0 flex-col gap-md overflow-y-auto border-r border-border-subtle bg-chrome p-sm"
             >
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-brand text-sm font-semibold text-white">
-                {isSignedIn ? initial : '•'}
+              <SettingsSearch
+                ref={searchInputRef}
+                value={searchQuery}
+                onChange={setSearchQuery}
+              />
+
+              {visibleGroups.length === 0 ? (
+                <p className="px-xs text-xs text-text-dimmed">
+                  {t('settings.shell.searchEmpty')}
+                </p>
+              ) : null}
+
+              {visibleGroups.map((group) => (
+                <div key={group.id} className="flex flex-col gap-[2px]">
+                  <div className="flex px-xs pb-[4px]">
+                    <span className="text-overline font-semibold uppercase tracking-label text-text-muted">
+                      {t(group.labelKey)}
+                    </span>
+                  </div>
+                  {group.topics.map((topic) => (
+                    <div key={topic.id} data-settings-topic={topic.id}>
+                      <NavItem
+                        icon={topic.icon}
+                        label={t(topic.titleKey)}
+                        active={topic.id === settingsTopic}
+                        onClick={() => requestTopicChange(topic.id)}
+                        warning={
+                          topic.id === 'stores'
+                            ? storesAttentionLabel
+                            : undefined
+                        }
+                        count={topic.id === 'plugins' ? pluginCount : undefined}
+                      />
+                    </div>
+                  ))}
+                </div>
+              ))}
+
+              <div className="mt-auto truncate text-caption text-text-muted">
+                {t('settings.shell.footer', {
+                  version: appInfo?.version ?? '0.1.0',
+                })}
               </div>
-              <div className="flex min-w-0 flex-col">
-                <span className="truncate text-sm font-semibold text-white">
-                  {isSignedIn ? identity : t('settings.noSession') || 'No session'}
-                </span>
-                <span className="text-xs text-[var(--settings-text-secondary)]">
-                  {isSignedIn ? t('settings.signedIn') || 'Signed in' : t('settings.noSession') || 'No session'}
-                </span>
-              </div>
-            </div>
-
-            <div className="h-px bg-border-subtle" />
-
-            <span className="px-compact py-1 text-xs font-bold uppercase tracking-[0.05em] text-[var(--settings-text-muted)]">
-              {t('settings.settings') || 'SETTINGS'}
-            </span>
-
-            {/* Topics Navigation */}
-            <nav className="flex flex-col gap-1" aria-label="Settings Topics">
-              {TOPICS.map((topic) => {
-                const isSelected = topic.id === settingsTopic;
-                const needsAttention = topic.id === 'stores' && storesNeedsAttention;
-                return (
-                  <button
-                    key={topic.id}
-                    type="button"
-                    aria-current={isSelected ? 'page' : undefined}
-                    aria-label={
-                      needsAttention
-                        ? `${t(topic.titleKey) || topic.titleKey}: ${storesAttentionLabel}`
-                        : undefined
-                    }
-                    className={`flex w-full items-center gap-[10px] rounded-sm px-sm py-compact text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${
-                      isSelected
-                        ? 'active bg-accent-subtle font-semibold text-brand'
-                        : 'font-medium text-[var(--settings-text-secondary)] hover:bg-raised hover:text-white'
-                    }`}
-                    onClick={() => handleSelectTopic(topic.id)}
-                  >
-                    <span className="min-w-0 flex-1">{t(topic.titleKey) || topic.titleKey}</span>
-                    {needsAttention && (
-                      <span
-                        role="img"
-                        aria-label={storesAttentionLabel}
-                        className="inline-flex shrink-0 items-center gap-[4px] rounded-full bg-warning-subtle px-compact py-[2px] text-[10px] font-semibold uppercase tracking-[0.04em] text-warning"
-                      >
-                        <IconAlertTriangle size={13} stroke={1.75} aria-hidden="true" />
-                        <span>{t('settings.attention')}</span>
-                      </span>
-                    )}
-                  </button>
-                );
-              })}
             </nav>
 
-            {/* Sidebar Footer */}
-            <div className="mt-auto truncate p-compact text-xs text-[var(--settings-text-muted)]">
-              GameNode · {appInfo?.version ?? '0.1.0'}
-            </div>
-          </aside>
-
-          {/* Right Content Pane */}
-          <section className="flex min-w-0 flex-1 flex-col bg-[var(--settings-bg-base)]">
-            {/* Header */}
-            <header
-              data-floating-modal-handle=""
-              className="flex cursor-grab touch-none items-start justify-between border-b border-border-subtle px-control-inline py-lg select-none active:cursor-grabbing"
-            >
-              <div className="flex flex-col gap-1">
-                <h2 className="text-lg font-bold text-white">
-                  {t(activeTopic.titleKey) || activeTopic.titleKey}
-                </h2>
-                <span className="text-sm text-[var(--settings-text-secondary)]">
-                  {t(activeTopic.descKey) || activeTopic.descKey}
-                </span>
-              </div>
-              <button
-                type="button"
-                className={settingsCloseButton}
-                onClick={handleRequestClose}
-                aria-label={t('settings.closeSettings') || 'Close settings'}
+            <section className="relative flex min-w-0 flex-1 flex-col">
+              <div
+                ref={contentPaneRef}
+                className={cx(
+                  'settings-scroll-content flex min-h-0 flex-1 flex-col gap-lg overflow-y-auto px-xl pt-[28px]',
+                  isDirty ? 'pb-[88px]' : 'pb-xl',
+                )}
               >
-                <IconX size={18} stroke={1.75} aria-hidden="true" />
-              </button>
-            </header>
+                <SettingsSearchProvider query={searchQuery}>
+                  {renderActivePanel()}
+                </SettingsSearchProvider>
+              </div>
 
-            {/* Scrollable Content */}
-            <div
-              ref={contentPaneRef}
-              className="settings-scroll-content flex flex-1 flex-col gap-6 overflow-y-auto p-6"
-            >
-              {settingsTopic === 'account' && <AccountPanel />}
-              {settingsTopic === 'stores' && <StoresPanel />}
-              {settingsTopic === 'plugins' && <PluginInventory />}
-              {settingsTopic === 'backups' && <BackupsPanel />}
-              {settingsTopic === 'tools' && <ToolsPanel />}
-              {settingsTopic === 'about' && (
-                <AboutPanel showLicenseNoticesButtonRef={showLicenseNoticesButtonRef} />
-              )}
-            </div>
-          </section>
+              <ScrollFade scrollerRef={contentPaneRef} raised={isDirty} />
+
+              {isDirty ? (
+                <UnsavedChangesBar
+                  data-testid="settings-unsaved-bar"
+                  count={changeCount}
+                  saving={saving}
+                  onRevert={handleRevert}
+                  onSave={() => void saveDraft()}
+                />
+              ) : null}
+            </section>
+          </div>
 
           <FloatingModal.ResizeHandle />
         </FloatingModal.Content>
       </FloatingModal.Root>
 
-      {/* Overlays on top of settings modal */}
-      {discardBackupConfirmOpen && (
+      {discardConfirmOpen ? (
         <DiscardChangesDialog
+          pendingChanges={pendingChanges}
           onCancel={handleCancelDiscard}
           onConfirm={handleConfirmDiscard}
         />
-      )}
+      ) : null}
 
-      {licenseModalOpen && (
+      {licenseModalOpen ? (
         <LicenseNoticesModal onClose={handleCloseLicenseModal} />
-      )}
+      ) : null}
     </>
   );
 };

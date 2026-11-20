@@ -67,6 +67,12 @@ const WINDOW_OLDER = 1 << 4;
 export interface ProviderRef {
   id: string;
   name: string;
+  /** Where the latest scan found the store, when the provider reports a location. */
+  installRoot?: string | null;
+  /** How many library folders that scan reported. */
+  libraryFolders?: number | null;
+  /** Whether the local scan found the store; absent falls back to local installed rows. */
+  detected?: boolean;
 }
 
 export interface RowFacts {
@@ -93,6 +99,8 @@ export interface QueryInput {
   now: number;
   providers: ProviderRef[];
   gamenodeAvailable: boolean;
+  /** Providers whose shared-only entries are left out; empty includes every store. */
+  sharedExcluded?: string[];
 }
 
 export interface QueryResult {
@@ -589,10 +597,22 @@ function emptyCounts(): FilterCounts {
 }
 
 export function runLibraryQuery(input: QueryInput): QueryResult {
-  const { rows, layout, search, now, providers, gamenodeAvailable } = input;
+  const { layout, search, now, providers, gamenodeAvailable } = input;
   const scope = input.effectiveScope ?? layout.scope;
   const filters = layout.filters;
   const needle = search.trim().toLowerCase();
+  const excluded = new Set(input.sharedExcluded ?? []);
+  // Shared-only, not-installed entries of an excluded provider leave the pipeline before the
+  // scope, filters, groups, counts and search, exactly like the engine's `all_rows`.
+  const rows = input.rows.filter(
+    (row) =>
+      !(
+        row.shared &&
+        !row.owned &&
+        !row.installed &&
+        excluded.has(row.provider)
+      ),
+  );
   const prepared = rows.map((row) => ({ row, facts: buildRowFacts(row, filters, needle, now) }));
   const hiddenAllowed = (facts: RowFacts) => filters.showHidden || !facts.hidden;
   const scoped = (row: Row, facts: RowFacts) =>
@@ -745,11 +765,13 @@ export function providerCounts(
   rows: Row[],
   stores: FilterCounts['stores'],
   showHidden: boolean,
+  providers: ProviderRef[] = [],
 ): ProviderCount[] {
   return stores.map((store) => {
     const own = rows.filter(
       (row) => row.provider === store.id && (showHidden || !row.hidden),
     );
+    const provider = providers.find((item) => item.id === store.id);
     return {
       id: store.id,
       name: store.name,
@@ -758,6 +780,13 @@ export function providerCounts(
       ownedCount: own.filter((row) => row.owned).length,
       sharedCount: own.filter((row) => row.shared && !row.owned).length,
       sharedLabel: store.id === 'steam' ? 'Steam Family' : null,
+      installRoot: provider?.installRoot ?? null,
+      libraryFolders: provider?.libraryFolders ?? null,
+      // The local scan outcome, never the online catalog counts. A fixture without an explicit
+      // outcome counts as detected only when a locally installed row exists.
+      detected:
+        provider?.detected ??
+        rows.some((row) => row.provider === store.id && row.installed),
     };
   });
 }

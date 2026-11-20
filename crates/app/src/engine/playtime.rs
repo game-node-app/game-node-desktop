@@ -5,10 +5,14 @@ use gamenode_core::playtime::{
     submitter::{Candidate, Effect as SubmitEffect, Submitter, group_candidates},
 };
 use gamenode_core::ports::ProcessError;
-use gamenode_core::sync::SyncPreferences;
+use gamenode_core::sync::{SyncNowError, SyncPreferences, SyncSummary, SyncView};
 use gamenode_core::tracker::{
     Effect as TrackEffect, Entry, Input as TrackInput, Tracker, runtime_sessions::RuntimeSessions,
 };
+
+/// How long a rejected total waits before a normal automatic pass retries it. An explicit
+/// "Sync now" is itself the next opportunity and does not wait.
+const REJECTED_RETRY_AFTER_SECS: i64 = 300;
 
 pub(super) struct Playtime {
     pub tracker: Tracker,
@@ -24,6 +28,26 @@ pub(super) struct Playtime {
     reading: bool,
     submitting: bool,
     resubmit: bool,
+    /// One submission pass is reading totals or sending them. A new pass waits for it.
+    pass_running: bool,
+    /// "Sync now" was accepted and its pass has not ended yet.
+    sync_now_running: bool,
+    /// "Sync now" is waiting for the rescan it requested to finish.
+    sync_now_awaiting_scan: bool,
+    /// "Sync now" is waiting for the counter read that follows the rescan.
+    sync_now_awaiting_counters: bool,
+    /// A counter read was already in flight when the scan finished, so one more read is needed
+    /// before the requested submission pass.
+    sync_now_counters_again: bool,
+    /// The next automatic pass may retry totals GameNode rejected, after a quiet period.
+    rejected_retry_at: Option<i64>,
+    /// This sync-now request may retry a rejected total. Consumed by the first pass it starts,
+    /// so a resubmit inside the same request cannot hammer GameNode.
+    sync_now_retry_allowed: bool,
+    /// The last completed pass, for the signed-in account.
+    pub summary: Option<SyncSummary>,
+    /// The account `summary` belongs to, so a late read never lands on another account.
+    summary_for: Option<String>,
     submitter: Submitter,
     next_list: i64,
     next_checkpoint: i64,
@@ -56,6 +80,15 @@ impl Playtime {
             reading: false,
             submitting: false,
             resubmit: false,
+            pass_running: false,
+            sync_now_running: false,
+            sync_now_awaiting_scan: false,
+            sync_now_awaiting_counters: false,
+            sync_now_counters_again: false,
+            rejected_retry_at: None,
+            sync_now_retry_allowed: false,
+            summary: None,
+            summary_for: None,
             submitter: Submitter::default(),
             next_list: 0,
             next_checkpoint: 0,
@@ -67,6 +100,17 @@ impl Playtime {
             display_loaded: false,
             display_loading: false,
             display_dirty: false,
+        }
+    }
+
+    /// The snapshot's sync block: the stored preferences, the last completed pass and whether one
+    /// runs now.
+    pub fn view(&self) -> SyncView {
+        SyncView {
+            enabled: self.preferences.enabled,
+            explained: self.preferences.explained,
+            summary: self.summary,
+            running: self.pass_running || self.sync_now_running || self.submitting,
         }
     }
 }
@@ -132,6 +176,11 @@ impl Engine {
             state.playtime.display_totals.clear();
             state.playtime.display_sessions.clear();
             state.playtime.display_loaded = false;
+            state.playtime.summary = None;
+            state.playtime.summary_for = account.clone();
+            if let Some(account) = account.clone() {
+                self.load_sync_summary(account);
+            }
         }
         state.playtime.tracker.set_policies(
             state
@@ -192,9 +241,16 @@ impl Engine {
                     key,
                     play_period,
                     last_gameplay_exit,
+                    play_seconds,
                 } => {
                     self.schedule_exited_game_achievements(&key);
-                    self.queue_local_backup(state, key, play_period, last_gameplay_exit);
+                    self.queue_local_backup(
+                        state,
+                        key,
+                        play_period,
+                        last_gameplay_exit,
+                        play_seconds,
+                    );
                 }
                 TrackEffect::Watch(process) => {
                     let adapter = self.shared.ports.processes.clone();
@@ -292,6 +348,7 @@ impl Engine {
     }
     /// Called by the UI's repeating timer, which continues while the Windows window is hidden.
     pub fn maintenance(&self) {
+        self.tool_auto_check_at(std::time::Instant::now());
         self.maintenance_at(unix_now());
     }
     pub fn maintenance_at(&self, now: i64) {
@@ -462,6 +519,12 @@ impl Engine {
         state.playtime.submitter.cancel();
         state.playtime.submitting = false;
         state.playtime.resubmit = false;
+        state.playtime.pass_running = false;
+        state.playtime.sync_now_running = false;
+        state.playtime.sync_now_awaiting_scan = false;
+        state.playtime.sync_now_awaiting_counters = false;
+        state.playtime.sync_now_counters_again = false;
+        state.playtime.sync_now_retry_allowed = false;
     }
     /// Close sessions before account state changes, preserving the old owner for storage writes.
     pub(super) fn stop_tracking(&self, state: &mut State) {
@@ -580,9 +643,18 @@ impl Engine {
                 })();
                 if let Err(error) = result {
                     tracing::warn!(%error,"could not save store totals");
-                    return;
                 }
                 let mut state = engine2.lock();
+                if state.playtime.sync_now_awaiting_counters {
+                    if std::mem::take(&mut state.playtime.sync_now_counters_again) {
+                        // The import that was in flight started before the scan finished. Read
+                        // once more so the requested pass sees the new scan's counters.
+                        if engine2.read_counters(&mut state) {
+                            return;
+                        }
+                    }
+                    state.playtime.sync_now_awaiting_counters = false;
+                }
                 engine2.submit_totals(&mut state);
                 engine2.refresh_playtime_display(&mut state);
             });
@@ -590,25 +662,33 @@ impl Engine {
         true
     }
     pub(super) fn submit_totals(&self, state: &mut State) {
-        if state.playtime.submitting {
+        // A requested "Sync now" owns the next pass: nothing may submit the totals held before
+        // its rescan and counter import finish.
+        if state.playtime.sync_now_awaiting_scan || state.playtime.sync_now_awaiting_counters {
+            return;
+        }
+        if state.playtime.submitting || state.playtime.pass_running {
             state.playtime.resubmit = true;
             return;
         }
         if !state.playtime.ready
             || state.playtime.stopped
-            || state.playtime.submitting
             || state.playtime.source != PlaytimeSource::Store
             || !state
                 .playtime
                 .preferences
                 .may_submit(state.machine.verified_credential().is_some())
         {
+            state.playtime.sync_now_running = false;
+            state.playtime.sync_now_retry_allowed = false;
             return;
         }
         let Some(account) = state.library.account().map(|a| a.id.clone()) else {
+            state.playtime.sync_now_running = false;
+            state.playtime.sync_now_retry_allowed = false;
             return;
         };
-        state.playtime.submitting = true;
+        state.playtime.pass_running = true;
         let generation = state.playtime.generation;
         let store = self.shared.ports.playtime.clone();
         let engine = self.clone();
@@ -616,39 +696,211 @@ impl Engine {
             let totals = store.totals(&account);
             let mut state = engine.lock();
             if generation != state.playtime.generation || state.playtime.stopped {
+                state.playtime.pass_running = false;
+                state.playtime.sync_now_running = false;
+                state.playtime.sync_now_retry_allowed = false;
                 return;
             }
             let Ok(totals) = totals else {
                 state.playtime.submitting = false;
+                state.playtime.pass_running = false;
+                state.playtime.sync_now_running = false;
+                state.playtime.sync_now_retry_allowed = false;
                 return;
             };
-            let candidates: Vec<Candidate> = totals
-                .iter()
-                .filter_map(|total| {
-                    let entry = state.library.entry(&total.entry_key)?;
-                    let provider = state.library.provider(&entry.provider)?;
-                    provider.manifest().playtime.as_ref()?;
-                    Some(Candidate {
-                        provider: entry.provider.clone(),
-                        game_id: state.library.match_status(entry).game_id(),
-                        source: provider.source().into(),
-                        total: total.clone(),
-                    })
-                })
-                .collect();
             // Entries of one provider matched to the same game are submitted as one total, so
             // their values replace each other on the server instead of overwriting.
-            let candidates = group_candidates(candidates, &totals);
+            let candidates = group_candidates(submission_candidates(&state, &totals), &totals);
             let preferences = state.playtime.preferences;
-            let effects = state.playtime.submitter.start_for_source(
+            let allow_rejected = state.playtime.sync_now_retry_allowed
+                || state
+                    .playtime
+                    .rejected_retry_at
+                    .is_some_and(|at| unix_now() >= at);
+            // A retry is an explicit opportunity, not a property of every resubmit in the same
+            // request. Consume it before the pass can queue another send.
+            state.playtime.sync_now_retry_allowed = false;
+            let effects = state.playtime.submitter.start_for_source_with_retry(
                 PlaytimeSource::Store,
                 &account,
                 preferences,
                 true,
+                allow_rejected,
                 candidates,
             );
             engine.submit_effects(&mut state, effects);
         });
+    }
+
+    /// Loads the last completed pass for one account without blocking the caller. A late answer
+    /// for another account is dropped.
+    fn load_sync_summary(&self, account: String) {
+        let engine = self.clone();
+        let store = self.shared.ports.playtime.clone();
+        self.shared.storage.submit(move || {
+            let summary = match store.load_sync_summary(&account) {
+                Ok(summary) => summary,
+                Err(error) => {
+                    tracing::warn!(%error, "could not load the last sync summary");
+                    return;
+                }
+            };
+            let mut state = engine.lock();
+            if state.playtime.stopped
+                || state.playtime.summary_for.as_deref() != Some(account.as_str())
+            {
+                return;
+            }
+            if state.playtime.summary != summary {
+                state.playtime.summary = summary;
+                engine.publish(&mut state);
+            }
+        });
+    }
+
+    /// Records the pass that just ended: the accepted totals it leaves, the stores that
+    /// contributed and the totals still held. The storage job runs after the pass's own saves.
+    fn record_sync_summary(&self, state: &mut State) {
+        let Some(account) = state.library.account().map(|a| a.id.clone()) else {
+            state.playtime.pass_running = false;
+            state.playtime.sync_now_running = false;
+            state.playtime.sync_now_retry_allowed = false;
+            return;
+        };
+        let engine = self.clone();
+        let store = self.shared.ports.playtime.clone();
+        self.shared.storage.submit(move || {
+            let totals = store.totals(&account);
+            let mut state = engine.lock();
+            if state.playtime.stopped
+                || state.library.account().map(|a| a.id.as_str()) != Some(account.as_str())
+            {
+                state.playtime.pass_running = false;
+                state.playtime.sync_now_running = false;
+                return;
+            }
+            let mut summary = None;
+            if let Ok(totals) = totals {
+                let candidates = group_candidates(submission_candidates(&state, &totals), &totals);
+                let mut accepted_games = 0u32;
+                let mut stores = std::collections::BTreeSet::new();
+                let mut held = 0u32;
+                let mut rejected = false;
+                for candidate in candidates {
+                    let Some(game_id) = candidate.game_id else {
+                        continue;
+                    };
+                    if candidate.total.accepted_game_id == Some(game_id)
+                        && candidate.total.accepted_seconds == Some(candidate.total.total_seconds)
+                    {
+                        accepted_games += 1;
+                        stores.insert(candidate.provider);
+                    } else {
+                        held += 1;
+                        rejected = rejected
+                            || candidate.total.rejected_seconds
+                                == Some(candidate.total.total_seconds);
+                    }
+                }
+                state.playtime.rejected_retry_at =
+                    rejected.then(|| unix_now().saturating_add(REJECTED_RETRY_AFTER_SECS));
+                let recorded = SyncSummary {
+                    completed_at: unix_now(),
+                    accepted_games,
+                    stores: u32::try_from(stores.len()).unwrap_or(u32::MAX),
+                    held,
+                };
+                if let Err(error) = store.save_sync_summary(&account, recorded) {
+                    tracing::warn!(%error, "could not save the last sync summary");
+                }
+                summary = Some(recorded);
+            }
+            if let Some(summary) = summary {
+                state.playtime.summary = Some(summary);
+                state.playtime.summary_for = Some(account);
+            }
+            state.playtime.pass_running = false;
+            state.playtime.sync_now_running = false;
+            state.playtime.sync_now_retry_allowed = false;
+            if std::mem::take(&mut state.playtime.resubmit) {
+                engine.submit_totals(&mut state);
+            }
+            engine.publish(&mut state);
+        });
+    }
+
+    /// "Sync now": rescans the library, waits for that scan and the counter import it triggers,
+    /// then submits every eligible total under the normal rules. A call while a pass is pending or
+    /// running is coalesced; sync off or an unverified session refuses it.
+    pub fn sync_now(&self) -> Result<(), SyncNowError> {
+        {
+            let mut state = self.lock();
+            if state.playtime.pass_running
+                || state.playtime.submitting
+                || state.playtime.sync_now_running
+            {
+                return Ok(());
+            }
+            if state.machine.verified_credential().is_none() {
+                return Err(SyncNowError::Unverified);
+            }
+            if !state.playtime.preferences.may_submit(true) {
+                return Err(SyncNowError::Disabled);
+            }
+            if state.library.account().is_none() {
+                return Err(SyncNowError::Unverified);
+            }
+            state.playtime.sync_now_running = true;
+            state.playtime.sync_now_awaiting_scan = true;
+            state.playtime.sync_now_awaiting_counters = false;
+            state.playtime.sync_now_counters_again = false;
+            state.playtime.sync_now_retry_allowed = true;
+            self.publish(&mut state);
+        }
+        self.rescan();
+        let mut state = self.lock();
+        if state.playtime.sync_now_awaiting_scan
+            && !state.library_loading
+            && !state.library.scan_running()
+        {
+            self.sync_now_scan_finished(&mut state);
+            self.publish(&mut state);
+        }
+        Ok(())
+    }
+
+    /// Continues the requested pass once the rescan ended: reads the store counters that the new
+    /// scan may have made visible, then submits. A requested pass never sends the totals that were
+    /// held before the scan.
+    pub(super) fn sync_now_scan_finished(&self, state: &mut State) {
+        if !state.playtime.sync_now_running || !state.playtime.sync_now_awaiting_scan {
+            return;
+        }
+        state.playtime.sync_now_awaiting_scan = false;
+        if state.playtime.stopped
+            || state.machine.verified_credential().is_none()
+            || !state.playtime.preferences.may_submit(true)
+            || state.library.account().is_none()
+        {
+            state.playtime.sync_now_running = false;
+            state.playtime.sync_now_retry_allowed = false;
+            return;
+        }
+        if state.playtime.source != PlaytimeSource::Store {
+            self.submit_totals(state);
+            return;
+        }
+        state.playtime.sync_now_awaiting_counters = true;
+        state.playtime.sync_now_counters_again = state.playtime.reading;
+        if self.read_counters(state) {
+            return;
+        }
+        if state.playtime.sync_now_counters_again {
+            // The read already in flight has to finish before a fresh one can start.
+            return;
+        }
+        state.playtime.sync_now_awaiting_counters = false;
+        self.submit_totals(state);
     }
     fn submit_effects(&self, state: &mut State, effects: Vec<SubmitEffect>) {
         let saved = effects.iter().any(|e| matches!(e, SubmitEffect::Save(_)));
@@ -706,8 +958,16 @@ impl Engine {
                 }
             }
         }
-        if !state.playtime.submitting && std::mem::take(&mut state.playtime.resubmit) && saved {
-            self.submit_totals(state);
+        if !state.playtime.submitting {
+            let resubmit = std::mem::take(&mut state.playtime.resubmit) && saved;
+            if resubmit {
+                state.playtime.pass_running = false;
+                self.submit_totals(state);
+            } else if state.playtime.pass_running {
+                // The record job clears `running` with the new summary, so the button keeps
+                // showing progress until the counts are ready.
+                self.record_sync_summary(state);
+            }
         }
     }
     pub(super) fn update_playtime_view(&self, state: &mut State, now: i64) {
@@ -814,6 +1074,25 @@ fn runtime_track_effects(
                 ended_at,
                 game_id,
             },
+        })
+        .collect()
+}
+
+/// The totals that can be submitted right now: the entry is known, its provider reports playtime
+/// and its game match exists. A pass and its summary both use this rule.
+fn submission_candidates(state: &State, totals: &[Total]) -> Vec<Candidate> {
+    totals
+        .iter()
+        .filter_map(|total| {
+            let entry = state.library.entry(&total.entry_key)?;
+            let provider = state.library.provider(&entry.provider)?;
+            provider.manifest().playtime.as_ref()?;
+            Some(Candidate {
+                provider: entry.provider.clone(),
+                game_id: state.library.match_status(entry).game_id(),
+                source: provider.source().into(),
+                total: total.clone(),
+            })
         })
         .collect()
 }

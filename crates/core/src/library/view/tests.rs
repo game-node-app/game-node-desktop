@@ -36,6 +36,7 @@ fn library() -> LibraryMachine {
             cover_url: None,
             cover_file: None,
             cover_failed_at: None,
+            platforms: Vec::new(),
         }],
         ..LibraryCache::default()
     };
@@ -163,6 +164,7 @@ fn a_change_bumps_the_generation_and_only_changed_rows_get_new_arcs() {
             cover_url: None,
             cover_file: None,
             cover_failed_at: None,
+            platforms: Vec::new(),
         }),
     );
     let renamed = machine.view().unwrap();

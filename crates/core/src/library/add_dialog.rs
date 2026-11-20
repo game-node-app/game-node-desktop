@@ -3,14 +3,15 @@
 //!
 //! Nothing is sent by opening, editing or cancelling. The only calls made before the user confirms
 //! are reads: the user's collections, and (when an entry is selected) whether the game is already
-//! in the library.
+//! in the library. Creating a collection is an explicit user action and sends its own request
+//! without touching any library entry.
 
 use std::collections::BTreeSet;
 
-use crate::game_api::{ApiError, Collection};
+use crate::game_api::{ApiError, Collection, CreateCollectionError};
 
 use super::actions::Reason;
-use super::add_run::{AddRun, AddSummary, AddSummaryView};
+use super::add_run::{AddItemView, AddRun, AddSummary, AddSummaryView};
 use super::machine::{Effect, LibraryMachine};
 use super::membership::EntryStatus;
 
@@ -22,12 +23,43 @@ pub(super) enum Collections {
     Failed(ApiError),
 }
 
+/// The inline "New collection" field, while the user is creating one.
+#[derive(Debug)]
+pub(super) struct NewCollection {
+    pub(super) name: String,
+    /// The create request in flight.
+    pub(super) creating_op: Option<u64>,
+    /// Set after the server accepted the create: the collections are being re-listed so the new
+    /// id can be picked. The name is kept until the re-list answer arrives.
+    pub(super) created_name: Option<String>,
+    /// The ids the list had before the create, so the new id is the one that appeared.
+    pub(super) before: Vec<String>,
+    pub(super) error: Option<NewCollectionError>,
+}
+
+impl NewCollection {
+    fn new() -> Self {
+        Self {
+            name: String::new(),
+            creating_op: None,
+            created_name: None,
+            before: Vec::new(),
+            error: None,
+        }
+    }
+
+    fn creating(&self) -> bool {
+        self.creating_op.is_some() || self.created_name.is_some()
+    }
+}
+
 #[derive(Debug)]
 pub(super) enum Stage {
     /// The user is choosing.
     Editing,
-    /// Confirmed: games are being checked and added, one at a time.
-    Running(AddRun),
+    /// Confirmed: the run's games are being checked and added, one at a time. The run itself
+    /// lives in [`LibraryMachine::add_runs`], so hiding the dialog does not stop it.
+    Running,
     /// Every game was handled; the summary is shown until the dialog is closed.
     Done(AddSummary),
 }
@@ -47,6 +79,8 @@ pub(super) struct AddDialog {
     pub(super) stage: Stage,
     /// Why the last confirm failed. The choices stay, so the user can retry.
     pub(super) error: Option<ApiError>,
+    /// The inline new-collection field, while it is open.
+    pub(super) new_collection: Option<NewCollection>,
 }
 
 use serde::{Deserialize, Serialize};
@@ -101,6 +135,8 @@ pub struct AddTargetView {
     /// The local library key, for a row target.
     pub entry_key: Option<String>,
     pub title: String,
+    /// The cached cover file, when the game has one. Served over `gamenode-asset://`.
+    pub cover_file: Option<String>,
     /// Unmatched local games are skipped when the user confirms.
     pub matched: bool,
 }
@@ -112,6 +148,9 @@ pub struct CollectionOption {
     pub name: String,
     pub default_status: Option<EntryStatus>,
     pub picked: bool,
+    /// How many games this collection holds, from the last complete read of the account library.
+    /// `None` when that read does not exist yet: an unknown count is never shown as zero.
+    pub entry_count: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,6 +160,33 @@ pub enum CollectionsView {
     /// The list could not be read; the user can retry.
     Failed(ApiError),
     Loaded(Vec<CollectionOption>),
+}
+
+/// Why the inline new-collection field shows an error. The typed name and every other choice stay
+/// exactly as they were.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NewCollectionError {
+    /// The account reached GameNode's collection limit.
+    LimitReached,
+    /// The session was refused; the user has to sign in again.
+    Rejected,
+    /// GameNode cannot be reached now.
+    Offline,
+    /// Any other failed request.
+    Failed,
+}
+
+/// The inline new-collection field as the window shows it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewCollectionView {
+    pub name: String,
+    /// A create or its re-list is in flight.
+    pub creating: bool,
+    /// The create action is available: a non-blank name and no request in flight.
+    pub can_create: bool,
+    pub error: Option<NewCollectionError>,
 }
 
 /// How far a confirmed add has come.
@@ -147,6 +213,8 @@ pub struct AddDialogView {
     pub applied_from: Option<String>,
     pub collections: CollectionsView,
     pub progress: Option<AddProgress>,
+    /// The per-game states while the run is going, or its final states once it is done.
+    pub items: Vec<AddItemView>,
     /// The last confirm failed (single game). The choices are kept.
     pub error: Option<ApiError>,
     pub can_confirm: bool,
@@ -154,6 +222,8 @@ pub struct AddDialogView {
     pub blocked: Option<Reason>,
     /// Present once every game was handled.
     pub summary: Option<AddSummaryView>,
+    /// The inline new-collection field, while it is open.
+    pub new_collection: Option<NewCollectionView>,
 }
 
 impl LibraryMachine {
@@ -187,9 +257,35 @@ impl LibraryMachine {
         }
     }
 
+    /// The cached cover file of one target: a DRM-free entry's custom cover first, then the
+    /// matched GameNode game's cover.
+    fn target_cover(&self, target: &AddTarget) -> Option<String> {
+        if let AddTarget::Row(key) = target
+            && let Some(custom) = self.local_covers.get(key)
+        {
+            return Some(custom.clone());
+        }
+        let game_id = match target {
+            AddTarget::Row(key) => self
+                .entries
+                .get(key)
+                .and_then(|entry| self.match_status(entry).game_id()),
+            AddTarget::Game(game_id) => Some(*game_id),
+        }?;
+        self.games
+            .get(&game_id)
+            .and_then(|game| game.cover_file.clone())
+    }
+
     /// Opens the dialog for the selected entries, if Add to GameNode is available for them.
     pub(super) fn open_add(&mut self) -> Vec<Effect> {
         if self.dialog.is_some() || self.add.is_some() {
+            return vec![];
+        }
+        // One add run at a time: while a hidden batch is still going, Add reopens its progress
+        // instead of starting another run.
+        if self.add_runs.is_some() {
+            self.reopen_add_run();
             return vec![];
         }
         if !self.actions().add_to_gamenode.is_available() {
@@ -206,10 +302,35 @@ impl LibraryMachine {
     /// Opens the same dialog for one GameNode catalog game (D8). No local row or selection is
     /// needed; the game is addressed by id. The catalog view calls this once its result is chosen.
     pub(super) fn open_add_for_game(&mut self, game_id: u64) -> Vec<Effect> {
-        if self.dialog.is_some() || self.add.is_some() {
+        if self.dialog.is_some() {
+            return vec![];
+        }
+        if self.add.is_some() || self.add_runs.is_some() {
+            self.reopen_add_run();
             return vec![];
         }
         self.start_add(vec![AddTarget::Game(game_id)], AddMode::Catalog)
+    }
+
+    /// Shows the running run in the dialog again, without sending anything.
+    fn reopen_add_run(&mut self) {
+        if self.add.is_some() {
+            return;
+        }
+        let Some(run) = self.add_runs.as_ref() else {
+            return;
+        };
+        self.add = Some(AddDialog {
+            targets: run.targets(),
+            mode: run.mode(),
+            editing_existing: run.editing_existing,
+            status: run.status,
+            picked: run.collection_ids.iter().cloned().collect(),
+            collections: Collections::Loaded(Vec::new()),
+            stage: Stage::Running,
+            error: None,
+            new_collection: None,
+        });
     }
 
     fn start_add(&mut self, targets: Vec<AddTarget>, mode: AddMode) -> Vec<Effect> {
@@ -242,13 +363,15 @@ impl LibraryMachine {
             collections: Collections::Loading { op },
             stage: Stage::Editing,
             error: None,
+            new_collection: None,
         });
         vec![Effect::ListCollections { op, user_id }]
     }
 
-    /// Closes the dialog. Before a confirm this sends nothing. Closing during a confirm stops
-    /// after the request already in flight; its answer is ignored, so what GameNode has for that
-    /// game is read again instead of guessed.
+    /// Closes the dialog. Before a confirm this sends nothing. Closing during a single-game run
+    /// abandons it; a hidden batch keeps going through [`Self::hide_add`]. The answer to a request
+    /// already in flight is ignored, so what GameNode has for that game is read again instead of
+    /// guessed.
     pub(super) fn close_add(&mut self) {
         let Some(add) = self.add.take() else {
             return;
@@ -256,9 +379,34 @@ impl LibraryMachine {
         if !matches!(add.stage, Stage::Editing) {
             self.membership_focus = None;
         }
-        if let Stage::Running(run) = add.stage
-            && let Some(game_id) = run.in_flight_game()
+        if matches!(add.stage, Stage::Running)
+            && !self.add_runs.as_ref().is_some_and(AddRun::is_batch)
         {
+            self.abandon_add_run();
+        }
+    }
+
+    /// Closes the dialog without abandoning a batch run. Anything else still closes the way
+    /// [`Self::close_add`] does, so a single-game run keeps its existing "close abandons" rule.
+    pub(super) fn hide_add(&mut self) {
+        let Some(add) = self.add.take() else {
+            return;
+        };
+        let keeps_running = matches!(add.stage, Stage::Running)
+            && self.add_runs.as_ref().is_some_and(AddRun::is_batch);
+        if !keeps_running {
+            if !matches!(add.stage, Stage::Editing) {
+                self.membership_focus = None;
+            }
+            self.abandon_add_run();
+        }
+    }
+
+    fn abandon_add_run(&mut self) {
+        let Some(run) = self.add_runs.take() else {
+            return;
+        };
+        if let Some(game_id) = run.in_flight_game() {
             self.membership.remove(&game_id);
             self.membership_reads.remove(&game_id);
             self.membership_focus = None;
@@ -295,34 +443,196 @@ impl LibraryMachine {
         }
     }
 
+    /// Opens the inline new-collection field.
+    pub(super) fn start_new_collection(&mut self) {
+        let Some(add) = self
+            .add
+            .as_mut()
+            .filter(|add| matches!(add.stage, Stage::Editing))
+        else {
+            return;
+        };
+        add.new_collection.get_or_insert_with(NewCollection::new);
+    }
+
+    /// Records the typed collection name. The name is kept across a failure so it can be retried.
+    pub(super) fn set_new_collection_name(&mut self, name: String) {
+        let Some(add) = self
+            .add
+            .as_mut()
+            .filter(|add| matches!(add.stage, Stage::Editing))
+        else {
+            return;
+        };
+        let Some(new) = add.new_collection.as_mut().filter(|new| !new.creating()) else {
+            return;
+        };
+        new.name = name;
+        new.error = None;
+    }
+
+    /// Closes the inline new-collection field. A create already sent is not cancelled; its answer
+    /// is ignored if the field is gone.
+    pub(super) fn cancel_new_collection(&mut self) {
+        if let Some(add) = self.add.as_mut() {
+            add.new_collection = None;
+        }
+    }
+
+    /// Creates the typed collection (`GameApi::create_collection`). Creating is an explicit user
+    /// action, so being synced is not required; only a usable session is. No entry is touched.
+    pub(super) fn create_collection(&mut self) -> Vec<Effect> {
+        let Some(user_id) = self.account.as_ref().map(|account| account.id.clone()) else {
+            return vec![];
+        };
+        let blocked = self.network_block();
+        let Some(add) = self
+            .add
+            .as_ref()
+            .filter(|add| matches!(add.stage, Stage::Editing))
+        else {
+            return vec![];
+        };
+        let Some(new) = add.new_collection.as_ref() else {
+            return vec![];
+        };
+        let name = new.name.trim().to_owned();
+        if name.is_empty() || new.creating() {
+            return vec![];
+        }
+        let op = self.next_op();
+        let Some(add) = self.add.as_mut() else {
+            return vec![];
+        };
+        let Some(new) = add.new_collection.as_mut() else {
+            return vec![];
+        };
+        if let Some(blocked) = blocked {
+            new.error = Some(match blocked {
+                Reason::Offline => NewCollectionError::Offline,
+                _ => NewCollectionError::Rejected,
+            });
+            return vec![];
+        }
+        new.error = None;
+        new.creating_op = Some(op);
+        new.created_name = None;
+        new.before = match &add.collections {
+            Collections::Loaded(list) => list
+                .iter()
+                .map(|collection| collection.id.clone())
+                .collect(),
+            _ => Vec::new(),
+        };
+        vec![Effect::CreateCollection { op, user_id, name }]
+    }
+
+    /// The answer to a collection create. The server returns no body, so a success re-lists the
+    /// collections and picks the id that appeared with the typed name.
+    pub(super) fn on_collection_created(
+        &mut self,
+        op: u64,
+        result: Result<(), CreateCollectionError>,
+    ) -> Vec<Effect> {
+        let Some(user_id) = self.account.as_ref().map(|account| account.id.clone()) else {
+            return vec![];
+        };
+        let blocked = self.network_block();
+        let Some(mut add) = self.add.take() else {
+            return vec![];
+        };
+        if !matches!(add.stage, Stage::Editing) {
+            self.add = Some(add);
+            return vec![];
+        }
+        let Some(new) = add
+            .new_collection
+            .as_mut()
+            .filter(|new| new.creating_op == Some(op))
+        else {
+            self.add = Some(add);
+            return vec![];
+        };
+        new.creating_op = None;
+        match result {
+            Ok(()) => {
+                new.created_name = Some(new.name.trim().to_owned());
+                new.error = None;
+                let list_op = self.next_op();
+                add.collections = Collections::Loading { op: list_op };
+                self.add = Some(add);
+                vec![Effect::ListCollections {
+                    op: list_op,
+                    user_id,
+                }]
+            }
+            Err(error) => {
+                new.error = Some(match error {
+                    CreateCollectionError::LimitReached => NewCollectionError::LimitReached,
+                    CreateCollectionError::Rejected => NewCollectionError::Rejected,
+                    CreateCollectionError::Failed => {
+                        if blocked == Some(Reason::Offline) {
+                            NewCollectionError::Offline
+                        } else {
+                            NewCollectionError::Failed
+                        }
+                    }
+                });
+                new.created_name = None;
+                self.add = Some(add);
+                vec![]
+            }
+        }
+    }
+
     pub(super) fn on_collections_listed(
         &mut self,
         op: u64,
         result: Result<Vec<Collection>, ApiError>,
     ) -> Vec<Effect> {
-        let Some(add) = self.add.as_mut() else {
+        let blocked = self.network_block();
+        let Some(mut add) = self.add.take() else {
             return vec![];
         };
         if !matches!(add.collections, Collections::Loading { op: waiting } if waiting == op) {
+            self.add = Some(add);
             return vec![];
         }
-        add.collections = match result {
-            Ok(list)
+        match result {
+            Ok(list) => {
+                select_created_collection(&mut add, &list);
                 if add.editing_existing
                     && add
                         .picked
                         .iter()
-                        .any(|id| !list.iter().any(|c| &c.id == id)) =>
-            {
-                Collections::Failed(ApiError::Failed)
-            }
-            Ok(list) => {
+                        .any(|id| !list.iter().any(|c| &c.id == id))
+                {
+                    add.collections = Collections::Failed(ApiError::Failed);
+                    self.add = Some(add);
+                    return vec![];
+                }
                 add.picked
                     .retain(|id| list.iter().any(|collection| &collection.id == id));
-                Collections::Loaded(list)
+                add.collections = Collections::Loaded(list);
             }
-            Err(error) => Collections::Failed(error),
-        };
+            Err(error) => {
+                // The create succeeded but its new id cannot be read yet. Keep the name and the
+                // pending pick so a retry of the list can still select it.
+                if let Some(new) = add.new_collection.as_mut()
+                    && new.created_name.is_some()
+                {
+                    new.error = Some(if error == ApiError::Rejected {
+                        NewCollectionError::Rejected
+                    } else if blocked == Some(Reason::Offline) {
+                        NewCollectionError::Offline
+                    } else {
+                        NewCollectionError::Failed
+                    });
+                }
+                add.collections = Collections::Failed(error);
+            }
+        }
+        self.add = Some(add);
         vec![]
     }
 
@@ -363,8 +673,22 @@ impl LibraryMachine {
         (add.status, None)
     }
 
+    /// How many games each collection holds, from the last complete account library read. A
+    /// collection with no entries is zero; without a complete read every count is unknown.
+    fn add_collection_counts(&self) -> Option<std::collections::BTreeMap<String, u32>> {
+        let library = self.account_library.as_ref()?;
+        let mut counts = std::collections::BTreeMap::new();
+        for entry in library.entries.values() {
+            for id in &entry.collection_ids {
+                *counts.entry(id.clone()).or_insert(0) += 1;
+            }
+        }
+        Some(counts)
+    }
+
     pub(super) fn add_dialog_view(&self) -> Option<AddDialogView> {
         let add = self.add.as_ref()?;
+        let counts = self.add_collection_counts();
         let targets: Vec<AddTargetView> = add
             .targets
             .iter()
@@ -374,6 +698,7 @@ impl LibraryMachine {
                     target: target.clone(),
                     entry_key: target.entry_key().map(str::to_owned),
                     title,
+                    cover_file: self.target_cover(target),
                     matched: game.is_some(),
                 }
             })
@@ -382,6 +707,7 @@ impl LibraryMachine {
         let blocked = self.network_block();
         let editing = matches!(add.stage, Stage::Editing);
         let can_confirm = editing
+            && self.add_runs.is_none()
             && blocked.is_none()
             && if add.editing_existing {
                 matches!(add.collections, Collections::Loaded(_))
@@ -389,6 +715,11 @@ impl LibraryMachine {
                 !matches!(add.collections, Collections::Loading { .. })
             }
             && targets.iter().any(|target| target.matched);
+        let items = match (&add.stage, self.add_runs.as_ref()) {
+            (Stage::Running, Some(run)) => run.item_views(),
+            (Stage::Done(summary), _) => summary.view().items,
+            _ => Vec::new(),
+        };
         Some(AddDialogView {
             targets,
             mode: add.mode,
@@ -402,14 +733,22 @@ impl LibraryMachine {
                             name: collection.name.clone(),
                             default_status: collection.default_status,
                             picked: add.picked.contains(&collection.id),
+                            entry_count: counts
+                                .as_ref()
+                                .map(|counts| counts.get(&collection.id).copied().unwrap_or(0)),
                         })
                         .collect(),
                 ),
             },
-            progress: match &add.stage {
-                Stage::Running(run) => Some(run.progress()),
+            progress: match (&add.stage, self.add_runs.as_ref()) {
+                (Stage::Running, Some(run)) => Some(run.progress()),
+                (Stage::Done(summary), _) => Some(AddProgress {
+                    done: summary.items.len(),
+                    total: summary.items.len(),
+                }),
                 _ => None,
             },
+            items,
             summary: match &add.stage {
                 Stage::Done(summary) => Some(summary.view()),
                 _ => None,
@@ -421,7 +760,45 @@ impl LibraryMachine {
             error: add.error,
             can_confirm,
             blocked,
+            new_collection: add.new_collection.as_ref().map(|new| NewCollectionView {
+                name: new.name.clone(),
+                creating: new.creating(),
+                can_create: !new.name.trim().is_empty() && !new.creating(),
+                error: new.error,
+            }),
         })
+    }
+}
+
+/// Checks the collection that appeared with the typed name in a re-list after a create. The new
+/// id is the one that was not in the list before; when the server does not expose a new id (for
+/// example, it answered the same page), the newest same-name id is picked instead.
+fn select_created_collection(add: &mut AddDialog, list: &[Collection]) {
+    let Some(new) = add.new_collection.as_mut() else {
+        return;
+    };
+    let Some(name) = new.created_name.clone() else {
+        return;
+    };
+    let picked = list
+        .iter()
+        .find(|collection| collection.name == name && !new.before.contains(&collection.id))
+        .map(|collection| collection.id.clone())
+        .or_else(|| {
+            list.iter()
+                .rev()
+                .find(|collection| collection.name == name)
+                .map(|collection| collection.id.clone())
+        });
+    match picked {
+        Some(id) => {
+            add.picked.insert(id);
+            add.new_collection = None;
+        }
+        None => {
+            new.created_name = None;
+            new.error = Some(NewCollectionError::Failed);
+        }
     }
 }
 

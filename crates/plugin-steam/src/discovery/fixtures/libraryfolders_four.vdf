@@ -1,0 +1,35 @@
+"libraryfolders"
+{
+	"0"
+	{
+		"path"		"C:\\Program Files (x86)\\Steam"
+		"label"		""
+		"apps"
+		{
+		}
+	}
+	"1"
+	{
+		"path"		"D:\\SteamLibrary"
+		"label"		""
+		"apps"
+		{
+		}
+	}
+	"2"
+	{
+		"path"		"E:\\SteamLibrary"
+		"label"		""
+		"apps"
+		{
+		}
+	}
+	"3"
+	{
+		"path"		"F:\\SteamLibrary"
+		"label"		""
+		"apps"
+		{
+		}
+	}
+}

@@ -12,7 +12,14 @@ export interface User {
 export type AuthView =
   | 'starting'
   | 'signedOut'
-  | { pending: { provider: Provider; awaitingBrowser: boolean } }
+  | {
+      pending: {
+        provider: Provider;
+        awaitingBrowser: boolean;
+        canReopen: boolean;
+        reopenFailed: boolean;
+      };
+    }
   | 'verifying'
   | { signedIn: { user: User } }
   | 'restoreFailed'
@@ -49,6 +56,62 @@ export interface Settings {
   window?: WindowGeometry | null;
 }
 
+/** The interface language choice; `system` follows the OS language. */
+export type LocalePreference = 'system' | 'en' | 'ptBr';
+
+/** The sidebar scope the library opens with; `last` keeps the remembered scope. */
+export type StartScopePreference = 'last' | 'all' | 'installed' | 'favorites' | 'recent';
+
+/**
+ * Mirrors `AppPreferences` in `crates/core/src/settings.rs`. Every preference is stored per PC,
+ * independently of the signed-in account.
+ */
+export interface AppPreferences {
+  startWithWindows: boolean;
+  startMinimized: boolean;
+  closeToTray: boolean;
+  locale: LocalePreference;
+  showStatusBar: boolean;
+  startScope: StartScopePreference;
+  discoveryOnStart: boolean;
+  discoveryRealtime: boolean;
+  toolAutoCheck: boolean;
+  toolDefaultChannel: ToolChannel;
+  /** Provider ids whose shared-only entries are left out; empty includes every store. */
+  sharedExcluded: string[];
+}
+
+/** One preference change, matching the externally tagged `AppPreferencePatch` enum. */
+export type AppPreferencePatch =
+  | { startWithWindows: boolean }
+  | { startMinimized: boolean }
+  | { closeToTray: boolean }
+  | { locale: LocalePreference }
+  | { showStatusBar: boolean }
+  | { startScope: StartScopePreference }
+  | { discoveryOnStart: boolean }
+  | { discoveryRealtime: boolean }
+  | { toolAutoCheck: boolean }
+  | { toolDefaultChannel: ToolChannel }
+  | { sharedExcluded: string[] };
+
+/** The defaults the engine loads from a database written before preferences existed. */
+export function createDefaultAppPreferences(): AppPreferences {
+  return {
+    startWithWindows: true,
+    startMinimized: true,
+    closeToTray: true,
+    locale: 'system',
+    showStatusBar: true,
+    startScope: 'last',
+    discoveryOnStart: true,
+    discoveryRealtime: true,
+    toolAutoCheck: true,
+    toolDefaultChannel: 'stable',
+    sharedExcluded: [],
+  };
+}
+
 export type PlaytimeSource = 'internal' | 'store';
 
 export interface PlaytimeView {
@@ -61,6 +124,20 @@ export interface PlaytimeView {
 export interface SyncPreferences {
   enabled: boolean;
   explained: boolean;
+  /** The last completed submission pass for the signed-in account. */
+  summary: SyncSummary | null;
+  /** A submission pass (or Sync now) is running. */
+  running: boolean;
+}
+
+/** The counts one completed playtime submission pass leaves for its account. */
+export interface SyncSummary {
+  /** Unix seconds when the pass completed. */
+  completedAt: number;
+  acceptedGames: number;
+  stores: number;
+  /** Totals still waiting for acceptance, including rejected ones. */
+  held: number;
 }
 
 export interface TrackingView {
@@ -125,6 +202,8 @@ export interface Row {
   shared: boolean;
   status: MatchStatus;
   coverFile: string | null;
+  /** The matched GameNode game's cover while a DRM-free custom cover is shown. */
+  gameCoverFile?: string | null;
   /** The matched game's release year; unknown for unmatched entries. */
   releaseYear: number | null;
   /** Unix seconds of the scan that first detected the entry. */
@@ -219,18 +298,42 @@ export interface AchievementRecord {
   iconGrayUrl: string;
   unlocked: boolean;
   unlockedAt?: number | null;
+  /** Global unlock percentage in hundredths of a percent (420 = 4.2%). */
+  globalPercent?: number | null;
   position: number;
 }
 
 export type AchievementFilter = 'all' | 'unlocked' | 'locked';
 
+/** How the full achievement list is ordered by core's storage worker. */
+export type AchievementSort = 'mostRecent' | 'rarest' | 'mostCommon' | 'name';
+
+/** Segment counts for the all/unlocked/locked filters. They ignore the active filter. */
+export interface AchievementCounts {
+  all: number;
+  unlocked: number;
+  locked: number;
+}
+
 export interface AchievementListView {
   connected: boolean;
   state?: AchievementGameState | null;
   lastSuccessAt?: number | null;
+  /** The successful read the footer's relative time is based on. */
+  refreshedAt?: number | null;
   failure?: CatalogError | null;
+  counts: AchievementCounts;
+  /** Whether any cached achievement of this game has a global percentage. */
+  hasRarity: boolean;
+  /** The provider's display name, for provider-named copy. */
+  providerName: string;
+  /** Whether the provider publishes a public achievements page for the game. */
+  hasProviderPage: boolean;
   achievements: AchievementRecord[];
 }
+
+/** Why the host refused to open a provider achievements page. */
+export type AchievementPageError = { code: 'unsupported' } | { code: 'browser' };
 
 export interface DetailView {
   running: boolean;
@@ -289,6 +392,9 @@ export type EmptyState =
   | 'nothingMatches';
 
 export type ViewMode = 'grid' | 'list';
+
+/** How large the grid covers are; the list view is unaffected. Older layouts use Medium. */
+export type CoverSize = 'small' | 'medium' | 'large';
 
 export type SortKey =
   | 'title'
@@ -438,6 +544,7 @@ export function filtersAreDefault(filters: LibraryFilters): boolean {
 export function createDefaultLibraryLayout(): LibraryLayout {
   return {
     view: 'grid',
+    coverSize: 'medium',
     scope: 'all',
     sort: { key: 'title', direction: 'ascending' },
     filters: createDefaultFilters(),
@@ -452,6 +559,8 @@ export function createDefaultLibraryLayout(): LibraryLayout {
 
 export interface LibraryLayout {
   view: ViewMode;
+  /** Absent on payloads older than the cover-size preference; treats as Medium. */
+  coverSize?: CoverSize;
   scope: LibraryScope;
   sort: Sort;
   filters: LibraryFilters;
@@ -475,6 +584,15 @@ export interface ProviderCount {
   sharedCount: number;
   /** The provider's declared shared-access label; only labelled providers offer the filter. */
   sharedLabel: string | null;
+  /** Where the latest scan found the store, when the provider reports a location. */
+  installRoot?: string | null;
+  /** How many library folders that scan reported, when it reports them. */
+  libraryFolders?: number | null;
+  /**
+   * Whether the last local scan found the store. It comes from the scan outcome,
+   * never from the owned/shared catalog counts or the current filters.
+   */
+  detected?: boolean;
 }
 
 /** Mirrors `StoreCount` in `crates/core/src/library/query.rs`. */
@@ -748,6 +866,13 @@ export interface Actions {
   changeMatch: boolean;
 }
 
+export type MatchReason =
+  | { titleSimilarity: { percent: number } }
+  | 'sameYear'
+  | { differentYear: { year: number } }
+  | 'storeIdRecognized'
+  | 'chosenByYou';
+
 export interface MatchOption {
   gameId: number;
   name: string;
@@ -755,6 +880,10 @@ export interface MatchOption {
   coverUrl?: string | null;
   coverFile?: string | null;
   current: boolean;
+  confidence: number;
+  tone: SuggestionTone;
+  platforms: string[];
+  reasons: MatchReason[];
 }
 
 export type SearchFailure =
@@ -770,6 +899,7 @@ export interface MatchDialogView {
   searching: boolean;
   candidates: MatchOption[];
   results: MatchOption[];
+  selected: MatchOption | null;
   noResults: boolean;
   error?: SearchFailure | null;
   searchBlocked?: Reason | null;
@@ -790,6 +920,8 @@ export interface AddTargetView {
   /** The local library key, for a row target. */
   entryKey: string | null;
   title: string;
+  /** The cached cover file, when the game has one. */
+  coverFile: string | null;
   matched: boolean;
 }
 
@@ -798,6 +930,11 @@ export interface CollectionOption {
   name: string;
   defaultStatus?: EntryStatus | null;
   picked: boolean;
+  /**
+   * How many games the collection holds, from the last complete account library read.
+   * `null` when that read does not exist yet; an unknown count is never shown as zero.
+   */
+  entryCount: number | null;
 }
 
 export type ApiError = 'rejected' | 'failed';
@@ -807,12 +944,27 @@ export type CollectionsView =
   | { failed: ApiError }
   | { loaded: CollectionOption[] };
 
+/** Why the inline new-collection field shows an error. */
+export type NewCollectionError = 'limitReached' | 'rejected' | 'offline' | 'failed';
+
+export interface NewCollectionView {
+  name: string;
+  /** A create or its re-list is in flight. */
+  creating: boolean;
+  /** A non-blank name and no request in flight. */
+  canCreate: boolean;
+  error: NewCollectionError | null;
+}
+
 export interface AddProgress {
   done: number;
   total: number;
 }
 
-export type AddOutcome =
+/** What happened to one game, or what is happening to it now. */
+export type AddItemState =
+  | 'waiting'
+  | 'adding'
   | 'added'
   | 'alreadyPresent'
   | 'skipped'
@@ -823,9 +975,11 @@ export interface AddItem {
   /** The local library key, for a row target. */
   entryKey: string | null;
   title: string;
-  outcome: AddOutcome;
+  state: AddItemState;
   /** The status GameNode has (or applied) for the game, when it is known. */
   status: EntryStatus | null;
+  /** Why the request failed, for a `failed` item. */
+  error: ApiError | null;
 }
 
 export interface AddSummary {
@@ -840,6 +994,18 @@ export interface AddSummary {
   failed: number;
 }
 
+/**
+ * The latest finished add run, delivered outside `library` so a hidden batch stopped by
+ * sign-out or an account change still reports its outcome after the view is gone.
+ */
+export interface AddNotice {
+  /** The account the run belonged to; actions are only offered while it is still signed in. */
+  accountId: string | null;
+  /** Several targets: an all-skipped, all-already-present or all-failed batch still notifies. */
+  batch: boolean;
+  summary: AddSummary;
+}
+
 export interface AddDialogView {
   targets: AddTargetView[];
   mode: AddMode;
@@ -849,10 +1015,14 @@ export interface AddDialogView {
   appliedFrom: string | null;
   collections: CollectionsView;
   progress: AddProgress | null;
+  /** Per-game states while the run is going, or its final states once it is done. */
+  items: AddItem[];
   error: ApiError | null;
   canConfirm: boolean;
   blocked: Reason | null;
   summary: AddSummary | null;
+  /** The inline new-collection field, while it is open. */
+  newCollection: NewCollectionView | null;
 }
 
 export type UndoState = 'done' | 'partial' | 'failed';
@@ -980,6 +1150,8 @@ export interface Registration {
   removed: boolean;
   rediscoveryAllowed?: boolean;
   transferredFrom?: string | null;
+  /** File name of the custom cover in the cache; it wins over the GameNode cover. */
+  customCover?: string | null;
   available: boolean;
 }
 
@@ -1016,12 +1188,25 @@ export interface Candidate {
   evidence: Evidence[];
   ignored: boolean;
   incomplete: boolean;
+  /** Best GameNode match at 40% or more, when a verified session found one. */
+  suggestion?: SuggestionView | null;
+  /** No positive evidence and a maintenance-tool executable or folder name. */
+  likelyNonGame?: boolean;
 }
 
-export interface WatchRoot {
+export type WatchState = 'idle' | 'checking' | 'unavailable';
+
+export interface WatchView {
   id: string;
   path: string;
   enabled: boolean;
+  /** Library entries whose installation root is inside this folder. */
+  entryCount: number;
+  /** Unix seconds of the last completed check of this folder. */
+  lastCheckedAt: number | null;
+  state: WatchState;
+  /** Unix seconds when the folder became unavailable, while it is. */
+  unavailableSince: number | null;
 }
 
 export type SaveSupport =
@@ -1041,6 +1226,8 @@ export interface SaveProfile {
   registry: string[];
   support: SaveSupport;
   automatic?: boolean | null;
+  /** Per-installation/profile retention override; absent follows the settings default. */
+  retention?: number | null;
 }
 
 export type JobState =
@@ -1066,9 +1253,31 @@ export interface BackupJob {
   error?: string | null;
 }
 
+export type BackupReason = 'afterSession' | 'manual' | 'recovery';
+
 export interface BackupSettings {
   automatic: boolean;
   destination: string;
+  /** Default full-version count for installations without a profile override. */
+  retention: number;
+}
+
+/** Space one game's local backups use, recovery snapshots included. */
+export interface BackupUsageGame {
+  /** The library key, `manual:<installation id>`. */
+  entryKey: string;
+  /** The last known title, including for a game that was removed. */
+  title: string;
+  coverFile: string | null;
+  bytes: number;
+  versions: number;
+}
+
+/** Total and per-game space used by local backups, largest game first. */
+export interface BackupUsage {
+  totalBytes: number;
+  totalVersions: number;
+  games: BackupUsageGame[];
 }
 
 export interface BackupVersion {
@@ -1078,6 +1287,10 @@ export interface BackupVersion {
   id: string;
   label: string;
   bytes: number;
+  /** Unix seconds from the archive time, or the recorded meta time as fallback. */
+  createdAt?: number | null;
+  reason?: BackupReason | null;
+  playSeconds?: number | null;
 }
 
 export type BackupOperation =
@@ -1100,10 +1313,23 @@ export interface RestorePlan {
   targets: string[];
 }
 
+export interface ClaimStoreEntry {
+  title: string;
+  provider: string;
+  coverFile?: string | null;
+  playtimeSeconds?: number | null;
+}
+
+export interface ClaimRegistration {
+  title: string;
+  root: string;
+  coverFile?: string | null;
+}
+
 export interface PendingClaim {
-  registration: Registration;
   storeKey: string;
-  storeTitle: string;
+  storeEntry: ClaimStoreEntry;
+  registration: ClaimRegistration;
 }
 
 export interface LocalView {
@@ -1116,9 +1342,13 @@ export interface LocalView {
   discoveryError?: string | null;
   /** Unix seconds of the last completed watched-folder check, kept across restarts. */
   discoveryLastCheckedAt: number | null;
-  watches: WatchRoot[];
+  watches: WatchView[];
   reviewSelected: string[];
   versions: BackupVersion[];
+  /** Sum of listed version bytes, recovery snapshots included. */
+  historyBytes: number;
+  /** Number of listed versions, recovery snapshots included. */
+  historyCount: number;
   restore?: RestorePlan | null;
   busy: boolean;
   error?: string | null;
@@ -1194,11 +1424,18 @@ export interface ToolRelease {
   cachedPath?: string | null;
 }
 
+export type ToolOperationErrorCode =
+  | 'pickerUnsupported'
+  | 'pickerFailed'
+  | 'targetOutsideInstallDir'
+  | 'targetExeNotFound'
+  | 'installDirNotFound';
+
 export type ToolOperationStatus =
   | { installing: { progressPercent?: number | null; message: string } }
   | { updating: { progressPercent?: number | null; message: string } }
   | 'uninstalling'
-  | { failed: { message: string } };
+  | { failed: { message: string; code?: ToolOperationErrorCode | null } };
 
 export interface ToolModalView {
   pluginRequest?: { pluginId: string; publisherFingerprint: string; remove: boolean } | null;
@@ -1224,12 +1461,27 @@ export interface ToolCatalogItemView {
   sourceUrl: string;
 }
 
+/** One cached tool archive as Settings › Ferramentas lists it. */
+export interface ToolCacheEntryView {
+  toolId: string;
+  version: string;
+  channel: ToolChannel;
+  bytes: number;
+  sha256Verified: boolean;
+  /** Any game installation references this version. */
+  inUse: boolean;
+}
+
 export interface ToolsView {
   installedByEntry: Record<string, GameToolView[]>;
   modal?: ToolModalView | null;
   totalCacheBytes: number;
   totalCacheArchives: number;
+  /** Achievement icons are accounted separately from downloadable tool archives. */
+  achievementIconCacheBytes: number;
   catalog: ToolCatalogItemView[];
+  /** Cached archives from the release cache metadata, with their verification and use state. */
+  cacheEntries: ToolCacheEntryView[];
 }
 
 export type CatalogError =
@@ -1440,6 +1692,7 @@ export interface PluginInfo {
   capabilities: string[];
   session: 'active' | 'stopped';
   nativeAccess: string[];
+  /** Version from the trusted descriptor or verified package manifest. */
   version?: string;
   enabled?: boolean;
   runtimeAvailable?: boolean;
@@ -1575,8 +1828,15 @@ export interface Snapshot {
   notice?: Notice | null;
   storage: StorageMethod;
   settings: Settings;
+  /** PC-wide application preferences, kept per PC and independent of the account. */
+  preferences: AppPreferences;
   library?: LibraryView | null;
   launch?: LaunchStatus | null;
+  /**
+   * The latest finished add run, independent of `library`. A hidden batch stopped by sign-out
+   * still reports its outcome here after the library view is gone.
+   */
+  addNotice?: AddNotice | null;
   tools: ToolsView;
   storeAccounts: StoreAccountView[];
   /** PC ports catalog, provenance and install jobs. Always present; empty until opened. */
@@ -1584,8 +1844,17 @@ export interface Snapshot {
 }
 
 export interface AppInfo {
+  /** The effective interface language: the preference, or the normalized OS locale. */
   locale: string;
+  /** The normalized OS locale, so Settings can label "System language" correctly. */
+  systemLocale?: string;
   version: string;
+  /** UTC build date (`SOURCE_DATE_EPOCH` when set, otherwise the compile date). */
+  buildDate?: string;
+  /** A human-readable OS name and version. */
+  osVersion?: string;
+  /** The build target architecture. */
+  arch?: string;
   backgroundSupported: boolean;
   /**
    * Platform reported by the host. Optional because older hosts do not send it; the UI then
@@ -1600,6 +1869,7 @@ export type AuthInput =
   | 'start'
   | { startSignIn: Provider }
   | 'cancelSignIn'
+  | 'reopenBrowser'
   | { callbackReceived: string }
   | 'retryRestore'
   | 'signOut'
@@ -1616,6 +1886,8 @@ export type LibraryInput =
   | { setMatchQuery: string }
   | 'searchMatch'
   | { pickMatch: { gameId: number; now: number } }
+  | { selectMatch: { gameId: number } }
+  | { confirmMatch: { now: number } }
   | { markNoGame: { now: number } }
   | { markEntryNoGame: { key: string; now: number } }
   | 'clearMatch'
@@ -1623,6 +1895,7 @@ export type LibraryInput =
   | { move: { direction: Direction; extend: boolean } }
   | { setColumns: number }
   | { setView: ViewMode }
+  | { setCoverSize: CoverSize }
   | { setFilter: SidebarSelection }
   | { setScope: LibraryScope }
   | { setGroup: GroupBy }
@@ -1648,9 +1921,14 @@ export type LibraryInput =
   | 'refreshMembership'
   | 'openAdd'
   | 'closeAdd'
+  | 'hideAdd'
   | { setAddStatus: EntryStatus }
   | { toggleAddCollection: string }
   | 'retryCollections'
+  | 'startNewCollection'
+  | { setNewCollectionName: string }
+  | 'createCollection'
+  | 'cancelNewCollection'
   | 'confirmAdd'
   | { undoAdd: { run: number } }
   | { setStatus: { keys: string[]; status: EntryStatus } }
@@ -1665,6 +1943,9 @@ export type LibraryInput =
 
 /** A browser page on the GameNode website. */
 export type GameNodePage = 'library' | { game: { id: number } };
+
+/** Fixed GameNode website links; the UI never passes a URL. `profile` needs a session. */
+export type GameNodeLink = 'website' | 'terms' | 'privacy' | 'reportIssue' | 'profile';
 
 export function getMatchedGameId(status: MatchStatus): number | null {
   if (typeof status === 'object' && 'matched' in status) {
@@ -1818,6 +2099,8 @@ export function createDefaultSnapshot(): Snapshot {
       watches: [],
       reviewSelected: [],
       versions: [],
+      historyBytes: 0,
+      historyCount: 0,
       restore: null,
       busy: false,
       error: null,
@@ -1828,6 +2111,7 @@ export function createDefaultSnapshot(): Snapshot {
       settings: {
         automatic: true,
         destination: '',
+        retention: 10,
       },
     },
     playtimeError: false,
@@ -1840,6 +2124,8 @@ export function createDefaultSnapshot(): Snapshot {
     sync: {
       enabled: true,
       explained: true,
+      summary: null,
+      running: false,
     },
     playtimeSource: 'internal',
     auth: 'signedOut',
@@ -1848,14 +2134,18 @@ export function createDefaultSnapshot(): Snapshot {
     settings: {
       window: null,
     },
+    preferences: createDefaultAppPreferences(),
     library: null,
     launch: null,
+    addNotice: null,
     tools: {
       installedByEntry: {},
       modal: null,
       totalCacheBytes: 0,
       totalCacheArchives: 0,
+      achievementIconCacheBytes: 0,
       catalog: [],
+      cacheEntries: [],
     },
     storeAccounts: [],
     ports: createDefaultPortsView(),

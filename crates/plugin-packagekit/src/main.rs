@@ -80,6 +80,8 @@ mod linux {
                                     target: None,
                                 })
                                 .collect(),
+                            // Packages have no store install location or library folders.
+                            ..Default::default()
                         }),
                         ..Default::default()
                     })

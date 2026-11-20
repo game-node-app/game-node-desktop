@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { commands } from '../../api/commands';
-import type { AuthView, LaunchStatus } from '../../api/types';
+import type { AddNotice, AddSummary, AuthView, LaunchStatus } from '../../api/types';
 import { useAuth, useLibraryView, useLocalGames, useSnapshot } from '../../api/useSnapshot';
 import { useI18n } from '../../i18n';
 import {
@@ -17,6 +17,7 @@ interface SeenRuns {
   initialized: boolean;
   librarySeen: boolean;
   add: number | null;
+  notice: string | null;
   undo: number | null;
   status: number | null;
   collection: number | null;
@@ -31,6 +32,7 @@ function emptySeen(accountId: string | null): SeenRuns {
     initialized: false,
     librarySeen: false,
     add: null,
+    notice: null,
     undo: null,
     status: null,
     collection: null,
@@ -75,6 +77,12 @@ function notificationId(scope: string, accountId: string | null, run: number | s
   return `library-${scope}-${accountId ?? 'anonymous'}-${run}`;
 }
 
+/** The identity of one add notice: its account and run, never object identity. */
+function addNoticeKey(notice: AddNotice | null | undefined): string | null {
+  if (!notice) return null;
+  return `${notice.accountId ?? 'anonymous'}\u0000${notice.summary.runId}`;
+}
+
 function skippedNotOnGameNode(run: {
   skippedUnmatched: number;
   skippedNotInLibrary: number;
@@ -100,6 +108,7 @@ export function useLibraryNotifications(): void {
   const library = useLibraryView();
   const auth = useAuth();
   const launch = useSnapshot(selectLaunch).data;
+  const addNotice = useSnapshot((snapshot) => snapshot.addNotice ?? null).data;
   const localGames = useLocalGames();
   const { t } = useI18n();
 
@@ -108,8 +117,77 @@ export function useLibraryNotifications(): void {
   /** The add run whose success notification was shown; undo only reports for that run. */
   const notifiedAddRun = useRef<number | null>(null);
 
+  /**
+   * Announces one add result. A batch notification is raised even with zero additions, and its
+   * owner decides whether Undo and View on GameNode may act on the current session.
+   */
+  const announceAdd = (
+    add: AddSummary,
+    ownerId: string | null,
+    allowActions: boolean,
+  ): void => {
+    const succeeded = add.added > 0;
+    const kind: ToastKind = succeeded
+      ? 'success'
+      : add.failed > 0
+        ? 'danger'
+        : 'info';
+    const title = succeeded
+      ? add.added === 1
+        ? t('Notify::1 game added to GameNode')
+        : formatI18n(t('Notify::{} games added to GameNode'), add.added)
+      : add.failed > 0
+        ? t("Notify::Couldn't update GameNode")
+        : t('Notify::No games were added to GameNode');
+    // A zero-addition batch still reports every count that explains the outcome.
+    const body = succeeded
+      ? add.alreadyPresent > 0
+        ? formatI18n(
+            t('Library::Saved {} · already in your library {} · skipped {} · failed {}'),
+            add.added,
+            add.alreadyPresent,
+            add.skipped,
+            add.failed,
+          )
+        : joinBody([
+            add.skipped > 0
+              ? formatI18n(t('Notify::{} not on GameNode were skipped'), add.skipped)
+              : null,
+            add.failed > 0 ? t("Notify::Couldn't update GameNode") : null,
+          ])
+      : formatI18n(
+          t('Notify::{} added · {} already in your library · {} skipped · {} failed'),
+          add.added,
+          add.alreadyPresent,
+          add.skipped,
+          add.failed,
+        );
+    const id = notificationId('add', ownerId, add.runId);
+    const actions: ToastAction[] = [];
+    if (allowActions) {
+      if (add.undoable) {
+        notifiedAddRun.current = add.runId;
+        actions.push({
+          label: t('Notify::Undo'),
+          onClick: () => {
+            dismissToast(id);
+            runCommand(() => commands.libraryInput({ undoAdd: { run: add.runId } }));
+          },
+        });
+      }
+      actions.push({
+        label: t('Notify::View on GameNode'),
+        onClick: () => {
+          runCommand(() => commands.openGameNodePage('library'));
+        },
+      });
+    }
+    pushNotification({ id, kind, title, body, actions });
+  };
+
   // Baseline on mount, on the first library view and whenever the account changes. Marking the
-  // current runs as seen is what prevents an old summary from being replayed.
+  // current runs as seen is what prevents an old summary from being replayed. The add notice is
+  // only baselined on mount: a batch that finishes while the account changes must still notify.
   useEffect(() => {
     const state = seen.current;
     const accountChanged = state.accountId !== accountId;
@@ -122,6 +200,7 @@ export function useLibraryNotifications(): void {
       initialized: true,
       librarySeen: Boolean(library),
       add: library?.addSummary?.runId ?? null,
+      notice: state.initialized ? state.notice : addNoticeKey(addNotice),
       undo: library?.undo?.run ?? null,
       status: library?.statusRun?.run ?? null,
       collection: library?.collectionRun?.run ?? null,
@@ -134,6 +213,22 @@ export function useLibraryNotifications(): void {
     }
   }, [accountId, library, launch]);
 
+  // The notice channel survives the library view. It is the only path for a hidden batch that
+  // ends after sign-out or an account switch, and it is raised once per (account, run).
+  useEffect(() => {
+    const state = seen.current;
+    if (!state.initialized || !addNotice) return;
+    const key = addNoticeKey(addNotice);
+    if (!key || state.notice === key) return;
+    state.notice = key;
+    if (!addNotice.batch) return;
+    announceAdd(
+      addNotice.summary,
+      addNotice.accountId,
+      addNotice.accountId != null && addNotice.accountId === accountId,
+    );
+  }, [accountId, addNotice, t]);
+
   useEffect(() => {
     const state = seen.current;
     if (!state.initialized || state.accountId !== accountId || !library) return;
@@ -141,53 +236,13 @@ export function useLibraryNotifications(): void {
     const add = library.addSummary;
     if (add && state.add !== add.runId) {
       state.add = add.runId;
+      // The batch notice channel already announced this run. A single add has no notice
+      // announcement path, so it keeps the library summary's previous success notification.
+      if (addNotice?.batch && addNotice.summary.runId === add.runId) return;
       // Only a run that actually created entries is a legitimate success, and only it can be
       // undone. A pure edit or an already-present entry stays silent.
       if (add.added > 0) {
-        notifiedAddRun.current = add.runId;
-        const id = notificationId('add', accountId, add.runId);
-        const actions: ToastAction[] = [];
-        if (add.undoable) {
-          actions.push({
-            label: t('Notify::Undo'),
-            onClick: () => {
-              dismissToast(id);
-              runCommand(() => commands.libraryInput({ undoAdd: { run: add.runId } }));
-            },
-          });
-        }
-        actions.push({
-          label: t('Notify::View on GameNode'),
-          onClick: () => {
-            runCommand(() => commands.openGameNodePage('library'));
-          },
-        });
-        pushNotification({
-          id,
-          kind: 'success',
-          title:
-            add.added === 1
-              ? t('Notify::1 game added to GameNode')
-              : formatI18n(t('Notify::{} games added to GameNode'), add.added),
-          // The add dialog's existing summary carries the already-present count; the Notify
-          // copy has no plural key for it, so use that established sentence when it applies.
-          body:
-            add.alreadyPresent > 0
-              ? formatI18n(
-                  t('Library::Saved {} · already in your library {} · skipped {} · failed {}'),
-                  add.added,
-                  add.alreadyPresent,
-                  add.skipped,
-                  add.failed,
-                )
-              : joinBody([
-                  add.skipped > 0
-                    ? formatI18n(t('Notify::{} not on GameNode were skipped'), add.skipped)
-                    : null,
-                  add.failed > 0 ? t("Notify::Couldn't update GameNode") : null,
-                ]),
-          actions,
-        });
+        announceAdd(add, accountId, true);
       }
     }
 
@@ -336,5 +391,5 @@ export function useLibraryNotifications(): void {
         });
       }
     }
-  }, [accountId, launch, library, localGames.registrations, t]);
+  }, [accountId, addNotice, launch, library, localGames.registrations, t]);
 }

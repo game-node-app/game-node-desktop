@@ -2,7 +2,7 @@
 
 use gamenode_core::AuthView;
 
-use crate::engine::{GameNodePage, GameNodePageError};
+use crate::engine::{GameNodeLink, GameNodePage, GameNodePageError};
 
 use super::{FakeApi, FakeCreds, harness};
 
@@ -89,5 +89,70 @@ async fn a_browser_failure_is_a_typed_error() {
     assert_eq!(
         h.engine.open_gamenode_page(GameNodePage::Library).await,
         Err(GameNodePageError::Browser)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fixed_links_open_without_a_session_but_the_profile_requires_one() {
+    let _guard = lock_web_url().await;
+    let mut h = harness(FakeApi::new(), FakeCreds::with(None));
+    h.engine.start();
+    h.until("signed out", |snapshot| {
+        snapshot.auth == AuthView::SignedOut
+    })
+    .await;
+
+    for link in [
+        GameNodeLink::Website,
+        GameNodeLink::Terms,
+        GameNodeLink::Privacy,
+        GameNodeLink::ReportIssue,
+    ] {
+        h.engine
+            .open_gamenode_link(link)
+            .await
+            .expect("a static page opens signed out");
+    }
+    assert_eq!(
+        h.engine.open_gamenode_link(GameNodeLink::Profile).await,
+        Err(GameNodePageError::NoSession)
+    );
+    assert_eq!(
+        h.browser
+            .opened
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|url| url.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "https://gamenode.app/",
+            "https://gamenode.app/terms",
+            "https://gamenode.app/privacy",
+            "https://gamenode.app/report",
+        ]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_verified_session_opens_the_profile_page_from_the_fixed_link() {
+    let _guard = lock_web_url().await;
+    let mut h = harness(FakeApi::new(), FakeCreds::with(Some("stored")));
+    h.engine.start();
+    h.until("signed in", signed_in).await;
+
+    h.engine
+        .open_gamenode_link(GameNodeLink::Profile)
+        .await
+        .expect("the profile page opens");
+    assert_eq!(
+        h.browser
+            .opened
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|url| url.as_str())
+            .collect::<Vec<_>>(),
+        ["https://gamenode.app/profile/u1"]
     );
 }

@@ -1,8 +1,8 @@
 import React from 'react';
 import { FloatingModal } from '../../components/FloatingModal';
+import { Button } from '../../components/ui';
 import { useLicenseNotices } from '../../api';
 import { useI18n } from '../../i18n';
-import { settingsButtonSecondary } from './settingsClasses';
 
 export interface LicenseNoticesModalProps {
   onClose: () => void;
@@ -35,15 +35,15 @@ export const LicenseNoticesModal: React.FC<LicenseNoticesModalProps> = ({ onClos
 
         <FloatingModal.Body
           tabIndex={0}
-          className="whitespace-pre-wrap px-control-inline py-lg font-mono text-xs leading-normal text-[var(--settings-text-secondary)] focus-visible:ring-2 focus-visible:ring-brand focus-visible:outline-none"
+          className="whitespace-pre-wrap px-control-inline py-lg font-mono text-xs leading-normal text-text-secondary focus-visible:ring-2 focus-visible:ring-brand focus-visible:outline-none"
         >
           {text}
         </FloatingModal.Body>
 
-        <FloatingModal.Footer className="bg-[var(--settings-bg-base)]">
-          <button type="button" className={settingsButtonSecondary} onClick={onClose}>
+        <FloatingModal.Footer className="bg-canvas">
+          <Button size="sm" variant="secondary" onClick={onClose}>
             {t('Close') || 'Close'}
-          </button>
+          </Button>
         </FloatingModal.Footer>
 
         <FloatingModal.ResizeHandle />

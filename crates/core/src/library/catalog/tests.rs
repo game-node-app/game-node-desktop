@@ -11,6 +11,7 @@ fn summary(id: u64, name: &str, year: Option<i32>) -> GameSummary {
         name: name.to_owned(),
         release_year: year,
         cover_url: Some(format!("https://covers.test/{id}.jpg")),
+        platforms: Vec::new(),
     }
 }
 
@@ -198,6 +199,7 @@ fn results_read_membership_from_the_account_cache_and_the_local_row_by_game_id()
             cover_url: None,
             cover_file: None,
             cover_failed_at: None,
+            platforms: Vec::new(),
         }],
         account_library: Some(AccountLibrary {
             entries: [
@@ -346,6 +348,7 @@ fn open_add_for_a_game_keeps_known_metadata_when_the_input_omits_it() {
             cover_url: Some("https://covers.test/known.jpg".to_owned()),
             cover_file: Some("42.jpg".to_owned()),
             cover_failed_at: None,
+            platforms: Vec::new(),
         }],
         ..LibraryCache::default()
     };

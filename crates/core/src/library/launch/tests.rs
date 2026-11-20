@@ -177,6 +177,7 @@ fn manual_launch_requires_approved_available_registration_and_never_installs() {
         removed: false,
         rediscovery_allowed: false,
         transferred_from: None,
+        custom_cover: None,
         available: true,
     };
     let record = crate::drm_free::records(std::slice::from_ref(&registration)).remove(0);
@@ -250,6 +251,7 @@ fn a_port_launch_passes_its_provenance_environment_to_the_host() {
         removed: false,
         rediscovery_allowed: false,
         transferred_from: None,
+        custom_cover: None,
         available: true,
     };
     let record = crate::drm_free::records(std::slice::from_ref(&registration)).remove(0);

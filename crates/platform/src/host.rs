@@ -123,7 +123,7 @@ impl RootResolver for SystemRoots {
 }
 
 #[cfg(windows)]
-mod registry {
+pub(crate) mod registry {
     use windows_sys::Win32::System::Registry::{
         HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW,
     };
@@ -134,7 +134,7 @@ mod registry {
         text.encode_utf16().chain(std::iter::once(0)).collect()
     }
 
-    pub(super) fn read_string(key: &str, value: &str) -> Option<String> {
+    pub(crate) fn read_string(key: &str, value: &str) -> Option<String> {
         if key.contains('\0') || value.contains('\0') {
             return None;
         }

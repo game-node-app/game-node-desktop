@@ -3,8 +3,12 @@ import { getMockHost, mockEnabled } from './mock';
 import type {
   AchievementFilter,
   AchievementListView,
+  AchievementSort,
   AppInfo,
+  AppPreferencePatch,
   AuthInput,
+  BackupUsage,
+  GameNodeLink,
   GameNodePage,
   LaunchKind,
   LaunchRecipeChoices,
@@ -69,13 +73,25 @@ export const commands = {
   getAppInfo: () =>
     safeInvoke<AppInfo>('get_app_info', undefined, () => ({
       locale: 'en',
+      systemLocale: 'en',
       version: '0.1.0',
+      buildDate: '2026-01-01',
+      osVersion: 'unknown',
+      arch: 'unknown',
       backgroundSupported: false,
       logDirectory: null,
     })),
 
   getRecentLogs: () =>
     safeInvoke<string>('get_recent_logs', undefined, () => '(no log available in the web preview)'),
+
+  /** Build, OS/arch, locale, plugins and detected stores, already redacted by the host. */
+  systemInfoText: () =>
+    safeInvoke<string>(
+      'system_info_text',
+      undefined,
+      () => 'GameNode Desktop (web preview)',
+    ),
 
   openLogsFolder: () =>
     safeInvoke<void>('open_logs_folder', undefined, () => undefined),
@@ -90,11 +106,22 @@ export const commands = {
   dispatchAuth: (input: AuthInput) =>
     safeInvoke<void>('dispatch_auth', { input }, () => undefined),
 
+  /** Cached cover file names for the signed-out screen's mural, most recent first. */
+  signInCoverWall: () =>
+    safeInvoke<string[]>('sign_in_cover_wall', undefined, () => []),
+
   setSyncEnabled: (enabled: boolean) =>
     safeInvoke<void>('set_sync_enabled', { enabled }, () => undefined),
 
+  /** Rescan the library and submit every held total; refused when sync is off or unverified. */
+  syncNow: () => safeInvoke<void>('sync_now', undefined, () => undefined),
+
   setPlaytimeSource: (source: PlaytimeSource) =>
     safeInvoke<void>('set_playtime_source', { source }, () => undefined),
+
+  /** Applies one Settings preference; the host validates, persists and publishes a snapshot. */
+  setAppPreference: (patch: AppPreferencePatch) =>
+    safeInvoke<void>('set_app_preference', { patch }, () => undefined),
 
   dismissSyncExplanation: () =>
     safeInvoke<void>('dismiss_sync_explanation', undefined, () => undefined),
@@ -110,6 +137,10 @@ export const commands = {
 
   openGameNodePage: (page: GameNodePage) =>
     safeInvoke<void>('open_gamenode_page', { page }, () => undefined),
+
+  /** Opens one fixed GameNode website link; the UI never passes a URL. */
+  openGameNodeLink: (kind: GameNodeLink) =>
+    safeInvoke<void>('open_gamenode_link', { kind }, () => undefined),
 
   activateEntry: () =>
     safeInvoke<void>('activate_entry', undefined, () => undefined),
@@ -371,6 +402,14 @@ export const commands = {
       () => false,
     ),
 
+  /** Stops one plugin process for this run; a pending sign-in is cancelled first. */
+  pluginStop: (providerId: string) =>
+    safeInvoke<void>('plugin_stop', { providerId }, () => undefined),
+
+  /** Starts a stopped plugin with a fresh session and restores its account. */
+  pluginStart: (providerId: string) =>
+    safeInvoke<void>('plugin_start', { providerId }, () => undefined),
+
   providerSignIn: (providerId: string) =>
     safeInvoke<void>('provider_sign_in', { providerId }, () => undefined),
 
@@ -387,12 +426,16 @@ export const commands = {
     safeInvoke<void>('provider_check', { providerId }, () => undefined),
 
   /** The full achievement list, read from the local cache (no GameNode request). */
-  achievementList: (key: string, filter: AchievementFilter) =>
+  achievementList: (key: string, filter: AchievementFilter, sort: AchievementSort) =>
     safeInvoke<AchievementListView | null>(
       'achievement_list',
-      { key, filter },
-      () => ({ connected: false, achievements: [] }),
+      { key, filter, sort },
+      () => null,
     ),
+
+  /** Opens a provider's public achievements page. The host resolves the URL. */
+  openAchievementsPage: (entryKey: string) =>
+    safeInvoke<void>('open_achievements_page', { entryKey }, () => undefined),
 
   removeEntry: (key: string, allowRediscovery: boolean) =>
     safeInvoke<void>('remove_entry', { key, allowRediscovery }, () => undefined),
@@ -400,6 +443,14 @@ export const commands = {
   // DRM-Free & Backups
   pickLocalExecutable: (repair?: string | null) =>
     safeInvoke<void>('pick_local_executable', { repair: repair ?? null }, () => undefined),
+
+  /** Opens the image picker; resolves to the pending cover file, or null when cancelled. */
+  pickLocalCover: (entryKey: string) =>
+    safeInvoke<string | null>('pick_local_cover', { entryKey }, () => null),
+
+  /** Drops an uncommitted cover after the editor closes without saving. */
+  discardLocalCover: (entryKey: string) =>
+    safeInvoke<void>('discard_local_cover', { entryKey }, () => undefined),
 
   addLocalExecutable: (path?: string | null) =>
     safeInvoke<void>('add_local_executable', { path: path ?? null }, () => undefined),
@@ -416,8 +467,23 @@ export const commands = {
   backupLocalNow: (id: string) =>
     safeInvoke<void>('backup_local_now', { id }, () => undefined),
 
-  setLocalBackupSettings: (automatic: boolean, destination: string) =>
-    safeInvoke<void>('set_local_backup_settings', { automatic, destination }, () => undefined),
+  setLocalBackupSettings: (automatic: boolean, destination: string, retention: number) =>
+    safeInvoke<void>(
+      'set_local_backup_settings',
+      { automatic, destination, retention },
+      () => undefined,
+    ),
+
+  /** Space used by local backups per game, computed on a blocking worker. */
+  localBackupUsage: () =>
+    safeInvoke<BackupUsage>('local_backup_usage', undefined, () => ({
+      totalBytes: 0,
+      totalVersions: 0,
+      games: [],
+    })),
+
+  setLocalBackupRetention: (entryKey: string, retention: number) =>
+    safeInvoke<void>('set_local_backup_retention', { entryKey, retention }, () => undefined),
 
   pickSaveDestination: () =>
     safeInvoke<string | null>('pick_save_destination', undefined, () => null),
@@ -449,11 +515,19 @@ export const commands = {
   rescanLocalFolders: () =>
     safeInvoke<void>('rescan_local_folders', undefined, () => undefined),
 
+  /** Check one watched folder on the discovery worker. */
+  checkLocalWatch: (id: string) =>
+    safeInvoke<void>('check_local_watch', { id }, () => undefined),
+
   selectLocalCandidate: (fingerprint: string) =>
     safeInvoke<void>('select_local_candidate', { fingerprint }, () => undefined),
 
-  reviewSelectedLocalCandidates: (add: boolean) =>
-    safeInvoke<void>('review_selected_local_candidates', { add }, () => undefined),
+  reviewSelectedLocalCandidates: (add: boolean, allowRediscovery: boolean) =>
+    safeInvoke<void>(
+      'review_selected_local_candidates',
+      { add, allowRediscovery },
+      () => undefined,
+    ),
 
   resetLocalIgnores: () =>
     safeInvoke<void>('reset_local_ignores', undefined, () => undefined),
@@ -500,6 +574,10 @@ export const commands = {
 
   selectToolTargetExe: (relativeExe: string) =>
     safeInvoke<void>('select_tool_target_exe', { relativeExe }, () => undefined),
+
+  /** Opens the executable picker for the open game's folder and selects the chosen file. */
+  pickToolTargetExe: () =>
+    safeInvoke<void>('pick_tool_target_exe', undefined, () => undefined),
 
   selectToolProxy: (proxy: string) =>
     safeInvoke<void>('select_tool_proxy', { proxy }, () => undefined),

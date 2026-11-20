@@ -38,6 +38,7 @@ fn game(id: u64, cover: Option<&str>) -> GameRecord {
         cover_url: cover.map(str::to_owned),
         cover_file: None,
         cover_failed_at: None,
+        platforms: Vec::new(),
     }
 }
 
@@ -73,6 +74,9 @@ fn a_scan_is_saved_and_loaded_with_its_fields() {
             catalog_error: None,
             last_shared_at: None,
             shared_error: None,
+            install_root: None,
+            library_folders: None,
+            last_detected: None,
         }]
     );
 }
@@ -362,6 +366,22 @@ fn game_metadata_keeps_cover_state_until_the_cover_url_changes() {
 }
 
 #[test]
+fn game_platforms_survive_a_store_round_trip_and_default_to_none() {
+    let dir = TempDir::new().unwrap();
+    let store = open(&dir).library_store();
+    let mut with_platforms = game(72, None);
+    with_platforms.platforms = vec!["PC".into(), "Switch".into()];
+    store.save_games(&[with_platforms]).unwrap();
+
+    // A row written before the column existed still loads, with no platforms.
+    store.save_games(&[game(73, None)]).unwrap();
+
+    let cache = store.load_cache(None).unwrap();
+    assert_eq!(cache.games[0].platforms, ["PC", "Switch"]);
+    assert_eq!(cache.games[1].platforms, Vec::<String>::new());
+}
+
+#[test]
 fn the_layout_survives_reopening() {
     let dir = TempDir::new().unwrap();
     assert_eq!(
@@ -431,7 +451,10 @@ fn sign_out_removes_the_account_keys_and_keeps_everything_else() {
     let dir = TempDir::new().unwrap();
     let settings = open(&dir);
     let store = settings.library_store();
-    let saved = Settings { window: None };
+    let saved = Settings {
+        window: None,
+        ..Settings::default()
+    };
     settings.save(&saved).unwrap();
     store
         .save_layout(&LibraryLayout {

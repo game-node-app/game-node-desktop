@@ -25,6 +25,9 @@ pub struct Registration {
     pub rediscovery_allowed: bool,
     #[serde(default, alias = "transferred_from")]
     pub transferred_from: Option<String>,
+    /// File name of the user's custom cover in the cover cache, over the GameNode cover.
+    #[serde(default, alias = "custom_cover")]
+    pub custom_cover: Option<String>,
     pub available: bool,
 }
 impl Registration {
@@ -120,13 +123,51 @@ pub struct Candidate {
     pub evidence: Vec<Evidence>,
     pub ignored: bool,
     pub incomplete: bool,
+    /// The best GameNode match the review found for this title, at 40% or more.
+    #[serde(default)]
+    pub suggestion: Option<crate::library::SuggestionView>,
+    /// No positive game evidence and the executable or folder name looks like a maintenance tool.
+    #[serde(default, alias = "likely_non_game")]
+    pub likely_non_game: bool,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WatchRoot {
     pub id: String,
     pub path: String,
     pub enabled: bool,
+    /// Unix seconds of the last completed check of this root, if it has ever been checked.
+    #[serde(default)]
+    pub last_checked_at: Option<i64>,
+    /// Unix seconds when the root was first found unavailable, until it is reachable again.
+    #[serde(default)]
+    pub unavailable_since: Option<i64>,
+}
+
+/// One watched folder as Settings shows it: the stored root plus the live state of its last check.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WatchView {
+    pub id: String,
+    pub path: String,
+    pub enabled: bool,
+    /// Library entries whose installation root is inside this folder.
+    pub entry_count: u32,
+    /// Unix seconds of the last completed check of this folder.
+    pub last_checked_at: Option<i64>,
+    pub state: WatchState,
+    /// Unix seconds when the folder became unavailable, while it is.
+    pub unavailable_since: Option<i64>,
+}
+
+/// What a watched folder is doing right now.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WatchState {
+    #[default]
+    Idle,
+    Checking,
+    Unavailable,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
@@ -164,6 +205,9 @@ pub struct SaveProfile {
     pub registry: Vec<String>,
     pub support: SaveSupport,
     pub automatic: Option<bool>,
+    /// Per-installation/profile retention override; `None` follows the setting default.
+    #[serde(default, alias = "retention")]
+    pub retention: Option<u8>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -200,18 +244,63 @@ pub struct BackupJob {
     #[serde(alias = "backup_id")]
     pub backup_id: Option<String>,
     pub error: Option<String>,
+    /// Length of the play session that queued this job, when it was an automatic backup.
+    #[serde(default, alias = "play_seconds")]
+    pub play_seconds: Option<u32>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupSettings {
     pub automatic: bool,
     pub destination: String,
+    /// Default full-version count for installations without a per-profile override.
+    #[serde(default = "default_retention", alias = "retention")]
+    pub retention: u8,
+}
+
+/// Allowed full-version retention counts (`5 | 10 | 20 | 50`).
+pub const RETENTION_OPTIONS: [u8; 4] = [5, 10, 20, 50];
+/// Retention used by new installations and by legacy settings.
+pub const DEFAULT_RETENTION: u8 = 10;
+
+/// Space a game's local backups use, recovery snapshots included.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupUsage {
+    pub total_bytes: u64,
+    pub total_versions: u32,
+    /// One entry per game with archives on disk, largest first.
+    pub games: Vec<BackupUsageGame>,
+}
+
+/// One game's share of the backup space.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupUsageGame {
+    /// The library key, `manual:<installation id>`.
+    pub entry_key: String,
+    /// The last known title, including for a game that was removed.
+    pub title: String,
+    pub cover_file: Option<String>,
+    pub bytes: u64,
+    pub versions: u32,
+}
+
+/// The default retention value; also used as the serde fallback for legacy settings.
+pub fn default_retention() -> u8 {
+    DEFAULT_RETENTION
+}
+
+/// Whether a retention value is one of the user-selectable counts.
+pub fn valid_retention(value: u8) -> bool {
+    RETENTION_OPTIONS.contains(&value)
 }
 impl Default for BackupSettings {
     fn default() -> Self {
         Self {
             automatic: true,
             destination: String::new(),
+            retention: DEFAULT_RETENTION,
         }
     }
 }
@@ -219,6 +308,8 @@ impl Default for BackupSettings {
 pub enum LocalError {
     #[error("this operation is unavailable on this platform")]
     Unsupported,
+    #[error("another local operation is already running")]
+    Busy,
     #[error("invalid executable or game folder")]
     InvalidTarget,
     #[error("operation cancelled")]
@@ -374,6 +465,14 @@ pub trait LocalGameStore: Send + Sync {
     fn save_watch(&self, value: &WatchRoot) -> Result<(), StorageError>;
     fn candidates(&self) -> Result<Vec<Candidate>, StorageError>;
     fn save_candidate(&self, value: &Candidate) -> Result<(), StorageError>;
+    /// Records a review suggestion on an existing candidate without touching its other fields.
+    fn save_candidate_suggestion(
+        &self,
+        fingerprint: &str,
+        suggestion: Option<&crate::library::SuggestionView>,
+    ) -> Result<(), StorageError>;
+    /// Forgets a discovery so a later scan can propose it again.
+    fn delete_candidate(&self, fingerprint: &str) -> Result<(), StorageError>;
     fn inferences(&self, account: &str) -> Result<Vec<Inference>, StorageError>;
     fn save_inference(&self, value: &Inference) -> Result<(), StorageError>;
     fn profiles(&self) -> Result<Vec<SaveProfile>, StorageError>;
@@ -382,6 +481,12 @@ pub trait LocalGameStore: Send + Sync {
     fn save_job(&self, value: &BackupJob) -> Result<(), StorageError>;
     fn backup_settings(&self) -> Result<BackupSettings, StorageError>;
     fn save_backup_settings(&self, value: &BackupSettings) -> Result<(), StorageError>;
+    /// Recorded origins for a game's listed versions.
+    fn backup_version_meta(
+        &self,
+        installation: &str,
+    ) -> Result<Vec<BackupVersionMeta>, StorageError>;
+    fn save_backup_version_meta(&self, value: &BackupVersionMeta) -> Result<(), StorageError>;
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
@@ -477,6 +582,47 @@ mod tests {
         }
     }
     #[test]
+    fn backup_settings_default_and_legacy_payload_use_ten_versions() {
+        assert_eq!(BackupSettings::default().retention, DEFAULT_RETENTION);
+        assert_eq!(
+            serde_json::from_str::<BackupSettings>(r#"{"automatic":false,"destination":"D:/b"}"#)
+                .unwrap()
+                .retention,
+            10
+        );
+        for value in RETENTION_OPTIONS {
+            assert!(valid_retention(value));
+        }
+        for value in [0, 1, 6, 9, 11, 25, 100, 255] {
+            assert!(!valid_retention(value), "{value} is not selectable");
+        }
+    }
+    #[test]
+    fn backup_version_serializes_origin_and_play_length() {
+        let version = BackupVersion {
+            installation: "game".into(),
+            profile: "profile".into(),
+            destination: "D:/b".into(),
+            id: "b1".into(),
+            label: "2026-11-15 14:20:00".into(),
+            bytes: 7_100_000,
+            created_at: Some(1_763_216_400),
+            reason: Some(BackupReason::AfterSession),
+            play_seconds: Some(42 * 60),
+        };
+        let json = serde_json::to_value(&version).unwrap();
+        assert_eq!(json["reason"], "afterSession");
+        assert_eq!(json["playSeconds"], 2520);
+        assert_eq!(json["createdAt"], 1_763_216_400_i64);
+        let legacy: BackupVersion = serde_json::from_str(
+            r#"{"installation":"g","profile":"p","destination":"D:/b","id":"b","label":"when","bytes":1}"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.created_at, None);
+        assert_eq!(legacy.reason, None);
+        assert_eq!(legacy.play_seconds, None);
+    }
+    #[test]
     fn local_models_and_scripted_engine_need_no_os() {
         let mut registration = Registration {
             id: "stable".into(),
@@ -492,6 +638,7 @@ mod tests {
             removed: false,
             rediscovery_allowed: false,
             transferred_from: None,
+            custom_cover: None,
             available: false,
         };
         registration.repair("new.exe".into(), "two".into());
@@ -508,6 +655,7 @@ mod tests {
             registry: vec![],
             support: SaveSupport::NoSaves,
             automatic: None,
+            retention: None,
         };
         let request = BackupRequest {
             job_id: None,
@@ -562,6 +710,7 @@ mod tests {
             removed: false,
             rediscovery_allowed: false,
             transferred_from: None,
+            custom_cover: None,
             available: true,
         };
         let host = CountingHost(Mutex::new(0));
@@ -594,6 +743,45 @@ pub fn records(registrations: &[Registration]) -> Vec<crate::provider::Record> {
         .collect()
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BackupReason {
+    AfterSession,
+    Manual,
+    Recovery,
+}
+impl BackupReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AfterSession => "afterSession",
+            Self::Manual => "manual",
+            Self::Recovery => "recovery",
+        }
+    }
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "afterSession" => Some(Self::AfterSession),
+            "manual" => Some(Self::Manual),
+            "recovery" => Some(Self::Recovery),
+            _ => None,
+        }
+    }
+}
+/// Persisted origin of one listed backup version.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupVersionMeta {
+    pub installation: String,
+    pub profile: String,
+    #[serde(alias = "backup_id")]
+    pub backup_id: String,
+    pub reason: BackupReason,
+    #[serde(default, alias = "play_seconds")]
+    pub play_seconds: Option<u32>,
+    #[serde(alias = "created_at")]
+    pub created_at: i64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupVersion {
@@ -603,6 +791,13 @@ pub struct BackupVersion {
     pub id: String,
     pub label: String,
     pub bytes: u64,
+    /// Unix seconds from the archive time (or the recorded meta time as fallback).
+    #[serde(default, alias = "created_at")]
+    pub created_at: Option<i64>,
+    #[serde(default)]
+    pub reason: Option<BackupReason>,
+    #[serde(default, alias = "play_seconds")]
+    pub play_seconds: Option<u32>,
 }
 impl BackupVersion {
     pub fn key(&self) -> String {
@@ -623,12 +818,36 @@ pub struct RestorePlan {
     pub targets: Vec<String>,
 }
 
+/// The store entry a tracking conflict was found with, as the conflict dialog shows it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaimStoreEntry {
+    pub title: String,
+    pub provider: String,
+    #[serde(default, alias = "cover_file")]
+    pub cover_file: Option<String>,
+    #[serde(default, alias = "playtime_seconds")]
+    pub playtime_seconds: Option<i64>,
+}
+
+/// The DRM-free registration a tracking conflict would create, as the dialog shows it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaimRegistration {
+    pub title: String,
+    pub root: String,
+    #[serde(default, alias = "cover_file")]
+    pub cover_file: Option<String>,
+}
+
+/// A DRM-free registration that would track a game a store entry already tracks.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingClaim {
-    pub registration: Registration,
+    /// The library key the conflict is with.
     pub store_key: String,
-    pub store_title: String,
+    pub store_entry: ClaimStoreEntry,
+    pub registration: ClaimRegistration,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -642,9 +861,15 @@ pub struct LocalView {
     pub discovery_error: Option<String>,
     /// Unix seconds of the last completed watched-folder check, kept across restarts.
     pub discovery_last_checked_at: Option<i64>,
-    pub watches: Vec<WatchRoot>,
+    pub watches: Vec<WatchView>,
     pub review_selected: Vec<String>,
     pub versions: Vec<BackupVersion>,
+    /// Sum of `versions` bytes, recovery snapshots included.
+    #[serde(default, alias = "history_bytes")]
+    pub history_bytes: u64,
+    /// Number of listed versions, recovery snapshots included.
+    #[serde(default, alias = "history_count")]
+    pub history_count: u32,
     pub restore: Option<RestorePlan>,
     pub busy: bool,
     pub error: Option<String>,
@@ -769,6 +994,7 @@ mod projection_tests {
             removed: false,
             rediscovery_allowed: false,
             transferred_from: None,
+            custom_cover: None,
             available: true,
         };
         let first = records(std::slice::from_ref(&registration));
@@ -791,5 +1017,35 @@ mod projection_tests {
         assert_eq!(projected[0].name.as_deref(), Some("Corrected title"));
         // Discovery candidates are a separate model and cannot be passed to records.
         assert!(records(&[]).is_empty());
+    }
+
+    #[test]
+    fn a_pending_claim_serializes_both_entries_in_camel_case() {
+        let claim = PendingClaim {
+            store_key: "steam:620".into(),
+            store_entry: ClaimStoreEntry {
+                title: "Portal 2".into(),
+                provider: "steam".into(),
+                cover_file: Some("7.jpg".into()),
+                playtime_seconds: Some(54_000),
+            },
+            registration: ClaimRegistration {
+                title: "Portal 2".into(),
+                root: r"D:\Jogos\Portal 2".into(),
+                cover_file: Some("local-claim.webp".into()),
+            },
+        };
+        let value = serde_json::to_value(&claim).unwrap();
+        assert_eq!(value["storeKey"], "steam:620");
+        assert_eq!(value["storeEntry"]["title"], "Portal 2");
+        assert_eq!(value["storeEntry"]["provider"], "steam");
+        assert_eq!(value["storeEntry"]["coverFile"], "7.jpg");
+        assert_eq!(value["storeEntry"]["playtimeSeconds"], 54_000);
+        assert_eq!(value["registration"]["root"], r"D:\Jogos\Portal 2");
+        assert_eq!(value["registration"]["coverFile"], "local-claim.webp");
+        assert!(
+            value.get("storeTitle").is_none(),
+            "the view no longer carries the old store title field"
+        );
     }
 }

@@ -13,6 +13,7 @@ fn summary(id: u64, name: &str, year: Option<i32>) -> GameSummary {
         cover_url: Some(format!(
             "//images.igdb.com/igdb/image/upload/t_thumb/co{id}.jpg"
         )),
+        platforms: Vec::new(),
     }
 }
 
@@ -407,6 +408,7 @@ fn ambiguous_entries_score_their_candidates_without_a_search() {
                 cover_url: None,
                 cover_file: None,
                 cover_failed_at: None,
+                platforms: Vec::new(),
             },
             GameRecord {
                 game_id: 9,
@@ -415,6 +417,7 @@ fn ambiguous_entries_score_their_candidates_without_a_search() {
                 cover_url: None,
                 cover_file: None,
                 cover_failed_at: None,
+                platforms: Vec::new(),
             },
         ],
         ..LibraryCache::default()

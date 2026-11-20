@@ -5,7 +5,7 @@ import {
   IconLink,
   type TablerIcon,
 } from '@tabler/icons-react';
-import type { GroupBy, Row, RowGroup } from '../../api';
+import type { CoverSize, GroupBy, Row, RowGroup } from '../../api';
 import { GAME_ROW_LAYOUT } from '../../components/ui/GameRow';
 import { formatI18n } from './formatters';
 import { providerIcon } from './libraryControlIcons';
@@ -19,7 +19,14 @@ import { providerIcon } from './libraryControlIcons';
  * a collapsed group mounts no games while keeping its header and engine count.
  */
 
-export const GRID_TILE_WIDTH = 172;
+/** The cover-size preference to the tile width it draws (`desktop-library` › Cover size). */
+export const GRID_TILE_WIDTHS: Record<CoverSize, number> = {
+  small: 140,
+  medium: 172,
+  large: 216,
+};
+/** The medium tile keeps the original 172×270 geometry. */
+export const GRID_TILE_WIDTH = GRID_TILE_WIDTHS.medium;
 export const GRID_TILE_HEIGHT = 270;
 /** Horizontal and vertical gap between grid lines from the reference dump. */
 export const GRID_GAP = 16;
@@ -30,13 +37,38 @@ export const GRID_LINE_HEIGHT = GRID_TILE_HEIGHT + GRID_GAP;
 export const LIST_ROW_HEIGHT = GAME_ROW_LAYOUT.height;
 export const LIST_GROUP_HEADER_HEIGHT = 36;
 
+/**
+ * The tile is the 6 px padded surface: a cover keeping the 160×214 aspect plus
+ * the 18 px title and 18 px meta lines (2×6 padding + 8 gap + 36 caption).
+ */
+const GRID_COVER_ASPECT = 214 / 160;
+const GRID_TILE_HORIZONTAL_PADDING = 12;
+const GRID_TILE_VERTICAL_CHROME = 56;
+
+export function gridTileWidth(size: CoverSize = 'medium'): number {
+  return GRID_TILE_WIDTHS[size];
+}
+
+/** The tile height for a cover size; the cover aspect and caption stay fixed. */
+export function gridTileHeight(size: CoverSize = 'medium'): number {
+  const coverWidth = gridTileWidth(size) - GRID_TILE_HORIZONTAL_PADDING;
+  return Math.round(coverWidth * GRID_COVER_ASPECT) + GRID_TILE_VERTICAL_CHROME;
+}
+
+export function gridLineHeight(size: CoverSize = 'medium'): number {
+  return gridTileHeight(size) + GRID_GAP;
+}
+
 /** Real container width to a column count, using the 24 px inset and 16 px gap. */
-export function columnsForWidth(width: number): number {
+export function columnsForWidth(
+  width: number,
+  size: CoverSize = 'medium',
+): number {
   const usable = width - GRID_PADDING_X * 2;
   if (usable <= 0) return 1;
   return Math.max(
     1,
-    Math.floor((usable + GRID_GAP) / (GRID_TILE_WIDTH + GRID_GAP)),
+    Math.floor((usable + GRID_GAP) / (gridTileWidth(size) + GRID_GAP)),
   );
 }
 
@@ -145,9 +177,12 @@ export function buildListItems(rows: Row[], groups: RowGroup[]): ListItem[] {
   return items;
 }
 
-export function gridItemHeight(item: GridItem | undefined): number {
-  if (!item) return GRID_LINE_HEIGHT;
-  return item.kind === 'group' ? GRID_GROUP_HEADER_HEIGHT : GRID_LINE_HEIGHT;
+export function gridItemHeight(
+  item: GridItem | undefined,
+  size: CoverSize = 'medium',
+): number {
+  if (!item) return gridLineHeight(size);
+  return item.kind === 'group' ? GRID_GROUP_HEADER_HEIGHT : gridLineHeight(size);
 }
 
 export function listItemHeight(item: ListItem | undefined): number {

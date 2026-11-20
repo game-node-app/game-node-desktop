@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gamenode_core::auth::{AuthState, NonceSource, Purpose, RemoteSignOut};
-use gamenode_core::game_api::{ApiError, FavoriteError, GameApi};
+use gamenode_core::game_api::{ApiError, CreateCollectionError, FavoriteError, GameApi};
 use gamenode_core::library::{
     Access, CatalogUpdate, Effect as LibEffect, Input as LibInput, LastAccount, LaunchKind,
     LaunchState, LaunchStatus, LibraryMachine, LibraryStore, ScanOutcome, open_action,
@@ -24,7 +24,8 @@ use gamenode_core::ports::{
 use gamenode_core::provider::Platform;
 use gamenode_core::snapshot::StoreAccountView;
 use gamenode_core::{
-    AuthMachine, Effect, Input, SessionCredential, Settings, SignInFailure, Snapshot,
+    AppPreferenceError, AppPreferencePatch, AppPreferences, AuthMachine, Effect, Input,
+    SessionCredential, Settings, SignInFailure, Snapshot, WindowGeometry,
 };
 use gamenode_platform::covers::{artwork_dir, write_cover};
 use tokio::runtime::Handle;
@@ -37,6 +38,7 @@ pub mod pc_ports;
 mod playtime;
 mod plugin_ports;
 mod providers;
+mod sign_in;
 mod tools;
 
 pub use pc_ports::{PortProgressPublisher, PortsService};
@@ -53,6 +55,18 @@ pub enum GameNodePage {
     Library,
     /// `https://gamenode.app/game/<id>`.
     Game { id: u64 },
+}
+
+/// One of the fixed website links Settings can open. The UI passes the enum, never a URL (D15).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GameNodeLink {
+    Website,
+    Terms,
+    Privacy,
+    ReportIssue,
+    /// The signed-in user's profile page; needs a verified session.
+    Profile,
 }
 
 /// Why a GameNode page could not be opened. The code is stable; the UI words the message.
@@ -85,6 +99,17 @@ pub struct LaunchRecipeChoices {
     pub recipes: Vec<LaunchRecipeOption>,
 }
 
+/// Why a provider's achievements page could not be opened. The code is stable; the UI words the
+/// message and never receives or passes the URL itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase", tag = "code")]
+pub enum AchievementPageError {
+    /// The entry's provider publishes no achievements page, or its id is not a Steam app id.
+    Unsupported,
+    /// The blocking worker or the system browser failed.
+    Browser,
+}
+
 /// The shortest time between snapshots published for cover completions.
 const COVER_FLUSH_INTERVAL: Duration = Duration::from_millis(300);
 
@@ -98,6 +123,8 @@ pub struct Ports {
     pub tools: Option<Arc<dyn gamenode_core::tools::ToolStore>>,
     pub tool_catalog: Option<Arc<dyn gamenode_core::tools::ToolCatalogApi>>,
     pub tool_installer: Option<Arc<dyn gamenode_core::tools::ToolInstallerHost>>,
+    /// Opens the executable picker for a game's install folder; `None` uses the native dialog.
+    pub tool_picker: Option<Arc<dyn crate::engine::tools::ToolTargetPicker>>,
     pub processes: Arc<dyn gamenode_core::ports::Processes>,
     pub playtime: Arc<dyn gamenode_core::ports::PlaytimeStore>,
     pub playtime_api: Arc<dyn gamenode_core::ports::PlaytimeApi>,
@@ -161,10 +188,28 @@ impl StorageWorker {
 
 struct State {
     pending_claim: Option<gamenode_core::drm_free::PendingClaim>,
+    /// The unsaved registration behind `pending_claim`, kept until the user decides.
+    pending_claim_registration: Option<gamenode_core::drm_free::Registration>,
     local_selection: Option<String>,
     local_generation: u64,
     local_backup_busy: bool,
+    /// Custom-cover files picked in an open editor, by registration id, not committed yet.
+    local_cover_pending: std::collections::BTreeMap<String, String>,
+    /// Incremented when an editor closes or commits, so a pick that finishes late deletes its file.
+    local_cover_epoch: std::collections::BTreeMap<String, u64>,
     local: gamenode_core::drm_free::LocalView,
+    /// Review candidates already seen, so a new snapshot never re-selects a manual choice.
+    local_review_seen: std::collections::BTreeSet<String>,
+    /// Candidate fingerprints waiting for a GameNode suggestion, one request at a time.
+    local_suggestion_queue: std::collections::VecDeque<String>,
+    local_suggestion_queued: std::collections::BTreeSet<String>,
+    local_suggestion_searched: std::collections::BTreeSet<String>,
+    /// Titles with a request in flight, so a generation change cannot queue a duplicate.
+    local_suggestion_in_flight: std::collections::BTreeSet<String>,
+    /// Suggestion results by normalized title, so each new title is searched once.
+    local_suggestion_titles:
+        std::collections::BTreeMap<String, Option<gamenode_core::library::SuggestionView>>,
+    local_suggestion_running: bool,
     tools: gamenode_core::tools::ToolsView,
     tool_reset_config: bool,
     tool_last_fetch: std::collections::HashMap<
@@ -205,6 +250,10 @@ struct State {
     achievement_language: String,
 }
 
+/// Test seam type for the Windows login-startup side effect.
+#[cfg(test)]
+type AutostartHook = Arc<dyn Fn(AppPreferences) -> Result<(), String> + Send + Sync>;
+
 struct Shared {
     local_catalog: Arc<tokio::sync::Semaphore>,
     local_cancel: std::sync::atomic::AtomicBool,
@@ -220,6 +269,12 @@ struct Shared {
     ports: Ports,
     runtime: Handle,
     storage: StorageWorker,
+    /// Serializes preference commits so an older write can never land after a newer one. The
+    /// guard is held across the off-thread save and any lifecycle side effect.
+    settings_gate: tokio::sync::Mutex<()>,
+    /// Test seam for the Windows login-startup side effect, which cannot fail on Linux.
+    #[cfg(test)]
+    autostart_hook: Mutex<Option<AutostartHook>>,
     providers: Mutex<Option<Arc<dyn crate::plugin_host::runtime::ProviderRuntime>>>,
     /// Third-party plugin profiles follow the signed-in GameNode account.
     plugin_profiles: Mutex<Option<Arc<crate::plugin_host::profile::PluginProfiles>>>,
@@ -231,6 +286,16 @@ struct Shared {
     provider_checks: Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// One catalog sync per provider, coalescing requests made while one runs.
     catalog_syncs: Mutex<std::collections::HashMap<String, CatalogSync>>,
+    /// Watched-folder ids whose check is running now, so every rebuilt view reports checking.
+    local_checking: Mutex<std::collections::BTreeSet<String>>,
+    /// Whether the user wants real-time watched-folder monitoring (Settings › Jogos DRM-free).
+    local_realtime: AtomicBool,
+    /// One filesystem watcher thread, started and stopped by the preference.
+    local_watcher: AtomicBool,
+    /// The last automatic tool update check, or `None` before the first one.
+    tool_auto_check_last: Mutex<Option<Instant>>,
+    /// A scheduled automatic tool check is queued or running.
+    tool_auto_check_running: AtomicBool,
     /// One serialized achievement worker and its priority queue per provider.
     achievement_queues: Mutex<std::collections::HashMap<String, achievements::Queue>>,
     /// A cover completion is waiting for the coalescing flush task to publish it.
@@ -279,6 +344,9 @@ impl Engine {
     ) -> Self {
         #[cfg(test)]
         let test_runtime = Arc::new(tests::provider_runtime::Runtime::new(&ports));
+        let mut library = library;
+        library.set_shared_excluded(settings.preferences.shared_excluded.clone());
+        let discovery_realtime = settings.preferences.discovery_realtime;
         let shared = Arc::new(Shared {
             local_catalog: Arc::new(tokio::sync::Semaphore::new(4)),
             local_cancel: std::sync::atomic::AtomicBool::new(false),
@@ -286,10 +354,20 @@ impl Engine {
             local_discovery_again: std::sync::atomic::AtomicBool::new(false),
             state: Mutex::new(State {
                 pending_claim: None,
+                pending_claim_registration: None,
                 local_selection: None,
                 local_generation: 0,
                 local_backup_busy: false,
+                local_cover_pending: Default::default(),
+                local_cover_epoch: Default::default(),
                 local: Default::default(),
+                local_review_seen: Default::default(),
+                local_suggestion_queue: Default::default(),
+                local_suggestion_queued: Default::default(),
+                local_suggestion_searched: Default::default(),
+                local_suggestion_in_flight: Default::default(),
+                local_suggestion_titles: Default::default(),
+                local_suggestion_running: false,
                 tools: gamenode_core::tools::ToolsView {
                     catalog: tools::builtin_catalog_items(),
                     ..Default::default()
@@ -322,12 +400,20 @@ impl Engine {
             ports,
             runtime,
             storage: StorageWorker::new(),
+            settings_gate: tokio::sync::Mutex::new(()),
+            #[cfg(test)]
+            autostart_hook: Mutex::new(None),
             providers: Mutex::new(None),
             plugin_profiles: Mutex::new(None),
             selected_launch_api: Mutex::new(None),
             library_feed: Mutex::new(None),
             provider_checks: Mutex::new(std::collections::HashMap::new()),
             catalog_syncs: Mutex::new(std::collections::HashMap::new()),
+            local_checking: Mutex::new(std::collections::BTreeSet::new()),
+            local_realtime: AtomicBool::new(discovery_realtime),
+            local_watcher: AtomicBool::new(false),
+            tool_auto_check_last: Mutex::new(None),
+            tool_auto_check_running: AtomicBool::new(false),
             achievement_queues: Mutex::new(std::collections::HashMap::new()),
             cover_flush_pending: AtomicBool::new(false),
             cover_flush_scheduled: AtomicBool::new(false),
@@ -400,6 +486,15 @@ impl Engine {
         &self.shared.ports.covers_dir
     }
 
+    /// Cover file names for the sign-in mural, read on a blocking worker. Never fails: a missing
+    /// or unreadable cache renders neutral tiles.
+    pub async fn sign_in_cover_wall(&self) -> Vec<String> {
+        let dir = self.shared.ports.covers_dir.clone();
+        tokio::task::spawn_blocking(move || sign_in::cover_wall(&dir))
+            .await
+            .unwrap_or_default()
+    }
+
     pub fn host_files(&self) -> &Arc<dyn gamenode_core::ports::HostFiles> {
         &self.shared.ports.files
     }
@@ -436,6 +531,46 @@ impl Engine {
                 gamenode_api::library_page_url(&web, &user_id)
             }
             (GameNodePage::Library, None) => return Err(GameNodePageError::NoSession),
+        };
+        self.shared
+            .runtime
+            .spawn_blocking(move || browser.open(&url))
+            .await
+            .map_err(|_| GameNodePageError::Browser)?
+            .map_err(|_| GameNodePageError::Browser)
+    }
+
+    /// Opens one of the fixed GameNode website links in the default browser, off the UI thread.
+    /// Only `Profile` needs a verified session; the static pages open signed out too. The UI never
+    /// supplies a URL.
+    pub async fn open_gamenode_link(&self, link: GameNodeLink) -> Result<(), GameNodePageError> {
+        let (browser, user_id) = {
+            let state = self.lock();
+            let user_id = match link {
+                GameNodeLink::Profile => {
+                    state
+                        .machine
+                        .verified_credential()
+                        .ok_or(GameNodePageError::NoSession)?;
+                    match state.machine.state() {
+                        AuthState::SignedIn(user) => Some(user.id.clone()),
+                        _ => return Err(GameNodePageError::NoSession),
+                    }
+                }
+                _ => None,
+            };
+            (self.shared.ports.browser.clone(), user_id)
+        };
+        let web = gamenode_api::web_url_from_env().map_err(|_| GameNodePageError::Browser)?;
+        let url = match (link, user_id) {
+            (GameNodeLink::Website, _) => web,
+            (GameNodeLink::Terms, _) => gamenode_api::site_page_url(&web, "terms"),
+            (GameNodeLink::Privacy, _) => gamenode_api::site_page_url(&web, "privacy"),
+            (GameNodeLink::ReportIssue, _) => gamenode_api::site_page_url(&web, "report"),
+            (GameNodeLink::Profile, Some(user_id)) => {
+                gamenode_api::profile_page_url(&web, &user_id)
+            }
+            (GameNodeLink::Profile, None) => return Err(GameNodePageError::NoSession),
         };
         self.shared
             .runtime
@@ -495,14 +630,15 @@ impl Engine {
         let mut snapshot = Snapshot::new(
             &state.machine,
             self.shared.ports.credentials.method(),
-            state.settings,
+            state.settings.clone(),
             library,
             state.launch.clone(),
         );
         snapshot.local_games = state.local.clone();
         snapshot.local_games.pending_claim = state.pending_claim.clone();
+        snapshot.add_notice = state.library.add_notice();
         snapshot.playtime_error = state.playtime.error;
-        snapshot.sync = state.playtime.preferences;
+        snapshot.sync = state.playtime.view();
         snapshot.playtime_source = state.playtime.source;
         let running_sessions = if state.playtime.available {
             state.playtime.tracker.running_started_at()
@@ -649,11 +785,18 @@ impl Engine {
         self.start_providers();
         self.recover_local_jobs();
         self.refresh_local_games();
+        // "Check when GameNode starts": one reconcile before the watcher (if any) takes over.
+        if self.preferences().discovery_on_start
+            && self.shared.ports.platform == gamenode_core::provider::Platform::Windows
+        {
+            self.rescan_local_folders();
+        }
         self.start_local_discovery();
         self.start_local_manifest_updates();
         self.load_achievement_cache();
         self.start_achievement_reconciliation();
         self.recover_and_load_tools();
+        self.tool_auto_check_at(Instant::now());
         let (engine, store) = (self.clone(), self.shared.ports.library.clone());
         self.shared.storage.submit(move || {
             if let Err(error) = engine.start_playtime() {
@@ -851,6 +994,7 @@ impl Engine {
             || matches!(
                 &input,
                 LibInput::PickMatch { .. }
+                    | LibInput::ConfirmMatch { .. }
                     | LibInput::MarkNoGame { .. }
                     | LibInput::MarkEntryNoGame { .. }
                     | LibInput::ClearMatch
@@ -1010,6 +1154,11 @@ impl Engine {
         let effects = state.library.handle(input);
         for effect in effects {
             self.library_effect(state, effect);
+        }
+        if !state.library_loading && !state.library.scan_running() {
+            // Finish a requested "Sync now" once no scan is pending; the first call may be a
+            // rescan that starts one, and the final ProviderScanned call ends it.
+            self.sync_now_scan_finished(state);
         }
         if retry_favorites || (scan_was_running && !state.library.scan_running()) {
             let effects = state.library.handle(LibInput::SyncFavoritesRequested);
@@ -1461,6 +1610,12 @@ impl Engine {
             // A new library installs its cache before it is ready; catalog clears are deferred.
             state.library_loading = account.is_some();
             state.local_generation += 1;
+            // Suggestions belong to the session that asked for them; a new account starts over.
+            state.local_suggestion_queue.clear();
+            state.local_suggestion_queued.clear();
+            state.local_suggestion_searched.clear();
+            state.local_suggestion_in_flight.clear();
+            state.local_suggestion_titles.clear();
         }
         self.run_library(state, LibInput::AccountChanged(account));
         if catalog_changed {
@@ -1903,6 +2058,21 @@ impl Engine {
                     engine.check_rejected(rejected).await;
                 });
             }
+            LibEffect::CreateCollection { op, name, .. } => {
+                let Some(credential) = credential else {
+                    return self.later(LibInput::CollectionCreated {
+                        op,
+                        result: Err(CreateCollectionError::Rejected),
+                    });
+                };
+                let (engine, api) = (self.clone(), ports.games.clone());
+                self.shared.runtime.spawn(async move {
+                    let result = api.create_collection(&credential, &name).await;
+                    let rejected = matches!(result, Err(CreateCollectionError::Rejected));
+                    engine.library_input(LibInput::CollectionCreated { op, result });
+                    engine.check_rejected(rejected).await;
+                });
+            }
             LibEffect::CreateEntry {
                 op,
                 game_id,
@@ -1985,18 +2155,166 @@ impl Engine {
         }
     }
 
-    /// Applies a settings change, persists it, and publishes the result.
-    pub fn update_settings(&self, change: impl FnOnce(&mut Settings)) {
+    /// Applies a window-geometry change, persists it, and publishes the result. Window saves
+    /// write only the geometry rows, so a queued save that lands after a preference commit
+    /// cannot overwrite the committed preferences (and preference commits keep the geometry).
+    pub fn update_window_geometry(&self, geometry: WindowGeometry) {
         let mut state = self.lock();
-        change(&mut state.settings);
-        let settings = state.settings;
+        state.settings.window = Some(geometry);
+        let window = state.settings.window;
         let store = self.shared.ports.settings.clone();
         self.shared.storage.submit(move || {
-            if let Err(error) = store.save(&settings) {
-                tracing::warn!(%error, "could not save settings");
+            if let Err(error) = store.save_window(window) {
+                tracing::warn!(%error, "could not save window geometry");
             }
         });
         self.publish(&mut state);
+    }
+
+    /// The current PC-wide preferences. A cheap lock and clone, safe for the close-request and
+    /// maintenance paths that must not do I/O on the event loop.
+    pub fn preferences(&self) -> AppPreferences {
+        self.lock().settings.preferences.clone()
+    }
+
+    /// Validates, persists and commits one preference change. The caller waits for the actual
+    /// storage and lifecycle result: a refused or failed change leaves the snapshot, the stored
+    /// value and the OS side effect on the previous value. Patches are serialized, so two quick
+    /// changes cannot overwrite each other or land out of order.
+    pub async fn commit_app_preference(
+        &self,
+        patch: AppPreferencePatch,
+    ) -> Result<(), AppPreferenceError> {
+        patch.validate()?;
+        let _commit = self.shared.settings_gate.lock().await;
+        let previous = self.preferences();
+        let mut next = previous.clone();
+        patch.apply(&mut next);
+
+        let store = self.shared.ports.settings.clone();
+        let saved = next.clone();
+        self.shared
+            .runtime
+            .spawn_blocking(move || store.save_preferences(&saved))
+            .await
+            .map_err(|_| AppPreferenceError::Storage("the settings storage worker stopped".into()))?
+            .map_err(|error| AppPreferenceError::Storage(error.to_string()))?;
+
+        // The value is durable now. Lifecycle side effects run before the snapshot publishes so
+        // an error can roll the stored value back without the UI ever seeing an unapplied value.
+        if matches!(
+            patch,
+            AppPreferencePatch::StartWithWindows(_) | AppPreferencePatch::StartMinimized(_)
+        ) && let Err(error) = self.apply_autostart(next.clone()).await
+        {
+            let store = self.shared.ports.settings.clone();
+            let rollback = previous.clone();
+            let restored = self
+                .shared
+                .runtime
+                .spawn_blocking(move || store.save_preferences(&rollback))
+                .await;
+            let rolled_back = matches!(restored, Ok(Ok(())));
+            if !rolled_back {
+                // The old value could not be written again, so keep the durable one and make the
+                // snapshot agree with it instead of leaving a stored/applied mismatch.
+                let mut state = self.lock();
+                patch.apply(&mut state.settings.preferences);
+                let shared_excluded = state.settings.preferences.shared_excluded.clone();
+                state.library.set_shared_excluded(shared_excluded);
+                self.publish(&mut state);
+            }
+            return Err(AppPreferenceError::SideEffect(error));
+        }
+
+        {
+            let mut state = self.lock();
+            // Apply only this field: a newer preference change can never be lost by an older
+            // commit, even if a test-only or future path wrote another field meanwhile.
+            patch.apply(&mut state.settings.preferences);
+            let shared_excluded = state.settings.preferences.shared_excluded.clone();
+            state.library.set_shared_excluded(shared_excluded);
+            self.publish(&mut state);
+        }
+        // Runs after the stored value and the snapshot are updated, so a hook that reads
+        // `preferences()` sees the new value. Language, discovery and tool behavior plug in here
+        // rather than at each call site.
+        self.apply_preference_side_effects(&patch);
+        Ok(())
+    }
+
+    /// Applies the Windows login-startup value for the committed preferences. The registry work
+    /// runs on a blocking worker; its error reaches the command caller.
+    async fn apply_autostart(&self, preferences: AppPreferences) -> Result<(), String> {
+        // Tests run on Linux, where the real call is a no-op; the hook lets a test exercise the
+        // rollback path a failed registry write reaches on Windows.
+        #[cfg(test)]
+        if let Some(hook) = self.shared.autostart_hook.lock().unwrap().clone() {
+            return hook(preferences);
+        }
+        #[cfg(windows)]
+        {
+            let start = preferences.start_with_windows;
+            let background = preferences.start_minimized;
+            self.shared
+                .runtime
+                .spawn_blocking(move || {
+                    if start {
+                        gamenode_platform::autostart::register(background).map(drop)
+                    } else {
+                        gamenode_platform::autostart::unregister().map(drop)
+                    }
+                    .map_err(|error| error.to_string())
+                })
+                .await
+                .map_err(|_| "the login startup worker stopped".to_owned())?
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = preferences;
+            Ok(())
+        }
+    }
+
+    /// The side effects a preference change has outside its stored value. The language choice
+    /// also changes the language requested from achievement providers; the host relabels the tray
+    /// and rewrites autostart from its own layer. The value and the snapshot are already updated
+    /// when this runs.
+    fn apply_preference_side_effects(&self, patch: &AppPreferencePatch) {
+        match patch {
+            AppPreferencePatch::Locale(_) => {
+                let preferences = self.preferences();
+                let locale = crate::commands::effective_locale(
+                    preferences.locale,
+                    &crate::commands::system_locale(),
+                )
+                .to_owned();
+                let mut state = self.lock();
+                if state.achievement_language != locale {
+                    state.achievement_language = locale;
+                    self.publish(&mut state);
+                }
+            }
+            AppPreferencePatch::DiscoveryRealtime(enabled) => {
+                self.shared
+                    .local_realtime
+                    .store(*enabled, std::sync::atomic::Ordering::Release);
+                if *enabled && self.shared.ports.platform == Platform::Windows {
+                    // Turning it back on resumes monitoring and reconciles missed changes once.
+                    self.start_local_discovery();
+                    self.rescan_local_folders();
+                } else if !*enabled {
+                    // The watcher thread observes this and ends without waiting for a restart.
+                    self.shared
+                        .local_watcher
+                        .store(false, std::sync::atomic::Ordering::Release);
+                }
+            }
+            AppPreferencePatch::ToolAutoCheck(true) => {
+                self.tool_auto_check_at(Instant::now());
+            }
+            _ => {}
+        }
     }
 
     fn execute(&self, effect: Effect) {
@@ -2046,7 +2364,12 @@ impl Engine {
                     };
                     // Mark the browser as opened first so a prompt callback is never rejected
                     // for arriving "too early"; a launch failure then cancels the attempt.
-                    engine.dispatch_on_worker(Input::BrowserOpened { op }).await;
+                    engine
+                        .dispatch_on_worker(Input::BrowserOpened {
+                            op,
+                            url: url.as_str().to_owned(),
+                        })
+                        .await;
                     let opened = tokio::task::spawn_blocking(move || browser.open(&url)).await;
                     if !matches!(opened, Ok(Ok(()))) {
                         engine
@@ -2055,6 +2378,21 @@ impl Engine {
                                 reason: SignInFailure::BrowserLaunch,
                             })
                             .await;
+                    }
+                });
+            }
+            Effect::OpenBrowser { url } => {
+                let (engine, browser) = (self.clone(), ports.browser.clone());
+                self.shared.runtime.spawn(async move {
+                    let parsed = url::Url::parse(&url);
+                    let opened = match parsed {
+                        Ok(parsed) => tokio::task::spawn_blocking(move || browser.open(&parsed))
+                            .await
+                            .unwrap_or(Err(gamenode_core::ports::BrowserError)),
+                        Err(_) => Err(gamenode_core::ports::BrowserError),
+                    };
+                    if opened.is_err() {
+                        engine.dispatch(Input::BrowserReopenFailed { url });
                     }
                 });
             }

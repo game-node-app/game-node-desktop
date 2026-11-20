@@ -4,8 +4,9 @@ use gamenode_core::Provider;
 use gamenode_core::auth::{AuthMachine, Input};
 use gamenode_core::credential::StorageMethod;
 use gamenode_core::library::{
-    DetailView, EntryStatus, Input as LibraryInput, LibraryFilters, MatchSource, MatchStatus,
-    Membership, Row, SelectMode, SidebarSelection, Sort, SortDirection, SortKey, ViewMode,
+    CoverSize, DetailView, EntryStatus, Input as LibraryInput, LibraryFilters, MatchSource,
+    MatchStatus, Membership, Row, SelectMode, SidebarSelection, Sort, SortDirection, SortKey,
+    ViewMode,
 };
 use gamenode_core::library::{FilterCounts, RowGroup, ScopeCounts, TitleSource, TitleSourceKind};
 use gamenode_core::library::{GroupBy, LibraryScope, RowGameNode};
@@ -25,6 +26,7 @@ fn test_snapshot_roundtrip_serialization() {
             y: Some(50),
             maximized: false,
         }),
+        ..Settings::default()
     };
 
     let mut snapshot = Snapshot::new(&machine, StorageMethod::SecretService, settings, None, None);
@@ -47,6 +49,7 @@ fn test_snapshot_roundtrip_serialization() {
     assert!(value.get("auth").is_some());
     assert!(value.get("storage").is_some());
     assert!(value.get("settings").is_some());
+    assert!(value.get("preferences").is_some());
     assert!(value.get("tools").is_some());
     assert_eq!(
         value
@@ -91,6 +94,7 @@ fn test_detail_view_serialization_and_artwork_omission() {
             source: MatchSource::Chosen,
         },
         cover_file: Some("1091500.jpg".into()),
+        game_cover_file: Some("1091500.jpg".into()),
         release_year: Some(2020),
         added_at: 1_700_000_000,
         is_favorite: false,
@@ -159,7 +163,14 @@ fn test_auth_input_serialization() {
         Input::Start,
         Input::StartSignIn(Provider::Discord),
         Input::CancelSignIn,
-        Input::BrowserOpened { op: 42 },
+        Input::BrowserOpened {
+            op: 42,
+            url: "https://server.test/sign-in".into(),
+        },
+        Input::ReopenBrowser,
+        Input::BrowserReopenFailed {
+            url: "https://server.test/sign-in".into(),
+        },
         Input::CallbackReceived("app.gamenode://auth?code=xyz".into()),
         Input::RetryRestore,
         Input::SignOut,
@@ -174,11 +185,17 @@ fn test_auth_input_serialization() {
     }
 
     // Verify camelCase representation
-    let browser_opened = Input::BrowserOpened { op: 99 };
+    let browser_opened = Input::BrowserOpened {
+        op: 99,
+        url: "https://server.test/sign-in".into(),
+    };
     let json_val = serde_json::to_value(&browser_opened).unwrap();
     assert_eq!(
         json_val.get("browserOpened"),
-        Some(&serde_json::json!({ "op": 99 }))
+        Some(&serde_json::json!({
+            "op": 99,
+            "url": "https://server.test/sign-in"
+        }))
     );
 
     let start_sign_in = Input::StartSignIn(Provider::Google);
@@ -203,6 +220,7 @@ fn test_library_input_serialization() {
         },
         LibraryInput::SetSearch("witcher".into()),
         LibraryInput::SetView(ViewMode::Grid),
+        LibraryInput::SetCoverSize(CoverSize::Large),
         LibraryInput::SetSort(Sort {
             key: SortKey::Title,
             direction: SortDirection::Ascending,
@@ -250,6 +268,13 @@ fn test_library_input_serialization() {
             collection_id: "backlog".into(),
         },
         LibraryInput::UndoAdd { run: 9 },
+        LibraryInput::OpenAdd,
+        LibraryInput::HideAdd,
+        LibraryInput::CloseAdd,
+        LibraryInput::StartNewCollection,
+        LibraryInput::SetNewCollectionName("Coop no sofá".into()),
+        LibraryInput::CreateCollection,
+        LibraryInput::CancelNewCollection,
     ];
 
     for input in &inputs {
@@ -270,6 +295,23 @@ fn test_library_input_serialization() {
     assert_eq!(
         serde_json::to_value(LibraryInput::SetSidebarCollapsed(true)).unwrap(),
         serde_json::json!({ "setSidebarCollapsed": true })
+    );
+    assert_eq!(
+        serde_json::to_value(LibraryInput::SetCoverSize(CoverSize::Large)).unwrap(),
+        serde_json::json!({ "setCoverSize": "large" })
+    );
+    // The add dialog's quick collection field and its background batch.
+    assert_eq!(
+        serde_json::to_value(LibraryInput::SetNewCollectionName("Coop".into())).unwrap(),
+        serde_json::json!({ "setNewCollectionName": "Coop" })
+    );
+    assert_eq!(
+        serde_json::to_value(LibraryInput::CreateCollection).unwrap(),
+        serde_json::json!("createCollection")
+    );
+    assert_eq!(
+        serde_json::to_value(LibraryInput::HideAdd).unwrap(),
+        serde_json::json!("hideAdd")
     );
     // The organization inputs carry the exact payload the mock host mirrors.
     assert_eq!(

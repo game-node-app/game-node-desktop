@@ -88,6 +88,18 @@ pub struct Installed {
     pub fields: BTreeMap<String, String>,
 }
 
+/// One successful discovery scan: the installed games plus where the scan looked.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Scan {
+    pub records: Vec<Installed>,
+    /// The Steam root the scan started from, already canonicalized. Absent when Steam is not
+    /// installed.
+    pub install_root: Option<String>,
+    /// How many library folders the scan used, including the root's own. Absent when Steam is
+    /// not installed.
+    pub library_folders: Option<u32>,
+}
+
 impl Manifest {
     pub fn resolve_roots(&self, platform: Platform, resolver: &dyn RootResolver) -> Vec<String> {
         let roots = match platform {
@@ -113,13 +125,24 @@ impl Manifest {
         files: &dyn Files,
         resolver: &dyn RootResolver,
     ) -> Result<Vec<Installed>, String> {
+        Ok(self.scan_with_location(platform, files, resolver)?.records)
+    }
+
+    /// Scans like [`Manifest::scan`] and also reports where the scan looked.
+    pub fn scan_with_location(
+        &self,
+        platform: Platform,
+        files: &dyn Files,
+        resolver: &dyn RootResolver,
+    ) -> Result<Scan, String> {
         let roots = self.resolve_roots(platform, resolver);
-        let raw = scanner::scan(&ScanInput {
+        let scanned = scanner::scan(&ScanInput {
             files,
             roots: &roots,
         })?;
         let mut seen = BTreeSet::new();
-        Ok(raw
+        let records = scanned
+            .records
             .into_iter()
             .filter_map(|record| {
                 let id = record.id?.trim().to_owned();
@@ -142,7 +165,12 @@ impl Manifest {
                     fields: record.fields,
                 })
             })
-            .collect())
+            .collect();
+        Ok(Scan {
+            records,
+            install_root: scanned.install_root,
+            library_folders: scanned.library_folders,
+        })
     }
 }
 

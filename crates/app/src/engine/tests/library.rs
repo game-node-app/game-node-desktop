@@ -58,16 +58,25 @@ pub(super) struct SlowFiles {
 impl SlowFiles {
     /// Steam with one installed game: Portal 2 (`620`).
     pub(super) fn steam_with_portal_2() -> Self {
-        let files = MemoryFiles::new()
-            .with_file(
-                &format!("{STEAM}/steamapps/libraryfolders.vdf"),
-                LIBRARY_FOLDERS,
-            )
-            .with_file(
-                &format!("{STEAM}/steamapps/appmanifest_620.acf"),
-                "\"AppState\"\n{\n\t\"appid\"\t\t\"620\"\n\t\"name\"\t\t\"Portal 2\"\n\t\"StateFlags\"\t\t\"4\"\n\t\"installdir\"\t\t\"Portal 2\"\n}\n",
-            )
-            .with_dir(&format!("{STEAM}/steamapps/common/Portal 2"));
+        Self::steam_with_games(&[("620", "Portal 2")])
+    }
+
+    /// Steam with several installed games, each with a manifest and a common folder.
+    pub(super) fn steam_with_games(games: &[(&str, &str)]) -> Self {
+        let mut files = MemoryFiles::new().with_file(
+            &format!("{STEAM}/steamapps/libraryfolders.vdf"),
+            LIBRARY_FOLDERS,
+        );
+        for (appid, name) in games {
+            files = files
+                .with_file(
+                    &format!("{STEAM}/steamapps/appmanifest_{appid}.acf"),
+                    &format!(
+                        "\"AppState\"\n{{\n\t\"appid\"\t\t\"{appid}\"\n\t\"name\"\t\t\"{name}\"\n\t\"StateFlags\"\t\t\"4\"\n\t\"installdir\"\t\t\"{name}\"\n}}\n"
+                    ),
+                )
+                .with_dir(&format!("{STEAM}/steamapps/common/{name}"));
+        }
         Self {
             inner: Mutex::new(files),
             gate: Gate::default(),
@@ -538,6 +547,7 @@ fn portal_2_match() -> ExternalMatch {
             name: "Portal 2".to_owned(),
             release_year: Some(2011),
             cover_url: Some(COVER.to_owned()),
+            platforms: Vec::new(),
         },
     }
 }
@@ -642,6 +652,45 @@ async fn a_scan_is_saved_and_the_signed_in_account_is_remembered() {
     assert_eq!(scans[0].0, "steam");
     assert_eq!(scans[0].1[0].id, "620");
     assert_eq!(*h.store.account.lock().unwrap(), Some(account("u1", "Ana")));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn detected_stores_report_the_scan_location_and_unreported_ones_keep_it_empty() {
+    let mut h = harness(FakeApi::new(), FakeCreds::with(None));
+    h.signed_out().await;
+    h.sign_in("token").await;
+    let snapshot = h
+        .until("the scan reports its location", |s| {
+            view(s).is_some_and(|view| {
+                !view.scanning
+                    && view
+                        .providers
+                        .iter()
+                        .any(|provider| provider.id == "steam" && provider.install_root.is_some())
+            })
+        })
+        .await;
+    let providers = &view(&snapshot).unwrap().providers;
+    let steam = providers
+        .iter()
+        .find(|provider| provider.id == "steam")
+        .unwrap();
+    assert_eq!(steam.install_root.as_deref(), Some(STEAM));
+    assert_eq!(steam.library_folders, Some(1));
+    assert_eq!(steam.installed_count, 1);
+    let packagekit = providers
+        .iter()
+        .find(|provider| provider.id == "packagekit")
+        .unwrap();
+    assert_eq!(
+        (
+            packagekit.install_root.as_deref(),
+            packagekit.library_folders
+        ),
+        (None, None),
+        "a provider that reports no location keeps only its installed count"
+    );
+    assert_eq!(packagekit.installed_count, 0);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1248,6 +1297,7 @@ async fn a_restart_shows_the_cached_account_library_before_any_request() {
             cover_url: None,
             cover_file: None,
             cover_failed_at: None,
+            platforms: Vec::new(),
         }],
         ..LibraryCache::default()
     };
@@ -1334,6 +1384,7 @@ async fn a_cover_burst_publishes_far_fewer_snapshots_and_keeps_the_last_cover() 
             )),
             cover_file: None,
             cover_failed_at: None,
+            platforms: Vec::new(),
         });
     }
     *h.store.cache.lock().unwrap() = cache;
@@ -1565,6 +1616,321 @@ async fn adding_a_game_reads_back_its_id_and_undo_deletes_exactly_that_entry() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn signing_out_after_hiding_a_batch_reports_the_remaining_games_once() {
+    use gamenode_core::library::{Input as LibInput, SelectMode};
+
+    let api = FakeApi::new();
+    *api.lookup_result.lock().unwrap() = Some(Ok(vec![
+        steam_match("500", 8, "Left 4 Dead"),
+        steam_match("620", 7, "Portal 2"),
+        steam_match("504230", 10, "Celeste"),
+    ]));
+    let mut h = harness(api, FakeCreds::with(None));
+    let files = SlowFiles::steam_with_games(&[
+        ("500", "Left 4 Dead"),
+        ("620", "Portal 2"),
+        ("504230", "Celeste"),
+    ]);
+    *h.files.inner.lock().unwrap() = files.inner.into_inner().unwrap();
+    h.signed_out().await;
+    h.sign_in("token").await;
+    h.until("three installed games", |s| {
+        view(s).is_some_and(|v| {
+            v.rows.len() == 3
+                && v.rows
+                    .iter()
+                    .all(|row| matches!(row.status, MatchStatus::Matched { .. }))
+        })
+    })
+    .await;
+
+    h.engine.library_input(LibInput::Select {
+        key: "steam:500".into(),
+        mode: SelectMode::Replace,
+    });
+    h.engine.library_input(LibInput::Select {
+        key: "steam:620".into(),
+        mode: SelectMode::Toggle,
+    });
+    h.engine.library_input(LibInput::Select {
+        key: "steam:504230".into(),
+        mode: SelectMode::Toggle,
+    });
+    h.until("the add is available", |s| {
+        view(s).is_some_and(|v| v.actions.add_to_gamenode.is_available())
+    })
+    .await;
+    h.engine.library_input(LibInput::OpenAdd);
+    h.until("ready to confirm", |s| {
+        view(s).is_some_and(|v| {
+            v.add_dialog
+                .as_ref()
+                .is_some_and(|dialog| dialog.can_confirm)
+        })
+    })
+    .await;
+
+    // Hold every GameNode write so the batch is still running when the account goes away.
+    *h.api.delay.lock().unwrap() = Duration::from_millis(250);
+    h.engine.library_input(LibInput::ConfirmAdd);
+    h.engine.library_input(LibInput::HideAdd);
+    h.engine.dispatch(Input::SignOut);
+
+    let snapshot = h
+        .until("signed out", |s| s.auth == AuthView::SignedOut)
+        .await;
+    assert!(snapshot.library.is_none());
+    let notice = snapshot
+        .add_notice
+        .as_ref()
+        .expect("the hidden batch's outcome survives sign-out");
+    assert!(notice.batch);
+    assert_eq!(notice.account_id.as_deref(), Some("u1"));
+    assert_eq!(
+        notice.summary.added
+            + notice.summary.already_present
+            + notice.summary.skipped
+            + notice.summary.failed,
+        3,
+        "every selected game is counted: {:?}",
+        notice.summary
+    );
+    let run = notice.summary.run_id;
+    let created_at_sign_out = h.api.created.lock().unwrap().len();
+
+    // The answers to any request that was already out are ignored: nothing else is created and
+    // the notice's counts do not change.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(h.api.created.lock().unwrap().len(), created_at_sign_out);
+    assert!(!h.engine.lock().library.add_run_active());
+    let after = h.engine.snapshot().add_notice.expect("the notice is kept");
+    assert_eq!(after.summary.run_id, run);
+    assert_eq!(after.summary, notice.summary);
+}
+
+/// One Steam match for the multi-game library fixture.
+fn steam_match(uid: &str, id: u64, name: &str) -> ExternalMatch {
+    ExternalMatch {
+        uid: uid.to_owned(),
+        game: GameSummary {
+            id,
+            name: name.to_owned(),
+            release_year: None,
+            cover_url: None,
+            platforms: Vec::new(),
+        },
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn switching_accounts_after_hiding_a_batch_stops_creates_and_keeps_first_account_notice() {
+    use gamenode_core::library::{Input as LibInput, SelectMode};
+
+    let api = FakeApi::new();
+    *api.lookup_result.lock().unwrap() = Some(Ok(vec![
+        steam_match("500", 8, "Left 4 Dead"),
+        steam_match("620", 7, "Portal 2"),
+        steam_match("504230", 10, "Celeste"),
+    ]));
+    let mut h = harness(api, FakeCreds::with(None));
+    let files = SlowFiles::steam_with_games(&[
+        ("500", "Left 4 Dead"),
+        ("620", "Portal 2"),
+        ("504230", "Celeste"),
+    ]);
+    *h.files.inner.lock().unwrap() = files.inner.into_inner().unwrap();
+    h.signed_out().await;
+    h.sign_in("token-u1").await;
+    h.until("three installed games", |s| {
+        view(s).is_some_and(|v| {
+            v.rows.len() == 3
+                && v.rows
+                    .iter()
+                    .all(|row| matches!(row.status, MatchStatus::Matched { .. }))
+        })
+    })
+    .await;
+
+    h.engine.library_input(LibInput::Select {
+        key: "steam:500".into(),
+        mode: SelectMode::Replace,
+    });
+    h.engine.library_input(LibInput::Select {
+        key: "steam:620".into(),
+        mode: SelectMode::Toggle,
+    });
+    h.engine.library_input(LibInput::Select {
+        key: "steam:504230".into(),
+        mode: SelectMode::Toggle,
+    });
+    h.until("the add is available", |s| {
+        view(s).is_some_and(|v| v.actions.add_to_gamenode.is_available())
+    })
+    .await;
+    h.engine.library_input(LibInput::OpenAdd);
+    h.until("ready to confirm", |s| {
+        view(s).is_some_and(|v| {
+            v.add_dialog
+                .as_ref()
+                .is_some_and(|dialog| dialog.can_confirm)
+        })
+    })
+    .await;
+
+    *h.api.delay.lock().unwrap() = Duration::from_millis(250);
+    h.engine.library_input(LibInput::ConfirmAdd);
+    h.engine.library_input(LibInput::HideAdd);
+    h.engine.dispatch(Input::SignOut);
+    let signed_out = h
+        .until("signed out", |s| s.auth == AuthView::SignedOut)
+        .await;
+    let notice = signed_out
+        .add_notice
+        .clone()
+        .expect("u1's hidden batch notice survives sign-out");
+    let created_before_switch = h.api.created.lock().unwrap().len();
+
+    *h.api.delay.lock().unwrap() = Duration::ZERO;
+    *h.api.session.lock().unwrap() = Some(Ok(gamenode_core::User {
+        id: "u2".into(),
+        name: "Bob".into(),
+        email: Some("bob@example.com".into()),
+        image: None,
+    }));
+    h.sign_in("token-u2").await;
+    let switched = h
+        .until("u2 library ready", |s| {
+            matches!(&s.auth, AuthView::SignedIn { user, .. } if user.id == "u2")
+                && view(s).is_some()
+        })
+        .await;
+    assert!(view(&switched).unwrap().add_summary.is_none());
+
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    assert_eq!(h.api.created.lock().unwrap().len(), created_before_switch);
+    let after = h.engine.snapshot();
+    assert!(view(&after).unwrap().add_summary.is_none());
+    let kept = after
+        .add_notice
+        .expect("u1's notice stays attributed to u1");
+    assert_eq!(kept.account_id.as_deref(), Some("u1"));
+    assert_eq!(kept.summary.run_id, notice.summary.run_id);
+    assert_eq!(kept.summary, notice.summary);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hidden_batch_with_all_failed_or_skipped_items_still_populates_add_notice() {
+    use gamenode_core::library::{Input as LibInput, SelectMode};
+
+    let api = FakeApi::new();
+    // Only 620 is matched; 500 stays unmatched and is skipped by the add run.
+    *api.lookup_result.lock().unwrap() = Some(Ok(vec![steam_match("620", 7, "Portal 2")]));
+    let mut h = harness(api, FakeCreds::with(None));
+    let files = SlowFiles::steam_with_games(&[("500", "Left 4 Dead"), ("620", "Portal 2")]);
+    *h.files.inner.lock().unwrap() = files.inner.into_inner().unwrap();
+    h.signed_out().await;
+    h.sign_in("token").await;
+    h.until("both games scanned and matched", |s| {
+        view(s).is_some_and(|v| {
+            v.rows.len() == 2
+                && v.rows.iter().any(|row| {
+                    row.key == "steam:620" && matches!(row.status, MatchStatus::Matched { .. })
+                })
+        })
+    })
+    .await;
+
+    h.engine.library_input(LibInput::Select {
+        key: "steam:500".into(),
+        mode: SelectMode::Replace,
+    });
+    h.engine.library_input(LibInput::Select {
+        key: "steam:620".into(),
+        mode: SelectMode::Toggle,
+    });
+    h.until("the add is available", |s| {
+        view(s).is_some_and(|v| v.actions.add_to_gamenode.is_available())
+    })
+    .await;
+    h.engine.library_input(LibInput::OpenAdd);
+    h.until("ready to confirm", |s| {
+        view(s).is_some_and(|v| {
+            v.add_dialog
+                .as_ref()
+                .is_some_and(|dialog| dialog.can_confirm)
+        })
+    })
+    .await;
+
+    *h.api.entry.lock().unwrap() = Some(Err(ApiError::Failed));
+    h.engine.library_input(LibInput::ConfirmAdd);
+    h.engine.library_input(LibInput::HideAdd);
+
+    let snapshot = h
+        .until("hidden batch finished with zero added", |s| {
+            s.add_notice
+                .as_ref()
+                .is_some_and(|notice| notice.summary.skipped == 1 && notice.summary.failed == 1)
+        })
+        .await;
+    let notice = snapshot.add_notice.as_ref().unwrap();
+    assert!(notice.batch);
+    assert_eq!(notice.account_id.as_deref(), Some("u1"));
+    assert_eq!(notice.summary.added, 0);
+    assert_eq!(notice.summary.already_present, 0);
+    assert_eq!(notice.summary.skipped, 1);
+    assert_eq!(notice.summary.failed, 1);
+    assert!(notice.summary.run_id > 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn closing_a_single_game_add_stays_quiet_without_notice() {
+    use gamenode_core::library::{Input as LibInput, SelectMode};
+
+    let api = FakeApi::new();
+    *api.lookup_result.lock().unwrap() = Some(Ok(vec![portal_2_match()]));
+    let mut h = harness(api, FakeCreds::with(None));
+    h.signed_out().await;
+    h.sign_in("token").await;
+    h.until("matched", |s| {
+        view(s).is_some_and(|v| {
+            v.rows
+                .first()
+                .is_some_and(|row| matches!(row.status, MatchStatus::Matched { .. }))
+        })
+    })
+    .await;
+
+    h.engine.library_input(LibInput::Select {
+        key: "steam:620".into(),
+        mode: SelectMode::Replace,
+    });
+    h.until("the add is available", |s| {
+        view(s).is_some_and(|v| v.actions.add_to_gamenode.is_available())
+    })
+    .await;
+    h.engine.library_input(LibInput::OpenAdd);
+    h.until("ready to confirm", |s| {
+        view(s).is_some_and(|v| {
+            v.add_dialog
+                .as_ref()
+                .is_some_and(|dialog| dialog.can_confirm)
+        })
+    })
+    .await;
+
+    *h.api.delay.lock().unwrap() = Duration::from_millis(200);
+    h.engine.library_input(LibInput::ConfirmAdd);
+    h.engine.library_input(LibInput::CloseAdd);
+
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    let snapshot = h.engine.snapshot();
+    assert!(!h.engine.lock().library.add_run_active());
+    assert!(snapshot.add_notice.is_none());
+    assert!(view(&snapshot).unwrap().add_summary.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn batch_status_and_collection_changes_reach_the_api_and_refresh_the_rows() {
     use gamenode_core::library::Input as LibInput;
 
@@ -1704,6 +2070,7 @@ fn search_page(games: &[(u64, &str)]) -> gamenode_core::game_api::SearchPage {
                 name: (*name).to_owned(),
                 release_year: Some(2013),
                 cover_url: None,
+                platforms: vec![],
             })
             .collect(),
         complete: Some(true),
@@ -2597,5 +2964,146 @@ async fn a_plugin_starts_and_installs_through_the_users_own_path() {
     assert_eq!(
         h.engine.snapshot().launch.unwrap().state,
         LaunchState::Failed(LaunchError::NoHandler)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn creating_a_collection_from_the_dialog_relists_and_selects_it() {
+    use gamenode_core::library::{CollectionsView, Input as LibInput, SelectMode};
+    let api = FakeApi::new();
+    *api.lookup_result.lock().unwrap() = Some(Ok(vec![portal_2_match()]));
+    *api.collections_result.lock().unwrap() = Some(Ok(vec![Collection {
+        id: "c1".to_owned(),
+        name: "Backlog".to_owned(),
+        default_status: None,
+    }]));
+    let mut h = harness(api, FakeCreds::with(None));
+    h.signed_out().await;
+    h.sign_in("token").await;
+    h.until("matched", |s| {
+        view(s).is_some_and(|v| {
+            v.rows
+                .first()
+                .is_some_and(|r| matches!(r.status, MatchStatus::Matched { .. }))
+        })
+    })
+    .await;
+    h.engine.library_input(LibInput::Select {
+        key: "steam:620".into(),
+        mode: SelectMode::Replace,
+    });
+    h.until("membership", |s| {
+        view(s).is_some_and(|v| v.actions.add_to_gamenode.is_available())
+    })
+    .await;
+    h.engine.library_input(LibInput::OpenAdd);
+    h.until("collections listed", |s| {
+        view(s).is_some_and(|v| {
+            v.add_dialog.as_ref().is_some_and(|d| {
+                d.can_confirm
+                    && matches!(&d.collections, CollectionsView::Loaded(list) if list.len() == 1)
+            })
+        })
+    })
+    .await;
+
+    h.engine.library_input(LibInput::StartNewCollection);
+    h.engine
+        .library_input(LibInput::SetNewCollectionName("Coop".to_owned()));
+    h.engine.library_input(LibInput::CreateCollection);
+    let snapshot = h
+        .until("the new collection is selected", |s| {
+            view(s).is_some_and(|v| {
+                v.add_dialog.as_ref().is_some_and(|d| {
+                    d.new_collection.is_none()
+                        && matches!(&d.collections, CollectionsView::Loaded(list)
+                            if list.iter().any(|c| c.id == "created-1" && c.name == "Coop" && c.picked))
+                })
+            })
+        })
+        .await;
+    assert!(
+        view(&snapshot)
+            .unwrap()
+            .add_dialog
+            .as_ref()
+            .unwrap()
+            .items
+            .is_empty(),
+        "creating a collection adds no game"
+    );
+    assert_eq!(*h.api.collections_created.lock().unwrap(), ["Coop"]);
+    assert!(h.api.created.lock().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_shared_games_preference_updates_the_library_without_a_sync() {
+    let mut h = harness(FakeApi::new(), FakeCreds::with(None));
+    h.signed_out().await;
+    let shared_only = StoredEntry {
+        key: "steam:900".to_owned(),
+        provider: "steam".to_owned(),
+        store_id: "900".to_owned(),
+        name: Some("Family Game".to_owned()),
+        target: None,
+        install_dir: "Family Game".to_owned(),
+        fields: Default::default(),
+        installed: false,
+        owned: false,
+        shared: true,
+        first_seen: 1,
+        last_seen: 1,
+    };
+    *h.store.cache.lock().unwrap() = LibraryCache {
+        entries: vec![cached_portal_2(), shared_only],
+        ..LibraryCache::default()
+    };
+    h.sign_in("token").await;
+    h.until("the shared entry is a row", |s| {
+        view(s).is_some_and(|library| {
+            library.rows.iter().any(|row| row.key == "steam:900") && !library.scanning
+        })
+    })
+    .await;
+
+    h.engine
+        .set_app_preference(gamenode_core::settings::AppPreferencePatch::SharedExcluded(
+            std::collections::BTreeSet::from(["steam".to_owned()]),
+        ))
+        .unwrap();
+    let snapshot = h.engine.snapshot();
+    let library = view(&snapshot).unwrap();
+    assert!(
+        library.rows.iter().all(|row| row.key != "steam:900"),
+        "the shared-only entry leaves the rows immediately"
+    );
+    assert!(
+        library.rows.iter().any(|row| row.key == "steam:620"),
+        "owned and installed entries stay"
+    );
+    let steam = library
+        .providers
+        .iter()
+        .find(|provider| provider.id == "steam")
+        .unwrap();
+    assert_eq!(
+        steam.shared_count, 1,
+        "the store card keeps the catalog count"
+    );
+    assert_eq!(steam.count, 1);
+
+    h.engine
+        .set_app_preference(gamenode_core::settings::AppPreferencePatch::SharedExcluded(
+            std::collections::BTreeSet::new(),
+        ))
+        .unwrap();
+    let snapshot = h.engine.snapshot();
+    assert!(
+        view(&snapshot)
+            .unwrap()
+            .rows
+            .iter()
+            .any(|row| row.key == "steam:900"),
+        "turning the preference back on restores the row without a sync"
     );
 }

@@ -1,0 +1,56 @@
+### 5369:2803 Associar a um jogo do GameNode  (wrapper 5369:2919 "Associar (MatchDialog · FloatingModal)")
+### Annotation: Lista com confiança e prévia ao lado; "Por que sugerimos" (NOVO) explica a correspondência automática.
+F [Associar a um jogo do GameNode] 820x474 col XH bg=secondary bd1=#333333 r12 sh(0,20,48,0,#0000008C) clip
+ F [Cabeçalho] 818x66 row gap12 p16/20/14/20 ai:center FH bd0/0/1/0=border/subtle
+  I dots-vertical 16:text/muted
+  F [Frame] 722x35 col gap2 FH
+   T "Associar a um jogo do GameNode" 16/SemiBold text/primary 244x19 HH
+   T "Hollow Mountain: Deep Delve · Steam" 12/400 text-dimmed 200x14 HH
+  I x 16:text/secondary
+ F [Corpo] 818x345 row gap20 p20 FH
+  F [Frame] 420x305 col gap10 XH
+   F [Frame] 420x54 col gap6 FH
+    T "Buscar no GameNode" 12/500 text/secondary 117x14 HH
+    F [Frame] 420x34 row gap8 p0/10/0/10 ai:center FX bg=surface bd1=primary r6      (focused)
+     I search 14:text-dimmed
+     T "Hollow Mountain" 13/400 text/primary ellipsis 376x15 FH
+   F [Frame] 420x13 row ai:center FH
+    T "Várias correspondências possíveis" 11/SemiBold text/muted ls0.8 upper 234x13 HH
+    F [spacer] 125x1 FX clip
+    T "3 resultados" 11/400 text-dimmed 61x13 HH
+   F [Frame] 420x66 row gap10 p8 ai:center FH bg=accent/subtle@0.12 bd1=primary r8   (selected option)
+    REC [Rectangle] 36x48 XX bg=grad(#1C1C24→#6C7A99) r4                             (cover)
+    F [Frame] 307x30 col gap2 FH
+     T "Hollow Mountain: Deep Delve" 13/SemiBold text/primary 171x15 HH
+     T "2024 · Ashen Lantern · PC, Switch" 11/400 text-dimmed 165x13 HH
+    C <Pill Success> 39x18 "96%" row gap4 p2/8/2/8 ai:center HH bg=success-subtle@0.12 r999
+   F [Frame] 420x66 row gap10 p8 ai:center FH bd1=border/subtle r8                    (option)
+    REC [Rectangle] 36x48 XX bg=grad(#20202A→#8C7A59) r4
+    F [Frame] 307x30 col gap2 FH
+     T "Hollow Mountain" 13/SemiBold text/primary 99x15 HH
+     T "2021 · Ashen Lantern · PC" 11/400 text-dimmed 127x13 HH
+    C <Pill Warning> 39x18 "74%" row gap4 p2/8/2/8 ai:center HH bg=warning-subtle@0.12 r999
+   F [Frame] 420x66 row gap10 p8 ai:center FH bd1=border/subtle r8
+    REC [Rectangle] 36x48 XX bg=grad(#24180F→#A86A3C) r4
+    F [Frame] 307x30 col gap2 FH
+     T "Hollow Hearth" 13/SemiBold text/primary 84x15 HH
+     T "2019 · Little Fern · PC, PS4" 11/400 text-dimmed 129x13 HH
+    C <Pill Neutral> 39x18 "38%" row gap4 p2/8/2/8 ai:center HH bg=bg/raised r999
+  F [Frame] 338x305 col gap12 p14 FF bg=background bd1=border/subtle r8               (preview pane)
+   F [Frame] 296x112 row gap12 HH
+    REC [Rectangle] 84x112 XX bg=grad(#1C1C24→#6C7A99) r6
+    F [Frame] 200x62 col gap6 HH
+     T "Hollow Mountain: Deep Delve" 15/SemiBold text/primary 200x18 XH
+     T "2024 · Ashen Lantern" 12/400 text-dimmed 114x14 HH
+     C <Pill Neutral> 74x18 "PC, Switch" row gap4 p2/8/2/8 ai:center HH bg=bg/raised r999
+   T "Por que sugerimos (NOVO)" 11/SemiBold text/muted ls0.8 upper 169x13 HH
+   F [Frame] row gap8 ai:center HH ; I circle-check 14:success ; T "Título 96% parecido" 12/400 text-default
+   F [Frame] row gap8 ; I circle-check 14:success ; T "Mesmo ano de lançamento" 12/400 text-default
+   F [Frame] row gap8 ; I circle-check 14:success ; T "ID da loja reconhecido" 12/400 text-default
+   F [Frame] row gap8 ; I alert-triangle 14:warning ; T "Desenvolvedora diferente da loja" 12/400 text-default
+ F [Rodapé] 818x61 row gap8 p14/20/14/20 ai:center FH bg=surface bd1/0/0/0=border/subtle
+  C <Button Ghost SM> 195x32 "Não está no GameNode" icons=circle-x r4
+  C <Button Ghost SM> 269x32 "Usar a correspondência automática" icons=sparkles r4
+  F [spacer] FX
+  C <Button Secondary SM> 82x32 "Cancelar" bg=bg/raised bd1=border/subtle r4
+  C <Button Primary SM> 102x32 "Associar" icons=link bg=primary r4

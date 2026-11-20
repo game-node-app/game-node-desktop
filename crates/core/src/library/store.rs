@@ -85,6 +85,16 @@ pub struct ProviderScanState {
     /// Why the latest shared-catalog sync failed; cleared by the next success.
     #[serde(default)]
     pub shared_error: Option<CatalogError>,
+    /// Where the last successful scan found the store, when it reported a location.
+    #[serde(default)]
+    pub install_root: Option<String>,
+    /// How many library folders the last successful scan reported, when it reported them.
+    #[serde(default)]
+    pub library_folders: Option<u32>,
+    /// Whether the last successful local scan found an installed store. Unlike catalog facts this
+    /// ignores ownership, search, facets and hidden entries. `None` until a scan succeeds.
+    #[serde(default)]
+    pub last_detected: Option<bool>,
 }
 
 /// The categories a catalog sync failure is stored and shown under.
@@ -243,6 +253,10 @@ pub struct GameRecord {
     pub cover_file: Option<String>,
     /// Unix seconds of the last failed cover download; the next scan retries.
     pub cover_failed_at: Option<i64>,
+    /// Platform abbreviations a search answer reported. Persisted so a stored game keeps the
+    /// platforms it already received; lookups and old rows start empty.
+    #[serde(default)]
+    pub platforms: Vec<String>,
 }
 
 /// The account's favorite state for one GameNode game.

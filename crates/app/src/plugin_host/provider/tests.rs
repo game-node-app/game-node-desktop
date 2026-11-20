@@ -643,6 +643,7 @@ async fn real_host_fences_old_account_work_and_keeps_discovery_independent() {
     result.discovery = Some(DiscoveryResult {
         provider_id: "fixture".into(),
         records: vec![],
+        ..Default::default()
     });
     scan_client.finish(result).await.unwrap();
     assert!(
@@ -774,6 +775,7 @@ async fn mismatched_provider_result_is_rejected_without_publishing_state() {
     result.discovery = Some(DiscoveryResult {
         provider_id: "other-provider".into(),
         records: vec![],
+        ..Default::default()
     });
     client.finish(result).await.unwrap();
     let error = operation.await.unwrap().unwrap_err();
@@ -805,6 +807,7 @@ async fn rejected_submission_preserves_previous_successful_account_facts() {
     rejected.discovery = Some(DiscoveryResult {
         provider_id: "foreign-provider".into(),
         records: vec![],
+        ..Default::default()
     });
     client.finish(rejected).await.unwrap();
     let error = second.await.unwrap().unwrap_err();

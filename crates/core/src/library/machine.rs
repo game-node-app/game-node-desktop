@@ -9,12 +9,13 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
 use crate::game_api::{
-    AccountEntry, ApiError, Collection, ExternalMatch, GameSummary, LibraryEntry,
+    AccountEntry, ApiError, Collection, CreateCollectionError, ExternalMatch, GameSummary,
+    LibraryEntry,
 };
 use crate::provider::{Provider, Record};
 
 use super::add_dialog::AddDialog;
-use super::add_run::AddSummary;
+use super::add_run::{AddNoticeView, AddRun, AddSummary};
 use super::batch::{
     CollectionRun, CollectionRunView, StatusRun, StatusRunView, UndoAddView, UndoRun,
 };
@@ -23,8 +24,8 @@ use super::cover::CoverUrl;
 use super::cover_queue::CoverQueue;
 use super::favorites::FavoriteState;
 use super::layout::{
-    DETAIL_WIDTH_RANGE, GroupBy, LibraryFilters, LibraryLayout, LibraryScope, SIDEBAR_WIDTH_RANGE,
-    SidebarSelection, Sort, ViewMode,
+    CoverSize, DETAIL_WIDTH_RANGE, GroupBy, LibraryFilters, LibraryLayout, LibraryScope,
+    SIDEBAR_WIDTH_RANGE, SidebarSelection, Sort, ViewMode,
 };
 use super::lookup::LookupRun;
 use super::match_dialog::MatchDialog;
@@ -193,6 +194,13 @@ pub enum Effect {
         op: u64,
         user_id: String,
     },
+    /// Create one collection (`GameApi::create_collection`) and report with
+    /// [`Input::CollectionCreated`]. An explicit user action, so it does not depend on sync.
+    CreateCollection {
+        op: u64,
+        user_id: String,
+        name: String,
+    },
     /// Read the account's complete GameNode library and its collections
     /// (`GameApi::list_library_entries` and `GameApi::list_collections`) and report with
     /// [`Input::AccountLibrarySynced`]. Only sent with a verified session.
@@ -278,6 +286,14 @@ pub enum Input {
         entry_key: String,
         expected_revision: u64,
         target: super::target::DetectedTarget,
+    },
+    /// Where a scan looked, reported with its successful answer before [`Input::ProviderScanned`].
+    /// A scan that reports no location clears the previous one for that provider.
+    ProviderLocated {
+        op: u64,
+        provider: String,
+        install_root: Option<String>,
+        library_folders: Option<u32>,
     },
     /// The engine started one provider's scan. It turns the provider's progress from waiting to
     /// scanning; an answer for a superseded scan is ignored by the same op check.
@@ -436,6 +452,14 @@ pub enum Input {
         game_id: u64,
         now: i64,
     },
+    /// Select an option for preview. The entry changes only with [`Input::ConfirmMatch`].
+    SelectMatch {
+        game_id: u64,
+    },
+    /// Match the entry to the selected option. Without a selection, nothing happens.
+    ConfirmMatch {
+        now: i64,
+    },
     /// Mark the dialog's entry as having no GameNode game; later lookups never change it.
     MarkNoGame {
         now: i64,
@@ -482,6 +506,8 @@ pub enum Input {
     SetColumns(usize),
     /// Grid or list.
     SetView(ViewMode),
+    /// How large the grid covers are; the list view is unaffected.
+    SetCoverSize(CoverSize),
     /// The pre-scope sidebar choice: All games, or one provider (which becomes the store
     /// shortcut: All scope plus that store).
     SetFilter(SidebarSelection),
@@ -529,7 +555,10 @@ pub enum Input {
     RefreshMembership,
     /// Open the Add to GameNode dialog for the selected entries.
     OpenAdd,
+    /// Close the dialog. A single-game run is abandoned; a batch keeps going.
     CloseAdd,
+    /// Close the dialog without abandoning a batch run. Anything else closes like [`CloseAdd`].
+    HideAdd,
     SetAddStatus(EntryStatus),
     ToggleAddCollection(String),
     CollectionsListed {
@@ -537,6 +566,19 @@ pub enum Input {
         result: Result<Vec<Collection>, ApiError>,
     },
     RetryCollections,
+    /// Open the inline new-collection field.
+    StartNewCollection,
+    /// The typed collection name. Blank means the create action stays disabled.
+    SetNewCollectionName(String),
+    /// Create the typed collection. Nothing is added to any library entry.
+    CreateCollection,
+    /// Close the inline new-collection field without creating anything.
+    CancelNewCollection,
+    /// The answer to an [`Effect::CreateCollection`].
+    CollectionCreated {
+        op: u64,
+        result: Result<(), CreateCollectionError>,
+    },
     /// Add the dialog's games: each is checked first and only created if absent.
     ConfirmAdd,
     /// The answer to an [`Effect::CreateEntry`].
@@ -614,6 +656,9 @@ pub(super) struct PendingViewSave {
 
 pub struct LibraryMachine {
     pub(super) local_inferences: BTreeMap<String, u64>,
+    /// Custom cover file names for DRM-free entries, by library key. They win over the matched
+    /// GameNode cover in every row the view builds.
+    pub(super) local_covers: BTreeMap<String, String>,
     pub(super) playtime: BTreeMap<String, crate::playtime::PlaytimeView>,
     /// Running library keys mapped to the Unix second their current execution began. The engine
     /// derives it from the process tracker, including counter-backed entries with no session row.
@@ -625,6 +670,8 @@ pub struct LibraryMachine {
     pub(super) op: u64,
     pub(super) entries: BTreeMap<String, StoredEntry>,
     pub(super) excluded: BTreeSet<String>,
+    /// Providers whose shared-only entries the library leaves out. Empty includes every provider.
+    pub(super) shared_excluded: BTreeSet<String>,
     /// Library keys hidden for this account. Empty until the organization cache is read.
     pub(super) hidden: BTreeSet<String>,
     /// The account's saved views, in sidebar order. Empty until the organization cache is read.
@@ -708,9 +755,15 @@ pub struct LibraryMachine {
     pub(super) membership_focus: Option<u64>,
     /// The Add to GameNode dialog, while it is open.
     pub(super) add: Option<AddDialog>,
+    /// The add run in flight. A batch lives here, outside the dialog, so hiding the dialog does
+    /// not stop it; there is at most one run at a time.
+    pub(super) add_runs: Option<AddRun>,
     /// The result of the latest add, kept after the dialog closes so its notification can offer
     /// Undo and View on GameNode even when the dialog is gone.
     pub(super) last_add: Option<AddSummary>,
+    /// The latest finished add as the notification, kept across account changes so a hidden batch
+    /// stopped by sign-out still reports its outcome once the library view is gone.
+    pub(super) last_add_notice: Option<AddNoticeView>,
     /// The undo in flight for the latest add run.
     pub(super) undo: Option<UndoRun>,
     /// The result of the last undo, for the notification.
@@ -746,6 +799,7 @@ impl LibraryMachine {
     pub fn new(providers: Vec<Provider>, layout: LibraryLayout) -> Self {
         Self {
             local_inferences: BTreeMap::new(),
+            local_covers: BTreeMap::new(),
             playtime: BTreeMap::new(),
             running: BTreeMap::new(),
             providers,
@@ -755,6 +809,7 @@ impl LibraryMachine {
             op: 0,
             entries: BTreeMap::new(),
             excluded: BTreeSet::new(),
+            shared_excluded: BTreeSet::new(),
             hidden: BTreeSet::new(),
             saved_views: Vec::new(),
             applied_view_payload: None,
@@ -796,7 +851,9 @@ impl LibraryMachine {
             membership_reads: BTreeMap::new(),
             membership_focus: None,
             add: None,
+            add_runs: None,
             last_add: None,
+            last_add_notice: None,
             undo: None,
             last_undo: None,
             status_run: None,
@@ -876,6 +933,12 @@ impl LibraryMachine {
         self.account.as_ref()
     }
 
+    /// The latest finished add run for the window's notification, independent of the library view.
+    /// It survives sign-out and account changes until a new run starts.
+    pub fn add_notice(&self) -> Option<AddNoticeView> {
+        self.last_add_notice.clone()
+    }
+
     pub fn access(&self) -> Access {
         self.access
     }
@@ -892,6 +955,11 @@ impl LibraryMachine {
         self.entries.get(key)
     }
 
+    /// The playtime recorded for one entry, if the selected source knows any.
+    pub fn playtime_for(&self, key: &str) -> Option<crate::playtime::PlaytimeView> {
+        self.playtime.get(key).copied()
+    }
+
     /// The entries a scan currently finds installed, in key order.
     pub fn installed_entries(&self) -> impl Iterator<Item = &StoredEntry> {
         self.entries
@@ -904,6 +972,26 @@ impl LibraryMachine {
         self.entries
             .values()
             .filter(|entry| entry.is_visible() && !self.excluded.contains(&entry.key))
+    }
+
+    /// Whether the shared-games preference leaves this entry out: only entries that are shared
+    /// without being owned or installed, of a provider the user excluded.
+    pub(super) fn shared_excluded_entry(&self, entry: &StoredEntry) -> bool {
+        entry.shared
+            && !entry.owned
+            && !entry.installed
+            && self.shared_excluded.contains(&entry.provider)
+    }
+
+    /// Replaces the providers whose shared-only entries the library leaves out. Returns whether
+    /// anything changed: the view pipeline runs again on the next snapshot.
+    pub fn set_shared_excluded(&mut self, providers: BTreeSet<String>) -> bool {
+        if self.shared_excluded == providers {
+            return false;
+        }
+        self.shared_excluded = providers;
+        self.view_dirty = true;
+        true
     }
 
     pub fn all_entries(&self) -> impl Iterator<Item = &StoredEntry> {
@@ -942,6 +1030,15 @@ impl LibraryMachine {
         }
         self.view_dirty = true;
         self.plan_covers(None)
+    }
+
+    /// Installs the DRM-free custom covers by entry key, replacing the previous set. A custom
+    /// cover stays after a match: it is keyed by the entry, not by the matched game.
+    pub fn replace_local_covers(&mut self, covers: BTreeMap<String, String>) {
+        if self.local_covers != covers {
+            self.local_covers = covers;
+            self.view_dirty = true;
+        }
     }
     /// The downloaded landscape artwork of `game_id` while that game is the one whose details
     /// are shown. Cheap: it only clones a handle.
@@ -1058,6 +1155,15 @@ impl LibraryMachine {
                 }
                 vec![]
             }
+            Input::ProviderLocated {
+                op,
+                provider,
+                install_root,
+                library_folders,
+            } => {
+                self.on_provider_located(op, &provider, install_root, library_folders);
+                vec![]
+            }
             Input::ProviderScanStarted { op, provider } => {
                 self.on_provider_scan_started(op, &provider);
                 vec![]
@@ -1145,6 +1251,10 @@ impl LibraryMachine {
                 effects.extend(self.plan_covers(None));
                 if became_verified {
                     effects.extend(self.account_library_sync_effect());
+                } else if access != Access::Verified {
+                    // A session that stopped being usable cannot finish the add run: no further
+                    // request is sent, and the games that were not handled count as not added.
+                    effects.extend(self.stop_add_runs());
                 }
                 effects
             }
@@ -1208,6 +1318,8 @@ impl LibraryMachine {
                 cover_url,
             } => self.open_add_for_catalog_game(game_id, title, cover_url),
             Input::PickMatch { game_id, now } => self.pick_match(game_id, now),
+            Input::SelectMatch { game_id } => self.select_match(game_id),
+            Input::ConfirmMatch { now } => self.confirm_match(now),
             Input::MarkNoGame { now } => self.mark_no_game(now),
             Input::MarkEntryNoGame { key, now } => self.mark_entry_no_game(&key, now),
             Input::ClearMatch => self.clear_match(),
@@ -1234,6 +1346,7 @@ impl LibraryMachine {
                 self.update_layout(|layout| layout.detail_open = true)
             }
             Input::SetView(view) => self.update_layout(|layout| layout.view = view),
+            Input::SetCoverSize(size) => self.update_layout(|layout| layout.cover_size = size),
             // The pre-scope sidebar input: a provider is the All scope plus that store, which is
             // what the new store shortcut sends. The redesigned sidebar uses scopes directly.
             Input::SetFilter(sidebar) => self.update_layout(|layout| {
@@ -1312,6 +1425,10 @@ impl LibraryMachine {
                 self.close_add();
                 vec![]
             }
+            Input::HideAdd => {
+                self.hide_add();
+                vec![]
+            }
             Input::SetAddStatus(status) => {
                 self.set_add_status(status);
                 vec![]
@@ -1322,6 +1439,20 @@ impl LibraryMachine {
             }
             Input::CollectionsListed { op, result } => self.on_collections_listed(op, result),
             Input::RetryCollections => self.retry_collections(),
+            Input::StartNewCollection => {
+                self.start_new_collection();
+                vec![]
+            }
+            Input::SetNewCollectionName(name) => {
+                self.set_new_collection_name(name);
+                vec![]
+            }
+            Input::CreateCollection => self.create_collection(),
+            Input::CancelNewCollection => {
+                self.cancel_new_collection();
+                vec![]
+            }
+            Input::CollectionCreated { op, result } => self.on_collection_created(op, result),
             Input::ConfirmAdd => self.confirm_add(),
             Input::EntryCreated {
                 op,
@@ -1483,6 +1614,7 @@ impl LibraryMachine {
         self.membership_reads.clear();
         self.membership_focus = None;
         self.add = None;
+        self.add_runs = None;
         self.last_add = None;
         self.undo = None;
         self.last_undo = None;
@@ -1508,19 +1640,23 @@ impl LibraryMachine {
         if account == self.account && self.is_active() == account.is_some() {
             return vec![];
         }
+        // A hidden batch belongs to the account that started it. Stop it before the reset so its
+        // outcome is counted and published as a notice, instead of disappearing with the view.
+        let mut effects = self.stop_add_runs();
         // Whatever was loading or scanning belongs to the previous account.
         let op = self.next_op();
         self.reset_data();
         self.account = account;
         let Some(account) = &self.account else {
             self.phase = Phase::Inactive;
-            return vec![];
+            return effects;
         };
         self.phase = Phase::Loading;
-        vec![Effect::LoadCache {
+        effects.push(Effect::LoadCache {
             op,
             account_id: Some(account.id.clone()),
-        }]
+        });
+        effects
     }
 
     fn on_loaded(&mut self, op: u64, result: Result<LibraryCache, ()>) -> Vec<Effect> {
@@ -1949,6 +2085,27 @@ impl LibraryMachine {
         }
     }
 
+    /// Records where a provider's successful scan looked. The answer belongs to the same scan op
+    /// as the records that follow it, so a late or superseded location is dropped with them.
+    fn on_provider_located(
+        &mut self,
+        op: u64,
+        provider: &str,
+        install_root: Option<String>,
+        library_folders: Option<u32>,
+    ) {
+        let Some(run) = &self.scan else {
+            return;
+        };
+        if run.op != op || !run.waiting.contains(provider) {
+            return;
+        }
+        let state = self.scan_state_mut(provider);
+        state.install_root = install_root;
+        state.library_folders = library_folders;
+        self.view_dirty = true;
+    }
+
     fn on_provider_scanned(
         &mut self,
         op: u64,
@@ -2021,6 +2178,9 @@ impl LibraryMachine {
             ScanOutcome::Scanned { records, targets } => {
                 state.last_success_at = Some(now);
                 state.last_error = None;
+                // A successful scan with a location or any record proves the store is installed
+                // locally. Catalog ownership is deliberately not consulted here.
+                state.last_detected = Some(state.install_root.is_some() || !records.is_empty());
                 for entry in self
                     .entries
                     .values_mut()

@@ -515,6 +515,7 @@ impl Access {
                     result.discovery = Some(DiscoveryResult {
                         provider_id: "fixture".into(),
                         records: vec![],
+                        ..Default::default()
                     });
                 } else {
                     result.counters = vec![CounterObservation {

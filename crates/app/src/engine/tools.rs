@@ -2,16 +2,44 @@
 //! transactional installation, update, rollback, anti-cheat guards, and cache management.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
+use gamenode_core::drm_free::LocalError;
 use gamenode_core::tools::{
-    GameToolView, InstallRequest, ProxyDllName, ToolCatalogItemView, ToolChannel, ToolId,
-    ToolModalView, ToolOperationStatus, builtin_tools, evaluate_anticheat, find_tool,
+    GameToolView, InstallRequest, ProxyDllName, ToolCacheEntryView, ToolCatalogItemView,
+    ToolChannel, ToolError, ToolId, ToolModalView, ToolOperationErrorCode, ToolOperationStatus,
+    ToolRelease, ToolStore, builtin_tools, evaluate_anticheat, find_tool,
 };
 
 use super::Engine;
 
 const RELEASE_CACHE_MAX_AGE: Duration = Duration::from_secs(3600);
+/// How often the automatic tool update check runs while the application is open.
+const TOOL_AUTO_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Opens the native executable picker for a game's install folder. Tests inject a fake so the
+/// accepted, cancelled and failed paths do not need a real dialog.
+pub trait ToolTargetPicker: Send + Sync {
+    fn pick(&self, install_dir: &str) -> Result<Option<String>, String>;
+}
+
+/// One successful release-list fetch, kept with its identity so a worker can publish it without
+/// overwriting a modal that changed meanwhile.
+struct FetchedReleases {
+    tool_id: ToolId,
+    channel: ToolChannel,
+    releases: Vec<ToolRelease>,
+}
+
+/// Identity of the open tools view at the moment a background fetch starts. The result is applied
+/// only when the modal still shows the same game, tool and channel.
+#[derive(Clone)]
+struct ToolModalGuard {
+    entry_key: String,
+    tool_id: ToolId,
+    channel: ToolChannel,
+}
 
 pub(super) struct PluginToolRequest {
     id: String,
@@ -219,9 +247,8 @@ impl Engine {
     pub fn recover_and_load_tools(&self) {
         let engine = self.clone();
         self.shared.storage.submit(move || {
-            let (store, catalog, installer) = (
+            let (store, installer) = (
                 engine.shared.ports.tools.clone(),
-                engine.shared.ports.tool_catalog.clone(),
                 engine.shared.ports.tool_installer.clone(),
             );
             let Some(store) = store else {
@@ -294,23 +321,229 @@ impl Engine {
             // 3. Catalog items from built-in registry
             let catalog_items = builtin_catalog_items();
 
-            // 4. Cache statistics
-            let (bytes, archives) = if let Some(catalog) = &catalog {
-                catalog.cache_usage().unwrap_or((0, 0))
-            } else {
-                (0, 0)
-            };
+            // 4. Cache statistics. The tool total is the sum of the listed archives; achievement
+            // icons have their own accounting and are not added to it.
+            let cache_entries = tool_cache_entries(&*store);
+            let total_cache_bytes = cache_entries.iter().map(|entry| entry.bytes).sum();
+            let total_cache_archives = cache_entries.len();
+            let achievement_icon_cache_bytes =
+                gamenode_platform::achievement_icons::achievement_icon_usage(
+                    &engine.shared.ports.covers_dir,
+                );
 
             let mut state = engine.lock();
             state.tools.installed_by_entry = installed_by_entry;
             state.tools.catalog = catalog_items;
-            state.tools.total_cache_bytes = bytes
-                + gamenode_platform::achievement_icons::achievement_icon_usage(
-                    &engine.shared.ports.covers_dir,
-                );
-            state.tools.total_cache_archives = archives;
+            state.tools.total_cache_bytes = total_cache_bytes;
+            state.tools.total_cache_archives = total_cache_archives;
+            state.tools.cache_entries = cache_entries;
+            state.tools.achievement_icon_cache_bytes = achievement_icon_cache_bytes;
             engine.publish(&mut state);
         });
+    }
+
+    /// Schedules the automatic tool update check when due. The preference is read from the live
+    /// state, so turning it off stops future checks immediately. At most one check runs; it only
+    /// fetches release metadata and never downloads an archive.
+    pub(crate) fn tool_auto_check_at(&self, now: Instant) {
+        if !self.preferences().tool_auto_check {
+            return;
+        }
+        if self
+            .shared
+            .tool_auto_check_running
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            return;
+        }
+        let due = {
+            let mut last = self
+                .shared
+                .tool_auto_check_last
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let due = last
+                .is_none_or(|last| now.saturating_duration_since(last) >= TOOL_AUTO_CHECK_INTERVAL);
+            if due {
+                *last = Some(now);
+            }
+            due
+        };
+        if !due {
+            self.shared
+                .tool_auto_check_running
+                .store(false, std::sync::atomic::Ordering::Release);
+            return;
+        }
+
+        let modal_guard = self.tool_modal_guard();
+        let catalog = self.shared.ports.tool_catalog.clone();
+        let Some(catalog) = catalog else {
+            self.shared
+                .tool_auto_check_running
+                .store(false, std::sync::atomic::Ordering::Release);
+            return;
+        };
+        let engine = self.clone();
+        self.shared.runtime.spawn_blocking(move || {
+            let targets = engine.tool_auto_check_targets();
+            let mut fetched = Vec::new();
+            for (tool_id, channel) in targets {
+                let Some(descriptor) = find_tool(tool_id.as_str()) else {
+                    continue;
+                };
+                if let Ok(releases) = catalog.fetch_releases(&descriptor, channel) {
+                    fetched.push(FetchedReleases {
+                        tool_id,
+                        channel,
+                        releases,
+                    });
+                }
+            }
+            // Publish the fetched lists to the open modal (when it still shows the same game,
+            // tool and channel) and refresh the cache view in the same snapshot. This is the
+            // automatic check's only path: it never downloads an archive.
+            engine.apply_fetched_releases(fetched, modal_guard.as_ref());
+            engine
+                .shared
+                .tool_auto_check_running
+                .store(false, std::sync::atomic::Ordering::Release);
+        });
+    }
+
+    /// The tool/channel pairs the automatic check refreshes: every built-in tool's stable channel,
+    /// plus the channel of each installed version so an installed Nightly stays current.
+    #[cfg(test)]
+    pub(crate) fn tool_auto_check_is_running(&self) -> bool {
+        self.shared
+            .tool_auto_check_running
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// The tool/channel pairs the automatic check refreshes: every built-in tool's stable channel,
+    /// plus the channel of each installed version so an installed Nightly stays current.
+    fn tool_auto_check_targets(&self) -> Vec<(ToolId, ToolChannel)> {
+        let mut targets = std::collections::BTreeSet::new();
+        for descriptor in builtin_tools() {
+            targets.insert((descriptor.id, ToolChannel::Stable));
+        }
+        if let Some(store) = &self.shared.ports.tools
+            && let Ok(installations) = store.list_installations()
+        {
+            for installation in installations {
+                targets.insert((installation.tool_id, installation.channel));
+            }
+        }
+        targets.into_iter().collect()
+    }
+
+    /// Captures the open tools view so a background fetch only applies to the modal it started
+    /// for. A closed modal, another game, another tool or another channel makes the result stale
+    /// for the visible view (the cache metadata is still refreshed).
+    fn tool_modal_guard(&self) -> Option<ToolModalGuard> {
+        self.lock()
+            .tools
+            .modal
+            .as_ref()
+            .map(|modal| ToolModalGuard {
+                entry_key: modal.entry_key.clone(),
+                tool_id: modal.active_tool_id.clone(),
+                channel: modal.selected_channel,
+            })
+    }
+
+    /// Persists fetched release lists, refreshes the tools cache view and publishes the result.
+    /// The open modal is updated only when `guard` still matches its game, tool and channel; its
+    /// current version selection is kept when the refreshed list still offers that version.
+    fn apply_fetched_releases(
+        &self,
+        mut fetched: Vec<FetchedReleases>,
+        guard: Option<&ToolModalGuard>,
+    ) {
+        if let Some(store) = &self.shared.ports.tools {
+            for item in &mut fetched {
+                if let Err(error) = store.save_releases(&item.tool_id, item.channel, &item.releases)
+                {
+                    tracing::warn!(%error, "could not persist fetched tool releases");
+                }
+                // `save_releases` keeps cached versions upstream no longer lists. Reading the
+                // merged rows back keeps those versions available in the open picker too, so a
+                // selection does not jump when a cached archive disappears from the API list.
+                // Rows whose archive was deleted outside the application are left out.
+                if let Ok(stored) = store.load_releases(&item.tool_id, item.channel) {
+                    let merged: Vec<ToolRelease> = stored
+                        .into_iter()
+                        .filter_map(|mut release| {
+                            let missing = release
+                                .cached_path
+                                .as_deref()
+                                .is_some_and(|path| !Path::new(path).is_file());
+                            if missing {
+                                if !item
+                                    .releases
+                                    .iter()
+                                    .any(|offered| offered.version == release.version)
+                                {
+                                    return None;
+                                }
+                                release.cached_path = None;
+                            }
+                            Some(release)
+                        })
+                        .collect();
+                    if !merged.is_empty() {
+                        item.releases = merged;
+                    }
+                }
+            }
+        }
+
+        let cache_entries = self
+            .shared
+            .ports
+            .tools
+            .as_ref()
+            .map(|store| tool_cache_entries(store.as_ref()))
+            .unwrap_or_default();
+        let total_cache_bytes = cache_entries.iter().map(|entry| entry.bytes).sum();
+        let total_cache_archives = cache_entries.len();
+        let achievement_icon_cache_bytes =
+            gamenode_platform::achievement_icons::achievement_icon_usage(
+                &self.shared.ports.covers_dir,
+            );
+
+        let mut state = self.lock();
+        for item in &fetched {
+            state
+                .tool_last_fetch
+                .insert((item.tool_id.clone(), item.channel), Instant::now());
+        }
+        state.tools.total_cache_bytes = total_cache_bytes;
+        state.tools.total_cache_archives = total_cache_archives;
+        state.tools.cache_entries = cache_entries;
+        state.tools.achievement_icon_cache_bytes = achievement_icon_cache_bytes;
+
+        if let Some(guard) = guard
+            && let Some(item) = fetched
+                .iter()
+                .find(|item| item.tool_id == guard.tool_id && item.channel == guard.channel)
+            && let Some(modal) = &mut state.tools.modal
+            && modal.entry_key == guard.entry_key
+            && modal.active_tool_id == guard.tool_id
+            && modal.selected_channel == guard.channel
+        {
+            modal.available_versions = item.releases.clone();
+            if modal.selected_version.as_ref().is_none_or(|version| {
+                !modal
+                    .available_versions
+                    .iter()
+                    .any(|release| &release.version == version)
+            }) {
+                modal.selected_version =
+                    modal.available_versions.first().map(|r| r.version.clone());
+            }
+        }
+        self.publish(&mut state);
     }
 
     /// Opens the tools modal for the currently selected game in the library.
@@ -397,7 +630,7 @@ impl Engine {
 
         let channel = installed_tool
             .map(|t| t.channel)
-            .unwrap_or(ToolChannel::Stable);
+            .unwrap_or(state.settings.preferences.tool_default_channel);
 
         let proxy = installed_tool
             .and_then(|t| {
@@ -441,10 +674,9 @@ impl Engine {
         self.publish(&mut state);
 
         // Background target inspection and anti-cheat checks
-        let (installer, catalog, store) = (
+        let (installer, catalog) = (
             self.shared.ports.tool_installer.clone(),
             self.shared.ports.tool_catalog.clone(),
-            self.shared.ports.tools.clone(),
         );
 
         let engine = self.clone();
@@ -500,41 +732,23 @@ impl Engine {
 
         if needs_fetch {
             let descriptor = find_tool(active_tool_id.as_str());
-            if let (Some(catalog), Some(store), Some(descriptor)) = (catalog, store, descriptor) {
+            if let (Some(catalog), Some(descriptor)) = (catalog, descriptor) {
                 let engine = self.clone();
-                let k = entry_key.clone();
-                let tool_id = active_tool_id.clone();
+                let guard = ToolModalGuard {
+                    entry_key: entry_key.clone(),
+                    tool_id: active_tool_id.clone(),
+                    channel,
+                };
                 self.shared.runtime.spawn_blocking(move || {
                     if let Ok(releases) = catalog.fetch_releases(&descriptor, channel) {
-                        let _ = store.save_releases(&tool_id, channel, &releases);
-                        let (bytes, archives) = catalog.cache_usage().unwrap_or((0, 0));
-                        let mut state = engine.lock();
-                        state
-                            .tool_last_fetch
-                            .insert((tool_id.clone(), channel), Instant::now());
-                        state.tools.total_cache_bytes = bytes
-                            + gamenode_platform::achievement_icons::achievement_icon_usage(
-                                &engine.shared.ports.covers_dir,
-                            );
-                        state.tools.total_cache_archives = archives;
-
-                        if let Some(modal) = &mut state.tools.modal
-                            && modal.entry_key == k
-                            && modal.active_tool_id == tool_id
-                            && modal.selected_channel == channel
-                        {
-                            modal.available_versions = releases;
-                            if modal.selected_version.is_none()
-                                || !modal
-                                    .available_versions
-                                    .iter()
-                                    .any(|r| Some(&r.version) == modal.selected_version.as_ref())
-                            {
-                                modal.selected_version =
-                                    modal.available_versions.first().map(|r| r.version.clone());
-                            }
-                            engine.publish(&mut state);
-                        }
+                        engine.apply_fetched_releases(
+                            vec![FetchedReleases {
+                                tool_id: active_tool_id,
+                                channel,
+                                releases,
+                            }],
+                            Some(&guard),
+                        );
                     }
                 });
             }
@@ -596,43 +810,24 @@ impl Engine {
 
         if needs_fetch {
             let descriptor = find_tool(tool_id.as_str());
-            let (catalog, store) = (
-                self.shared.ports.tool_catalog.clone(),
-                self.shared.ports.tools.clone(),
-            );
-            if let (Some(catalog), Some(store), Some(descriptor)) = (catalog, store, descriptor) {
+            let catalog = self.shared.ports.tool_catalog.clone();
+            if let (Some(catalog), Some(descriptor)) = (catalog, descriptor) {
                 let engine = self.clone();
+                let guard = ToolModalGuard {
+                    entry_key,
+                    tool_id: tool_id.clone(),
+                    channel,
+                };
                 self.shared.runtime.spawn_blocking(move || {
                     if let Ok(releases) = catalog.fetch_releases(&descriptor, channel) {
-                        let _ = store.save_releases(&tool_id, channel, &releases);
-                        let (bytes, archives) = catalog.cache_usage().unwrap_or((0, 0));
-                        let mut state = engine.lock();
-                        state
-                            .tool_last_fetch
-                            .insert((tool_id.clone(), channel), Instant::now());
-                        state.tools.total_cache_bytes = bytes
-                            + gamenode_platform::achievement_icons::achievement_icon_usage(
-                                &engine.shared.ports.covers_dir,
-                            );
-                        state.tools.total_cache_archives = archives;
-
-                        if let Some(modal) = &mut state.tools.modal
-                            && modal.entry_key == entry_key
-                            && modal.active_tool_id == tool_id
-                            && modal.selected_channel == channel
-                        {
-                            modal.available_versions = releases;
-                            if modal.selected_version.is_none()
-                                || !modal
-                                    .available_versions
-                                    .iter()
-                                    .any(|r| Some(&r.version) == modal.selected_version.as_ref())
-                            {
-                                modal.selected_version =
-                                    modal.available_versions.first().map(|r| r.version.clone());
-                            }
-                            engine.publish(&mut state);
-                        }
+                        engine.apply_fetched_releases(
+                            vec![FetchedReleases {
+                                tool_id,
+                                channel,
+                                releases,
+                            }],
+                            Some(&guard),
+                        );
                     }
                 });
             }
@@ -654,43 +849,24 @@ impl Engine {
         };
 
         let descriptor = find_tool(tool_id.as_str());
-        let (catalog, store) = (
-            self.shared.ports.tool_catalog.clone(),
-            self.shared.ports.tools.clone(),
-        );
-        if let (Some(catalog), Some(store), Some(descriptor)) = (catalog, store, descriptor) {
+        let catalog = self.shared.ports.tool_catalog.clone();
+        if let (Some(catalog), Some(descriptor)) = (catalog, descriptor) {
             let engine = self.clone();
+            let guard = ToolModalGuard {
+                entry_key,
+                tool_id: tool_id.clone(),
+                channel,
+            };
             self.shared.runtime.spawn_blocking(move || {
                 if let Ok(releases) = catalog.fetch_releases(&descriptor, channel) {
-                    let _ = store.save_releases(&tool_id, channel, &releases);
-                    let (bytes, archives) = catalog.cache_usage().unwrap_or((0, 0));
-                    let mut state = engine.lock();
-                    state
-                        .tool_last_fetch
-                        .insert((tool_id.clone(), channel), Instant::now());
-                    state.tools.total_cache_bytes = bytes
-                        + gamenode_platform::achievement_icons::achievement_icon_usage(
-                            &engine.shared.ports.covers_dir,
-                        );
-                    state.tools.total_cache_archives = archives;
-
-                    if let Some(modal) = &mut state.tools.modal
-                        && modal.entry_key == entry_key
-                        && modal.active_tool_id == tool_id
-                        && modal.selected_channel == channel
-                    {
-                        modal.available_versions = releases;
-                        if modal.selected_version.is_none()
-                            || !modal
-                                .available_versions
-                                .iter()
-                                .any(|r| Some(&r.version) == modal.selected_version.as_ref())
-                        {
-                            modal.selected_version =
-                                modal.available_versions.first().map(|r| r.version.clone());
-                        }
-                        engine.publish(&mut state);
-                    }
+                    engine.apply_fetched_releases(
+                        vec![FetchedReleases {
+                            tool_id,
+                            channel,
+                            releases,
+                        }],
+                        Some(&guard),
+                    );
                 }
             });
         }
@@ -713,6 +889,117 @@ impl Engine {
             if let Some(inspection) = &mut modal.inspection {
                 inspection.selected_exe = Some(relative_exe);
             }
+            self.publish(&mut state);
+        }
+    }
+
+    /// Opens the executable picker for the open game's install folder on a worker, then feeds the
+    /// chosen file through [`Self::select_tool_target_exe`] after the existing containment rules.
+    /// Cancelling, or a pick outside the folder, leaves the current target untouched.
+    pub async fn pick_tool_target_exe(&self) {
+        let Some((entry_key, install_dir)) = ({
+            let state = self.lock();
+            state
+                .tools
+                .modal
+                .as_ref()
+                .map(|modal| (modal.entry_key.clone(), modal.install_dir.clone()))
+        }) else {
+            return;
+        };
+        let picker = self.shared.ports.tool_picker.clone();
+        let folder = install_dir.clone();
+        let picked = self
+            .shared
+            .runtime
+            .spawn_blocking(move || {
+                let raw_pick = match picker {
+                    Some(picker) => picker
+                        .pick(&folder)
+                        .map_err(|message| (ToolOperationErrorCode::PickerFailed, message)),
+                    None => gamenode_platform::installations::pick_executable_in(&folder).map_err(
+                        |error| match error {
+                            LocalError::Unsupported => (
+                                ToolOperationErrorCode::PickerUnsupported,
+                                "the executable picker is unsupported on this platform".to_string(),
+                            ),
+                            other => (ToolOperationErrorCode::PickerFailed, other.to_string()),
+                        },
+                    ),
+                }?;
+                let Some(path) = raw_pick else {
+                    return Ok(None);
+                };
+                gamenode_platform::tools::inspect::validate_target_within_install_dir(
+                    Path::new(&folder),
+                    &path,
+                )
+                .map(|(_, relative_exe)| Some(relative_exe))
+                .map_err(|error| {
+                    let code = match &error {
+                        ToolError::PathEscapesInstallDir(_) => {
+                            ToolOperationErrorCode::TargetOutsideInstallDir
+                        }
+                        ToolError::TargetExeNotFound(_) => {
+                            ToolOperationErrorCode::TargetExeNotFound
+                        }
+                        ToolError::InstallDirNotFound(_) => {
+                            ToolOperationErrorCode::InstallDirNotFound
+                        }
+                        _ => ToolOperationErrorCode::PickerFailed,
+                    };
+                    (code, error.to_string())
+                })
+            })
+            .await;
+        match picked {
+            Ok(Ok(Some(relative_exe))) => {
+                let still_open = {
+                    let state = self.lock();
+                    state
+                        .tools
+                        .modal
+                        .as_ref()
+                        .is_some_and(|modal| modal.entry_key == entry_key)
+                };
+                if !still_open {
+                    return;
+                }
+                self.select_tool_target_exe(relative_exe);
+                // A previous picker failure is resolved by a successful choice.
+                let mut state = self.lock();
+                if let Some(modal) = &mut state.tools.modal
+                    && modal.entry_key == entry_key
+                    && matches!(modal.operation, Some(ToolOperationStatus::Failed { .. }))
+                {
+                    modal.operation = None;
+                    self.publish(&mut state);
+                }
+            }
+            // The user cancelled the dialog: the current target stays.
+            Ok(Ok(None)) => {}
+            Ok(Err((code, message))) => {
+                self.report_tool_target_error(&entry_key, Some(code), message);
+            }
+            Err(error) => self.report_tool_target_error(
+                &entry_key,
+                Some(ToolOperationErrorCode::PickerFailed),
+                format!("the executable picker stopped: {error}"),
+            ),
+        }
+    }
+
+    fn report_tool_target_error(
+        &self,
+        entry_key: &str,
+        code: Option<ToolOperationErrorCode>,
+        message: String,
+    ) {
+        let mut state = self.lock();
+        if let Some(modal) = &mut state.tools.modal
+            && modal.entry_key == entry_key
+        {
+            modal.operation = Some(ToolOperationStatus::Failed { message, code });
             self.publish(&mut state);
         }
     }
@@ -796,6 +1083,7 @@ impl Engine {
                     modal.operation = Some(ToolOperationStatus::Failed {
                         message: "Game is currently running; stop the game before modifying tools"
                             .to_string(),
+                        code: None,
                     });
                 }
                 self.publish(&mut state);
@@ -808,6 +1096,7 @@ impl Engine {
                     modal.operation = Some(ToolOperationStatus::Failed {
                         message: "Anti-cheat warning must be confirmed before installing"
                             .to_string(),
+                        code: None,
                     });
                 }
                 self.publish(&mut state);
@@ -819,6 +1108,7 @@ impl Engine {
                 if let Some(modal) = &mut state.tools.modal {
                     modal.operation = Some(ToolOperationStatus::Failed {
                         message: "No target executable selected".to_string(),
+                        code: None,
                     });
                 }
                 self.publish(&mut state);
@@ -830,6 +1120,7 @@ impl Engine {
                 if let Some(modal) = &mut state.tools.modal {
                     modal.operation = Some(ToolOperationStatus::Failed {
                         message: "No version selected".to_string(),
+                        code: None,
                     });
                 }
                 self.publish(&mut state);
@@ -847,6 +1138,7 @@ impl Engine {
                 if let Some(modal) = &mut state.tools.modal {
                     modal.operation = Some(ToolOperationStatus::Failed {
                         message: format!("Release not found for version {selected_version}"),
+                        code: None,
                     });
                 }
                 self.publish(&mut state);
@@ -858,6 +1150,7 @@ impl Engine {
                 if let Some(modal) = &mut state.tools.modal {
                     modal.operation = Some(ToolOperationStatus::Failed {
                         message: format!("Tool not found: {active_tool_id}"),
+                        code: None,
                     });
                 }
                 self.publish(&mut state);
@@ -908,6 +1201,7 @@ impl Engine {
             if let Some(modal) = &mut state.tools.modal {
                 modal.operation = Some(ToolOperationStatus::Failed {
                     message: "Tools ports are not configured".to_string(),
+                    code: None,
                 });
                 self.publish(&mut state);
             }
@@ -991,6 +1285,7 @@ impl Engine {
             if let Some(modal) = &mut state.tools.modal {
                 modal.operation = Some(ToolOperationStatus::Failed {
                     message: "Tools ports are not configured".to_string(),
+                    code: None,
                 });
                 self.publish(&mut state);
             }
@@ -1062,6 +1357,8 @@ impl Engine {
             let mut state = engine.lock();
             state.tools.total_cache_bytes = 0;
             state.tools.total_cache_archives = 0;
+            state.tools.achievement_icon_cache_bytes = 0;
+            state.tools.cache_entries.clear();
             if let Some(modal) = &mut state.tools.modal {
                 for r in &mut modal.available_versions {
                     r.cached_path = None;
@@ -1074,7 +1371,6 @@ impl Engine {
     /// Helper called after an install, update, or uninstall to refresh installations and cache usage.
     fn reload_tools_after_mutation(&self, entry_key: &str, outcome: Result<(), String>) {
         let store = self.shared.ports.tools.clone();
-        let catalog = self.shared.ports.tool_catalog.clone();
         let all_installs = store
             .as_ref()
             .and_then(|s| s.list_installations().ok())
@@ -1105,20 +1401,25 @@ impl Engine {
                 });
         }
 
-        let (bytes, archives) = catalog
+        let cache_entries = store
             .as_ref()
-            .and_then(|c| c.cache_usage().ok())
-            .unwrap_or((0, 0));
+            .map(|store| tool_cache_entries(store.as_ref()))
+            .unwrap_or_default();
+        let total_cache_bytes = cache_entries.iter().map(|entry| entry.bytes).sum();
+        let total_cache_archives = cache_entries.len();
+        let achievement_icon_cache_bytes =
+            gamenode_platform::achievement_icons::achievement_icon_usage(
+                &self.shared.ports.covers_dir,
+            );
 
         let new_modal_tools = map.get(entry_key).cloned().unwrap_or_default();
 
         let mut state = self.lock();
         state.tools.installed_by_entry = map;
-        state.tools.total_cache_bytes = bytes
-            + gamenode_platform::achievement_icons::achievement_icon_usage(
-                &self.shared.ports.covers_dir,
-            );
-        state.tools.total_cache_archives = archives;
+        state.tools.total_cache_bytes = total_cache_bytes;
+        state.tools.total_cache_archives = total_cache_archives;
+        state.tools.cache_entries = cache_entries;
+        state.tools.achievement_icon_cache_bytes = achievement_icon_cache_bytes;
 
         if state
             .plugin_tool_request
@@ -1147,12 +1448,56 @@ impl Engine {
                     modal.operation = None;
                 }
                 Err(err_msg) => {
-                    modal.operation = Some(ToolOperationStatus::Failed { message: err_msg });
+                    modal.operation = Some(ToolOperationStatus::Failed {
+                        message: err_msg,
+                        code: None,
+                    });
                 }
             }
         }
         self.publish(&mut state);
     }
+}
+
+/// Builds the Settings cache listing from the persisted release rows whose archive is present,
+/// marking a version in use when a game installation references the same tool, version and
+/// channel.
+fn tool_cache_entries(store: &dyn ToolStore) -> Vec<ToolCacheEntryView> {
+    let releases = store.list_cached_releases().unwrap_or_else(|error| {
+        tracing::warn!(%error, "could not list cached tool releases");
+        Vec::new()
+    });
+    let installations = store.list_installations().unwrap_or_else(|error| {
+        tracing::warn!(%error, "could not list tool installations for the cache view");
+        Vec::new()
+    });
+    releases
+        .into_iter()
+        .filter(|release| {
+            release
+                .cached_path
+                .as_deref()
+                .is_some_and(|path| Path::new(path).is_file())
+        })
+        .map(|release| {
+            let in_use = installations.iter().any(|installation| {
+                installation.tool_id == release.tool_id
+                    && installation.version == release.version
+                    && installation.channel == release.channel
+            });
+            ToolCacheEntryView {
+                tool_id: release.tool_id,
+                version: release.version,
+                channel: release.channel,
+                bytes: release.size_bytes,
+                sha256_verified: release
+                    .sha256
+                    .as_deref()
+                    .is_some_and(|digest| !digest.trim().is_empty()),
+                in_use,
+            }
+        })
+        .collect()
 }
 
 /// Helper converting built-in tool descriptors to catalog item views.

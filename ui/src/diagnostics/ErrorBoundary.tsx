@@ -289,7 +289,7 @@ const monoFont = 'ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", mon
 const panelOverlayStyle: React.CSSProperties = {
   position: 'fixed',
   inset: 0,
-  backgroundColor: 'var(--settings-overlay, rgba(0, 0, 0, 0.62))',
+  backgroundColor: 'rgba(0, 0, 0, 0.62)',
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
@@ -304,8 +304,8 @@ const panelCardStyle: React.CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
   overflow: 'hidden',
-  backgroundColor: 'var(--settings-bg-base, #111111)',
-  border: '1px solid var(--settings-border-subtle, #2A2A2A)',
+  backgroundColor: 'var(--color-canvas, #0B0B0B)',
+  border: '1px solid var(--color-border-subtle, #2A2A2A)',
   borderRadius: 'var(--radius-md, 8px)',
   boxShadow: 'var(--shadow-modal)',
   color: 'var(--color-text-default, #D9D9D9)',
@@ -329,15 +329,15 @@ const pageCardStyle: React.CSSProperties = {
   maxWidth: '720px',
   display: 'flex',
   flexDirection: 'column',
-  backgroundColor: 'var(--settings-bg-base, #111111)',
-  border: '1px solid var(--settings-border-subtle, #2A2A2A)',
+  backgroundColor: 'var(--color-canvas, #0B0B0B)',
+  border: '1px solid var(--color-border-subtle, #2A2A2A)',
   borderRadius: 'var(--radius-md, 8px)',
   boxShadow: 'var(--shadow-modal)',
 };
 
 const headerStyle: React.CSSProperties = {
   padding: '16px 24px',
-  borderBottom: '1px solid var(--settings-border-subtle, #2A2A2A)',
+  borderBottom: '1px solid var(--color-border-subtle, #2A2A2A)',
 };
 
 const titleStyle: React.CSSProperties = {
@@ -397,8 +397,8 @@ const preStyle: React.CSSProperties = {
   padding: '10px 12px',
   maxHeight: '220px',
   overflow: 'auto',
-  backgroundColor: 'var(--settings-bg-base, #0B0B0B)',
-  border: '1px solid var(--settings-border-subtle, #2A2A2A)',
+  backgroundColor: 'var(--color-canvas, #0B0B0B)',
+  border: '1px solid var(--color-border-subtle, #2A2A2A)',
   borderRadius: 'var(--radius-sm, 4px)',
   fontFamily: monoFont,
   fontSize: 'var(--font-size-xs, 12px)',
@@ -423,8 +423,8 @@ const textareaStyle: React.CSSProperties = {
   width: '100%',
   minHeight: '180px',
   boxSizing: 'border-box',
-  backgroundColor: 'var(--settings-bg-base, #0B0B0B)',
-  border: '1px solid var(--settings-border-subtle, #2A2A2A)',
+  backgroundColor: 'var(--color-canvas, #0B0B0B)',
+  border: '1px solid var(--color-border-subtle, #2A2A2A)',
   borderRadius: 'var(--radius-sm, 4px)',
   padding: '10px 12px',
   color: 'var(--color-text-default, #D9D9D9)',
@@ -441,7 +441,7 @@ const hintStyle: React.CSSProperties = {
 
 const footerStyle: React.CSSProperties = {
   padding: '16px 24px',
-  borderTop: '1px solid var(--settings-border-subtle, #2A2A2A)',
+  borderTop: '1px solid var(--color-border-subtle, #2A2A2A)',
   display: 'flex',
   justifyContent: 'flex-end',
   flexWrap: 'wrap',
@@ -450,8 +450,8 @@ const footerStyle: React.CSSProperties = {
 
 const secondaryButtonStyle: React.CSSProperties = {
   padding: '8px 16px',
-  backgroundColor: 'var(--settings-bg-raised, #222222)',
-  border: '1px solid var(--settings-border-subtle, #2A2A2A)',
+  backgroundColor: 'var(--color-raised, #222222)',
+  border: '1px solid var(--color-border-subtle, #2A2A2A)',
   borderRadius: 'var(--radius-sm, 4px)',
   color: 'var(--color-text-default, #D9D9D9)',
   fontSize: 'var(--font-size-sm, 14px)',

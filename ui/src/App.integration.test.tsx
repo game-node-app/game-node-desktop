@@ -32,12 +32,17 @@ vi.mock('@tauri-apps/api/core', () => ({
     if (cmd === 'get_app_info') {
       return {
         locale,
+        systemLocale: locale,
         version: '9.9.9',
+        buildDate: '2026-11-16',
+        osVersion: 'Test OS 1.0',
+        arch: 'x86_64',
         backgroundSupported: false,
         platform: 'windows',
       } satisfies AppInfo;
     }
     if (cmd === 'get_license_notices') return 'GPL-3.0-only notices';
+    if (cmd === 'sign_in_cover_wall') return [];
     return undefined;
   }),
 }));
@@ -169,12 +174,135 @@ describe('App (integration: real component tree over a fake Tauri host)', () => 
     delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
   });
 
-  it('is a real application shell, not a placeholder', async () => {
+  it('signed out: fills the window with the entry surface and hides the library shell', async () => {
     await mountApp();
-    expect(screen.getByTestId('top-bar')).toBeInTheDocument();
+    expect(screen.getByTestId('signed-out-view')).toBeInTheDocument();
+    expect(screen.getByTestId('signed-out-surface')).toBeInTheDocument();
+    const chrome = screen.getByTestId('signed-out-window-chrome');
+    expect(chrome.querySelector('[data-tauri-drag-region="deep"]')).not.toBeNull();
+    expect(screen.getByTestId('window-controls')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Minimize' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Maximize' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Close' })).toBeInTheDocument();
+    expect(screen.queryByTestId('top-bar')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('status-bar')).not.toBeInTheDocument();
+    expect(screen.getByTestId('sign-in-art')).toBeInTheDocument();
+    expect(screen.getByTestId('sign-in-art')).toHaveClass(
+      'hidden',
+      'basis-[53%]',
+      'max-w-[760px]',
+      'min-[860px]:flex',
+    );
+  });
+
+  it('signed in: restores the real application shell and its native window controls', async () => {
+    await mountApp();
+    await publish(signedIn(current));
+
+    expect(await screen.findByTestId('top-bar')).toBeInTheDocument();
     expect(screen.getByTestId('sidebar')).toBeInTheDocument();
     expect(screen.getByTestId('status-bar')).toBeInTheDocument();
-    expect(screen.getByTestId('signed-out-view')).toBeInTheDocument();
+    expect(screen.getByTestId('window-controls')).toBeInTheDocument();
+    expect(screen.queryByTestId('signed-out-surface')).not.toBeInTheDocument();
+  });
+
+  it('hides the status bar when the preference is off and gives the height to the library', async () => {
+    current = createDefaultSnapshot();
+    current.preferences = { ...current.preferences, showStatusBar: false };
+    await mountApp();
+    await publish(signedIn(current));
+
+    expect(await screen.findByTestId('library-screen')).toBeInTheDocument();
+    expect(screen.queryByTestId('status-bar')).not.toBeInTheDocument();
+    expect(screen.getByTestId('app-shell')).toHaveClass(
+      'grid-rows-[48px_minmax(0,1fr)]',
+    );
+  });
+
+  it('brings the status bar back when the preference is turned on', async () => {
+    current = createDefaultSnapshot();
+    current.preferences = { ...current.preferences, showStatusBar: false };
+    await mountApp();
+    await publish(signedIn(current));
+
+    expect(screen.queryByTestId('status-bar')).not.toBeInTheDocument();
+
+    await publish({
+      ...current,
+      preferences: { ...current.preferences, showStatusBar: true },
+    });
+
+    expect(await screen.findByTestId('status-bar')).toBeInTheDocument();
+    expect(screen.getByTestId('app-shell')).toHaveClass(
+      'grid-rows-[48px_minmax(0,1fr)_26px]',
+    );
+  });
+
+  it('keeps a cached offline library in the shell after sign-in', async () => {
+    await mountApp();
+    const next = signedIn(current);
+    next.library = libraryView(5, { access: 'offline' });
+    await publish(next);
+
+    expect(await screen.findByTestId('library-screen')).toBeInTheDocument();
+    expect(screen.getByTestId('top-bar')).toBeInTheDocument();
+    expect(screen.queryByTestId('signed-out-view')).not.toBeInTheDocument();
+  });
+
+  it('keeps a cached library in the shell while verifying or when restore fails offline', async () => {
+    await mountApp();
+    await publish({
+      ...current,
+      auth: 'verifying',
+      library: libraryView(4, { access: 'unverified' }),
+    });
+
+    expect(await screen.findByTestId('library-screen')).toBeInTheDocument();
+    expect(screen.getByTestId('top-bar')).toBeInTheDocument();
+    expect(screen.queryByTestId('signed-out-surface')).not.toBeInTheDocument();
+
+    await publish({
+      ...current,
+      auth: 'restoreFailed',
+      library: libraryView(4, { access: 'unverified' }),
+    });
+
+    expect(screen.getByTestId('library-screen')).toBeInTheDocument();
+    expect(screen.getByTestId('top-bar')).toBeInTheDocument();
+    expect(screen.queryByTestId('signed-out-surface')).not.toBeInTheDocument();
+  });
+
+  it('shows the full-window entry surface on restoreFailed when no cached library exists', async () => {
+    await mountApp();
+    await publish({
+      ...current,
+      auth: 'restoreFailed',
+      library: null,
+    });
+
+    expect(await screen.findByTestId('signed-out-surface')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /retry connection/i })).toBeInTheDocument();
+    expect(screen.queryByTestId('top-bar')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar')).not.toBeInTheDocument();
+  });
+
+  it('shows the pending state over the full-window entry surface', async () => {
+    await mountApp();
+    const next = createDefaultSnapshot();
+    next.auth = {
+      pending: {
+        provider: 'google',
+        awaitingBrowser: true,
+        canReopen: true,
+        reopenFailed: false,
+      },
+    };
+    await publish(next);
+
+    expect(await screen.findByTestId('sign-in-pending')).toBeInTheDocument();
+    expect(screen.getByTestId('signed-out-surface')).toBeInTheDocument();
+    expect(screen.queryByTestId('top-bar')).not.toBeInTheDocument();
   });
 
   it('signed out: Continue with Google sends dispatch_auth over IPC', async () => {
@@ -280,8 +408,8 @@ describe('App (integration: real component tree over a fake Tauri host)', () => 
     const menu = await screen.findByTestId('library-context-menu');
     expect(await screen.findByTestId('library-screen')).toBeInTheDocument();
     expect(within(menu).getByText('Game 1')).toBeInTheDocument();
-    expect(calls('library_input').at(-1)?.args).toEqual({
-      input: { select: { key: 'steam:1', mode: 'replace' } },
+    expect(calls('library_input').map((call) => call.args?.input)).toContainEqual({
+      select: { key: 'steam:1', mode: 'replace' },
     });
     expect(uiStore.state.activeDestination).toBe('library');
     expect(
@@ -332,7 +460,7 @@ describe('App (integration: real component tree over a fake Tauri host)', () => 
   it('shows the one-time sync explanation after sign-in and dismisses it through IPC', async () => {
     await mountApp();
     const next = signedIn(current);
-    next.sync = { enabled: true, explained: false };
+    next.sync = { enabled: true, explained: false, summary: null, running: false };
     await publish(next);
 
     expect(await screen.findByTestId('sync-explanation-modal')).toBeInTheDocument();
@@ -342,7 +470,8 @@ describe('App (integration: real component tree over a fake Tauri host)', () => 
 
   it('opens Settings from the app menu and with Ctrl+,', async () => {
     await mountApp();
-    fireEvent.click(screen.getByTestId('app-menu-trigger'));
+    await publish(signedIn(current));
+    fireEvent.click(await screen.findByTestId('app-menu-trigger'));
     const menu = await screen.findByTestId('app-menu');
     fireEvent.click(within(menu).getByText('Settings'));
     expect(await screen.findByRole('dialog')).toBeInTheDocument();
@@ -365,6 +494,7 @@ describe('App (integration: real component tree over a fake Tauri host)', () => 
         searching: false,
         candidates: [],
         results: [],
+        selected: null,
         noResults: false,
         error: null,
         searchBlocked: null,
@@ -373,10 +503,10 @@ describe('App (integration: real component tree over a fake Tauri host)', () => 
       },
     });
     await publish(withMatch);
-    expect(await screen.findByTestId('match-dialog-overlay')).toBeInTheDocument();
+    expect(await screen.findByTestId('match-dialog')).toBeInTheDocument();
 
     await publish(signedIn(current));
-    await waitFor(() => expect(screen.queryByTestId('match-dialog-overlay')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByTestId('match-dialog')).not.toBeInTheDocument());
   });
 
   it('contains a crash in the game tools panel: the rest of the app stays up and Close asks the engine to close it', async () => {
@@ -422,6 +552,37 @@ describe('App (integration: real component tree over a fake Tauri host)', () => 
     await mountApp();
     expect(await screen.findByText('Continuar com Google')).toBeInTheDocument();
     expect(document.documentElement.lang).toBe('pt-BR');
+  });
+
+  it('switches the interface when the language preference changes', async () => {
+    await mountApp();
+    expect(await screen.findByText('Continue with Google')).toBeInTheDocument();
+    expect(document.documentElement.lang).toBe('en');
+
+    fireEvent.keyDown(window, { key: ',', ctrlKey: true });
+    const modal = await screen.findByRole('dialog');
+    expect(
+      within(modal).getByRole('heading', { name: 'Settings' }),
+    ).toBeInTheDocument();
+
+    await publish({
+      ...current,
+      preferences: { ...current.preferences, locale: 'ptBr' },
+    });
+    expect(await within(modal).findByText('Continuar com Google')).toBeInTheDocument();
+    expect(document.documentElement.lang).toBe('pt-BR');
+    // The open modal re-renders through the i18n context, not a reload.
+    expect(
+      await within(modal).findByRole('heading', { name: 'Configurações' }),
+    ).toBeInTheDocument();
+
+    // System language follows the OS again without a reload.
+    await publish({
+      ...current,
+      preferences: { ...current.preferences, locale: 'system' },
+    });
+    expect(await within(modal).findByText('Continue with Google')).toBeInTheDocument();
+    expect(document.documentElement.lang).toBe('en');
   });
 
   it('keeps a newer engine snapshot when the initial get_snapshot reply is stale', async () => {

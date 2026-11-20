@@ -175,6 +175,8 @@ impl DiscoveryHost for WindowsDiscovery {
                         evidence,
                         ignored: false,
                         incomplete,
+                        suggestion: None,
+                        likely_non_game: false,
                     });
                 }
             }
@@ -237,6 +239,7 @@ mod tests {
             id: "w1".into(),
             path: "/games".into(),
             enabled: true,
+            ..Default::default()
         };
         let cancelled = AtomicBool::new(false);
         assert_eq!(
@@ -252,6 +255,7 @@ mod tests {
             id: "w1".into(),
             path: "C:\\".into(),
             enabled: true,
+            ..Default::default()
         };
         let cancelled = AtomicBool::new(true);
         assert_eq!(

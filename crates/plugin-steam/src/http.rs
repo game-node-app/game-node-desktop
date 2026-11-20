@@ -11,8 +11,8 @@
 use std::time::Duration;
 
 use crate::steam::{
-    SteamAchievementDefinition, SteamAchievementState, SteamError, SteamFamily, SteamOwnedGame,
-    SteamSession, SteamWebApi,
+    SteamAchievementDefinition, SteamAchievementGlobal, SteamAchievementState, SteamError,
+    SteamFamily, SteamOwnedGame, SteamSession, SteamWebApi,
 };
 use async_trait::async_trait;
 use gamenode_plugin_protocol::models::SessionCredential;
@@ -50,6 +50,8 @@ const FAMILY_GROUP_PATH: &str = "/IFamilyGroupsService/GetFamilyGroupForUser/v1/
 const SHARED_LIBRARY_PATH: &str = "/IFamilyGroupsService/GetSharedLibraryApps/v1/";
 const ACHIEVEMENT_SCHEMA_PATH: &str = "/ISteamUserStats/GetSchemaForGame/v2/";
 const PLAYER_ACHIEVEMENTS_PATH: &str = "/ISteamUserStats/GetPlayerAchievements/v1/";
+/// Public: no access token or key is needed.
+const GLOBAL_ACHIEVEMENTS_PATH: &str = "/ISteamUserStats/GetGlobalAchievementPercentagesForApp/v2/";
 
 /// How many times one store request may follow Steam's cookie-setting redirect back to itself.
 const MAX_COOKIE_BOUNCES: u32 = 3;
@@ -847,6 +849,39 @@ impl SteamWebApi for SteamClient {
             .collect::<Vec<_>>();
         Ok(Some(states))
     }
+
+    async fn achievement_global_percentages(
+        &self,
+        app_id: &str,
+    ) -> Result<Vec<SteamAchievementGlobal>, SteamError> {
+        let url = api_url(
+            &self.api,
+            GLOBAL_ACHIEVEMENTS_PATH,
+            &[("gameid", app_id), ("format", "json")],
+        );
+        let Some(body) = self.achievement_body(GLOBAL_ACHIEVEMENTS_PATH, url).await? else {
+            return Ok(Vec::new());
+        };
+        let parsed: GlobalAchievementsResponse =
+            serde_json::from_slice(&body).map_err(|_| SteamError::Changed)?;
+        let achievements = parsed
+            .achievement_percentages
+            .and_then(|percentages| percentages.achievements)
+            .unwrap_or_default();
+        Ok(achievements
+            .into_iter()
+            .filter_map(|achievement| {
+                let api_name = achievement.name?.trim().to_owned();
+                if api_name.is_empty() {
+                    return None;
+                }
+                Some(SteamAchievementGlobal {
+                    api_name,
+                    percent: percent_hundredths(achievement.percent?)?,
+                })
+            })
+            .collect())
+    }
 }
 
 fn redirect_policy() -> Policy {
@@ -1294,6 +1329,53 @@ struct PlayerAchievement {
     name: Option<String>,
     #[serde(default)]
     description: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct GlobalAchievementsResponse {
+    #[serde(default, rename = "achievementpercentages")]
+    achievement_percentages: Option<GlobalAchievementPercentages>,
+}
+
+#[derive(Deserialize)]
+struct GlobalAchievementPercentages {
+    #[serde(default)]
+    achievements: Option<Vec<GlobalAchievement>>,
+}
+
+#[derive(Deserialize)]
+struct GlobalAchievement {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    percent: Option<PercentValue>,
+}
+
+/// Steam sends `percent` as a number in one response and as a string in another.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum PercentValue {
+    Number(f64),
+    Text(String),
+}
+
+impl PercentValue {
+    fn as_f64(&self) -> Option<f64> {
+        match self {
+            Self::Number(value) => Some(*value),
+            Self::Text(text) => text.trim().parse::<f64>().ok(),
+        }
+    }
+}
+
+/// Converts a percentage (4.2) into the protocol's hundredths (420), discarding values Steam
+/// could not have meant.
+fn percent_hundredths(value: PercentValue) -> Option<u16> {
+    let value = value.as_f64()?;
+    if !value.is_finite() || value < 0.0 {
+        return None;
+    }
+    Some((value * 100.0).round().clamp(0.0, f64::from(u16::MAX)) as u16)
 }
 
 #[derive(Deserialize)]

@@ -53,14 +53,17 @@ describe('useGlobalShortcuts', () => {
     uiStore.setState((prev) => ({
       ...prev,
       settingsTopic: 'backups',
-      backupDestinationDraft: '/tmp/backups',
+      settingsDraft: { topic: 'backups', values: { destination: '/tmp/backups' } },
       settingsOpen: true,
     }));
 
     fireEvent.keyDown(document.body, { key: ',', ctrlKey: true });
     expect(uiStore.state.settingsOpen).toBe(true);
     expect(uiStore.state.settingsTopic).toBe('backups');
-    expect(uiStore.state.backupDestinationDraft).toBe('/tmp/backups');
+    expect(uiStore.state.settingsDraft).toEqual({
+      topic: 'backups',
+      values: { destination: '/tmp/backups' },
+    });
   });
 
   it('rescans with F5 and quits with Ctrl+Q', () => {

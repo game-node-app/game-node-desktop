@@ -59,6 +59,31 @@ pub fn format_tray_tooltip(running_title: &str) -> String {
     }
 }
 
+/// Rewrites the current user's autostart value once at start: on with the minimized flag when
+/// "Start with Windows" is on, removed otherwise. The registry work runs on its own thread before
+/// the window exists, and a non-installed build is a no-op (`register` returns `Ok(false)`).
+#[cfg(windows)]
+fn apply_autostart(preferences: &gamenode_core::AppPreferences) {
+    let preferences = preferences.clone();
+    let worker = std::thread::Builder::new()
+        .name("gamenode-autostart".into())
+        .spawn(move || {
+            if preferences.start_with_windows {
+                gamenode_platform::autostart::register(preferences.start_minimized).map(drop)
+            } else {
+                gamenode_platform::autostart::unregister().map(drop)
+            }
+        });
+    match worker {
+        Ok(worker) => match worker.join() {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => tracing::warn!(%error, "could not update login startup"),
+            Err(_) => tracing::warn!("the login startup worker panicked"),
+        },
+        Err(error) => tracing::warn!(%error, "could not start the login startup worker"),
+    }
+}
+
 /// Shows or hides the WebView2 controller with its window. `window.hide()` alone leaves the
 /// webview rendering in the background; `SetIsVisible(false)` suspends it. On newer runtimes the
 /// memory target follows the visibility, and older runtimes without `ICoreWebView2_19` still get
@@ -113,11 +138,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let mut owner = owner.serve(runtime.handle());
 
-    #[cfg(windows)]
-    if let Err(error) = gamenode_platform::autostart::register() {
-        tracing::warn!(%error, "could not register login startup");
-    }
-
     let paths = DataPaths::resolve().ok_or("Could not locate your application data directory")?;
     paths.ensure_data_dir()?;
     let plugin_updates = gamenode_app::plugin_host::updates::PluginUpdateService::open(&paths)?;
@@ -132,6 +152,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let store = Arc::new(SqliteSettingsStore::open(&paths.database_file())?);
     let initial_settings = store.load()?;
+    // The lifecycle preferences decide the login value before any window exists.
+    #[cfg(windows)]
+    apply_autostart(&initial_settings.preferences);
     // One durable port store, shared by the catalog worker, the install runner and the
     // `port-art` route. It lives on the same SQLite connection as the rest of the app.
     let port_store: Arc<dyn PortStore> = Arc::new(store.ports_store());
@@ -149,6 +172,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::warn!(%error, "could not read the saved library layout; using the default");
         Default::default()
     });
+    // "Open in" replaces the remembered scope once, before the window exists. Later scope changes
+    // persist through the normal layout path.
+    let layout = initial_settings.preferences.apply_start_scope(layout);
     let library = gamenode_core::library::LibraryMachine::new(providers, layout);
 
     let displays = display::available_displays();
@@ -388,6 +414,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     processes.clone(),
                 ),
             )),
+            tool_picker: None,
             processes,
             playtime: Arc::new(store.playtime_store()),
             playtime_api: client.clone(),
@@ -497,7 +524,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         commands::get_license_notices,
         commands::dispatch_auth,
         commands::set_sync_enabled,
+        commands::sync_now,
         commands::set_playtime_source,
+        commands::set_app_preference,
         commands::dismiss_sync_explanation,
         commands::update_window_geometry,
         commands::quit_app,
@@ -515,14 +544,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         commands::dismiss_launch,
         commands::rescan_library,
         commands::open_gamenode_page,
+        commands::open_gamenode_link,
+        commands::sign_in_cover_wall,
         commands::remove_entry,
         commands::pick_local_executable,
+        commands::pick_local_cover,
+        commands::discard_local_cover,
         commands::add_local_executable,
         commands::edit_local_game,
         commands::repair_local_game,
         commands::remove_local_game,
         commands::backup_local_now,
         commands::set_local_backup_settings,
+        commands::local_backup_usage,
+        commands::set_local_backup_retention,
         commands::pick_save_destination,
         commands::set_local_profile_automatic,
         commands::configure_local_saves,
@@ -533,6 +568,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         commands::remove_local_watch,
         commands::set_local_candidate_executable,
         commands::rescan_local_folders,
+        commands::check_local_watch,
         commands::select_local_candidate,
         commands::review_selected_local_candidates,
         commands::reset_local_ignores,
@@ -550,6 +586,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         commands::refresh_tool_versions,
         commands::select_tool_version,
         commands::select_tool_target_exe,
+        commands::pick_tool_target_exe,
         commands::select_tool_proxy,
         commands::set_tool_anticheat_confirmed,
         commands::set_tool_reset_config,
@@ -602,9 +639,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         commands::provider_cancel_sign_in,
         commands::provider_sign_out,
         commands::provider_check,
+        commands::plugin_stop,
+        commands::plugin_start,
         commands::achievement_list,
+        commands::open_achievements_page,
         commands::get_recent_logs,
         commands::open_logs_folder,
+        commands::system_info_text,
         commands::ports_open,
         commands::ports_refresh,
         commands::ports_detail,
@@ -658,15 +699,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // Setup system tray
-        let locale = commands::normalize_locale(&commands::system_locale());
-        let (open_text, quit_text) = if locale == "pt-BR" {
-            ("Abrir o GameNode", "Sair")
-        } else {
-            ("Open GameNode", "Quit")
-        };
+        let locale = commands::effective_locale(
+            eng_for_setup.preferences().locale,
+            &commands::system_locale(),
+        );
+        let (open_text, quit_text) = commands::tray_labels(locale);
 
         let open_item = MenuItem::with_id(app, "open", open_text, true, None::<&str>)?;
         let quit_item = MenuItem::with_id(app, "quit", quit_text, true, None::<&str>)?;
+        app.manage(commands::TrayLabels::new(open_item.clone(), quit_item.clone()));
         let tray_menu = Menu::with_items(app, &[&open_item, &quit_item])?;
 
         let mut tray_builder = TrayIconBuilder::with_id("main-tray")
@@ -789,7 +830,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     height,
                     maximized: is_max,
                 };
-                eng_for_events.update_settings(move |s| s.window = Some(geom));
+                eng_for_events.update_window_geometry(geom);
             }
         }
         WindowEvent::CloseRequested { api, .. } => {
@@ -816,16 +857,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     height,
                     maximized: is_max,
                 };
-                eng_for_events.update_settings(move |s| s.window = Some(geom));
+                eng_for_events.update_window_geometry(geom);
             }
 
             let _ = &api;
             #[cfg(target_os = "windows")]
-            {
-                api.prevent_close();
-                let _ = window.hide();
-                if let Some(win) = window.app_handle().get_webview_window(window.label()) {
-                    set_webview_visible(&win, false);
+            match commands::close_action(eng_for_events.preferences().close_to_tray) {
+                commands::CloseAction::HideToTray => {
+                    api.prevent_close();
+                    let _ = window.hide();
+                    if let Some(win) = window.app_handle().get_webview_window(window.label()) {
+                        set_webview_visible(&win, false);
+                    }
+                }
+                commands::CloseAction::Quit => {
+                    api.prevent_close();
+                    let engine = eng_for_events.clone();
+                    let app = window.app_handle().clone();
+                    // Ending sessions and flushing storage blocks; keep it off the UI thread,
+                    // then end the event loop like the Quit path does.
+                    tauri::async_runtime::spawn(async move {
+                        let _ = tokio::task::spawn_blocking(move || engine.shutdown()).await;
+                        app.exit(0);
+                    });
                 }
             }
         }

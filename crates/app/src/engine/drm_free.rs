@@ -1,6 +1,10 @@
 //! Short UI commands; filesystem and persistence work run on blocking workers.
+mod suggestions;
 use super::*;
-use gamenode_core::drm_free::{LocalError, LocalView, Registration};
+use gamenode_core::drm_free::{
+    BackupReason, BackupVersion, BackupVersionMeta, Candidate, ClaimRegistration, ClaimStoreEntry,
+    LocalError, LocalGameStore, LocalView, PendingClaim, Registration,
+};
 impl Engine {
     pub fn refresh_local_games(&self) {
         let engine = self.clone();
@@ -51,6 +55,8 @@ impl Engine {
             view.inferences = inferences;
             view.busy = state.local.busy;
             view.versions = state.local.versions.clone();
+            view.history_bytes = state.local.history_bytes;
+            view.history_count = state.local.history_count;
             view.restore = state.local.restore.clone();
             view.review_selected = state.local.review_selected.clone();
             view.recently_added = state.local.recently_added.clone();
@@ -62,8 +68,12 @@ impl Engine {
                 .local
                 .discovery_last_checked_at
                 .or(view.discovery_last_checked_at);
+            engine.apply_review_defaults(&mut state, &mut view);
+            state.library.replace_local_covers(local_covers(&view));
             state.local = view;
             engine.publish(&mut state);
+            drop(state);
+            engine.request_discovery_suggestions();
         });
     }
     pub fn add_local_executable(&self, path: Option<String>) {
@@ -97,6 +107,7 @@ impl Engine {
             {
                 registration.id = old.id;
                 registration.revision = old.revision + 1;
+                registration.custom_cover = old.custom_cover;
             }
             let key = existing.as_ref().unwrap_or(&registration).key();
             if existing.is_none() {
@@ -118,17 +129,43 @@ impl Engine {
                             };
                             exe.starts_with(&format!("{}{sep}", root.trim_end_matches(['/', '\\'])))
                         })
-                        .map(|entry| gamenode_core::drm_free::PendingClaim {
-                            registration: registration.clone(),
-                            store_key: entry.key.clone(),
-                            store_title: entry
-                                .name
+                        .map(|entry| {
+                            let store_key = entry.key.clone();
+                            let store_title =
+                                entry.name.clone().unwrap_or_else(|| entry.store_id.clone());
+                            let store_cover = state.library.entry_cover_file(&store_key);
+                            let playtime_seconds = state
+                                .library
+                                .playtime_for(&store_key)
+                                .and_then(|playtime| playtime.seconds);
+                            // A custom cover wins over the matched GameNode cover (design D7/H).
+                            let registration_cover = registration
+                                .custom_cover
                                 .clone()
-                                .unwrap_or_else(|| entry.store_id.clone()),
+                                .or_else(|| state.library.entry_cover_file(&key));
+                            (
+                                PendingClaim {
+                                    store_key,
+                                    store_entry: ClaimStoreEntry {
+                                        title: store_title,
+                                        provider: entry.provider.clone(),
+                                        cover_file: store_cover,
+                                        playtime_seconds,
+                                    },
+                                    registration: ClaimRegistration {
+                                        title: registration.title.clone(),
+                                        root: registration.root.clone(),
+                                        cover_file: registration_cover,
+                                    },
+                                },
+                                registration.clone(),
+                            )
                         })
                 };
-                if let Some(claim) = claim {
-                    engine.lock().pending_claim = Some(claim);
+                if let Some((claim, draft)) = claim {
+                    let mut state = engine.lock();
+                    state.pending_claim = Some(claim);
+                    state.pending_claim_registration = Some(draft);
                     return Ok(());
                 }
                 store
@@ -192,6 +229,15 @@ impl Engine {
                 .as_ref()
                 .zip(engine.shared.ports.installations.as_ref())
                 .ok_or(LocalError::Unsupported)?;
+            let custom_cover = match &value.custom_cover {
+                Some(name) => {
+                    if !gamenode_platform::covers::is_local_cover_name(&value.id, name) {
+                        return Err(LocalError::InvalidTarget);
+                    }
+                    Some(name.clone())
+                }
+                None => None,
+            };
             let mut inspected = host.inspect(&value.executable)?;
             inspected.id = value.id;
             inspected.title = value.title;
@@ -200,6 +246,7 @@ impl Engine {
             inspected.arguments = value.arguments;
             inspected.gameplay = value.gameplay;
             inspected.launchers = value.launchers;
+            inspected.custom_cover = custom_cover.clone();
             let current = store
                 .registrations()
                 .map_err(local_storage)?
@@ -214,6 +261,29 @@ impl Engine {
             inspected.revision = current.revision + 1;
             let inspected = host.validate_registration(&inspected)?;
             store.save_registration(&inspected).map_err(local_storage)?;
+
+            // The editor is closing with this save: a pick still in flight for the same
+            // registration must not leave a second orphan behind.
+            let (pending, other_pending) = {
+                let mut state = engine.lock();
+                *state
+                    .local_cover_epoch
+                    .entry(inspected.id.clone())
+                    .or_default() += 1;
+                let pending = state.local_cover_pending.remove(&inspected.id);
+                (pending, state.local_cover_pending.clone())
+            };
+            let registrations = store.registrations().map_err(local_storage)?;
+            if let Some(previous) = current.custom_cover.as_deref()
+                && Some(previous) != custom_cover.as_deref()
+            {
+                remove_cover_if_unreferenced(engine, &registrations, &other_pending, previous);
+            }
+            if let Some(pending) = pending
+                && Some(pending.as_str()) != custom_cover.as_deref()
+            {
+                remove_cover_if_unreferenced(engine, &registrations, &other_pending, &pending);
+            }
             Ok(())
         });
     }
@@ -240,68 +310,148 @@ impl Engine {
             replacement.title = old.title;
             replacement.revision = old.revision + 1;
             replacement.arguments = old.arguments;
+            replacement.custom_cover = old.custom_cover;
             store
                 .save_registration(&replacement)
                 .map_err(local_storage)?;
             Ok(())
         });
     }
-    fn local_work(&self, work: impl FnOnce(&Engine) -> Result<(), LocalError> + Send + 'static) {
+    /// Marks one local operation busy and clears its previous error. Returns `Busy` instead of
+    /// silently dropping a second request.
+    fn start_local_work(&self) -> Result<(), LocalError> {
+        let mut state = self.lock();
+        if state.local.busy {
+            return Err(LocalError::Busy);
+        }
+        state.local_generation += 1;
+        state.local.busy = true;
+        state.local.error = None;
+        self.publish(&mut state);
+        Ok(())
+    }
+    /// Rebuilds the local view after a worker finished and publishes the result. Returns the
+    /// operation's own result so an awaiting command can report it.
+    fn finish_local_work(&self, result: Result<(), LocalError>) -> Result<(), LocalError> {
+        let _views = self.lock_local_views();
+        let view = self.load_local_view();
         {
             let mut state = self.lock();
-            if state.local.busy {
-                return;
-            }
-            state.local_generation += 1;
-            state.local.busy = true;
-            state.local.error = None;
+            let mut view = view;
+            view.inferences = state.local.inferences.clone();
+            view.versions = state.local.versions.clone();
+            view.history_bytes = state.local.history_bytes;
+            view.history_count = state.local.history_count;
+            view.restore = state.local.restore.clone();
+            view.recently_added = state.local.recently_added.clone();
+            view.discovery_incomplete = state.local.discovery_incomplete.clone();
+            view.discovery_scanning = state.local.discovery_scanning;
+            view.discovery_completed = state.local.discovery_completed;
+            view.discovery_error = state.local.discovery_error.clone();
+            view.discovery_last_checked_at = state
+                .local
+                .discovery_last_checked_at
+                .or(view.discovery_last_checked_at);
+            self.apply_review_defaults(&mut state, &mut view);
+            state.library.replace_local_covers(local_covers(&view));
+            state.local = view;
+            state.local.error = result.as_ref().err().map(|e| e.to_string());
             self.publish(&mut state);
+        }
+        self.rescan();
+        self.enrich_local_games();
+        self.request_discovery_suggestions();
+        result
+    }
+    fn local_work(&self, work: impl FnOnce(&Engine) -> Result<(), LocalError> + Send + 'static) {
+        if self.start_local_work().is_err() {
+            return;
         }
         let engine = self.clone();
         self.shared.runtime.spawn_blocking(move || {
-            let result = work(&engine);
-            let _views = engine.lock_local_views();
-            let view = engine.load_local_view();
-            {
-                let mut state = engine.lock();
-                let mut view = view;
-                view.inferences = state.local.inferences.clone();
-                view.versions = state.local.versions.clone();
-                view.restore = state.local.restore.clone();
-                view.recently_added = state.local.recently_added.clone();
-                view.discovery_incomplete = state.local.discovery_incomplete.clone();
-                view.discovery_scanning = state.local.discovery_scanning;
-                view.discovery_completed = state.local.discovery_completed;
-                view.discovery_error = state.local.discovery_error.clone();
-                view.discovery_last_checked_at = state
-                    .local
-                    .discovery_last_checked_at
-                    .or(view.discovery_last_checked_at);
-                view.review_selected = state
-                    .local
-                    .review_selected
-                    .iter()
-                    .filter(|id| {
-                        view.candidates
-                            .iter()
-                            .any(|candidate| !candidate.ignored && &candidate.fingerprint == *id)
-                    })
-                    .cloned()
-                    .collect();
-                state.local = view;
-                state.local.error = result.err().map(|e| e.to_string());
-                engine.publish(&mut state);
-            }
-            engine.rescan();
-            engine.enrich_local_games();
+            let _ = engine.finish_local_work(work(&engine));
         });
+    }
+    /// Saves the three backup settings as one atomic operation and waits for the actual blocking
+    /// validation and write. A busy worker is reported instead of dropping the request.
+    pub async fn set_local_backup_settings(
+        &self,
+        automatic: bool,
+        destination: String,
+        retention: u8,
+    ) -> Result<(), LocalError> {
+        use gamenode_core::drm_free::valid_retention;
+        if !valid_retention(retention) {
+            return Err(LocalError::InvalidTarget);
+        }
+        self.start_local_work()?;
+        let (done, finished) = tokio::sync::oneshot::channel();
+        let engine = self.clone();
+        self.shared.runtime.spawn_blocking(move || {
+            let result = (|| -> Result<(), LocalError> {
+                let store = engine
+                    .shared
+                    .ports
+                    .local_games
+                    .as_ref()
+                    .ok_or(LocalError::Unsupported)?;
+                let registrations = store.registrations().map_err(local_storage)?;
+                let profiles = store.profiles().map_err(local_storage)?;
+                let protected: Vec<_> = registrations
+                    .iter()
+                    .filter(|r| !r.removed)
+                    .map(|r| std::path::PathBuf::from(&r.root))
+                    .chain(
+                        profiles
+                            .iter()
+                            .flat_map(|p| p.files.iter().map(std::path::PathBuf::from)),
+                    )
+                    .chain(
+                        store
+                            .watches()
+                            .map_err(local_storage)?
+                            .iter()
+                            .map(|w| std::path::PathBuf::from(&w.path)),
+                    )
+                    .collect();
+                gamenode_platform::backups::validate_destination(
+                    std::path::Path::new(&destination),
+                    &protected,
+                )?;
+                let mut settings = store.backup_settings().map_err(local_storage)?;
+                settings.automatic = automatic;
+                settings.destination = destination;
+                settings.retention = retention;
+                store
+                    .save_backup_settings(&settings)
+                    .map_err(local_storage)?;
+                if !automatic {
+                    for mut job in store
+                        .jobs()
+                        .map_err(local_storage)?
+                        .into_iter()
+                        .filter(|j| {
+                            j.play_period.is_some()
+                                && j.state == gamenode_core::drm_free::JobState::Queued
+                        })
+                    {
+                        job.state = gamenode_core::drm_free::JobState::Cancelled;
+                        store.save_job(&job).map_err(local_storage)?;
+                    }
+                }
+                Ok(())
+            })();
+            let result = engine.finish_local_work(result);
+            let _ = done.send(result);
+        });
+        finished.await.map_err(|_| LocalError::Cancelled)?
     }
     pub(super) fn load_local_view(&self) -> LocalView {
         let Some(store) = &self.shared.ports.local_games else {
             return LocalView::default();
         };
         let result = (|| {
-            let watches = store.watches()?;
+            let mut roots = store.watches()?;
             let registrations = store.registrations()?;
             let plugin_watch_ids: Vec<_> = self
                 .shared
@@ -312,6 +462,33 @@ impl Engine {
                 .flatten()
                 .filter(|r| r.root.watching && (r.valid)().is_ok())
                 .map(|r| r.root.id.clone())
+                .collect();
+            // Availability is a fact of this moment: the first time a folder is missing keeps
+            // the time it became unavailable, and reconnecting clears it.
+            let now = unix_now();
+            for root in &mut roots {
+                let available = !root.path.is_empty() && std::path::Path::new(&root.path).is_dir();
+                let changed = if available {
+                    root.unavailable_since.take().is_some()
+                } else if root.unavailable_since.is_none() {
+                    root.unavailable_since = Some(now);
+                    true
+                } else {
+                    false
+                };
+                if changed {
+                    store.save_watch(root)?;
+                }
+            }
+            let checking = self
+                .shared
+                .local_checking
+                .lock()
+                .map(|ids| ids.clone())
+                .unwrap_or_default();
+            let watches: Vec<gamenode_core::drm_free::WatchView> = roots
+                .into_iter()
+                .map(|root| watch_view(root, &registrations, &checking))
                 .collect();
             let candidates = store
                 .candidates()?
@@ -326,6 +503,11 @@ impl Engine {
                                 && r.removed
                                 && !r.rediscovery_allowed
                         })
+                })
+                .map(|mut candidate| {
+                    candidate.likely_non_game =
+                        gamenode_core::drm_free::identity::likely_non_game(&candidate);
+                    candidate
                 })
                 .collect();
             let discovery_last_checked_at = self
@@ -345,15 +527,8 @@ impl Engine {
                 settings: {
                     let mut settings = store.backup_settings()?;
                     if settings.destination.is_empty() {
-                        settings.destination = self
-                            .shared
-                            .ports
-                            .covers_dir
-                            .parent()
-                            .unwrap_or(std::path::Path::new("."))
-                            .join("backups")
-                            .to_string_lossy()
-                            .into_owned();
+                        settings.destination =
+                            default_backup_destination(&self.shared.ports.covers_dir);
                         store.save_backup_settings(&settings)?;
                     }
                     settings
@@ -366,9 +541,515 @@ impl Engine {
             ..LocalView::default()
         })
     }
+
+    /// Applies the review defaults: a candidate that first appears starts selected unless it is a
+    /// likely non-game. A fingerprint already seen keeps whatever the user chose in an earlier
+    /// snapshot, so a refresh never re-selects a manual uncheck.
+    fn apply_review_defaults(
+        &self,
+        state: &mut State,
+        view: &mut gamenode_core::drm_free::LocalView,
+    ) {
+        let active: std::collections::BTreeSet<&str> = view
+            .candidates
+            .iter()
+            .filter(|candidate| !candidate.ignored)
+            .map(|candidate| candidate.fingerprint.as_str())
+            .collect();
+        state
+            .local_review_seen
+            .retain(|fingerprint| active.contains(fingerprint.as_str()));
+        let mut selected: Vec<String> = state
+            .local
+            .review_selected
+            .iter()
+            .filter(|fingerprint| active.contains(fingerprint.as_str()))
+            .cloned()
+            .collect();
+        for candidate in view
+            .candidates
+            .iter()
+            .filter(|candidate| !candidate.ignored)
+        {
+            if state
+                .local_review_seen
+                .insert(candidate.fingerprint.clone())
+                && !candidate.likely_non_game
+                && !selected.contains(&candidate.fingerprint)
+            {
+                selected.push(candidate.fingerprint.clone());
+            }
+        }
+        view.review_selected = selected;
+        state.local.review_selected = view.review_selected.clone();
+    }
 }
 fn local_storage(error: StorageError) -> LocalError {
     LocalError::Failed(error.to_string())
+}
+
+/// Records a review suggestion as the entry's automatic match, never as a user choice, so a later
+/// lookup may still improve it. The inference keeps it across restarts.
+fn apply_candidate_suggestion(
+    engine: &Engine,
+    store: &dyn gamenode_core::drm_free::LocalGameStore,
+    registration: &Registration,
+    candidate: &Candidate,
+    suggestion: gamenode_core::library::SuggestionView,
+) -> Result<(), LocalError> {
+    let account = engine
+        .lock()
+        .library
+        .account()
+        .map(|account| account.id.clone());
+    let Some(account) = account else {
+        return Ok(());
+    };
+    let game = gamenode_core::library::GameRecord {
+        game_id: suggestion.game_id,
+        name: suggestion.title,
+        release_year: suggestion.year,
+        cover_url: suggestion.cover_url,
+        cover_file: None,
+        cover_failed_at: None,
+        platforms: Vec::new(),
+    };
+    let inference = gamenode_core::drm_free::Inference {
+        installation: registration.id.clone(),
+        revision: registration.revision,
+        title: candidate.title.clone(),
+        evidence: candidate.evidence.clone(),
+        game_id: Some(game.game_id),
+        account,
+    };
+    store.save_inference(&inference).map_err(local_storage)?;
+    if let Err(error) = engine
+        .shared
+        .ports
+        .library
+        .save_games(std::slice::from_ref(&game))
+    {
+        tracing::warn!(%error, "could not save the suggested game");
+    }
+    let mut state = engine.lock();
+    let effects =
+        state
+            .library
+            .set_local_inference(registration.key(), Some(game.game_id), Some(game));
+    for effect in effects {
+        engine.library_effect(&mut state, effect);
+    }
+    engine.publish(&mut state);
+    Ok(())
+}
+
+/// One watched root as Settings shows it, with the entries whose installation is inside it.
+fn watch_view(
+    root: gamenode_core::drm_free::WatchRoot,
+    registrations: &[gamenode_core::drm_free::Registration],
+    checking: &std::collections::BTreeSet<String>,
+) -> gamenode_core::drm_free::WatchView {
+    use gamenode_core::drm_free::{WatchState, WatchView};
+    let entry_count = registrations
+        .iter()
+        .filter(|registration| !registration.removed)
+        .filter(|registration| path_inside(&root.path, &registration.root))
+        .count();
+    let state = if root.unavailable_since.is_some() {
+        WatchState::Unavailable
+    } else if checking.contains(&root.id) {
+        WatchState::Checking
+    } else {
+        WatchState::Idle
+    };
+    WatchView {
+        id: root.id,
+        path: root.path,
+        enabled: root.enabled,
+        entry_count: u32::try_from(entry_count).unwrap_or(u32::MAX),
+        last_checked_at: root.last_checked_at,
+        state,
+        unavailable_since: root.unavailable_since,
+    }
+}
+
+/// Whether `path` is `root` or one of its descendants, on either path style.
+fn path_inside(root: &str, path: &str) -> bool {
+    if root.is_empty() || path.is_empty() {
+        return false;
+    }
+    let root = gamenode_core::provider::path::normalize(root).to_lowercase();
+    let path = gamenode_core::provider::path::normalize(path).to_lowercase();
+    let separator = if gamenode_core::provider::path::is_windows_style(&root) {
+        '\\'
+    } else {
+        '/'
+    };
+    let trimmed = root.trim_end_matches(['/', '\\']);
+    path == trimmed || path.starts_with(&format!("{trimmed}{separator}"))
+}
+
+/// The destination the app uses when none was chosen.
+fn default_backup_destination(covers_dir: &std::path::Path) -> String {
+    covers_dir
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .join("backups")
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Space and version count of every game under `<destination>/manual`, including recovery
+/// profiles and games that no longer exist in the library.
+fn backup_usage_at(
+    destination: &str,
+    registrations: &[gamenode_core::drm_free::Registration],
+    profiles: &[gamenode_core::drm_free::SaveProfile],
+) -> gamenode_core::drm_free::BackupUsage {
+    use gamenode_core::drm_free::{BackupUsage, BackupUsageGame};
+    let mut usage = BackupUsage::default();
+    let base = std::path::Path::new(destination).join("manual");
+    let Ok(entries) = std::fs::read_dir(&base) else {
+        return usage;
+    };
+    for entry in entries.flatten() {
+        if !entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let id = entry.file_name().to_string_lossy().into_owned();
+        let (bytes, versions) = backup_directory_totals(&entry.path());
+        if bytes == 0 && versions == 0 {
+            continue;
+        }
+        let title = registrations
+            .iter()
+            .find(|registration| registration.id == id)
+            .map(|registration| registration.title.clone())
+            .or_else(|| {
+                profiles
+                    .iter()
+                    .find(|profile| profile.installation == id)
+                    .map(|profile| profile.title.clone())
+            })
+            .unwrap_or_else(|| id.clone());
+        usage.games.push(BackupUsageGame {
+            entry_key: format!("manual:{id}"),
+            title,
+            cover_file: None,
+            bytes,
+            versions,
+        });
+    }
+    usage.games.sort_by(|left, right| {
+        right
+            .bytes
+            .cmp(&left.bytes)
+            .then_with(|| left.title.cmp(&right.title))
+    });
+    usage
+}
+
+/// Bytes under one installation and its version count. Each profile directory keeps one
+/// subdirectory per version, so recovery profiles count like ordinary ones.
+fn backup_directory_totals(installation: &std::path::Path) -> (u64, u32) {
+    let mut versions = 0u32;
+    let Ok(profiles) = std::fs::read_dir(installation) else {
+        return (0, 0);
+    };
+    for profile in profiles.flatten() {
+        if !profile
+            .file_type()
+            .map(|kind| kind.is_dir())
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        if let Ok(backups) = std::fs::read_dir(profile.path()) {
+            for backup in backups.flatten() {
+                if backup
+                    .file_type()
+                    .map(|kind| kind.is_dir())
+                    .unwrap_or(false)
+                    && !backup.file_name().to_string_lossy().starts_with('.')
+                {
+                    versions = versions.saturating_add(1);
+                }
+            }
+        }
+    }
+    (files_size(installation), versions)
+}
+
+/// Sums regular files under `directory`, without following symbolic links.
+fn files_size(directory: &std::path::Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return 0;
+    };
+    let mut total = 0u64;
+    for entry in entries.flatten() {
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if kind.is_symlink() {
+            continue;
+        }
+        if kind.is_dir() {
+            total = total.saturating_add(files_size(&entry.path()));
+        } else if kind.is_file() {
+            total = total.saturating_add(entry.metadata().map(|meta| meta.len()).unwrap_or(0));
+        }
+    }
+    total
+}
+
+/// The custom covers the library view must apply, by entry key.
+fn local_covers(view: &LocalView) -> std::collections::BTreeMap<String, String> {
+    view.registrations
+        .iter()
+        .filter(|registration| !registration.removed)
+        .filter_map(|registration| {
+            registration
+                .custom_cover
+                .as_ref()
+                .map(|file| (registration.key(), file.clone()))
+        })
+        .collect()
+}
+
+/// Deletes a custom-cover file only when no registration or pending pick still points at it.
+fn remove_cover_if_unreferenced(
+    engine: &Engine,
+    registrations: &[Registration],
+    other_pending: &std::collections::BTreeMap<String, String>,
+    file: &str,
+) {
+    if !gamenode_platform::covers::is_local_cover_file(file) {
+        return;
+    }
+    if registrations
+        .iter()
+        .any(|registration| registration.custom_cover.as_deref() == Some(file))
+        || other_pending.values().any(|pending| pending == file)
+    {
+        return;
+    }
+    let _ = std::fs::remove_file(engine.shared.ports.covers_dir.join(file));
+}
+
+/// Resolves a `manual:<id>` or bare `<id>` key to the registration id.
+fn registration_id(entry_key: &str) -> String {
+    entry_key
+        .strip_prefix("manual:")
+        .unwrap_or(entry_key)
+        .to_owned()
+}
+
+/// Parses the Ludusavi archive time (`YYYY-MM-DD HH:MM:SS`, treated as UTC) into Unix seconds.
+pub(super) fn backup_archive_time(value: &str) -> Option<i64> {
+    let bytes = value.as_bytes();
+    if bytes.len() < 19 {
+        return None;
+    }
+    if bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || !matches!(bytes[10], b' ' | b'T')
+        || bytes[13] != b':'
+        || bytes[16] != b':'
+    {
+        return None;
+    }
+    let number = |range: std::ops::Range<usize>| value.get(range)?.parse::<i64>().ok();
+    let year = number(0..4)?;
+    let month = number(5..7)?;
+    let day = number(8..10)?;
+    let hour = number(11..13)?;
+    let minute = number(14..16)?;
+    let second = number(17..19)?;
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || !(0..=23).contains(&hour)
+        || !(0..=59).contains(&minute)
+        || !(0..=59).contains(&second)
+    {
+        return None;
+    }
+    Some(
+        days_from_civil(year, month, day)
+            .saturating_mul(86_400)
+            .saturating_add(hour * 3_600 + minute * 60 + second),
+    )
+}
+
+/// Days since 1970-01-01 for a proleptic Gregorian date (Howard Hinnant's algorithm).
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let shifted_month = if month > 2 { month - 3 } else { month + 9 };
+    let day_of_year = (153 * shifted_month + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
+}
+
+fn history_totals(versions: &[BackupVersion]) -> (u64, u32) {
+    (
+        versions.iter().map(|version| version.bytes).sum(),
+        u32::try_from(versions.len()).unwrap_or(u32::MAX),
+    )
+}
+
+fn history_version(
+    installation: &str,
+    profile: &str,
+    destination: &str,
+    item: &serde_json::Value,
+    bytes: u64,
+    meta: Option<&BackupVersionMeta>,
+) -> Option<BackupVersion> {
+    let name = item["name"].as_str()?;
+    let label = item["when"].as_str().unwrap_or(name).to_owned();
+    Some(BackupVersion {
+        installation: installation.to_owned(),
+        profile: profile.to_owned(),
+        destination: destination.to_owned(),
+        id: name.to_owned(),
+        created_at: backup_archive_time(&label).or_else(|| meta.map(|m| m.created_at)),
+        reason: meta.map(|m| m.reason),
+        play_seconds: meta.and_then(|m| m.play_seconds),
+        label,
+        bytes,
+    })
+}
+
+fn collect_history(
+    backup: &dyn gamenode_core::drm_free::BackupEngine,
+    cancel: &std::sync::atomic::AtomicBool,
+    request: &gamenode_core::drm_free::BackupRequest,
+    installation: &str,
+    profile_id: &str,
+    meta: &[BackupVersionMeta],
+    versions: &mut Vec<BackupVersion>,
+) -> Result<(), LocalError> {
+    use gamenode_core::drm_free::BackupOperation;
+    let report = backup.execute(request, cancel)?;
+    let json: serde_json::Value =
+        serde_json::from_str(&report.json).map_err(|e| LocalError::Failed(e.to_string()))?;
+    let Some(backups) = json["games"][&request.profile.title]["backups"].as_array() else {
+        return Ok(());
+    };
+    for item in backups {
+        let Some(name) = item["name"].as_str() else {
+            continue;
+        };
+        let preview = backup.execute(
+            &gamenode_core::drm_free::BackupRequest {
+                operation: BackupOperation::RestorePreview {
+                    backup: name.to_owned(),
+                },
+                ..request.clone()
+            },
+            cancel,
+        )?;
+        let size: serde_json::Value =
+            serde_json::from_str(&preview.json).map_err(|e| LocalError::Failed(e.to_string()))?;
+        let bytes = size["overall"]["totalBytes"].as_u64().unwrap_or(0);
+        let meta = meta
+            .iter()
+            .find(|m| m.profile == profile_id && m.backup_id == name);
+        if let Some(version) = history_version(
+            installation,
+            profile_id,
+            &request.destination,
+            item,
+            bytes,
+            meta,
+        ) {
+            versions.push(version);
+        }
+    }
+    Ok(())
+}
+
+fn record_restore_recovery_meta(
+    store: &dyn LocalGameStore,
+    backup: &dyn gamenode_core::drm_free::BackupEngine,
+    request: &gamenode_core::drm_free::BackupRequest,
+    cancelled: &std::sync::atomic::AtomicBool,
+    now: i64,
+) -> Result<(), LocalError> {
+    use gamenode_core::drm_free::{BackupOperation, BackupRequest, JobState};
+    let marker_path = std::path::Path::new(&request.destination)
+        .join("manual")
+        .join(&request.installation.id)
+        .join(&request.profile.id)
+        .join(".gamenode-restore-recovery.json");
+    let marker: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&marker_path).map_err(|e| LocalError::Failed(e.to_string()))?,
+    )
+    .map_err(|e| LocalError::Failed(e.to_string()))?;
+    let state: JobState =
+        serde_json::from_value(marker["state"].clone()).unwrap_or(JobState::Unchanged);
+    if state != JobState::Successful {
+        return Ok(());
+    }
+    let recovery = std::path::PathBuf::from(
+        marker["recovery"]
+            .as_str()
+            .ok_or(LocalError::InvalidTarget)?,
+    );
+    let recovery_id = recovery
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .ok_or(LocalError::InvalidTarget)?;
+    let mut profile = request.profile.clone();
+    profile.id = recovery_id.clone();
+    let report = backup.execute(
+        &BackupRequest {
+            operation: BackupOperation::History,
+            ..request.clone()
+        },
+        cancelled,
+    )?;
+    let history: serde_json::Value =
+        serde_json::from_str(&report.json).map_err(|e| LocalError::Failed(e.to_string()))?;
+    let backup_id = history["games"][&profile.title]["backups"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .max_by_key(|item| item["when"].as_str())
+        .and_then(|item| item["name"].as_str())
+        .ok_or(LocalError::InvalidTarget)?;
+    store
+        .save_backup_version_meta(&BackupVersionMeta {
+            installation: request.installation.id.clone(),
+            profile: recovery_id,
+            backup_id: backup_id.to_owned(),
+            reason: BackupReason::Recovery,
+            play_seconds: None,
+            created_at: now,
+        })
+        .map_err(local_storage)
+}
+
+fn record_backup_meta(
+    store: &dyn LocalGameStore,
+    installation: &str,
+    profile: &str,
+    backup_id: &str,
+    reason: BackupReason,
+    play_seconds: Option<u32>,
+    now: i64,
+) -> Result<(), LocalError> {
+    store
+        .save_backup_version_meta(&BackupVersionMeta {
+            installation: installation.to_owned(),
+            profile: profile.to_owned(),
+            backup_id: backup_id.to_owned(),
+            reason,
+            play_seconds,
+            created_at: now,
+        })
+        .map_err(local_storage)
 }
 
 pub(super) fn candidate_matches_registration(
@@ -403,6 +1084,96 @@ impl Engine {
             }
         });
     }
+
+    /// Opens the native image picker and stores a converted WebP as a pending cover for the
+    /// registration. The editor commits it through `edit_local_game`; closing the editor calls
+    /// [`Engine::discard_local_cover`], which removes an uncommitted file.
+    pub async fn pick_local_cover(
+        &self,
+        entry_key: String,
+    ) -> Result<Option<String>, gamenode_platform::covers::CoverImageError> {
+        use gamenode_platform::covers::CoverImageError;
+        let engine = self.clone();
+        self.shared
+            .runtime
+            .spawn_blocking(move || engine.pick_local_cover_blocking(entry_key))
+            .await
+            .map_err(|_| CoverImageError::Picker)?
+    }
+
+    fn pick_local_cover_blocking(
+        &self,
+        entry_key: String,
+    ) -> Result<Option<String>, gamenode_platform::covers::CoverImageError> {
+        use gamenode_platform::covers::{self, CoverImageError};
+        let id = registration_id(&entry_key);
+        let store = self
+            .shared
+            .ports
+            .local_games
+            .as_ref()
+            .ok_or(CoverImageError::Unsupported)?;
+        let _registration = store
+            .registrations()
+            .map_err(|_| CoverImageError::Picker)?
+            .into_iter()
+            .find(|registration| registration.id == id && !registration.removed)
+            .ok_or(CoverImageError::InvalidTarget)?;
+        let epoch = self.lock().local_cover_epoch.get(&id).copied().unwrap_or(0);
+
+        let Some(source) = covers::pick_cover_image()? else {
+            return Ok(None);
+        };
+        let file = covers::reencode_local_cover(&self.shared.ports.covers_dir, &id, &source)?;
+
+        // A closed editor, a removed registration or a newer save invalidates this pick.
+        let current = store.registrations().ok().and_then(|registrations| {
+            registrations
+                .into_iter()
+                .find(|registration| registration.id == id && !registration.removed)
+        });
+        let accepted = current.is_some()
+            && self.lock().local_cover_epoch.get(&id).copied().unwrap_or(0) == epoch;
+        if !accepted {
+            let registrations = store.registrations().unwrap_or_default();
+            let pending = self.lock().local_cover_pending.clone();
+            remove_cover_if_unreferenced(self, &registrations, &pending, &file);
+            return Ok(None);
+        }
+
+        let previous = {
+            let mut state = self.lock();
+            state.local_cover_pending.insert(id.clone(), file.clone())
+        };
+        if let Some(previous) = previous
+            && previous != file
+        {
+            let registrations = store.registrations().unwrap_or_default();
+            let pending = self.lock().local_cover_pending.clone();
+            remove_cover_if_unreferenced(self, &registrations, &pending, &previous);
+        }
+        Ok(Some(file))
+    }
+
+    /// Drops an uncommitted cover for a closed editor and removes its file. It also invalidates a
+    /// pick that is still running, so no orphan is written after the editor is gone.
+    pub fn discard_local_cover(&self, entry_key: String) {
+        let id = registration_id(&entry_key);
+        let pending = {
+            let mut state = self.lock();
+            *state.local_cover_epoch.entry(id.clone()).or_default() += 1;
+            state.local_cover_pending.remove(&id)
+        };
+        let Some(file) = pending else {
+            return;
+        };
+        let Some(store) = self.shared.ports.local_games.as_ref() else {
+            return;
+        };
+        let registrations = store.registrations().unwrap_or_default();
+        let pending = self.lock().local_cover_pending.clone();
+        remove_cover_if_unreferenced(self, &registrations, &pending, &file);
+    }
 }
 
 impl Engine {
@@ -412,6 +1183,7 @@ impl Engine {
         key: String,
         period: String,
         last_exit: i64,
+        play_seconds: u32,
     ) {
         use gamenode_core::drm_free::scheduler::automatic_job;
         let Some(installation) = state.local.registrations.iter().find(|r| r.key() == key) else {
@@ -425,7 +1197,7 @@ impl Engine {
         else {
             return;
         };
-        let Some(job) = automatic_job(
+        let Some(mut job) = automatic_job(
             gamenode_platform::random::session_id(),
             installation,
             profile,
@@ -435,6 +1207,7 @@ impl Engine {
         ) else {
             return;
         };
+        job.play_seconds = Some(play_seconds);
         if state.local.jobs.iter().any(|j| {
             j.installation == job.installation
                 && j.profile == job.profile
@@ -503,7 +1276,7 @@ impl Engine {
         else {
             return;
         };
-        let Some(profile) = state
+        let Some(mut profile) = state
             .local
             .profiles
             .iter()
@@ -512,6 +1285,15 @@ impl Engine {
         else {
             return;
         };
+        let retention = profile
+            .retention
+            .filter(|value| gamenode_core::drm_free::valid_retention(*value))
+            .or_else(|| {
+                Some(state.local.settings.retention)
+                    .filter(|value| gamenode_core::drm_free::valid_retention(*value))
+            })
+            .unwrap_or(gamenode_core::drm_free::DEFAULT_RETENTION);
+        profile.retention = Some(retention);
         let Some(installation) = state
             .local
             .registrations
@@ -591,8 +1373,27 @@ impl Engine {
                 })();
             match result {
                 Ok(report) => {
+                    let changed = report.state == JobState::Successful;
                     job.state = report.state;
                     job.error = None;
+                    if changed && let Some(backup_id) = job.backup_id.as_deref() {
+                        let reason = if job.play_period.is_some() {
+                            BackupReason::AfterSession
+                        } else {
+                            BackupReason::Manual
+                        };
+                        if let Err(error) = record_backup_meta(
+                            store.as_ref(),
+                            &job.installation,
+                            &job.profile,
+                            backup_id,
+                            reason,
+                            job.play_seconds,
+                            unix_now(),
+                        ) {
+                            tracing::warn!(%error, "could not record backup origin");
+                        }
+                    }
                 }
                 Err(error) => gamenode_core::drm_free::scheduler::failed(
                     &mut job,
@@ -610,6 +1411,8 @@ impl Engine {
             view.inferences = state.local.inferences.clone();
             view.recently_added = state.local.recently_added.clone();
             view.versions = state.local.versions.clone();
+            view.history_bytes = state.local.history_bytes;
+            view.history_count = state.local.history_count;
             view.restore = state.local.restore.clone();
             view.review_selected = state.local.review_selected.clone();
             view.discovery_incomplete = state.local.discovery_incomplete.clone();
@@ -620,10 +1423,12 @@ impl Engine {
                 .local
                 .discovery_last_checked_at
                 .or(view.discovery_last_checked_at);
+            engine.apply_review_defaults(&mut state, &mut view);
             state.local = view;
             state.local_backup_busy = false;
             engine.publish(&mut state);
             drop(state);
+            engine.request_discovery_suggestions();
             engine.load_local_history(installation_id);
         });
     }
@@ -773,6 +1578,7 @@ impl Engine {
                             cover_url: g.cover_url.clone(),
                             cover_file: None,
                             cover_failed_at: None,
+                            platforms: g.platforms.clone(),
                         });
                     let valid = {
                         let state = e.lock();
@@ -886,58 +1692,60 @@ impl Engine {
 }
 
 impl Engine {
-    pub fn set_local_backup_settings(&self, automatic: bool, destination: String) {
+    /// Space used by local backups, per game, read from the destination on this thread's caller.
+    /// Callers must run it on a blocking worker.
+    pub fn local_backup_usage(&self) -> Result<gamenode_core::drm_free::BackupUsage, LocalError> {
+        use gamenode_core::drm_free::BackupUsage;
+        let store = self
+            .shared
+            .ports
+            .local_games
+            .as_ref()
+            .ok_or(LocalError::Unsupported)?;
+        let mut settings = store.backup_settings().map_err(local_storage)?;
+        if settings.destination.is_empty() {
+            settings.destination = default_backup_destination(&self.shared.ports.covers_dir);
+        }
+        let registrations = store.registrations().map_err(local_storage)?;
+        let profiles = store.profiles().map_err(local_storage)?;
+        let mut usage = backup_usage_at(&settings.destination, &registrations, &profiles);
+        let state = self.lock();
+        for game in &mut usage.games {
+            game.cover_file = state.library.entry_cover_file(&game.entry_key);
+        }
+        usage.total_bytes = usage.games.iter().map(|game| game.bytes).sum();
+        usage.total_versions = usage.games.iter().map(|game| game.versions).sum();
+        Ok::<BackupUsage, LocalError>(usage)
+    }
+
+    pub fn set_local_backup_retention(&self, entry_key: String, retention: u8) {
         self.local_work(move |engine| {
+            use gamenode_core::drm_free::{SaveProfile, valid_retention};
+            if !valid_retention(retention) {
+                return Err(LocalError::InvalidTarget);
+            }
+            let id = entry_key
+                .strip_prefix("manual:")
+                .unwrap_or(&entry_key)
+                .to_owned();
             let store = engine
                 .shared
                 .ports
                 .local_games
                 .as_ref()
                 .ok_or(LocalError::Unsupported)?;
-            let registrations = store.registrations().map_err(local_storage)?;
-            let profiles = store.profiles().map_err(local_storage)?;
-            let protected: Vec<_> = registrations
-                .iter()
-                .filter(|r| !r.removed)
-                .map(|r| std::path::PathBuf::from(&r.root))
-                .chain(
-                    profiles
-                        .iter()
-                        .flat_map(|p| p.files.iter().map(std::path::PathBuf::from)),
-                )
-                .chain(
-                    store
-                        .watches()
-                        .map_err(local_storage)?
-                        .iter()
-                        .map(|w| std::path::PathBuf::from(&w.path)),
-                )
-                .collect();
-            gamenode_platform::backups::validate_destination(
-                std::path::Path::new(&destination),
-                &protected,
-            )?;
+            let profile = store
+                .profiles()
+                .map_err(local_storage)?
+                .into_iter()
+                .rfind(|p| p.installation == id)
+                .ok_or(LocalError::InvalidTarget)?;
             store
-                .save_backup_settings(&gamenode_core::drm_free::BackupSettings {
-                    automatic,
-                    destination,
+                .save_profile(&SaveProfile {
+                    retention: Some(retention),
+                    ..profile
                 })
-                .map_err(local_storage)?;
-            if !automatic {
-                for mut job in store
-                    .jobs()
-                    .map_err(local_storage)?
-                    .into_iter()
-                    .filter(|j| {
-                        j.play_period.is_some()
-                            && j.state == gamenode_core::drm_free::JobState::Queued
-                    })
-                {
-                    job.state = gamenode_core::drm_free::JobState::Cancelled;
-                    store.save_job(&job).map_err(local_storage)?;
-                }
-            }
-            Ok(())
+                .map_err(local_storage)
         });
     }
     pub fn backup_local_now(&self, id: String) {
@@ -973,6 +1781,7 @@ impl Engine {
                 ready_at: unix_now(),
                 backup_id: None,
                 error: None,
+                play_seconds: None,
             };
             store.save_job(&job).map_err(local_storage)
         });
@@ -1046,6 +1855,7 @@ impl Engine {
                 registry: vec![],
                 support: SaveSupport::NeedsSelection,
                 automatic: None,
+                retention: None,
             };
             let profile = engine.preview_local_profile(&installation, profile)?;
             gamenode_platform::backups::validate_destination(
@@ -1081,6 +1891,7 @@ impl Engine {
                         .unwrap_or_else(gamenode_platform::random::session_id),
                     path,
                     enabled: true,
+                    ..Default::default()
                 })
                 .map_err(local_storage)?;
             engine.rescan_local_folders();
@@ -1154,8 +1965,14 @@ impl Engine {
                     &[],
                 );
             }
+            candidate.likely_non_game =
+                gamenode_core::drm_free::identity::likely_non_game(&candidate);
             valid()?;
             store.save_candidate(&candidate).map_err(local_storage)?;
+            if candidate.likely_non_game {
+                // A likely non-game stays in the review unchecked; it is never added on its own.
+                continue;
+            }
             if let (Some(host), Some(target)) = (
                 self.shared.ports.installations.as_ref(),
                 candidate.selected_target.as_deref(),
@@ -1195,12 +2012,48 @@ impl Engine {
         }
         Ok(added_titles)
     }
+    /// Checks every enabled watched folder on the bounded discovery worker.
     pub fn rescan_local_folders(&self) {
+        self.start_local_rescan(None);
+    }
+
+    /// Checks one watched folder on the bounded discovery worker. An unavailable folder keeps
+    /// its entries and is not traversed.
+    pub fn check_local_watch(&self, id: String) {
+        use std::sync::atomic::Ordering;
+        if self.shared.local_discovering.load(Ordering::Acquire) {
+            return;
+        }
+        {
+            let mut state = self.lock();
+            let Some(watch) = state
+                .local
+                .watches
+                .iter_mut()
+                .find(|watch| watch.id == id && watch.enabled)
+            else {
+                return;
+            };
+            if watch.state == gamenode_core::drm_free::WatchState::Unavailable {
+                return;
+            }
+            watch.state = gamenode_core::drm_free::WatchState::Checking;
+            if let Ok(mut ids) = self.shared.local_checking.lock() {
+                ids.insert(id.clone());
+            }
+            self.publish(&mut state);
+        }
+        self.start_local_rescan(Some(id));
+    }
+
+    fn start_local_rescan(&self, only: Option<String>) {
         use std::sync::atomic::Ordering;
         if self.shared.local_discovering.swap(true, Ordering::AcqRel) {
-            self.shared
-                .local_discovery_again
-                .store(true, Ordering::Release);
+            if only.is_none() {
+                self.shared
+                    .local_discovery_again
+                    .store(true, Ordering::Release);
+            }
             return;
         }
         {
@@ -1212,6 +2065,17 @@ impl Engine {
         let engine = self.clone();
         self.shared.runtime.spawn_blocking(move || {
             use gamenode_core::drm_free::*;
+            let finish = |engine: &Engine| {
+                if let Ok(mut ids) = engine.shared.local_checking.lock() {
+                    if only.is_some() {
+                        if let Some(only) = &only {
+                            ids.remove(only);
+                        }
+                    } else {
+                        ids.clear();
+                    }
+                }
+            };
             let Some(store) = &engine.shared.ports.local_games else {
                 {
                     let mut state = engine.lock();
@@ -1220,6 +2084,7 @@ impl Engine {
                     state.local.discovery_error = Some(LocalError::Unsupported.to_string());
                     engine.publish(&mut state);
                 }
+                finish(&engine);
                 engine
                     .shared
                     .local_discovering
@@ -1227,12 +2092,20 @@ impl Engine {
                 return;
             };
             let mut added_titles = Vec::new();
+            let mut checked_ids = Vec::new();
             let result = (|| {
                 // One parse serves every watched root; the scan drops it when it ends.
                 let _release = gamenode_platform::manifest_cache::release_on_drop();
                 let mut watches = store.watches().map_err(local_storage)?;
                 watches.sort_by_key(|w| w.path.len());
-                let enabled_watches: Vec<_> = watches.into_iter().filter(|w| w.enabled).collect();
+                let mut enabled_watches: Vec<_> =
+                    watches.into_iter().filter(|w| w.enabled).collect();
+                if let Some(only) = &only {
+                    enabled_watches.retain(|w| &w.id == only);
+                }
+                if let Ok(mut ids) = engine.shared.local_checking.lock() {
+                    ids.extend(enabled_watches.iter().map(|w| w.id.clone()));
+                }
                 if engine.shared.ports.installations.is_some() {
                     let pending: Vec<_> = store
                         .candidates()
@@ -1257,13 +2130,14 @@ impl Engine {
                 all.extend(
                     contributions
                         .into_iter()
-                        .filter(|r| r.root.watching)
+                        .filter(|r| only.is_none() && r.root.watching)
                         .map(|r| {
                             (
                                 WatchRoot {
                                     id: r.root.id.clone(),
                                     path: r.root.path.clone(),
                                     enabled: true,
+                                    ..Default::default()
                                 },
                                 Some(r),
                             )
@@ -1309,7 +2183,13 @@ impl Engine {
                         incomplete.push(watch.path.clone());
                         continue;
                     }
+                    if !std::path::Path::new(&watch.path).is_dir() {
+                        continue;
+                    }
                     let normalized = gamenode_core::provider::path::normalize(&watch.path);
+                    if !std::path::Path::new(&watch.path).is_dir() {
+                        continue;
+                    }
                     let normalized = if cfg!(windows)
                         || gamenode_core::provider::path::is_windows_style(&normalized)
                     {
@@ -1330,6 +2210,9 @@ impl Engine {
                             ))
                     }) {
                         continue;
+                    }
+                    if contribution.is_none() {
+                        checked_ids.push(watch.id.clone());
                     }
                     let scanner = engine
                         .shared
@@ -1399,12 +2282,27 @@ impl Engine {
                 } else {
                     state.local.discovery_last_checked_at = Some(checked_at);
                 }
+                if !checked_ids.is_empty()
+                    && let Ok(mut roots) = store.watches()
+                {
+                    for root in roots.iter_mut() {
+                        if !checked_ids.iter().any(|id| id == &root.id) {
+                            continue;
+                        }
+                        root.last_checked_at = Some(checked_at);
+                        root.unavailable_since = None;
+                        if let Err(error) = store.save_watch(root) {
+                            tracing::warn!(%error, "could not save the watched-folder check time");
+                        }
+                    }
+                }
                 engine.publish(&mut state);
             }
             if !added_titles.is_empty() {
                 engine.rescan();
                 engine.enrich_local_games();
             }
+            finish(&engine);
             engine.refresh_local_games();
             gamenode_platform::manifest_cache::release_loaded();
             engine
@@ -1441,7 +2339,7 @@ impl Engine {
         }
         self.publish(&mut state);
     }
-    pub fn review_selected_local_candidates(&self, add: bool) {
+    pub fn review_selected_local_candidates(&self, add: bool, allow_rediscovery: bool) {
         let fingerprints = self.lock().local.review_selected.clone();
         self.local_work(move |engine| {
             let store = engine
@@ -1456,11 +2354,33 @@ impl Engine {
                 .installations
                 .as_ref()
                 .ok_or(LocalError::Unsupported)?;
+            // The review may show a suggestion that was published just before its persistence
+            // finished; merge it so Add still records what the user saw.
+            let visible_suggestions: std::collections::BTreeMap<
+                String,
+                gamenode_core::library::SuggestionView,
+            > = engine
+                .lock()
+                .local
+                .candidates
+                .iter()
+                .filter_map(|candidate| {
+                    candidate
+                        .suggestion
+                        .clone()
+                        .map(|suggestion| (candidate.fingerprint.clone(), suggestion))
+                })
+                .collect();
             let candidates = store.candidates().map_err(local_storage)?;
             for mut candidate in candidates
                 .into_iter()
                 .filter(|c| fingerprints.contains(&c.fingerprint) && !c.ignored)
             {
+                if candidate.suggestion.is_none()
+                    && let Some(suggestion) = visible_suggestions.get(&candidate.fingerprint)
+                {
+                    candidate.suggestion = Some(suggestion.clone());
+                }
                 if add {
                     let target = candidate
                         .selected_target
@@ -1469,19 +2389,39 @@ impl Engine {
                     let mut registration = host.inspect(target)?;
                     registration.root = candidate.root.clone();
                     registration.title = candidate.title.clone();
-                    if !store
+                    let active = store
                         .registrations()
                         .map_err(local_storage)?
-                        .iter()
-                        .any(|r| !r.removed && r.file_identity == registration.file_identity)
-                    {
-                        store
-                            .save_registration(&registration)
-                            .map_err(local_storage)?;
+                        .into_iter()
+                        .find(|r| !r.removed && r.file_identity == registration.file_identity);
+                    let registration = match active {
+                        Some(active) => active,
+                        None => {
+                            store
+                                .save_registration(&registration)
+                                .map_err(local_storage)?;
+                            registration
+                        }
+                    };
+                    if let Some(suggestion) = candidate.suggestion.clone() {
+                        apply_candidate_suggestion(
+                            engine,
+                            store.as_ref(),
+                            &registration,
+                            &candidate,
+                            suggestion,
+                        )?;
                     }
                 }
-                candidate.ignored = true;
-                store.save_candidate(&candidate).map_err(local_storage)?;
+                if !add && allow_rediscovery {
+                    // Forget the record: a later scan can propose the same installation again.
+                    store
+                        .delete_candidate(&candidate.fingerprint)
+                        .map_err(local_storage)?;
+                } else {
+                    candidate.ignored = true;
+                    store.save_candidate(&candidate).map_err(local_storage)?;
+                }
             }
             Ok(())
         });
@@ -1512,6 +2452,8 @@ impl Engine {
             }
             for mut candidate in store.candidates().map_err(local_storage)? {
                 candidate.ignored = false;
+                candidate.likely_non_game =
+                    gamenode_core::drm_free::identity::likely_non_game(&candidate);
                 store.save_candidate(&candidate).map_err(local_storage)?;
             }
             engine.rescan_local_folders();
@@ -1566,7 +2508,9 @@ impl Engine {
                     .ok_or(LocalError::InvalidTarget)?;
                 let profiles = store.profiles().map_err(local_storage)?;
                 let jobs = store.jobs().map_err(local_storage)?;
+                let meta = store.backup_version_meta(&id).map_err(local_storage)?;
                 let mut namespaces = std::collections::BTreeSet::new();
+                let mut recovery: Vec<(gamenode_core::drm_free::SaveProfile, String)> = Vec::new();
                 let mut versions = Vec::new();
                 for job in jobs.into_iter().filter(|j| j.installation == id) {
                     if !namespaces.insert((job.profile.clone(), job.destination.clone())) {
@@ -1582,47 +2526,73 @@ impl Engine {
                         destination: job.destination.clone(),
                         operation: BackupOperation::History,
                     };
-                    let report = backup.execute(&request, &engine.shared.local_cancel)?;
-                    let json: serde_json::Value = serde_json::from_str(&report.json)
-                        .map_err(|e| LocalError::Failed(e.to_string()))?;
-                    if let Some(backups) = json["games"][&profile.title]["backups"].as_array() {
-                        for item in backups {
-                            let Some(name) = item["name"].as_str() else {
+                    collect_history(
+                        backup.as_ref(),
+                        &engine.shared.local_cancel,
+                        &request,
+                        &id,
+                        &profile.id,
+                        &meta,
+                        &mut versions,
+                    )?;
+                    let directory = std::path::Path::new(&job.destination)
+                        .join("manual")
+                        .join(&id);
+                    let prefix = format!("{}_recovery_", profile.id);
+                    if let Ok(entries) = std::fs::read_dir(directory) {
+                        for entry in entries.flatten() {
+                            let name = entry.file_name().to_string_lossy().into_owned();
+                            if !entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false)
+                                || !name.starts_with(&prefix)
+                                || recovery
+                                    .iter()
+                                    .any(|(known, at)| known.id == name && at == &job.destination)
+                            {
                                 continue;
-                            };
-                            let preview = backup.execute(
-                                &BackupRequest {
-                                    operation: BackupOperation::RestorePreview {
-                                        backup: name.to_owned(),
-                                    },
-                                    ..request.clone()
-                                },
-                                &engine.shared.local_cancel,
-                            )?;
-                            let size: serde_json::Value = serde_json::from_str(&preview.json)
-                                .map_err(|e| LocalError::Failed(e.to_string()))?;
-                            versions.push(BackupVersion {
-                                installation: id.clone(),
-                                profile: profile.id.clone(),
-                                destination: job.destination.clone(),
-                                id: name.into(),
-                                label: item["when"].as_str().unwrap_or(name).to_owned(),
-                                bytes: size["overall"]["totalBytes"].as_u64().unwrap_or(0),
-                            });
+                            }
+                            let mut recovery_profile = profile.clone();
+                            recovery_profile.id = name;
+                            recovery.push((recovery_profile, job.destination.clone()));
                         }
                     }
                 }
-                Ok::<_, LocalError>(versions)
+                for (profile, destination) in recovery {
+                    collect_history(
+                        backup.as_ref(),
+                        &engine.shared.local_cancel,
+                        &BackupRequest {
+                            job_id: None,
+                            installation: installation.clone(),
+                            profile: profile.clone(),
+                            destination,
+                            operation: BackupOperation::History,
+                        },
+                        &id,
+                        &profile.id,
+                        &meta,
+                        &mut versions,
+                    )?;
+                }
+                versions.sort_by(|left, right| {
+                    right
+                        .created_at
+                        .cmp(&left.created_at)
+                        .then_with(|| right.label.cmp(&left.label))
+                });
+                let (bytes, count) = history_totals(&versions);
+                Ok::<_, LocalError>((versions, bytes, count))
             })();
             let mut state = engine.lock();
             match result {
-                Ok(versions) => {
+                Ok((versions, bytes, count)) => {
                     if state
                         .library
                         .view()
                         .is_some_and(|v| v.selected == vec![format!("manual:{id}")])
                     {
                         state.local.versions = versions;
+                        state.local.history_bytes = bytes;
+                        state.local.history_count = count;
                     }
                 }
                 Err(error) => state.local.error = Some(error.to_string()),
@@ -1664,12 +2634,15 @@ impl Engine {
                     .into_iter()
                     .find(|r| r.id == version.installation && !r.removed)
                     .ok_or(LocalError::InvalidTarget)?;
-                let profile = store
-                    .profiles()
-                    .map_err(local_storage)?
-                    .into_iter()
-                    .find(|p| p.id == version.profile)
-                    .ok_or(LocalError::InvalidTarget)?;
+                let profiles = store.profiles().map_err(local_storage)?;
+                let mut profile = match profiles.iter().find(|p| p.id == version.profile) {
+                    Some(profile) => profile.clone(),
+                    None => profiles
+                        .into_iter()
+                        .rfind(|p| p.installation == version.installation)
+                        .ok_or(LocalError::InvalidTarget)?,
+                };
+                profile.id = version.profile.clone();
                 let mut request = BackupRequest {
                     job_id: None,
                     installation,
@@ -1753,6 +2726,17 @@ impl Engine {
             if report.state == gamenode_core::drm_free::JobState::Partial {
                 return Err(LocalError::Failed("restore partially completed; recovery snapshot retained in the backup namespace".into()));
             }
+            if report.state == gamenode_core::drm_free::JobState::Successful
+                && let Err(error) = record_restore_recovery_meta(
+                    store.as_ref(),
+                    backup.as_ref(),
+                    &plan.request,
+                    &engine.shared.local_cancel,
+                    unix_now(),
+                )
+            {
+                tracing::warn!(%error, "could not record the recovery backup origin");
+            }
             engine.load_local_history(installation_id);
             Ok(())
         });
@@ -1763,9 +2747,14 @@ impl Engine {
     pub(super) fn start_local_discovery(&self) {
         #[cfg(windows)]
         {
+            use std::sync::atomic::Ordering;
+            if !self.shared.local_realtime.load(Ordering::Acquire)
+                || self.shared.local_watcher.swap(true, Ordering::AcqRel)
+            {
+                return;
+            }
             let weak = Arc::downgrade(&self.shared);
             self.shared.runtime.spawn_blocking(move || {
-                use std::sync::atomic::Ordering;
                 let mut watchers = std::collections::BTreeMap::<
                     String,
                     (
@@ -1774,7 +2763,9 @@ impl Engine {
                     ),
                 >::new();
                 let mut next_roots = Instant::now();
-                let mut reconcile = Instant::now();
+                // The startup reconcile already ran when the preference asked for it; the
+                // watcher only reacts to changes and to the periodic safety reconcile.
+                let mut reconcile = Instant::now() + Duration::from_secs(30 * 60);
                 let mut changed = None;
                 let mut was_scanning = false;
                 let mut last_scan_end: Option<Instant> = None;
@@ -1782,18 +2773,35 @@ impl Engine {
                     let Some(shared) = weak.upgrade() else {
                         break;
                     };
-                    if shared.local_cancel.load(Ordering::Relaxed) {
+                    if shared.local_cancel.load(Ordering::Relaxed)
+                        || !shared.local_realtime.load(Ordering::Acquire)
+                    {
+                        shared.local_watcher.store(false, Ordering::Release);
                         break;
                     }
                     let now = Instant::now();
                     if now >= next_roots {
                         if let Some(store) = &shared.ports.local_games
-                            && let Ok(roots) = store.watches()
+                            && let Ok(mut roots) = store.watches()
                         {
+                            // A reconnected drive becomes available again and is reconciled by
+                            // the next scheduled pass below.
+                            for root in roots.iter_mut() {
+                                if root.enabled
+                                    && root.unavailable_since.is_some()
+                                    && std::path::Path::new(&root.path).is_dir()
+                                {
+                                    root.unavailable_since = None;
+                                    if let Err(error) = store.save_watch(root) {
+                                        tracing::warn!(%error, "could not save watch availability");
+                                    }
+                                    changed = Some(now);
+                                }
+                            }
                             watchers.retain(|id, _| roots.iter().any(|r| r.enabled && r.id == *id));
-                            for root in roots.into_iter().filter(|r| r.enabled) {
+                            for root in roots.iter().filter(|r| r.enabled) {
                                 let entry = watchers
-                                    .entry(root.id)
+                                    .entry(root.id.clone())
                                     .or_insert_with(|| (root.path.clone(), None));
                                 if entry.0 != root.path {
                                     *entry = (root.path.clone(), None);
@@ -1879,6 +2887,8 @@ impl Engine {
                 return Err(LocalError::InvalidTarget);
             }
             candidate.selected_target = Some(inspected.executable);
+            candidate.likely_non_game =
+                gamenode_core::drm_free::identity::likely_non_game(&candidate);
             store.save_candidate(&candidate).map_err(local_storage)
         });
     }
@@ -2131,8 +3141,14 @@ impl Engine {
 
 impl Engine {
     pub fn resolve_local_claim(&self, transfer: bool) {
-        let claim = self.lock().pending_claim.take();
-        let Some(mut claim) = claim else {
+        let (claim, draft) = {
+            let mut state = self.lock();
+            (
+                state.pending_claim.take(),
+                state.pending_claim_registration.take(),
+            )
+        };
+        let Some(claim) = claim else {
             return;
         };
         if !transfer {
@@ -2142,6 +3158,9 @@ impl Engine {
             });
             return;
         }
+        let Some(mut registration) = draft else {
+            return;
+        };
         self.local_work(move |engine| {
             let store = engine
                 .shared
@@ -2155,8 +3174,8 @@ impl Engine {
                 .installations
                 .as_ref()
                 .ok_or(LocalError::Unsupported)?;
-            claim.registration.transferred_from = Some(claim.store_key);
-            let registration = host.validate_registration(&claim.registration)?;
+            registration.transferred_from = Some(claim.store_key);
+            let registration = host.validate_registration(&registration)?;
             store
                 .save_registration(&registration)
                 .map_err(local_storage)?;
@@ -2167,6 +3186,204 @@ impl Engine {
     pub fn cancel_local_claim(&self) {
         let mut state = self.lock();
         state.pending_claim = None;
+        state.pending_claim_registration = None;
         self.publish(&mut state);
+    }
+}
+
+#[cfg(test)]
+mod backup_history_tests {
+    use super::*;
+
+    #[test]
+    fn ludusavi_archive_times_parse_as_utc_seconds() {
+        assert_eq!(backup_archive_time("1970-01-01 00:00:00"), Some(0));
+        assert_eq!(
+            backup_archive_time("2026-11-15 14:20:00"),
+            Some(1_794_752_400)
+        );
+        assert_eq!(
+            backup_archive_time("2026-11-15T14:20:00.123"),
+            Some(1_794_752_400)
+        );
+        assert_eq!(backup_archive_time("not a date"), None);
+        assert_eq!(backup_archive_time("2026-13-15 14:20:00"), None);
+    }
+
+    #[test]
+    fn history_join_uses_meta_origin_and_archive_time_first() {
+        let item = serde_json::json!({
+            "name": "backup-1",
+            "when": "2026-11-15 14:20:00"
+        });
+        let meta = BackupVersionMeta {
+            installation: "game".into(),
+            profile: "profile".into(),
+            backup_id: "backup-1".into(),
+            reason: BackupReason::AfterSession,
+            play_seconds: Some(2_520),
+            created_at: 1_700_000_000,
+        };
+        let version =
+            history_version("game", "profile", "/backups", &item, 7_100_000, Some(&meta)).unwrap();
+        assert_eq!(version.created_at, Some(1_794_752_400));
+        assert_eq!(version.reason, Some(BackupReason::AfterSession));
+        assert_eq!(version.play_seconds, Some(2_520));
+
+        let legacy =
+            history_version("game", "profile", "/backups", &item, 7_100_000, None).unwrap();
+        assert_eq!(legacy.created_at, Some(1_794_752_400));
+        assert_eq!(legacy.reason, None);
+        assert_eq!(legacy.play_seconds, None);
+
+        let unresolved = serde_json::json!({"name": "old", "when": "yesterday"});
+        let unresolved =
+            history_version("game", "profile", "/backups", &unresolved, 10, Some(&meta)).unwrap();
+        assert_eq!(
+            unresolved.created_at,
+            Some(1_700_000_000),
+            "meta time is the fallback when the archive time is unreadable"
+        );
+        assert_eq!(unresolved.reason, Some(BackupReason::AfterSession));
+    }
+
+    struct HistoryOnly(serde_json::Value);
+    impl gamenode_core::drm_free::BackupEngine for HistoryOnly {
+        fn execute(
+            &self,
+            _: &gamenode_core::drm_free::BackupRequest,
+            _: &std::sync::atomic::AtomicBool,
+        ) -> Result<gamenode_core::drm_free::BackupReport, LocalError> {
+            Ok(gamenode_core::drm_free::BackupReport {
+                state: gamenode_core::drm_free::JobState::Successful,
+                json: self.0.to_string(),
+            })
+        }
+    }
+
+    #[test]
+    fn recovery_origin_is_written_only_when_the_recovery_backup_changed() {
+        use gamenode_core::drm_free::{
+            BackupRequest, BackupVersionMeta, Registration, SaveProfile, SaveSupport,
+        };
+        let profile = SaveProfile {
+            id: "profile".into(),
+            installation: "game".into(),
+            revision: 1,
+            title: "Fixture".into(),
+            manifest_hash: "hash".into(),
+            definition: "{}".into(),
+            files: vec![],
+            registry: vec![],
+            support: SaveSupport::Supported,
+            automatic: None,
+            retention: None,
+        };
+        let request = BackupRequest {
+            job_id: None,
+            profile: profile.clone(),
+            installation: Registration {
+                id: "game".into(),
+                title: "Fixture".into(),
+                executable: "/games/fixture/fixture.exe".into(),
+                file_identity: "fixture".into(),
+                root: "/games/fixture".into(),
+                working_directory: "/games/fixture".into(),
+                arguments: vec![],
+                gameplay: vec![],
+                launchers: vec![],
+                revision: 1,
+                removed: false,
+                rediscovery_allowed: false,
+                transferred_from: None,
+                custom_cover: None,
+                available: true,
+            },
+            destination: String::new(),
+            operation: gamenode_core::drm_free::BackupOperation::Restore {
+                backup: "selected".into(),
+            },
+        };
+        let history = HistoryOnly(serde_json::json!({
+            "games": {
+                "Fixture": {
+                    "backups": [{
+                        "name": "recovery-backup",
+                        "when": "2026-11-15 14:20:00"
+                    }]
+                }
+            }
+        }));
+        for (marker_state, expected_rows) in [("successful", 1), ("unchanged", 0)] {
+            let fixture = tempfile::tempdir().unwrap();
+            let destination = fixture.path().to_string_lossy().into_owned();
+            let namespace = fixture.path().join("manual").join("game").join("profile");
+            std::fs::create_dir_all(&namespace).unwrap();
+            std::fs::write(
+                namespace.join(".gamenode-restore-recovery.json"),
+                serde_json::json!({
+                    "recovery": fixture
+                        .path()
+                        .join("manual")
+                        .join("game")
+                        .join("profile_recovery_1")
+                        .to_string_lossy(),
+                    "state": marker_state
+                })
+                .to_string(),
+            )
+            .unwrap();
+            let database = gamenode_platform::db::SqliteSettingsStore::new(
+                gamenode_platform::db::open(std::path::Path::new(":memory:")).unwrap(),
+            );
+            let store = database.local_game_store();
+            let mut request = request.clone();
+            request.destination = destination;
+            record_restore_recovery_meta(
+                &store,
+                &history,
+                &request,
+                &std::sync::atomic::AtomicBool::new(false),
+                100,
+            )
+            .unwrap();
+            let rows = store.backup_version_meta("game").unwrap();
+            assert_eq!(rows.len(), expected_rows, "{marker_state}");
+            if marker_state == "successful" {
+                assert_eq!(
+                    rows[0],
+                    BackupVersionMeta {
+                        installation: "game".into(),
+                        profile: "profile_recovery_1".into(),
+                        backup_id: "recovery-backup".into(),
+                        reason: BackupReason::Recovery,
+                        play_seconds: None,
+                        created_at: 100,
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn history_totals_count_recovery_versions_and_bytes() {
+        let version = |id: &str, bytes: u64, reason: Option<BackupReason>| BackupVersion {
+            installation: "game".into(),
+            profile: "profile".into(),
+            destination: "/backups".into(),
+            id: id.into(),
+            label: "when".into(),
+            bytes,
+            created_at: Some(1),
+            reason,
+            play_seconds: None,
+        };
+        let versions = vec![
+            version("ordinary", 4_000, Some(BackupReason::AfterSession)),
+            version("manual", 2_000, Some(BackupReason::Manual)),
+            version("recovery", 1_000, Some(BackupReason::Recovery)),
+        ];
+        assert_eq!(history_totals(&versions), (7_000, 3));
+        assert_eq!(history_totals(&[]), (0, 0));
     }
 }

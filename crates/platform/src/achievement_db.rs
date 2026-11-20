@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use gamenode_core::achievements::{
     AchievementGameState, AchievementRecord, AchievementStore, AchievementUnlock,
-    StoredAchievementGame, StoredAchievementSummary,
+    StoredAchievementGame, StoredAchievementSummary, keep_previous_rarity,
 };
 use gamenode_core::library::CatalogError;
 use gamenode_core::ports::StorageError;
@@ -146,7 +146,7 @@ impl AchievementStore for SqliteAchievementStore {
         let mut statement = conn
             .prepare(
                 "SELECT achievement_id, name, description, hidden, icon_url, icon_gray_url,
-                        unlocked, unlocked_at, position
+                        unlocked, unlocked_at, position, global_percent
                    FROM achievements
                   WHERE provider = ?1 AND store_account_id = ?2 AND entry_id = ?3
                   ORDER BY position",
@@ -164,6 +164,7 @@ impl AchievementStore for SqliteAchievementStore {
                     unlocked: row.get::<_, i64>(6)? != 0,
                     unlocked_at: row.get(7)?,
                     position: row.get(8)?,
+                    global_percent: row.get(9)?,
                 })
             })
             .map_err(failed)?
@@ -191,6 +192,25 @@ impl AchievementStore for SqliteAchievementStore {
     ) -> Result<(), StorageError> {
         let mut conn = crate::db::lock(&self.conn);
         let tx = conn.transaction().map_err(failed)?;
+        // A refresh whose rarity request failed keeps the percentages already stored for the
+        // same achievement ids. The read and the replacement share the transaction.
+        let previous: BTreeMap<String, u16> = {
+            let mut statement = tx
+                .prepare(
+                    "SELECT achievement_id, global_percent FROM achievements
+                      WHERE provider = ?1 AND store_account_id = ?2 AND entry_id = ?3
+                        AND global_percent IS NOT NULL",
+                )
+                .map_err(failed)?;
+            let rows = statement
+                .query_map(params![provider, account_id, entry_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, u16>(1)?))
+                })
+                .map_err(failed)?;
+            rows.collect::<Result<_, _>>().map_err(failed)?
+        };
+        let mut records = achievements.to_vec();
+        keep_previous_rarity(&mut records, &previous);
         tx.execute(
             "INSERT INTO achievement_games
                 (provider, store_account_id, entry_id, state, language, last_success_at,
@@ -214,11 +234,12 @@ impl AchievementStore for SqliteAchievementStore {
                 .prepare(
                     "INSERT INTO achievements
                         (provider, store_account_id, entry_id, achievement_id, name, description,
-                         hidden, icon_url, icon_gray_url, unlocked, unlocked_at, position)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                         hidden, icon_url, icon_gray_url, unlocked, unlocked_at, position,
+                         global_percent)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 )
                 .map_err(failed)?;
-            for (position, achievement) in achievements.iter().enumerate() {
+            for (position, achievement) in records.iter().enumerate() {
                 insert
                     .execute(params![
                         provider,
@@ -233,6 +254,7 @@ impl AchievementStore for SqliteAchievementStore {
                         i64::from(achievement.unlocked),
                         achievement.unlocked_at,
                         i64::try_from(position).unwrap_or(i64::MAX),
+                        achievement.global_percent,
                     ])
                     .map_err(failed)?;
             }
@@ -335,6 +357,7 @@ mod tests {
             icon_gray_url: format!("https://cdn.example/{id}_gray.jpg"),
             unlocked,
             unlocked_at: at,
+            global_percent: None,
             position,
         }
     }
@@ -376,6 +399,50 @@ mod tests {
         assert_eq!(summary[0].unlocked, 1);
         assert_eq!(summary[0].total, 1);
         assert_eq!(summary[0].latest_unlock.as_ref().unwrap().id, "one");
+    }
+
+    #[test]
+    fn rarity_is_persisted_and_a_refresh_without_it_keeps_previous_values() {
+        let (_temp, store) = store();
+        let mut first = achievement("one", true, Some(10), 0);
+        first.global_percent = Some(420);
+        store
+            .save_ready("steam", "A", "620", "english", &[first], 100)
+            .unwrap();
+        let game = store.load_game("steam", "A", "620").unwrap().unwrap();
+        assert_eq!(game.achievements[0].global_percent, Some(420));
+
+        let mut refreshed = achievement("one", true, Some(10), 0);
+        refreshed.global_percent = None;
+        let mut added = achievement("two", false, None, 1);
+        added.global_percent = Some(50);
+        store
+            .save_ready("steam", "A", "620", "english", &[refreshed, added], 200)
+            .unwrap();
+        let game = store.load_game("steam", "A", "620").unwrap().unwrap();
+        assert_eq!(
+            game.achievements[0].global_percent,
+            Some(420),
+            "the previous rarity survives a refresh that omits it"
+        );
+        assert_eq!(game.achievements[1].global_percent, Some(50));
+
+        store
+            .save_ready(
+                "steam",
+                "A",
+                "620",
+                "english",
+                &[achievement("three", false, None, 0)],
+                300,
+            )
+            .unwrap();
+        let game = store.load_game("steam", "A", "620").unwrap().unwrap();
+        assert_eq!(
+            game.achievements[0].id, "three",
+            "removed definitions do not carry rarity"
+        );
+        assert_eq!(game.achievements[0].global_percent, None);
     }
 
     #[test]

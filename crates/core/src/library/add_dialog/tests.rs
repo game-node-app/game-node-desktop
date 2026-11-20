@@ -1,8 +1,9 @@
 use super::*;
-use crate::game_api::LibraryEntry;
+use crate::game_api::{AccountEntry, CreateCollectionError, LibraryEntry};
 use crate::library::machine::tests::{loaded, record, stored};
-use crate::library::store::{AutoMatch, GameRecord, LibraryCache};
+use crate::library::store::{AccountLibrary, AutoMatch, GameRecord, LibraryCache};
 use crate::library::{Access, Input, Membership, SelectMode, entry_key};
+use std::collections::BTreeMap;
 
 pub(crate) const NOW: i64 = 5_000;
 
@@ -14,6 +15,7 @@ fn game(id: u64, name: &str) -> GameRecord {
         cover_url: None,
         cover_file: None,
         cover_failed_at: None,
+        platforms: Vec::new(),
     }
 }
 
@@ -130,6 +132,33 @@ pub(crate) fn collection(id: &str, name: &str, default: Option<EntryStatus>) -> 
         name: name.to_owned(),
         default_status: default,
     }
+}
+
+fn account_entry(
+    game_id: u64,
+    id: &str,
+    status: Option<EntryStatus>,
+    collections: &[&str],
+) -> AccountEntry {
+    AccountEntry {
+        id: id.to_owned(),
+        game_id,
+        status,
+        collection_ids: collections.iter().map(|id| (*id).to_owned()).collect(),
+    }
+}
+
+/// Every collection create that reached the effects, as `(op, user, name)`.
+pub(crate) fn collection_creates(effects: &[Effect]) -> Vec<(u64, String, String)> {
+    effects
+        .iter()
+        .filter_map(|effect| match effect {
+            Effect::CreateCollection { op, user_id, name } => {
+                Some((*op, user_id.clone(), name.clone()))
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// Selects `id`, answers "not in the library" and opens the dialog with these collections.
@@ -369,6 +398,7 @@ fn opening_the_dialog_lists_collections_and_sends_nothing_else() {
             name: "Favorites".to_owned(),
             default_status: None,
             picked: false,
+            entry_count: None,
         }])
     );
 
@@ -560,5 +590,390 @@ fn edit_waits_for_complete_collections_and_cancel_sends_no_write() {
     assert_eq!(
         machine.membership(7),
         Membership::InLibrary(Some(EntryStatus::Finished))
+    );
+}
+
+#[test]
+fn collection_counts_come_from_the_complete_account_library_read() {
+    let mut machine = library();
+    machine.account_library = Some(AccountLibrary {
+        entries: BTreeMap::from([
+            (
+                7,
+                account_entry(7, "e7", Some(EntryStatus::Finished), &["backlog"]),
+            ),
+            (
+                8,
+                account_entry(8, "e8", Some(EntryStatus::Playing), &["backlog", "coop"]),
+            ),
+            (
+                9,
+                account_entry(9, "e9", Some(EntryStatus::Planned), &["coop"]),
+            ),
+        ]),
+        collections: vec![
+            collection("backlog", "Backlog", None),
+            collection("coop", "Coop", None),
+        ],
+        read_at: NOW,
+    });
+    // Celeste (10) is not in the cached read, so opening the dialog does not rewrite it.
+    open_with(
+        &mut machine,
+        &["504230"],
+        vec![
+            collection("backlog", "Backlog", None),
+            collection("coop", "Coop", None),
+            collection("empty", "Empty", None),
+        ],
+    );
+    let CollectionsView::Loaded(list) = dialog(&mut machine).collections else {
+        panic!("loaded")
+    };
+    assert_eq!(
+        list.iter()
+            .map(|collection| (collection.id.as_str(), collection.entry_count))
+            .collect::<Vec<_>>(),
+        [("backlog", Some(2)), ("coop", Some(2)), ("empty", Some(0))],
+        "a complete read counts entries; a collection with none is zero"
+    );
+}
+
+#[test]
+fn collection_counts_stay_unknown_without_a_complete_read() {
+    let mut machine = library();
+    assert!(machine.account_library.is_none());
+    open_with(
+        &mut machine,
+        &["620"],
+        vec![
+            collection("backlog", "Backlog", None),
+            collection("empty", "Empty", None),
+        ],
+    );
+    let CollectionsView::Loaded(list) = dialog(&mut machine).collections else {
+        panic!("loaded")
+    };
+    assert!(
+        list.iter()
+            .all(|collection| collection.entry_count.is_none()),
+        "unknown counts are never shown as zero"
+    );
+}
+
+#[test]
+fn creating_a_collection_picks_the_new_id_and_adds_no_entry() {
+    let mut machine = library();
+    open_with(
+        &mut machine,
+        &["620"],
+        vec![collection("backlog", "Backlog", None)],
+    );
+    machine.handle(Input::SetAddStatus(EntryStatus::Finished));
+    machine.handle(Input::ToggleAddCollection("backlog".to_owned()));
+
+    assert!(machine.handle(Input::StartNewCollection).is_empty());
+    machine.handle(Input::SetNewCollectionName("Coop no sofá".to_owned()));
+    let view = dialog(&mut machine);
+    let new = view.new_collection.expect("the inline field is open");
+    assert_eq!(new.name, "Coop no sofá");
+    assert!(new.can_create && !new.creating && new.error.is_none());
+
+    let effects = machine.handle(Input::CreateCollection);
+    let sent = collection_creates(&effects);
+    let [(op, user, name)] = sent.as_slice() else {
+        panic!("{effects:?}");
+    };
+    let (op, user, name) = (*op, user.as_str(), name.as_str());
+    assert_eq!((user, name), ("a", "Coop no sofá"));
+    let view = dialog(&mut machine);
+    let new = view.new_collection.expect("kept while creating");
+    assert!(new.creating && !new.can_create);
+    assert!(creates(&effects).is_empty(), "no entry is written");
+
+    let effects = machine.handle(Input::CollectionCreated { op, result: Ok(()) });
+    let (list_op, _) = list_ops(&effects)[0].clone();
+    assert!(creates(&effects).is_empty());
+    machine.handle(Input::CollectionsListed {
+        op: list_op,
+        result: Ok(vec![
+            collection("backlog", "Backlog", None),
+            collection("coop", "Coop no sofá", None),
+        ]),
+    });
+
+    let view = dialog(&mut machine);
+    assert!(view.new_collection.is_none(), "the field closes");
+    let CollectionsView::Loaded(list) = view.collections else {
+        panic!("loaded")
+    };
+    let picked: Vec<&str> = list
+        .iter()
+        .filter(|collection| collection.picked)
+        .map(|collection| collection.id.as_str())
+        .collect();
+    assert_eq!(picked, ["backlog", "coop"], "the new collection is checked");
+    assert_eq!(
+        (view.status, view.applied_status),
+        (EntryStatus::Finished, EntryStatus::Finished),
+        "the chosen status is unchanged"
+    );
+    assert!(
+        machine.account_entries.is_empty(),
+        "creating a collection never writes a library entry"
+    );
+    assert_eq!(machine.membership(7), Membership::NotInLibrary);
+    assert!(machine.last_add.is_none(), "nothing was added yet");
+}
+
+#[test]
+fn two_same_name_collections_pick_the_new_one() {
+    let mut machine = library();
+    open_with(
+        &mut machine,
+        &["620"],
+        vec![collection("coop-old", "Coop", None)],
+    );
+    machine.handle(Input::StartNewCollection);
+    machine.handle(Input::SetNewCollectionName("Coop".to_owned()));
+    let effects = machine.handle(Input::CreateCollection);
+    let (op, _, _) = collection_creates(&effects)[0].clone();
+    let effects = machine.handle(Input::CollectionCreated { op, result: Ok(()) });
+    let (list_op, _) = list_ops(&effects)[0].clone();
+    machine.handle(Input::CollectionsListed {
+        op: list_op,
+        result: Ok(vec![
+            collection("coop-old", "Coop", None),
+            collection("coop-new", "Coop", None),
+        ]),
+    });
+
+    let CollectionsView::Loaded(list) = dialog(&mut machine).collections else {
+        panic!("loaded")
+    };
+    let picked: Vec<&str> = list
+        .iter()
+        .filter(|collection| collection.picked)
+        .map(|collection| collection.id.as_str())
+        .collect();
+    assert_eq!(
+        picked,
+        ["coop-new"],
+        "the id that appeared is picked, not the older homonym"
+    );
+}
+
+#[test]
+fn the_newest_same_name_is_used_when_no_new_id_appears() {
+    let mut machine = library();
+    open_with(
+        &mut machine,
+        &["620"],
+        vec![
+            collection("coop-a", "Coop", None),
+            collection("coop-b", "Coop", None),
+        ],
+    );
+    machine.handle(Input::StartNewCollection);
+    machine.handle(Input::SetNewCollectionName("Coop".to_owned()));
+    let effects = machine.handle(Input::CreateCollection);
+    let (op, _, _) = collection_creates(&effects)[0].clone();
+    let effects = machine.handle(Input::CollectionCreated { op, result: Ok(()) });
+    let (list_op, _) = list_ops(&effects)[0].clone();
+    // The re-list shows no id that was not there before: the fallback picks the newest homonym.
+    machine.handle(Input::CollectionsListed {
+        op: list_op,
+        result: Ok(vec![
+            collection("coop-a", "Coop", None),
+            collection("coop-b", "Coop", None),
+        ]),
+    });
+    let CollectionsView::Loaded(list) = dialog(&mut machine).collections else {
+        panic!("loaded")
+    };
+    let picked: Vec<&str> = list
+        .iter()
+        .filter(|collection| collection.picked)
+        .map(|collection| collection.id.as_str())
+        .collect();
+    assert_eq!(picked, ["coop-b"]);
+}
+
+#[test]
+fn a_failed_create_keeps_the_name_and_every_choice() {
+    for (result, expected) in [
+        (CreateCollectionError::Failed, NewCollectionError::Failed),
+        (
+            CreateCollectionError::Rejected,
+            NewCollectionError::Rejected,
+        ),
+        (
+            CreateCollectionError::LimitReached,
+            NewCollectionError::LimitReached,
+        ),
+    ] {
+        let mut machine = library();
+        open_with(
+            &mut machine,
+            &["620"],
+            vec![
+                collection("backlog", "Backlog", None),
+                collection("coop", "Coop", None),
+            ],
+        );
+        machine.handle(Input::SetAddStatus(EntryStatus::Finished));
+        machine.handle(Input::ToggleAddCollection("coop".to_owned()));
+        machine.handle(Input::StartNewCollection);
+        machine.handle(Input::SetNewCollectionName("Coop no sofá".to_owned()));
+        let effects = machine.handle(Input::CreateCollection);
+        let (op, _, _) = collection_creates(&effects)[0].clone();
+        assert!(
+            machine
+                .handle(Input::CollectionCreated {
+                    op,
+                    result: Err(result)
+                })
+                .is_empty(),
+            "{result:?}"
+        );
+
+        let view = dialog(&mut machine);
+        let new = view.new_collection.expect("the field stays open");
+        assert_eq!(new.name, "Coop no sofá", "{result:?}: the name is kept");
+        assert_eq!(new.error, Some(expected), "{result:?}");
+        assert!(
+            !new.creating && new.can_create,
+            "{result:?}: retry is possible"
+        );
+        assert_eq!(view.status, EntryStatus::Finished);
+        let CollectionsView::Loaded(list) = view.collections else {
+            panic!("the choices are kept")
+        };
+        let picked: Vec<&str> = list
+            .iter()
+            .filter(|collection| collection.picked)
+            .map(|collection| collection.id.as_str())
+            .collect();
+        assert_eq!(picked, ["coop"], "{result:?}");
+        assert!(machine.last_add.is_none());
+    }
+}
+
+#[test]
+fn an_offline_session_reports_it_without_sending_the_create() {
+    let mut machine = library();
+    open_with(&mut machine, &["620"], vec![]);
+    machine.handle(Input::SetAccess {
+        access: Access::Offline,
+        now: NOW,
+    });
+    machine.handle(Input::StartNewCollection);
+    machine.handle(Input::SetNewCollectionName("Coop".to_owned()));
+    assert!(collection_creates(&machine.handle(Input::CreateCollection)).is_empty());
+    let view = dialog(&mut machine);
+    let new = view.new_collection.expect("the field stays open");
+    assert_eq!(new.error, Some(NewCollectionError::Offline));
+    assert_eq!(new.name, "Coop");
+}
+
+#[test]
+fn a_blank_name_cannot_be_created() {
+    let mut machine = library();
+    open_with(&mut machine, &["620"], vec![]);
+    machine.handle(Input::StartNewCollection);
+    machine.handle(Input::SetNewCollectionName("   ".to_owned()));
+    let view = dialog(&mut machine);
+    let new = view.new_collection.expect("the field is open");
+    assert!(!new.can_create);
+    assert!(collection_creates(&machine.handle(Input::CreateCollection)).is_empty());
+    // The initial blank state is disabled too.
+    machine.handle(Input::CancelNewCollection);
+    machine.handle(Input::StartNewCollection);
+    assert!(!dialog(&mut machine).new_collection.unwrap().can_create);
+}
+
+#[test]
+fn cancelling_the_new_collection_hides_it_and_sends_nothing() {
+    let mut machine = library();
+    open_with(&mut machine, &["620"], vec![]);
+    machine.handle(Input::StartNewCollection);
+    machine.handle(Input::SetNewCollectionName("Coop".to_owned()));
+    assert!(machine.handle(Input::CancelNewCollection).is_empty());
+    assert!(dialog(&mut machine).new_collection.is_none());
+    assert!(collection_creates(&machine.handle(Input::CreateCollection)).is_empty());
+}
+
+#[test]
+fn a_create_that_cannot_be_relisted_keeps_the_name_for_a_retry() {
+    let mut machine = library();
+    open_with(
+        &mut machine,
+        &["620"],
+        vec![collection("coop", "Coop", None)],
+    );
+    machine.handle(Input::StartNewCollection);
+    machine.handle(Input::SetNewCollectionName("Novo".to_owned()));
+    let effects = machine.handle(Input::CreateCollection);
+    let (op, _, _) = collection_creates(&effects)[0].clone();
+    let effects = machine.handle(Input::CollectionCreated { op, result: Ok(()) });
+    let (list_op, _) = list_ops(&effects)[0].clone();
+    machine.handle(Input::CollectionsListed {
+        op: list_op,
+        result: Err(ApiError::Failed),
+    });
+    let view = dialog(&mut machine);
+    let new = view.new_collection.expect("the name is kept");
+    assert_eq!(
+        (new.name.as_str(), new.error),
+        ("Novo", Some(NewCollectionError::Failed))
+    );
+    assert!(new.creating, "the re-list is still owed");
+
+    let effects = machine.handle(Input::RetryCollections);
+    let (retry, _) = list_ops(&effects)[0].clone();
+    machine.handle(Input::CollectionsListed {
+        op: retry,
+        result: Ok(vec![
+            collection("coop", "Coop", None),
+            collection("novo", "Novo", None),
+        ]),
+    });
+    let view = dialog(&mut machine);
+    assert!(view.new_collection.is_none());
+    let CollectionsView::Loaded(list) = view.collections else {
+        panic!("loaded")
+    };
+    assert!(
+        list.iter()
+            .any(|collection| collection.id == "novo" && collection.picked)
+    );
+}
+
+#[test]
+fn a_drm_free_custom_cover_wins_in_the_add_dialog_header() {
+    let mut machine = library();
+    machine.games.get_mut(&7).unwrap().cover_file = Some("7.jpg".into());
+    machine.local_covers.insert(
+        "steam:620".into(),
+        "local-local-1-0123456789abcdef.webp".into(),
+    );
+    let effects = select(&mut machine, "620");
+    answer_read(&mut machine, &effects, Ok(None));
+    let effects = machine.handle(Input::OpenAdd);
+    let (op, _) = list_ops(&effects)[0].clone();
+    machine.handle(Input::CollectionsListed {
+        op,
+        result: Ok(Vec::new()),
+    });
+    assert_eq!(
+        dialog(&mut machine).targets[0].cover_file.as_deref(),
+        Some("local-local-1-0123456789abcdef.webp")
+    );
+
+    machine.local_covers.clear();
+    machine.handle(Input::ToggleAddCollection("noop".into()));
+    assert_eq!(
+        dialog(&mut machine).targets[0].cover_file.as_deref(),
+        Some("7.jpg")
     );
 }

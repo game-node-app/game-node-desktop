@@ -1,0 +1,25 @@
+### 5369:2924 Adicionar ao GameNode  (wrapper 5369:3004 "Adicionar ao GameNode (AddDialog)")
+### Annotation: Status como cartões; coleções com contagem e criação rápida (NOVO).
+F [Adicionar ao GameNode] 520x492 col XH bg=secondary bd1=#333333 r12 sh(0,20,48,0,#0000008C) clip
+ F [Cabeçalho] row gap12 p16/20/14/20 ai:center bd-bottom=border/subtle
+  I dots-vertical 16:text/muted
+  REC cover 30x40 r4 grad(#5A1E0E→#F2913D)
+  F col gap2 FH ; T "Adicionar ao GameNode" 16/600 text/primary ; T "Emberfall: Iron Trail" 12/400 text-dimmed
+  I x 16:text/secondary
+ F [Corpo] col gap16 p20
+  T "Status" 11/600 text/muted ls0.8 upper
+  F row gap8   (status cards, each FH 114x61 col gap6 p10 r8)
+   selected: bg=accent/subtle bd1=primary ; I device-gamepad-2 18:primary ; T "Jogando" 13/600 text/primary
+   other:    bg=surface bd1=border/subtle ; I trophy 18:text/secondary ; T "Zerado" 13/400 text-default
+   other:    I bookmark 18:text/secondary ; T "Na lista"
+   other:    I archive 18:text/secondary ; T "Abandonado"
+  T "Sem escolha, o GameNode usará Na lista, o status padrão de Steam." 12/400 text-dimmed
+  F row ai:center ; T "Coleções (opcional)" 11/600 text/muted ls0.8 upper ; spacer ; T "+ Nova coleção" 12/500 primary
+  F [list] col gap2 p4 bg=background bd1=border/subtle r8
+   rows 468x34 row gap10 p0/8/0/8 ai:center r6:
+   C <Checkbox Checked> (bg=primary r4, I check) ; T "Backlog curto" 13/400 text/primary FH ; T "9 jogos" 12/400 text-dimmed
+   C <Checkbox Unchecked> (bg=bg/canvas bd1=#4A4A4A r4) ; T "Zerados em 2026" 13/400 text-default FH ; T "14 jogos"
+   C <Checkbox Unchecked> ; T "Coop no sofá" ; T "6 jogos"
+   C <Checkbox Checked> ; T "Favoritos de sempre" text/primary ; T "21 jogos"
+ F [Rodapé] row gap8 p14/20/14/20 bg=surface bd-top=border/subtle
+  spacer ; C <Button Secondary SM> "Cancelar" ; C <Button Primary SM> "Adicionar ao GameNode" icons=plus

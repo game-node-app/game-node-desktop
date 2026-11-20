@@ -38,7 +38,7 @@ export function NavItem({
   const button = (
     <button
       type="button"
-      aria-label={label}
+      aria-label={warning ? `${label}: ${warning}` : label}
       aria-current={active ? 'page' : undefined}
       aria-controls={ariaControls}
       onClick={onClick}

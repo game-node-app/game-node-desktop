@@ -15,6 +15,9 @@ use tonic::Status;
 
 use super::provider::{Completion, ProviderApi, SupervisedExtension};
 
+/// Stable error returned when a provider was deliberately stopped for this run.
+pub(crate) const PLUGIN_STOPPED: &str = "plugin stopped";
+
 #[derive(Clone)]
 pub struct ProcessConfig {
     pub provider_id: String,
@@ -340,6 +343,9 @@ struct Inner {
     slots: HashMap<String, Slot>,
     shutdown: watch::Sender<bool>,
     activation: std::sync::RwLock<Option<super::profile::PluginStateLayout>>,
+    /// Providers the user stopped for this run. Work is refused with a stable error until an
+    /// explicit start clears the marker.
+    stopped: std::sync::Mutex<std::collections::BTreeSet<String>>,
 }
 
 #[derive(Clone)]
@@ -398,6 +404,7 @@ impl ProviderProcesses {
                 slots,
                 shutdown,
                 activation: std::sync::RwLock::new(activation),
+                stopped: std::sync::Mutex::new(std::collections::BTreeSet::new()),
             }),
         };
         if watch_profile {
@@ -432,7 +439,7 @@ impl ProviderProcesses {
                 };
                 let processes = ProviderProcesses { inner };
                 for provider_id in &provider_ids {
-                    processes.stop_provider(provider_id).await;
+                    processes.terminate_provider(provider_id).await;
                 }
             }
         });
@@ -509,6 +516,9 @@ impl ProviderProcesses {
     ) -> Result<(), Status> {
         if *self.inner.shutdown.borrow() {
             return Err(Status::unavailable("desktop is shutting down"));
+        }
+        if self.is_stopped(provider_id) {
+            return Err(Status::unavailable(PLUGIN_STOPPED));
         }
         let slot = self
             .inner
@@ -801,7 +811,7 @@ impl ProviderProcesses {
         {
             // Terminate a timed-out provider; its outstanding authorization and
             // login handles cannot survive into a later process session.
-            self.stop_provider(provider_id).await;
+            self.terminate_provider(provider_id).await;
         }
         result
     }
@@ -821,12 +831,45 @@ impl ProviderProcesses {
             .as_ref()
             .is_err_and(|e| e.code() == tonic::Code::DeadlineExceeded)
         {
-            self.stop_provider(provider_id).await;
+            self.terminate_provider(provider_id).await;
         }
         result
     }
 
+    /// Whether the user stopped this provider for the current run.
+    pub fn is_stopped(&self, provider_id: &str) -> bool {
+        self.inner
+            .stopped
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains(provider_id)
+    }
+
+    /// Stops the provider for this run: pending calls are refused with `plugin stopped` and a
+    /// later `execute` cannot silently relaunch the process.
     pub async fn stop_provider(&self, provider_id: &str) {
+        self.inner
+            .stopped
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(provider_id.to_owned());
+        self.terminate_provider(provider_id).await;
+    }
+
+    /// Starts a stopped provider again with a fresh process session. Its account is restored by
+    /// the normal initialization path.
+    pub async fn start_provider(&self, provider_id: &str) -> Result<(), Status> {
+        self.inner
+            .stopped
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(provider_id);
+        self.ensure_started(provider_id).await
+    }
+
+    /// Ends the current process and waits for the supervised shutdown, without changing whether
+    /// the provider is user-stopped.
+    pub async fn terminate_provider(&self, provider_id: &str) {
         if !self.inner.api.is_extension(provider_id) {
             let _ = self
                 .inner
@@ -916,7 +959,7 @@ impl ProviderProcesses {
             .api
             .third_party_provider_ids_for_plugin(plugin_id)
         {
-            self.stop_provider(&provider_id).await;
+            self.terminate_provider(&provider_id).await;
         }
     }
 
@@ -940,7 +983,7 @@ impl ProviderProcesses {
         self.inner.shutdown.send_replace(true);
         let _ = tokio::time::timeout(Duration::from_secs(4), async {
             for id in &provider_ids {
-                self.stop_provider(id).await;
+                self.terminate_provider(id).await;
             }
         })
         .await;

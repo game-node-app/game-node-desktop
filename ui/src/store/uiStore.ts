@@ -1,7 +1,31 @@
 import { Store } from '@tanstack/react-store';
 import { useStore } from '@tanstack/react-store';
 
-export type SettingsTopic = 'account' | 'stores' | 'plugins' | 'backups' | 'tools' | 'about';
+export type SettingsTopic =
+  | 'account'
+  | 'stores'
+  | 'drmFree'
+  | 'backups'
+  | 'general'
+  | 'tools'
+  | 'plugins'
+  | 'about';
+
+/** Pending values for one Settings panel that saves as a group (D4). */
+export interface SettingsDraftValues {
+  automatic?: boolean;
+  destination?: string;
+  retention?: number;
+}
+
+/**
+ * One panel's unsaved edits. Only Backups saves as a group today; the shape is
+ * generic so later group-saved panels add their own topic and values.
+ */
+export interface SettingsDraft {
+  topic: 'backups';
+  values: SettingsDraftValues;
+}
 
 /**
  * The content-area destination. It is deliberately not persisted: the application always
@@ -61,7 +85,10 @@ export interface UiStoreState {
   saveProtectionEntryKey: string | null;
   discoveryModalOpen: boolean;
   removeModalEntryKey: string | null;
-  backupDestinationDraft: string | null;
+  /** Pending values of the Backups card, saved together through the unsaved bar. */
+  settingsDraft: SettingsDraft | null;
+  /** Save error shown on the changed destination row until the next edit. */
+  settingsDraftError: string | null;
   discardBackupConfirmOpen: boolean;
   pendingSettingsAction: (() => void) | null;
   /** The command palette (Ctrl+K), a shared-modal-layer overlay. */
@@ -102,7 +129,8 @@ export function createInitialUiStoreState(): UiStoreState {
     saveProtectionEntryKey: null,
     discoveryModalOpen: false,
     removeModalEntryKey: null,
-    backupDestinationDraft: null,
+    settingsDraft: null,
+    settingsDraftError: null,
     discardBackupConfirmOpen: false,
     pendingSettingsAction: null,
     paletteOpen: false,
@@ -147,7 +175,8 @@ export function closeSettingsModal(): void {
     ...prev,
     settingsOpen: false,
     licenseModalOpen: false,
-    backupDestinationDraft: null,
+    settingsDraft: null,
+    settingsDraftError: null,
     discardBackupConfirmOpen: false,
     pendingSettingsAction: null,
   }));

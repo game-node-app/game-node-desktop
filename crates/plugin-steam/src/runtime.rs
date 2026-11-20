@@ -154,11 +154,12 @@ impl ProviderPlugin for SteamPlugin {
         if kind == ProviderOperation::Discover {
             return tokio::task::spawn_blocking(move || {
                 manifest
-                    .scan(platform, &StdFiles, &SystemRoots)
-                    .map(|records| OperationResult {
+                    .scan_with_location(platform, &StdFiles, &SystemRoots)
+                    .map(|scan| OperationResult {
                         discovery: Some(DiscoveryResult {
                             provider_id: "steam".into(),
-                            records: records
+                            records: scan
+                                .records
                                 .into_iter()
                                 .map(|r| DiscoveryRecord {
                                     id: r.id,
@@ -168,6 +169,8 @@ impl ProviderPlugin for SteamPlugin {
                                     target: None,
                                 })
                                 .collect(),
+                            install_root: scan.install_root,
+                            library_folders: scan.library_folders,
                         }),
                         ..success()
                     })
@@ -343,6 +346,7 @@ impl ProviderPlugin for SteamPlugin {
                                                 icon_gray_url: achievement.icon_gray_url,
                                                 unlocked: achievement.unlocked,
                                                 unlocked_at: achievement.unlocked_at,
+                                                global_percent: achievement.global_percent,
                                             })
                                             .collect(),
                                     },

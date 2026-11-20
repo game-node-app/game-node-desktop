@@ -87,9 +87,20 @@ describe('mock comprehensive and state fixtures', () => {
       files: ['%APPDATA%\\Brasa'],
       support: 'supported',
     });
-    expect(
-      snapshot.localGames.versions.filter((version) => version.installation === 'brasa'),
-    ).toHaveLength(12);
+    const brasaVersions = snapshot.localGames.versions.filter(
+      (version) => version.installation === 'brasa',
+    );
+    expect(brasaVersions).toHaveLength(4);
+    expect(brasaVersions.map((version) => version.reason)).toEqual([
+      'afterSession',
+      'afterSession',
+      'manual',
+      'recovery',
+    ]);
+    expect(snapshot.localGames.historyCount).toBe(4);
+    expect(snapshot.localGames.historyBytes).toBe(
+      brasaVersions.reduce((total, version) => total + version.bytes, 0),
+    );
     expect(snapshot.localGames.jobs[0].installation).toBe('brasa');
 
     // The existing organization fixtures stay present.
@@ -101,9 +112,9 @@ describe('mock comprehensive and state fixtures', () => {
     // Discovered candidates feed both the sidebar count and the banner.
     expect(snapshot.localGames.candidates).toHaveLength(3);
     expect(snapshot.localGames.recentlyAdded).toEqual([
-      'Signal Ridge',
-      'Paper Harbor',
-      'Tiny Comet',
+      'Moss & Machine',
+      'Frostbyte Arcade',
+      'setup_redist',
     ]);
 
     await host.invoke('library_input', {

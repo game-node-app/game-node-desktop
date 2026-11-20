@@ -8,7 +8,7 @@ import {
   IconUsersGroup,
   type TablerIcon,
 } from '@tabler/icons-react';
-import { coverAssetUrl, type Row } from '../../api';
+import { coverAssetUrl, type CoverSize, type Row } from '../../api';
 import { useI18n } from '../../i18n';
 import { cx } from './cx';
 import { GameCover } from './GameCover';
@@ -42,6 +42,11 @@ export interface GameTileProps {
    */
   primaryAction?: GameTilePrimaryAction;
   onPrimaryAction?: () => void;
+  /**
+   * Cover-size preference for the library grid. The cover keeps the 160×214
+   * aspect and the caption height stays fixed; the list view ignores it.
+   */
+  size?: CoverSize;
   /** Store glyph supplied by the view; defaults to no glyph. */
   providerIcon?: TablerIcon;
   /**
@@ -80,6 +85,17 @@ export interface GameTileProps {
 const BADGE_BASE =
   'inline-flex h-[20px] max-w-full items-center gap-[4px] rounded-sm px-[6px] text-[11px] leading-none';
 
+/**
+ * Tile and cover boxes per `Cover size`: Small 140, Medium 172, Large 216 wide.
+ * Heights are the 6 px padding + rounded 160×214-ratio cover + 8 px gap + the
+ * 18 px title and 18 px meta lines, so only the cover area grows.
+ */
+const TILE_SIZE_CLASSES: Record<CoverSize, { tile: string; cover: string }> = {
+  small: { tile: 'h-[227px] w-[140px]', cover: 'h-[171px] w-[128px]' },
+  medium: { tile: 'h-[270px] w-[172px]', cover: 'h-[214px] w-[160px]' },
+  large: { tile: 'h-[329px] w-[216px]', cover: 'h-[273px] w-[204px]' },
+};
+
 function TileBadge({
   tone,
   icon: Icon,
@@ -112,9 +128,10 @@ function TileBadge({
 }
 
 /**
- * Fixed 172×270 grid tile from `components.md`. It is presentational: the row,
- * selection/focus flags and callbacks arrive as props, never from the engine or
- * a command module. Covers are lazy and decoded off the UI thread.
+ * Grid tile from `components.md`: 172×270 at the default Medium cover size.
+ * It is presentational: the row, selection/focus flags and callbacks arrive as
+ * props, never from the engine or a command module. Covers are lazy and
+ * decoded off the UI thread.
  */
 export function GameTile({
   row,
@@ -123,6 +140,7 @@ export function GameTile({
   coverUrl,
   primaryAction,
   onPrimaryAction,
+  size = 'medium',
   providerIcon: ProviderIcon,
   runningTime,
   onSelect,
@@ -147,6 +165,7 @@ export function GameTile({
     primaryAction === 'install' ? IconDownload : IconPlayerPlayFilled;
   const primaryLabel =
     primaryAction === 'install' ? t('Library::Install') : t('Library::Play');
+  const sizeClasses = TILE_SIZE_CLASSES[size];
 
   const accessibleParts = [row.title];
   if (row.installed) accessibleParts.push(t('Library::Installed'));
@@ -180,7 +199,8 @@ export function GameTile({
       onKeyDown={onKeyDown}
       style={style}
       className={cx(
-        'group relative box-border flex h-[270px] w-[172px] shrink-0 select-none flex-col gap-[8px] rounded-md p-[6px] transition-colors',
+        'group relative box-border flex shrink-0 select-none flex-col gap-[8px] rounded-md p-[6px] transition-colors',
+        sizeClasses.tile,
         selected ? 'bg-accent-subtle' : 'bg-transparent',
         !selected && 'hover:bg-raised',
         ringClass,
@@ -190,7 +210,12 @@ export function GameTile({
         className,
       )}
     >
-      <div className="relative h-[214px] w-[160px] shrink-0 overflow-hidden rounded-control">
+      <div
+        className={cx(
+          'relative shrink-0 overflow-hidden rounded-control',
+          sizeClasses.cover,
+        )}
+      >
         <GameCover
           src={src}
           title={row.title}
@@ -249,7 +274,7 @@ export function GameTile({
                 onPrimaryAction?.();
               }}
               onDoubleClick={(event) => event.stopPropagation()}
-              className="absolute left-1/2 top-1/2 flex h-[48px] w-[48px] -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-brand text-white opacity-0 transition-opacity hover:bg-[var(--settings-accent-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white group-hover:opacity-100 group-focus-within:opacity-100"
+              className="absolute left-1/2 top-1/2 flex h-[48px] w-[48px] -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-brand text-white opacity-0 transition-opacity hover:bg-[var(--color-primary-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white group-hover:opacity-100 group-focus-within:opacity-100"
             >
               <PrimaryIcon size={20} aria-hidden="true" />
             </button>

@@ -1,61 +1,82 @@
-import { providerLabel } from '../../../i18n/providerLabel';
 import React, { useEffect, useRef, useState } from 'react';
+import {
+  IconAlertTriangle,
+  IconCheck,
+  IconLock,
+} from '@tabler/icons-react';
 import {
   commands,
   useLibraryView,
-  useLocalGames,
   useSnapshot,
 } from '../../../api';
+import { Button, Pill } from '../../../components/ui';
+import { providerLabel } from '../../../i18n/providerLabel';
 import { pushToast } from '../../../store/uiStore';
 import { useI18n } from '../../../i18n';
-import { StoreAccountCard } from '../StoreAccountCard';
+import { StoreAccountCard, providerIcon } from '../StoreAccountCard';
 import {
-  settingsButtonGhost,
-  settingsButtonSecondary,
-  settingsCard,
-  settingsInput,
-  settingsPillWarning,
-  settingsRow,
-  settingsRowDescription,
-  settingsRowInfo,
-  settingsRowTitle,
-  settingsSection,
-  settingsSectionDescription,
-  settingsSectionTitle,
-} from '../settingsClasses';
+  SettingsCard,
+  SettingsPanel,
+  SettingsRow,
+} from '../components';
 
+interface DetectedStore {
+  id: string;
+  name: string;
+  count: number;
+  installedCount: number;
+  ownedCount: number;
+  installRoot?: string | null;
+  libraryFolders?: number | null;
+  /** The last local scan found the store; catalog facts never count as detection. */
+  detected: boolean;
+  failed: boolean;
+}
+
+/**
+ * Lojas (S2, D10): one provider-neutral account card per connected store, the
+ * credential-storage card and "Detectadas neste PC" with each scanned store's
+ * install location, library-folder count and scan result. DRM-free discovery
+ * moved to its own topic and playtime source to Conta e sincronização.
+ */
 export const StoresPanel: React.FC = () => {
-  const { t, locale } = useI18n();
+  const { t } = useI18n();
   const library = useLibraryView();
-  const localGames = useLocalGames();
-  const { data: storeAccounts } = useSnapshot((s) => s.storeAccounts);
-  const { data: sessionStorage } = useSnapshot((s) => s.storage);
+  const { data: storeAccounts } = useSnapshot((state) => state.storeAccounts);
+  const { data: sessionStorage } = useSnapshot((state) => state.storage);
+  const { data: sharedExcluded } = useSnapshot(
+    (state) => state.preferences.sharedExcluded,
+  );
 
-  const [newFolderInput, setNewFolderInput] = useState('');
   const signInPending = useRef(new Set<string>());
   const lastSyncedAt = useRef(new Map<string, number | null>());
   const autoCheckedFor = useRef(new Map<string, number>());
 
+  const [sharedOverrides, setSharedOverrides] = useState<
+    Record<string, boolean>
+  >({});
+  const [sharedError, setSharedError] = useState<string | null>(null);
+
   const providers = library?.providers ?? [];
   const failedProviders = library?.failedProviders ?? [];
-  const isScanning = library?.scanning ?? false;
-  // Removing a watch disables it but keeps its registrations (games stay in the library).
-  // Disabled roots must not be listed as watched.
-  const watches = (localGames?.watches ?? []).filter((watch) => watch.enabled);
-  const localBusy = localGames?.busy ?? false;
-  const discoveryScanning = localGames?.discoveryScanning ?? false;
-  const discoveryError = localGames?.discoveryError ?? null;
-  const discoveryIncomplete = localGames?.discoveryIncomplete ?? [];
-  const discoveryCompleted = localGames?.discoveryCompleted ?? false;
+  const failedFromScan = new Set(
+    (library?.scanProgress ?? [])
+      .filter((entry) => entry.state === 'failed')
+      .map((entry) => entry.provider),
+  );
+  const hasFailed = (id: string) =>
+    failedProviders.includes(id) || failedFromScan.has(id);
 
   const accounts = storeAccounts ?? [];
-  const accountProviders = new Set(accounts.map((account) => account.provider));
-  const otherProviders = providers.filter((provider) => !accountProviders.has(provider.id));
   const providerName = (id: string): string =>
-    providerLabel(id, providers.find((provider) => provider.id === id)?.name, t);
+    providerLabel(
+      id,
+      providers.find((provider) => provider.id === id)?.name,
+      t,
+    );
 
-  // A connected account older than the freshness interval is validated (and its catalog
-  // refreshed) once, without a second request while it runs. Each provider is tracked alone.
+  // A connected account older than the freshness interval is validated (and its
+  // catalog refreshed) once, without a second request while it runs.
   useEffect(() => {
     const now = Math.floor(Date.now() / 1000);
     for (const account of storeAccounts ?? []) {
@@ -64,8 +85,8 @@ export const StoresPanel: React.FC = () => {
       }
       const lastChecked = account.lastCheckedAt ?? 0;
       if (
-        now - lastChecked > 5 * 60
-        && autoCheckedFor.current.get(account.provider) !== lastChecked
+        now - lastChecked > 5 * 60 &&
+        autoCheckedFor.current.get(account.provider) !== lastChecked
       ) {
         autoCheckedFor.current.set(account.provider, lastChecked);
         void commands.providerCheck(account.provider);
@@ -81,17 +102,19 @@ export const StoresPanel: React.FC = () => {
         continue;
       }
       if (account.state === 'connected') {
-        // A sign-in validates the session before the catalog is fetched, so the first connected
-        // snapshot still has the previous (usually zero) counts. Announce the import only once a
-        // catalog sync has completed; the service sets lastSyncedAt on success.
+        // A sign-in validates the session before the catalog is fetched, so the
+        // first connected snapshot still has the previous (usually zero)
+        // counts. Announce the import only once a catalog sync has completed.
         const syncedAt = account.lastSyncedAt ?? null;
         if (
-          signInPending.current.has(account.provider)
-          && syncedAt !== null
-          && syncedAt !== lastSyncedAt.current.get(account.provider)
+          signInPending.current.has(account.provider) &&
+          syncedAt !== null &&
+          syncedAt !== lastSyncedAt.current.get(account.provider)
         ) {
           signInPending.current.delete(account.provider);
-          const imported = account.ownedCount + (account.sharedLabel !== null ? account.sharedCount : 0);
+          const imported =
+            account.ownedCount +
+            (account.sharedLabel !== null ? account.sharedCount : 0);
           pushToast(
             'success',
             t('settings.storeConnectedToast', {
@@ -110,17 +133,58 @@ export const StoresPanel: React.FC = () => {
     }
   });
 
-  const handleRescan = () => {
-    commands.rescanLibrary();
+  // Drop an optimistic shared-games value once the snapshot confirms it.
+  useEffect(() => {
+    setSharedOverrides((previous) => {
+      const entries = Object.entries(previous);
+      if (entries.length === 0) return previous;
+      const next = { ...previous };
+      let changed = false;
+      for (const [provider, value] of entries) {
+        if ((!sharedExcluded.includes(provider)) === value) {
+          delete next[provider];
+          changed = true;
+        }
+      }
+      return changed ? next : previous;
+    });
+  }, [sharedExcluded]);
+
+  const includeSharedFor = (provider: string): boolean =>
+    sharedOverrides[provider] ?? !sharedExcluded.includes(provider);
+
+  const handleIncludeShared = async (provider: string, checked: boolean) => {
+    const nextExcluded = new Set(sharedExcluded);
+    for (const [id, included] of Object.entries(sharedOverrides)) {
+      if (included) nextExcluded.delete(id);
+      else nextExcluded.add(id);
+    }
+    if (checked) nextExcluded.delete(provider);
+    else nextExcluded.add(provider);
+
+    setSharedOverrides((previous) => ({ ...previous, [provider]: checked }));
+    setSharedError(null);
+    try {
+      await commands.setAppPreference({
+        sharedExcluded: [...nextExcluded],
+      });
+    } catch {
+      setSharedOverrides((previous) => {
+        const copy = { ...previous };
+        delete copy[provider];
+        return copy;
+      });
+      setSharedError(t('settings.stores.saveSharedFailed'));
+    }
   };
 
-  const handleResetExcluded = () => {
-    commands.libraryInput('resetExcluded');
-    const toastMsg =
-      locale === 'pt-BR'
-        ? 'Descobertas ignoradas redefinidas'
-        : 'Reset hidden games';
-    pushToast('success', t('Reset hidden games') !== 'Reset hidden games' ? t('Reset hidden games') : toastMsg);
+  const handleRescan = () => {
+    void commands.rescanLibrary();
+  };
+
+  const handleShowHidden = () => {
+    void commands.libraryInput('resetExcluded');
+    pushToast('success', t('settings.stores.showHidden'));
   };
 
   const handleSignOut = (provider: string) => {
@@ -130,214 +194,184 @@ export const StoresPanel: React.FC = () => {
     );
   };
 
-  const handleAddWatchFolder = () => {
-    const trimmed = newFolderInput.trim();
-    if (trimmed) {
-      commands.watchLocalFolder(trimmed);
-      setNewFolderInput('');
-    } else {
-      commands.pickLocalWatchFolder();
+  const detected: DetectedStore[] = providers.map((provider) => ({
+    ...provider,
+    detected: provider.detected ?? false,
+    failed: hasFailed(provider.id),
+  }));
+  const known = new Set(detected.map((store) => store.id));
+  for (const id of [...failedProviders, ...failedFromScan]) {
+    if (known.has(id)) continue;
+    known.add(id);
+    detected.push({
+      id,
+      name: providerName(id),
+      count: 0,
+      installedCount: 0,
+      ownedCount: 0,
+      detected: false,
+      failed: true,
+    });
+  }
+
+  const credential = (() => {
+    switch (sessionStorage) {
+      case 'windowsCredentialManager':
+        return {
+          label: t('settings.stores.credentials.windows'),
+          help: t('settings.stores.credentials.help'),
+          available: true,
+        };
+      case 'secretService':
+        return {
+          label: t('settings.stores.credentials.keyring'),
+          help: t('settings.stores.credentials.keyringHelp'),
+          available: true,
+        };
+      case 'privateFile':
+      default:
+        return {
+          label: t('settings.stores.credentials.privateFile'),
+          help: t('settings.stores.credentials.privateFileHelp'),
+          available: false,
+        };
     }
-  };
-
-  const handleRemoveWatch = (id: string) => {
-    commands.removeLocalWatch(id);
-  };
-
-  const handleRescanFolders = () => {
-    commands.rescanLocalFolders();
-  };
-
-  const handleResetIgnores = () => {
-    commands.resetLocalIgnores();
-  };
+  })();
 
   return (
-    <div className={settingsSection}>
-      {accounts.map((account) => {
-        const name = providerName(account.provider);
-        return (
-          <StoreAccountCard
-            key={account.provider}
-            account={{ ...account, storage: account.storage ?? sessionStorage }}
-            providerName={name}
-            scanFailed={failedProviders.includes(account.provider)}
-            onSignOut={() => handleSignOut(account.provider)}
+    <SettingsPanel
+      title={t('settings.nav.stores')}
+      description={t('settings.stores.description')}
+    >
+      {sharedError ? (
+        <div
+          role="alert"
+          data-testid="settings-stores-error"
+          className="flex items-start gap-compact rounded-md border border-danger bg-danger-subtle p-sm text-xs leading-note text-text-secondary"
+        >
+          <IconAlertTriangle
+            size={16}
+            stroke={2}
+            aria-hidden="true"
+            className="shrink-0 text-danger"
           />
-        );
-      })}
-
-      <div className={settingsSection}>
-        <h3 className={settingsSectionTitle}>{t('Detected stores') || 'Detected stores'}</h3>
-        <span className={settingsSectionDescription}>
-          {t('Game providers configured on this system.')}
-        </span>
-
-        <div className={settingsCard}>
-          {providers.length === 0 ? (
-            <div className={settingsRowDescription}>
-              {t('No installed games found') || 'No installed games found'}
-            </div>
-          ) : otherProviders.length === 0 ? (
-            <div className={settingsRowDescription}>
-              {t('settings.storeNoOtherStores')}
-            </div>
-          ) : (
-            otherProviders.map((provider) => {
-              const hasFailed = failedProviders.includes(provider.id);
-              let description = '';
-              if (hasFailed) {
-                description = t('Last scan failed') || 'Last scan failed';
-              } else if (provider.count > 0) {
-                description = `${provider.count} ${t('installed games') || 'installed games'}`;
-              } else {
-                description = t('No installed games found') || 'No installed games found';
-              }
-
-              return (
-                <div key={provider.id} className={`${settingsRow} py-1`}>
-                  <div className={settingsRowInfo}>
-                    <span className={settingsRowTitle}>{providerLabel(provider.id, provider.name, t)}</span>
-                    <span className={settingsRowDescription}>{description}</span>
-                  </div>
-                  {hasFailed && (
-                    <span className={settingsPillWarning}>
-                      {t('Failed') || 'Failed'}
-                    </span>
-                  )}
-                </div>
-              );
-            })
-          )}
+          <span>{sharedError}</span>
         </div>
+      ) : null}
 
-        <div className="mt-compact flex items-center gap-compact">
-          <button
-            type="button"
-            className={settingsButtonSecondary}
-            disabled={isScanning}
+      {accounts.map((account) => (
+        <StoreAccountCard
+          key={account.provider}
+          account={{ ...account, storage: account.storage ?? sessionStorage }}
+          providerName={providerName(account.provider)}
+          includeShared={includeSharedFor(account.provider)}
+          onIncludeSharedChange={(checked) =>
+            void handleIncludeShared(account.provider, checked)
+          }
+          onSignOut={() => handleSignOut(account.provider)}
+        />
+      ))}
+
+      <SettingsCard title={t('settings.stores.credentials')}>
+        <SettingsRow
+          compact
+          icon={IconLock}
+          label={credential.label}
+          help={credential.help}
+          control={
+            <Pill
+              tone={credential.available ? 'success' : 'warning'}
+              icon={credential.available ? IconLock : IconAlertTriangle}
+            >
+              {credential.available
+                ? t('settings.stores.credentials.available')
+                : t('settings.stores.credentials.unavailable')}
+            </Pill>
+          }
+        />
+      </SettingsCard>
+
+      <SettingsCard
+        title={t('settings.stores.detected')}
+        aria-busy={library?.scanning ?? false}
+        action={
+          <Button
+            size="sm"
+            variant="secondary"
+            loading={library?.scanning ?? false}
             onClick={handleRescan}
           >
-            {t('Library::Rescan') !== 'Library::Rescan' ? t('Library::Rescan') : (t('Rescan') || 'Rescan library')}
-          </button>
-          <button
-            type="button"
-            className={settingsButtonGhost}
-            onClick={handleResetExcluded}
-          >
-            {t('Reset hidden games') !== 'Reset hidden games' ? t('Reset hidden games') : (locale === 'pt-BR' ? 'Restaurar entradas excluídas' : 'Reset hidden games')}
-          </button>
-        </div>
-      </div>
-
-      {/* DRM-free games: watched folders (moved here from Backups to match the pre-migration Lojas page) */}
-      <div className={settingsSection}>
-        <h3 className={settingsSectionTitle}>{t('DRM-free games') || 'DRM-free games'}</h3>
-        <span className={settingsSectionDescription}>
-          {t('Watched folders and local discoveries.') || 'Watched folders and local discoveries.'}
-        </span>
-
-        <div className={settingsCard}>
-          <div className="flex gap-compact">
-            <input
-              type="text"
-              className={settingsInput}
-              value={newFolderInput}
-              onChange={(e) => setNewFolderInput(e.target.value)}
-              placeholder={t('DRM-free::Folder to watch') || 'Folder to watch'}
-              aria-label={t('DRM-free::Folder to watch') || 'Folder to watch'}
-            />
-            <button
-              type="button"
-              className={settingsButtonSecondary}
-              disabled={localBusy}
-              onClick={handleAddWatchFolder}
+            {t('settings.stores.rescan')}
+          </Button>
+        }
+      >
+        {detected.length === 0 ? (
+          <p className="border-t border-border-subtle px-md py-sm text-xs text-text-dimmed">
+            {t('settings.noInstalledGamesFound')}
+          </p>
+        ) : (
+          detected.map((store) => {
+            const StoreIcon = providerIcon(store.id);
+            const meta =
+              store.installRoot != null
+                ? store.libraryFolders != null
+                  ? t('settings.stores.detected.meta', {
+                      path: store.installRoot,
+                      n: store.libraryFolders,
+                    })
+                  : store.installRoot
+                : store.installedCount > 0
+                  ? t('settings.stores.detected.installedOnly', {
+                      n: store.installedCount,
+                    })
+                  : null;
+            const state = store.failed
+              ? {
+                  tone: 'warning' as const,
+                  label: t('settings.stores.detected.state.scanFailed'),
+                  icon: IconAlertTriangle,
+                }
+              : store.detected
+                ? {
+                    tone: 'neutral' as const,
+                    label: t('settings.stores.detected.state.detected'),
+                    icon: IconCheck,
+                  }
+                : {
+                    tone: 'neutral' as const,
+                    label: t('settings.stores.detected.state.notFound'),
+                    icon: undefined,
+                  };
+            return (
+              <SettingsRow
+                key={store.id}
+                compact
+                icon={StoreIcon}
+                label={store.name}
+                help={meta ?? undefined}
+                control={
+                  <Pill tone={state.tone} icon={state.icon}>
+                    {state.label}
+                  </Pill>
+                }
+              />
+            );
+          })
+        )}
+        <SettingsRow
+          compact
+          label={t('settings.stores.showHidden')}
+          control={
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={handleShowHidden}
             >
-              {t('DRM-free::Watch folder') !== 'DRM-free::Watch folder'
-                ? t('DRM-free::Watch folder')
-                : (locale === 'pt-BR' ? 'Adicionar pasta' : 'Add folder')}
-            </button>
-          </div>
-
-          <div className="mt-compact flex flex-col gap-compact">
-            {watches.length === 0 ? (
-              <span className={settingsRowDescription}>
-                {locale === 'pt-BR' ? 'Nenhuma pasta monitorada.' : 'No watched folders configured.'}
-              </span>
-            ) : (
-              watches.map((watch) => (
-                <div
-                  key={watch.id}
-                  className={`${settingsRow} rounded-sm bg-raised px-sm py-compact`}
-                >
-                  <span className={`${settingsRowTitle} break-all`}>
-                    {watch.path}
-                  </span>
-                  <button
-                    type="button"
-                    className={settingsButtonGhost}
-                    onClick={() => handleRemoveWatch(watch.id)}
-                  >
-                    {t('DRM-free::Remove watch') !== 'DRM-free::Remove watch'
-                      ? t('DRM-free::Remove watch')
-                      : (locale === 'pt-BR' ? 'Remover' : 'Remove')}
-                  </button>
-                </div>
-              ))
-            )}
-          </div>
-
-          {discoveryScanning && (
-            <span className={`${settingsRowDescription} mt-compact`}>
-              {t('DRM-free::Checking watched folders…') !== 'DRM-free::Checking watched folders…'
-                ? t('DRM-free::Checking watched folders…')
-                : 'Checking watched folders…'}
-            </span>
-          )}
-          {!discoveryScanning && discoveryError && (
-            <span className="mt-compact text-xs text-danger" role="alert">
-              {discoveryError}
-            </span>
-          )}
-          {!discoveryScanning && !discoveryError && discoveryIncomplete.length > 0 && (
-            <span className={`${settingsRowDescription} mt-compact`}>
-              {t('DRM-free::Some folders could not be checked completely.') !== 'DRM-free::Some folders could not be checked completely.'
-                ? t('DRM-free::Some folders could not be checked completely.')
-                : 'Some folders could not be checked completely.'}
-            </span>
-          )}
-          {!discoveryScanning && !discoveryError && discoveryCompleted && (
-            <span className={`${settingsRowDescription} mt-compact`}>
-              {t('DRM-free::Recognized games in watched folders are added to your library automatically.') !== 'DRM-free::Recognized games in watched folders are added to your library automatically.'
-                ? t('DRM-free::Recognized games in watched folders are added to your library automatically.')
-                : 'Recognized games in watched folders are added to your library automatically.'}
-            </span>
-          )}
-
-          <div className="mt-sm flex gap-compact">
-            <button
-              type="button"
-              className={settingsButtonSecondary}
-              disabled={localBusy || discoveryScanning}
-              onClick={handleRescanFolders}
-            >
-              {t('DRM-free::Rescan watched folders') !== 'DRM-free::Rescan watched folders'
-                ? t('DRM-free::Rescan watched folders')
-                : (locale === 'pt-BR' ? 'Reescanear pastas' : 'Rescan folders')}
-            </button>
-            <button
-              type="button"
-              className={settingsButtonGhost}
-              disabled={localBusy}
-              onClick={handleResetIgnores}
-            >
-              {t('DRM-free::Reset ignored discoveries') !== 'DRM-free::Reset ignored discoveries'
-                ? t('DRM-free::Reset ignored discoveries')
-                : (locale === 'pt-BR' ? 'Redefinir candidatos ignorados' : 'Reset ignored candidates')}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
+              {t('settings.stores.showHidden')}
+            </Button>
+          }
+        />
+      </SettingsCard>
+    </SettingsPanel>
   );
 };

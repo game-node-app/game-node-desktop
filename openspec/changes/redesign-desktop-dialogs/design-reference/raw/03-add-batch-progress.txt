@@ -1,0 +1,15 @@
+### 5369:3008 Adicionando 3 jogos ao GameNode  (wrapper 5369:3058 "Adicionar em lote (progresso)")
+### Annotation: Mesmo diálogo para vários jogos; itens sem correspondência são listados e não bloqueiam.
+F [Adicionando 3 jogos] 520x346 col (same shell)
+ F [Cabeçalho] I dots-vertical ; col gap2 [T "Adicionando 3 jogos ao GameNode" 16/600 ; T "Status: Na lista · Coleção: Backlog curto" 12/400 text-dimmed] ; I x
+ F [Corpo] col gap16 p20
+  F row gap10 ai:center
+   F [track] 435x6 FH bg=bg/raised r3 ; F [fill] 300x6 bg=primary r3   (done/total)
+   T "2 de 3" 12/600 text/primary
+  F [list] col
+   rows 478x49 row gap10 p8/0/8/0 ai:center bd-bottom=border/subtle:
+   REC cover 24x32 r3 ; col gap2 FH [T title 13/500 text/primary ; T status 11/400] ; trailing I 16
+   "Emberfall: Iron Trail" ; "Adicionado" success ; I circle-check 16:success
+   "Aster Vale: Revival" ; "Adicionando…" text/secondary ; I loader-2 16:primary (spinning)
+   "Neon Courier 2088" ; "Ignorado: sem correspondência no GameNode" warning ; I alert-triangle 16:warning
+ F [Rodapé] T "Pode fechar: o envio continua em segundo plano." 12/400 text-dimmed ; spacer ; C <Button Secondary SM> "Ocultar"

@@ -269,6 +269,7 @@ fn target_error(error: LocalError) -> String {
         LocalError::InvalidTarget => {
             "the executable is missing, invalid, or outside the game's install folder".into()
         }
+        LocalError::Busy => "target review is busy".into(),
         LocalError::Cancelled => "target review was cancelled".into(),
         LocalError::Failed(_) => "the executable could not be validated".into(),
     }

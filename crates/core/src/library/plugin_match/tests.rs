@@ -10,6 +10,7 @@ fn game(id: u64, name: &str) -> GameSummary {
         id,
         name: name.to_owned(),
         release_year: Some(2011),
+        platforms: vec![],
         cover_url: None,
     }
 }
@@ -19,6 +20,7 @@ fn known(id: u64, name: &str) -> GameRecord {
         game_id: id,
         name: name.to_owned(),
         release_year: Some(2011),
+        platforms: vec![],
         cover_url: None,
         cover_file: None,
         cover_failed_at: None,

@@ -36,7 +36,7 @@ export function isShortcutBlockedByOverlay(
     state.localEditorEntryKey !== null ||
     state.saveProtectionEntryKey !== null ||
     state.removeModalEntryKey !== null ||
-    state.backupDestinationDraft !== null ||
+    state.settingsDraft !== null ||
     state.discardBackupConfirmOpen ||
     (!options?.allowFiltersOpen && state.filtersOpen)
   ) {
@@ -45,6 +45,16 @@ export function isShortcutBlockedByOverlay(
   // Menus (sort, group, app, context) are overlays too, even though their
   // open state is local to each Mantine Menu rather than `uiStore`.
   if (typeof document !== 'undefined' && document.querySelector('[role="menu"]')) {
+    return true;
+  }
+  // Dialogs opened from inside the library (such as the achievement list) keep their open state
+  // in the component, not in `uiStore`. React bubbles their keys through the portal to the
+  // library, so Escape would close the dialog and also clear the selection that owns the
+  // trigger, and focus restoration would find nothing to return to.
+  if (
+    typeof document !== 'undefined' &&
+    document.querySelector('[role="dialog"], [role="alertdialog"]')
+  ) {
     return true;
   }
   return Boolean(library?.addDialog || library?.matchDialog);

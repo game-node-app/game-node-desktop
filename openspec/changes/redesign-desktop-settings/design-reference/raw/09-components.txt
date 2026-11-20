@@ -1,0 +1,21 @@
+# Component sets used by the section (from the library page)
+# Nav item — 5357:828
+C <Nav item State=Default> 207x32 row gap10 p0/10 ai:center r6
+ I <icon> 16:color/text/secondary
+ T "<label>" 14/400 color/text-default FH ellipsis
+ T "<count>" 12/400 color/text-dimmed            # optional
+C <Nav item State=Hover>   same + bg=color/bg/raised
+C <Nav item State=Active>  bg=accent/subtle; icon 16:color/primary; label 14/600 color/text/primary; count color/text-default
+# Switch — 5357:774
+C <Switch State=On>  34x20 row p3 r999 bg=color/primary jc:max > ELL knob 14x14 bg=color/text/primary
+C <Switch State=Off> 34x20 row p3 r999 bg=#2E2E2E          > ELL knob 14x14 bg=color/text/muted
+# Kbd
+C <Kbd> HX h18 row p0/5 ai:center bg=color/bg/raised bd1=color/border/subtle r4 > T "<key>" 11/500 color/text/secondary
+# Pill
+C <Pill Tone=*> row gap4 p2/8 ai:center r999 > I <icon> 12; T "<label>" 12/500
+ Neutral bg=color/bg/raised text=color/text-default · Brand bg=accent/subtle text=color/primary
+ Success bg=success-subtle text=color/success · Warning bg=warning-subtle text=color/warning · Danger bg=danger-subtle text=color/danger
+# Button Size=SM — identical to the existing `Button size="sm"` (h32 p0/12 gap6 r4 14px; icon 16)
+ Primary bg=color/primary 600 text/primary · Secondary bg=bg/raised bd1=border/subtle 500 text-default · Ghost transparent 500 text/secondary (hover bg=bg/raised)
+# Segmented control
+F row gap2 p3 bg=color/bg/canvas bd1=color/border/subtle r8 > segment h26 p0/12 (p0/10 on Plugins filter) r5; active bg=color/bg/raised 12/600 text/primary; idle 12/400 text/secondary

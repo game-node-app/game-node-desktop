@@ -130,11 +130,24 @@ impl Submitter {
         verified: bool,
         candidates: Vec<Candidate>,
     ) -> Vec<Effect> {
+        self.start_for_source_with_retry(source, account, preferences, verified, false, candidates)
+    }
+    /// A pass that may resubmit totals GameNode rejected on an earlier pass. Accepted totals
+    /// still wait for a change, so ordinary dedup is untouched.
+    pub fn start_for_source_with_retry(
+        &mut self,
+        source: super::PlaytimeSource,
+        account: &str,
+        preferences: SyncPreferences,
+        verified: bool,
+        allow_rejected: bool,
+        candidates: Vec<Candidate>,
+    ) -> Vec<Effect> {
         if source != super::PlaytimeSource::Store {
             self.cancel();
             return Vec::new();
         }
-        self.start(account, preferences, verified, candidates)
+        self.start_inner(account, preferences, verified, allow_rejected, candidates)
     }
     /// Starts only when no previous pass is in progress. Account ownership is checked here too.
     pub fn start(
@@ -142,6 +155,26 @@ impl Submitter {
         account: &str,
         preferences: SyncPreferences,
         verified: bool,
+        candidates: Vec<Candidate>,
+    ) -> Vec<Effect> {
+        self.start_inner(account, preferences, verified, false, candidates)
+    }
+    /// Starts a pass that resubmits a value stored as rejected, used by an explicit retry.
+    pub fn start_allowing_rejected(
+        &mut self,
+        account: &str,
+        preferences: SyncPreferences,
+        verified: bool,
+        candidates: Vec<Candidate>,
+    ) -> Vec<Effect> {
+        self.start_inner(account, preferences, verified, true, candidates)
+    }
+    fn start_inner(
+        &mut self,
+        account: &str,
+        preferences: SyncPreferences,
+        verified: bool,
+        allow_rejected: bool,
         candidates: Vec<Candidate>,
     ) -> Vec<Effect> {
         if self.in_flight.is_some() || !preferences.may_submit(verified) {
@@ -154,7 +187,8 @@ impl Submitter {
                     && c.game_id.is_some_and(|game| {
                         (Some(game), Some(c.total.total_seconds))
                             != (c.total.accepted_game_id, c.total.accepted_seconds)
-                            && c.total.rejected_seconds != Some(c.total.total_seconds)
+                            && (allow_rejected
+                                || c.total.rejected_seconds != Some(c.total.total_seconds))
                     })
             })
             .collect();
@@ -291,6 +325,32 @@ mod tests {
             &s.start("a", on(), true, vec![c])[0],
             Effect::Send { .. }
         ));
+    }
+    #[test]
+    fn an_explicit_retry_resubmits_a_rejected_value_without_touching_accepted_totals() {
+        let mut s = Submitter::default();
+        s.start("a", on(), true, vec![candidate()]);
+        let Effect::Save(total) = s.complete(Err(SubmitError::Rejected)).remove(0) else {
+            panic!()
+        };
+        let mut retry = candidate();
+        retry.total = total;
+        assert!(
+            matches!(
+                &s.start_allowing_rejected("a", on(), true, vec![retry.clone()])[0],
+                Effect::Send { .. }
+            ),
+            "the next explicit opportunity retries the rejected value"
+        );
+        let Effect::Save(accepted) = s.complete(Ok(())).remove(0) else {
+            panic!()
+        };
+        retry.total = accepted;
+        assert!(
+            s.start_allowing_rejected("a", on(), true, vec![retry])
+                .is_empty(),
+            "an accepted total still waits for a change"
+        );
     }
     #[test]
     fn serialized_requests_and_failures_stop_the_pass() {

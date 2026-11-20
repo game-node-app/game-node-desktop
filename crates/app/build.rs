@@ -121,8 +121,29 @@ fn embed_plugin_descriptors(repo_root: &Path) {
     std::fs::write(out, descriptors).expect("write plugin_descriptors.rs");
 }
 
+/// Formats a Unix timestamp as a UTC `YYYY-MM-DD` date. Build scripts cannot depend on a date
+/// crate, so this uses the civil-from-days algorithm (valid for the Gregorian calendar).
+fn utc_date(seconds: i64) -> String {
+    let days = seconds.div_euclid(86_400) + 719_468;
+    let era = if days >= 0 { days } else { days - 146_096 } / 146_097;
+    let day_of_era = days - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_index = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_index + 2) / 5 + 1;
+    let month = if month_index < 10 {
+        month_index + 3
+    } else {
+        month_index - 9
+    };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
 fn main() {
     println!("cargo:rerun-if-env-changed=GAMENODE_BUILD_VERSION");
+    println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
     let version = std::env::var("GAMENODE_BUILD_VERSION")
         .unwrap_or_else(|_| std::env::var("CARGO_PKG_VERSION").expect("package version"));
     assert!(
@@ -130,6 +151,17 @@ fn main() {
         "build version must be a nonempty single line"
     );
     println!("cargo:rustc-env=GAMENODE_BUILD_VERSION={version}");
+
+    let compile_time = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let build_date = std::env::var("SOURCE_DATE_EPOCH")
+        .ok()
+        .and_then(|seconds| seconds.trim().parse::<i64>().ok())
+        .map(utc_date)
+        .unwrap_or_else(|| utc_date(compile_time));
+    println!("cargo:rustc-env=GAMENODE_BUILD_DATE={build_date}");
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("manifest dir"));
     let repo_root = manifest_dir.join("../..");
     embed_provider_manifests(&repo_root);

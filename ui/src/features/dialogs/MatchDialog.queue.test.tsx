@@ -47,6 +47,7 @@ function dialogFor(entryKey: string): MatchDialogView {
     searching: false,
     candidates: [],
     results: [],
+    selected: null,
     noResults: false,
     current: 'unmatched',
     canClear: false,

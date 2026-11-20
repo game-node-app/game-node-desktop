@@ -58,13 +58,13 @@ pub struct PluginInfo {
     /// Package execution kind from the verified manifest; bundled plugins are providers.
     pub plugin_kind: String,
     pub name: String,
+    /// The version declared by the trusted descriptor, or the build's package version.
+    pub version: String,
     pub source: String,
     pub status: String,
     pub capabilities: Vec<String>,
     pub session: String,
     pub native_access: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -105,6 +105,7 @@ fn inventory_at(
                 plugin_id: plugin.plugin_id.clone(),
                 plugin_kind: "provider".to_owned(),
                 name: plugin.name.clone(),
+                version: plugin.version.clone(),
                 source: "official".to_owned(),
                 status: if !installed {
                     "missing"
@@ -115,7 +116,6 @@ fn inventory_at(
                 capabilities: plugin.capabilities.clone(),
                 session: if connected { "active" } else { "stopped" }.into(),
                 native_access: plugin.native_access.clone(),
-                version: None,
                 enabled: None,
                 runtime_available: None,
                 publisher_fingerprint: None,
@@ -135,6 +135,8 @@ pub(crate) struct PluginDescriptor {
     pub provider_id: String,
     pub plugin_id: String,
     pub name: String,
+    /// The trusted descriptor's version, or the build package version when it declares none.
+    pub version: String,
     pub platforms: Vec<Platform>,
     pub capabilities: Vec<String>,
     pub executable: String,
@@ -200,6 +202,9 @@ struct DescriptorFile {
     provider_id: String,
     plugin_id: String,
     name: String,
+    /// Optional trusted version. Bundled descriptors that omit it use the build package version.
+    #[serde(default)]
+    version: Option<String>,
     platforms: Vec<Platform>,
     capabilities: Vec<String>,
     executable: String,
@@ -301,6 +306,11 @@ fn parse_descriptor(
     if file.provider_manifest != file.provider_id {
         return Err("provider manifest does not name the provider id".to_owned());
     }
+    let version = match file.version {
+        Some(version) if plain_version(&version) => version,
+        Some(_) => return Err("descriptor version is not a plain version string".to_owned()),
+        None => env!("CARGO_PKG_VERSION").to_owned(),
+    };
     let manifest_name = format!("{}.toml", file.provider_manifest);
     let manifest_text = manifests
         .iter()
@@ -395,6 +405,7 @@ fn parse_descriptor(
         provider_id: file.provider_id,
         plugin_id: file.plugin_id,
         name: file.name,
+        version,
         platforms: file.platforms,
         capabilities: file.capabilities,
         executable: file.executable,
@@ -424,6 +435,15 @@ fn plain_name(name: &str) -> bool {
         && name
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+}
+
+/// A build-trusted version string: printable, bounded, and without spaces or path characters.
+fn plain_version(version: &str) -> bool {
+    !version.is_empty()
+        && version.len() <= 64
+        && version
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+' | b'_'))
 }
 
 /// A lowercase DNS host name with at least two labels, no wildcard, port, path or userinfo, and
@@ -1098,6 +1118,47 @@ timeout_seconds = 600
         );
         assert_eq!(loaded.diagnostics.len(), 1);
         loaded.diagnostics[0].problem.clone()
+    }
+
+    #[test]
+    fn inventory_reports_the_trusted_descriptor_version() {
+        let info = inventory(|_| ("installed", false));
+        assert!(!info.is_empty());
+        assert!(
+            info.iter()
+                .all(|plugin| plugin.version == env!("CARGO_PKG_VERSION"))
+        );
+    }
+
+    #[test]
+    fn descriptor_version_defaults_to_the_build_package_version_and_uses_a_trusted_declaration() {
+        let defaulted = load(FIXTURE_DESCRIPTOR);
+        assert_eq!(defaulted.descriptors.len(), 1);
+        assert_eq!(defaulted.descriptors[0].version, env!("CARGO_PKG_VERSION"));
+
+        let declared = load(&descriptor_with(&[(
+            "name = \"Fixture Store\"",
+            "name = \"Fixture Store\"\nversion = \"2.3.4-beta.1+build7\"",
+        )]));
+        assert_eq!(declared.descriptors.len(), 1);
+        assert_eq!(declared.descriptors[0].version, "2.3.4-beta.1+build7");
+    }
+
+    #[test]
+    fn an_invalid_descriptor_version_is_rejected() {
+        for version in ["", "has space", "../escape", "line\nbreak"] {
+            let loaded = load(&descriptor_with(&[(
+                "name = \"Fixture Store\"",
+                &format!("name = \"Fixture Store\"\nversion = {version:?}"),
+            )]));
+            assert!(loaded.descriptors.is_empty(), "{version:?}");
+            assert_eq!(loaded.diagnostics.len(), 1, "{version:?}");
+            assert!(
+                loaded.diagnostics[0].problem.contains("version"),
+                "{version:?}: {:?}",
+                loaded.diagnostics[0].problem
+            );
+        }
     }
 
     fn with_achievements_and_icon_hosts(hosts: &str) -> String {

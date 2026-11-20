@@ -2,7 +2,9 @@ use super::*;
 use crate::game_api::{AccountEntry, Collection};
 use crate::library::layout::{GameNodeStatusFilter, GroupBy, LibraryScope, RECENT_DAYS};
 use crate::library::machine::Input;
-use crate::library::machine::tests::{finish_scan, loaded, record, stored, stored_with};
+use crate::library::machine::tests::{
+    finish_scan, loaded, record, scan_ops, scanned, stored, stored_with,
+};
 use crate::library::matching::MatchSource;
 use crate::library::store::{AccountLibrary, AutoMatch, ChosenMatch, GameRecord, LibraryCache};
 use crate::library::{Effect, SavedViewPayload};
@@ -24,6 +26,7 @@ fn row(provider: &str, id: &str, title: &str, status: MatchStatus) -> Row {
         shared: false,
         status,
         cover_file: None,
+        game_cover_file: None,
         release_year: None,
         added_at: 0,
         is_favorite: false,
@@ -449,8 +452,82 @@ fn provider_counts_reach_the_frontend_with_the_keys_it_reads() {
             "installedCount": 0,
             "ownedCount": 0,
             "sharedCount": 0,
-            "sharedLabel": null
+            "sharedLabel": null,
+            "installRoot": null,
+            "libraryFolders": null,
+            "detected": false
         })
+    );
+}
+
+#[test]
+fn provider_counts_carry_the_location_reported_by_the_latest_scan() {
+    let (mut machine, effects) = loaded(true, LibraryCache::default());
+    let ops = scan_ops(&effects);
+    let steam_op = ops
+        .iter()
+        .find(|(_, provider)| provider == "steam")
+        .expect("steam is scanned")
+        .0;
+    machine.handle(Input::ProviderLocated {
+        op: steam_op,
+        provider: "steam".to_owned(),
+        install_root: Some(r"C:\Program Files (x86)\Steam".to_owned()),
+        library_folders: Some(4),
+    });
+    for (op, provider) in ops {
+        let records = if provider == "steam" {
+            vec![record("1", "One", "/1")]
+        } else {
+            Vec::new()
+        };
+        scanned(&mut machine, op, &provider, Ok(records), 9);
+    }
+
+    let counts = machine.provider_counts();
+    let steam = counts.iter().find(|count| count.id == "steam").unwrap();
+    assert_eq!(
+        steam.install_root.as_deref(),
+        Some(r"C:\Program Files (x86)\Steam")
+    );
+    assert_eq!(steam.library_folders, Some(4));
+    assert_eq!(steam.installed_count, 1);
+    let shop = counts.iter().find(|count| count.id == "shop").unwrap();
+    assert_eq!(
+        (shop.install_root.as_deref(), shop.library_folders),
+        (None, None),
+        "a provider that reports no location keeps only its installed count"
+    );
+
+    // A later successful scan without a location clears the previous one.
+    let effects = machine.handle(Input::ScanRequested);
+    let steam_op = scan_ops(&effects)
+        .into_iter()
+        .find(|(_, provider)| provider == "steam")
+        .expect("steam is scanned again")
+        .0;
+    machine.handle(Input::ProviderLocated {
+        op: steam_op,
+        provider: "steam".to_owned(),
+        install_root: None,
+        library_folders: None,
+    });
+    machine.handle(Input::ProviderScanned {
+        op: steam_op,
+        provider: "steam".to_owned(),
+        result: Ok(Vec::new()),
+        targets: Default::default(),
+        now: 10,
+    });
+    let steam = machine
+        .provider_counts()
+        .into_iter()
+        .find(|count| count.id == "steam")
+        .unwrap();
+    assert_eq!(
+        (steam.install_root, steam.library_folders),
+        (None, None),
+        "a scan that reports nothing no longer claims a location"
     );
 }
 
@@ -481,6 +558,7 @@ fn the_machine_shows_only_installed_games_with_matched_titles_and_covers() {
             cover_url: None,
             cover_file: Some("7.jpg".to_owned()),
             cover_failed_at: None,
+            platforms: Vec::new(),
         }],
         ..LibraryCache::default()
     };
@@ -639,6 +717,56 @@ fn provider_counts_add_up_each_visible_fact() {
     assert!(shared.shared && !shared.owned);
     let both = rows.iter().find(|row| row.key == "steam:4").unwrap();
     assert!(both.owned && !both.shared, "owned wins in the row");
+}
+
+#[test]
+fn store_detection_uses_the_local_scan_not_the_catalog() {
+    let cache = LibraryCache {
+        entries: vec![stored_with("steam", "2", "Owned only", false, true, false)],
+        ..LibraryCache::default()
+    };
+    let (mut machine, _) = loaded(false, cache);
+    finish_scan(&mut machine, vec![], 9);
+
+    let count = &machine.provider_counts()[0];
+    assert_eq!(count.count, 1);
+    assert_eq!(count.owned_count, 1);
+    assert_eq!(count.installed_count, 0);
+    assert!(
+        !count.detected,
+        "a saved catalog without a local installation is not detected"
+    );
+}
+
+#[test]
+fn store_detection_survives_hidden_entries_and_hiding_filters() {
+    let cache = LibraryCache {
+        entries: vec![stored("steam", "1", "Installed", true)],
+        ..LibraryCache::default()
+    };
+    let (mut machine, _) = loaded(false, cache);
+    finish_scan(&mut machine, vec![record("1", "Installed", "/1")], 9);
+    assert!(machine.provider_counts()[0].detected);
+
+    machine.handle(Input::SetHidden {
+        keys: vec!["steam:1".to_owned()],
+        hidden: true,
+    });
+    machine.handle(Input::SetFilters(LibraryFilters {
+        favorites_only: true,
+        ..LibraryFilters::default()
+    }));
+
+    let count = &machine.provider_counts()[0];
+    assert_eq!(count.count, 0, "the current filters hide the only row");
+    assert_eq!(
+        count.installed_count, 0,
+        "a hidden game no longer contributes the raw installed count"
+    );
+    assert!(
+        count.detected,
+        "the local scan outcome is independent of filters and hidden entries"
+    );
 }
 
 #[test]
@@ -1546,6 +1674,7 @@ fn saved_view_counts_use_each_views_own_payload() {
                 cover_url: None,
                 cover_file: None,
                 cover_failed_at: None,
+                platforms: Vec::new(),
             },
             GameRecord {
                 game_id: 2,
@@ -1554,6 +1683,7 @@ fn saved_view_counts_use_each_views_own_payload() {
                 cover_url: None,
                 cover_file: None,
                 cover_failed_at: None,
+                platforms: Vec::new(),
             },
         ],
         ..LibraryCache::default()
@@ -1978,6 +2108,7 @@ fn provider_counts_follow_every_facet_except_the_sidebar_and_stay_raw_for_facts(
             cover_url: None,
             cover_file: None,
             cover_failed_at: None,
+            platforms: Vec::new(),
         }],
         favorites: vec![crate::library::store::FavoriteRecord {
             account_id: "u1".to_owned(),
@@ -2043,6 +2174,7 @@ fn override_cache(display_overrides: Vec<crate::library::DisplayOverride>) -> Li
             cover_url: None,
             cover_file: None,
             cover_failed_at: None,
+            platforms: vec![],
         }],
         display_overrides,
         ..LibraryCache::default()
@@ -2245,4 +2377,152 @@ fn stored_covers_load_with_their_revision() {
     assert_eq!(covers(&mut machine)["steam:70"], None);
     assert_eq!(machine.artwork_override("steam:620").unwrap().revision, 4);
     assert_eq!(machine.artwork_override("steam:70").unwrap().revision, 2);
+}
+
+#[test]
+fn a_local_custom_cover_wins_over_the_gamenode_cover_and_survives_a_match() {
+    let game = |id: u64, cover: &str| GameRecord {
+        game_id: id,
+        name: "Game".into(),
+        release_year: None,
+        cover_url: None,
+        cover_file: Some(cover.into()),
+        cover_failed_at: None,
+        platforms: vec![],
+    };
+    let cache = LibraryCache {
+        entries: vec![stored("manual", "1", "Game", true)],
+        games: vec![game(7, "7.jpg"), game(8, "8.jpg")],
+        ..LibraryCache::default()
+    };
+    let (mut machine, _) = loaded(false, cache);
+    let key = "manual:1".to_owned();
+    machine.set_local_inference(key.clone(), Some(7), None);
+    machine.replace_local_covers(std::collections::BTreeMap::from([(
+        key.clone(),
+        "local-1-0123456789abcdef.webp".to_owned(),
+    )]));
+
+    let row = machine
+        .all_rows()
+        .into_iter()
+        .find(|row| row.key == key)
+        .unwrap();
+    assert_eq!(
+        row.cover_file.as_deref(),
+        Some("local-1-0123456789abcdef.webp")
+    );
+    assert_eq!(row.game_cover_file.as_deref(), Some("7.jpg"));
+
+    // A new match changes the GameNode cover underneath, never the custom one.
+    machine.set_local_inference(key.clone(), Some(8), None);
+    let row = machine
+        .all_rows()
+        .into_iter()
+        .find(|row| row.key == key)
+        .unwrap();
+    assert_eq!(
+        row.cover_file.as_deref(),
+        Some("local-1-0123456789abcdef.webp")
+    );
+    assert_eq!(row.game_cover_file.as_deref(), Some("8.jpg"));
+
+    // Clearing it falls back to the matched game's cover.
+    machine.replace_local_covers(std::collections::BTreeMap::new());
+    let row = machine
+        .all_rows()
+        .into_iter()
+        .find(|row| row.key == key)
+        .unwrap();
+    assert_eq!(row.cover_file.as_deref(), Some("8.jpg"));
+}
+
+#[test]
+fn shared_exclusion_leaves_out_shared_only_entries_before_every_count() {
+    let cache = LibraryCache {
+        entries: vec![
+            stored("steam", "1", "Installed", true),
+            stored_with("steam", "2", "Owned", false, true, false),
+            stored_with("steam", "3", "Family only", false, false, true),
+            stored_with("steam", "4", "Owned and shared", false, true, true),
+            stored_with("steam", "5", "Installed family", true, false, true),
+        ],
+        ..LibraryCache::default()
+    };
+    let (mut machine, _) = loaded(false, cache);
+    finish_scan(
+        &mut machine,
+        vec![
+            record("1", "Installed", "/1"),
+            record("5", "Installed family", "/5"),
+        ],
+        9,
+    );
+    assert_eq!(machine.visible_rows("").len(), 5);
+    let before = machine.provider_counts()[0].clone();
+    assert_eq!((before.count, before.installed_count), (5, 2));
+    assert_eq!((before.owned_count, before.shared_count), (2, 2));
+
+    assert!(machine.set_shared_excluded(std::collections::BTreeSet::from(["steam".to_owned()])));
+
+    let rows = machine.visible_rows("");
+    let mut visible: Vec<&str> = keys(&rows);
+    visible.sort_unstable();
+    assert_eq!(visible, ["steam:1", "steam:2", "steam:4", "steam:5"]);
+    assert!(
+        rows.iter()
+            .find(|row| row.key == "steam:5")
+            .is_some_and(|row| row.installed && row.shared && !row.owned),
+        "an installed shared game stays, with its shared indicator"
+    );
+    assert!(
+        rows.iter()
+            .find(|row| row.key == "steam:4")
+            .is_some_and(|row| row.owned && !row.shared),
+        "an owned game stays even when it is also shared"
+    );
+    assert!(
+        machine.visible_rows("Family only").is_empty(),
+        "search never finds the hidden entry"
+    );
+    assert_eq!(machine.visible_rows("Installed family").len(), 1);
+
+    let query = machine.query("");
+    assert_eq!(query.total, 4);
+    assert_eq!(query.scope_counts.all, 4);
+    assert_eq!(query.filter_counts.stores[0].count, 4);
+    assert_eq!(query.filter_counts.availability.shared, 1);
+    let after = machine.provider_counts()[0].clone();
+    assert_eq!((after.count, after.installed_count), (4, 2));
+    assert_eq!(
+        (after.owned_count, after.shared_count),
+        (2, 2),
+        "the store card facts keep counting the catalog's shared entries"
+    );
+
+    // Turning the preference back on restores the entries without another scan.
+    assert!(machine.set_shared_excluded(std::collections::BTreeSet::new()));
+    assert_eq!(machine.visible_rows("").len(), 5);
+    assert_eq!(machine.visible_rows("Family only").len(), 1);
+    assert_eq!(machine.provider_counts()[0].count, 5);
+}
+
+#[test]
+fn shared_exclusion_ignores_other_providers_and_their_shared_entries() {
+    let cache = LibraryCache {
+        entries: vec![
+            stored_with("steam", "1", "Steam shared", false, false, true),
+            stored_with("shop", "2", "Shop shared", false, false, true),
+        ],
+        ..LibraryCache::default()
+    };
+    let (mut machine, _) = loaded(true, cache);
+    machine.set_shared_excluded(std::collections::BTreeSet::from(["steam".to_owned()]));
+    let rows = machine.visible_rows("");
+    assert_eq!(keys(&rows), ["shop:2"]);
+    let counts = machine.provider_counts();
+    let steam = counts.iter().find(|count| count.id == "steam").unwrap();
+    assert_eq!((steam.count, steam.shared_count), (0, 1));
+    let shop = counts.iter().find(|count| count.id == "shop").unwrap();
+    assert_eq!(shop.count, 1);
 }

@@ -24,8 +24,8 @@ use std::sync::{
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::steam::{
-    SteamAchievement, SteamAchievementDefinition, SteamAchievementState, SteamError, SteamFamily,
-    SteamOwnedGame, SteamSession, SteamWebApi,
+    SteamAchievement, SteamAchievementDefinition, SteamAchievementGlobal, SteamAchievementState,
+    SteamError, SteamFamily, SteamOwnedGame, SteamSession, SteamWebApi,
 };
 use gamenode_plugin_protocol::models::SessionCredential;
 #[cfg(test)]
@@ -585,9 +585,19 @@ impl SteamAccount {
                 outcomes.push((game_id.clone(), Ok(None)));
                 continue;
             };
+            // Rarity is additive: a failed or empty percentages request leaves every row without
+            // rarity and keeps the refresh a ready result.
+            let global = tokio::time::timeout(
+                REQUEST_TIMEOUT,
+                client.achievement_global_percentages(game_id),
+            )
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or_default();
             outcomes.push((
                 game_id.clone(),
-                Ok(Some(join_achievements(definitions, states))),
+                Ok(Some(join_achievements(definitions, states, &global))),
             ));
         }
         if self.superseded(generation) {
@@ -1453,19 +1463,26 @@ fn all_failed(game_ids: &[String], error: CatalogError) -> Vec<(String, SteamAch
 
 /// Joins schema definitions with unlock state by Steam's API name. Definitions keep Steam's
 /// order; a missing state is a locked achievement, and the player payload's localized text wins
-/// when it is present.
+/// when it is present. Global percentages are matched by the same API name; unknown names and
+/// achievements without a percentage keep `None`.
 fn join_achievements(
     definitions: Vec<SteamAchievementDefinition>,
     states: Vec<SteamAchievementState>,
+    global: &[SteamAchievementGlobal],
 ) -> Vec<SteamAchievement> {
     let mut states: std::collections::HashMap<_, _> = states
         .into_iter()
         .map(|state| (state.api_name.clone(), state))
         .collect();
+    let mut global: std::collections::HashMap<_, _> = global
+        .iter()
+        .map(|achievement| (achievement.api_name.as_str(), achievement.percent))
+        .collect();
     definitions
         .into_iter()
         .map(|definition| {
             let state = states.remove(&definition.api_name);
+            let global_percent = global.remove(definition.api_name.as_str());
             let name = crate::steam::clean_achievement_text(
                 state
                     .as_ref()
@@ -1489,6 +1506,7 @@ fn join_achievements(
                 icon_gray_url: definition.icon_gray,
                 unlocked: state.as_ref().is_some_and(|state| state.achieved),
                 unlocked_at: state.and_then(|state| state.unlock_time),
+                global_percent,
             }
         })
         .collect()
@@ -1683,11 +1701,13 @@ mod tests {
             Option<Result<Option<Vec<crate::steam::SteamAchievementDefinition>>, SteamError>>,
         >,
         states: Mutex<Option<Result<Option<Vec<crate::steam::SteamAchievementState>>, SteamError>>>,
+        global: Mutex<Option<Result<Vec<crate::steam::SteamAchievementGlobal>, SteamError>>>,
         session_calls: AtomicUsize,
         owned_calls: AtomicUsize,
         family_calls: AtomicUsize,
         definition_calls: AtomicUsize,
         state_calls: AtomicUsize,
+        global_calls: AtomicUsize,
         started: Arc<Semaphore>,
         release: Mutex<Option<Arc<Semaphore>>>,
     }
@@ -1703,11 +1723,13 @@ mod tests {
                 family: Mutex::new(None),
                 definitions: Mutex::new(None),
                 states: Mutex::new(None),
+                global: Mutex::new(None),
                 session_calls: AtomicUsize::new(0),
                 owned_calls: AtomicUsize::new(0),
                 family_calls: AtomicUsize::new(0),
                 definition_calls: AtomicUsize::new(0),
                 state_calls: AtomicUsize::new(0),
+                global_calls: AtomicUsize::new(0),
                 started: Arc::new(Semaphore::new(0)),
                 release: Mutex::new(None),
             })
@@ -1745,6 +1767,10 @@ mod tests {
             value: Result<Option<Vec<crate::steam::SteamAchievementState>>, SteamError>,
         ) {
             *self.states.lock().unwrap() = Some(value);
+        }
+
+        fn set_global(&self, value: Result<Vec<crate::steam::SteamAchievementGlobal>, SteamError>) {
+            *self.global.lock().unwrap() = Some(value);
         }
 
         fn hold_until(&self, release: Arc<Semaphore>) {
@@ -1818,6 +1844,18 @@ mod tests {
         ) -> Result<Option<Vec<crate::steam::SteamAchievementState>>, SteamError> {
             self.state_calls.fetch_add(1, Ordering::SeqCst);
             self.states.lock().unwrap().clone().unwrap_or(Ok(None))
+        }
+
+        async fn achievement_global_percentages(
+            &self,
+            _app_id: &str,
+        ) -> Result<Vec<crate::steam::SteamAchievementGlobal>, SteamError> {
+            self.global_calls.fetch_add(1, Ordering::SeqCst);
+            self.global
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or(Ok(Vec::new()))
         }
     }
 
@@ -2937,14 +2975,25 @@ mod tests {
         ]
     }
 
+    fn global(api_name: &str, percent: u16) -> crate::steam::SteamAchievementGlobal {
+        crate::steam::SteamAchievementGlobal {
+            api_name: api_name.into(),
+            percent,
+        }
+    }
+
     #[tokio::test]
-    async fn achievements_join_definitions_and_unlocks_by_api_name() {
+    async fn achievements_join_definitions_unlocks_and_rarity_by_api_name() {
         let harness = harness(Some(cred("stored-cookie")), None);
         harness
             .client
             .set_session(Ok(session("A", "cassi", "stored-cookie")));
         harness.client.set_definitions(Ok(Some(definitions())));
         harness.client.set_states(Ok(Some(states())));
+        harness.client.set_global(Ok(vec![
+            global("ACH_WIN", 420),
+            global("ACH_UNKNOWN", 9_000),
+        ]));
         harness.account.startup().await;
         let outcome = harness
             .account
@@ -2958,14 +3007,49 @@ mod tests {
         assert_eq!(achievements[0].name, "Vitória");
         assert!(achievements[0].unlocked);
         assert_eq!(achievements[0].unlocked_at, Some(900));
+        assert_eq!(
+            achievements[0].global_percent,
+            Some(420),
+            "4.2% becomes 420 hundredths"
+        );
         assert!(achievements[1].hidden, "the schema hidden flag is kept");
         assert!(achievements[1].unlocked);
         assert_eq!(
             achievements[1].unlocked_at, None,
             "an unlock without a time stays unlocked with no date"
         );
+        assert_eq!(
+            achievements[1].global_percent, None,
+            "a percentage for an unknown API name is ignored"
+        );
         assert_eq!(harness.client.definition_calls.load(Ordering::SeqCst), 1);
         assert_eq!(harness.client.state_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(harness.client.global_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_failed_global_percentages_request_stays_ready_without_rarity() {
+        let harness = harness(Some(cred("stored-cookie")), None);
+        harness
+            .client
+            .set_session(Ok(session("A", "cassi", "stored-cookie")));
+        harness.client.set_definitions(Ok(Some(definitions())));
+        harness.client.set_states(Ok(Some(states())));
+        harness.client.set_global(Err(SteamError::Unreachable));
+        harness.account.startup().await;
+        let outcome = harness
+            .account
+            .achievements(&["620".to_owned()], "en")
+            .await;
+        let Ok(Some(achievements)) = &outcome.outcomes[0].1 else {
+            panic!("a rarity failure must not discard the unlock state");
+        };
+        assert_eq!(achievements.len(), 2);
+        assert!(
+            achievements
+                .iter()
+                .all(|achievement| achievement.global_percent.is_none())
+        );
     }
 
     #[tokio::test]

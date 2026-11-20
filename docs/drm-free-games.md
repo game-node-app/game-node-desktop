@@ -9,10 +9,20 @@ separate identities, settings, sessions and archive namespaces.
 **Game settings** edits the detected title, executable, game folder, working
 directory and argument list. **Locate executable** repairs a moved installation
 without changing its identity. **Remove from library** removes only the registration:
-installed files, live saves, measured sessions and archives remain on disk. A missing
-executable stays visible. Store entries continue to use their own launch/install rules.
-Community native PC ports installed from **PC ports** become the same kind of DRM-free
-entry; see [pc-ports.md](pc-ports.md) for the catalog, overlay and install rules.
+installed files, live saves, measured sessions and archives remain on disk. It offers
+**Just remove**, which lets a later watched-folder scan find the installation again, or
+**Remove and don't import again**, which ignores the folder (the safer default). A
+missing executable stays visible. Store entries continue to use their own
+launch/install rules. Community native PC ports installed from **PC ports** become the
+same kind of DRM-free entry; see [pc-ports.md](pc-ports.md) for the catalog, overlay
+and install rules.
+
+**Game settings** also sets the cover. **Change cover…** copies a PNG, JPEG or WebP
+image up to 20 MB into the local cover cache, re-encoded to WebP within 600×800, so
+moving or deleting the original does not affect it. A custom cover takes precedence
+over the GameNode cover, including after the game is matched. **Use the GameNode
+cover** removes it; Cancel keeps the previous cover. Unreadable or oversized images
+are rejected with a localized error.
 
 ## Identity and corrections
 
@@ -77,11 +87,21 @@ missed notifications; event bursts are debounced. Discovery is bounded to select
 roots, eight levels and 10,000 entries per installation. It never runs an executable.
 Unknown or installer-only folders are omitted rather than guessed from extensions.
 
-Select review candidates and choose **Add selected** or **Ignore selected**. A
-candidate with several targets requires executable correction first. Candidates have
-no library, tracking or backup effect before approval. Ignored fingerprints survive
-restart; incidental files do not change them. **Remove watch** stops monitoring and
-retains registrations. An unavailable drive retains registrations and decisions.
+The review table shows each candidate's title and folder, its chosen executable and
+the most confident GameNode match of at least 40% (or **No match**). With a verified
+session the application searches each new title once, in a bounded queue, and adding
+a candidate records that suggestion as an automatic match. A candidate with several
+targets requires executable correction first. Candidates without positive game
+evidence whose executable or folder looks like an installer, redistributable or
+maintenance tool are marked **Probably not a game** and start unchecked.
+
+Choose **Add N games** for the selected candidates or **Ignore selected** to hide
+them. **Allow rediscovery in future scans** starts checked: ignored candidates are
+forgotten so a later scan can propose them again. Clear it to keep them ignored
+until ignored items are reset. Candidates have no library, tracking or backup effect
+before approval. Ignored fingerprints survive restart; incidental files do not
+change them. **Remove watch** stops monitoring and retains registrations. An
+unavailable drive retains registrations and decisions.
 
 ## Save profiles, backups and restore
 
@@ -106,11 +126,19 @@ updates use the fixed upstream HTTPS source, daily ETag checks and a validated c
 jobs retain their selected rule snapshot. Game-local secondary manifests cannot
 silently widen the save scope.
 
-Archives live at `backups/manual/<installation UUID>/<profile ID>/`. Ten successful
-changed full versions and zero differential versions are retained. Unchanged data
-adds no version. Partial, cancelled or failed staging does not replace usable active
-history. Transient jobs retry after 30 seconds, two minutes and ten minutes. Running,
-queued, unchanged, partial and failed outcomes must remain distinguishable.
+Archives live at `backups/manual/<installation UUID>/<profile ID>/`. Each
+installation/profile keeps a user-chosen number of successful changed full versions
+(5, 10, 20 or 50; ten by default) and zero differential versions. Lowering the limit
+prunes at the next successful changed backup; recovery snapshots stay in their
+separate protected destination. Unchanged data adds no version. Partial, cancelled or
+failed staging does not replace usable active history. Transient jobs retry after 30
+seconds, two minutes and ten minutes. Running, queued, unchanged, partial and failed
+outcomes must remain distinguishable.
+
+The history shows when each copy was made, why (after a play session with its length,
+**Manual**, or **Recovery backup**) and its size, plus the total space and copy count
+for the game. Copies recorded before this metadata existed show their time and size
+without a reason.
 
 Choose **Load backup history**, select a version and review its file/registry targets.
 Only **Confirm restore** authorizes replacement. GameNode checks that the game is
@@ -120,7 +148,7 @@ Unrelated files remain untouched. External starts during preparation cancel work
 coordination with other launchers is best effort. Partial restore retains its recovery
 record at `.gamenode-restore-recovery.json` in the profile namespace.
 
-Recovery archives are outside ordinary ten-version retention. To reclaim their space,
+Recovery archives are outside ordinary retention. To reclaim their space,
 quit GameNode, inspect the recorded recovery path and remove only recovery data you
 have explicitly decided to discard. Uninstall preserves user data and archives.
 A backup on the same physical drive protects against save corruption and accidental

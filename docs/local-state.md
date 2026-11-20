@@ -33,10 +33,26 @@ The database contains `schema_migrations` (version, name and applied time),
 `settings` (key/value) and the library cache tables below. The only keys
 `settings` may hold are `renderer`, `window.x`, `window.y`, `window.width`,
 `window.height`, `window.maximized`, `library.layout`, `library.excluded`, `account.last_id` and
-`account.last_name`, `sync_enabled`, `sync_explained`, `playtime_source` and
-`discovery.lastCheckedAt` (the `SETTING_KEYS` list in `db.rs`). A fresh database
-defaults to GPU rendering, the default library layout and no games. No session
-token, callback URL, or pending sign-in secret belongs in this database.
+`account.last_name`, `sync_enabled`, `sync_explained`, `playtime_source`,
+`discovery.lastCheckedAt` and the `app.*` preferences: `app.startWithWindows`,
+`app.startMinimized`, `app.closeToTray`, `app.locale`, `app.showStatusBar`,
+`app.startScope`, `app.discoveryOnStart`, `app.discoveryRealtime`, `app.toolAutoCheck`,
+`app.toolDefaultChannel` and `app.sharedExcluded` (the `SETTING_KEYS` list in
+`db.rs`). A fresh database defaults to GPU rendering, the default library layout
+and no games. No session token, callback URL, or pending sign-in secret belongs
+in this database.
+
+The `app.*` rows are the PC-wide application preferences from Settings. They are
+kept per field and independent of the signed-in account, so an unreadable value
+falls back to that preference's own default while the others keep their stored
+values. `app.sharedExcluded` is a JSON array of provider ids whose shared-only
+entries are left out of the library. Migration `0015_app_preferences.sql` seeds
+every key with its default; absent keys already load as defaults.
+
+Window geometry saves and preference saves use separate store paths over disjoint
+keys: a geometry save that was queued before a preference change cannot overwrite
+the committed preference when it lands later, and committing or rolling back a
+preference leaves the latest geometry in place.
 
 ## Library cache (migration `0002_library.sql`)
 
@@ -69,12 +85,13 @@ matches and covers in place. An unreadable ownership flag is treated as false an
 the installed fact still applies.
 
 `library.layout` is a JSON object with the scope, filters, sort, grouping,
-collapsed groups per grouping, view mode, sidebar and detail pane widths and
+collapsed groups per grouping, view mode, cover size, sidebar and detail pane widths and
 whether the detail pane and sidebar are open. Saved views live per account in
 `saved_views`, not in this PC-wide layout. The search text is never saved. Older
 layouts with a provider selection, a single match state, the old playtime or
-release values, or the `installedOnly` toggle are normalized on load. A layout
-that cannot be read falls back to the default.
+release values, the `installedOnly` toggle or no cover size are normalized on load
+(a missing cover size is Medium). A layout that cannot be read falls back to the
+default.
 
 `account.last_id` and `account.last_name` record the last signed-in account so
 the cached library can open before the session is verified. They hold no
@@ -157,6 +174,12 @@ Its primary key is `(account_id, entry_key)`. Accounts never load or update each
 other's totals or sessions. Neither table contains process lists, executable
 paths or command lines. No session credential is stored here.
 
+Migration `0016_sync_summary.sql` adds `sync_summaries`: one row per account
+(`account_id` primary key) with the last completed playtime submission pass,
+`completed_at`, `accepted_games`, `stores` and `held`. Settings shows it after a
+restart before another pass runs; a different account starts with "Never synced".
+It holds no credential or server response body.
+
 The additional settings keys `sync_enabled` and `sync_explained` hold `1` or `0`.
 Missing values mean sync on and explanation not dismissed. An unreadable
 `sync_enabled` means off and explanation due again, preserving opt-out safety.
@@ -186,10 +209,17 @@ Migration `0004_drm_free_backups.sql` adds Windows-user-owned tables:
   `destination`, `state` and result `payload`. A play-period identity deduplicates
   automatic work. Profile changes cancel obsolete queued jobs transactionally.
 - `backup_destinations`: previously used local destination `path` values.
+- `backup_version_meta` (migration `0013_backup_metadata.sql`): `installation`,
+  `profile`, `backup_id`, `reason` (`afterSession`, `manual`, `recovery`),
+  `play_seconds` and `created_at`, primary keyed by installation/profile/backup.
+  Recovery namespaces keep their own profile identity, so ordinary and recovery
+  rows never collide.
 
-The `backup_settings` settings key stores independent automatic-backup control
-and destination. Save profiles and protection belong to the OS user and survive
-GameNode account changes. They never inherit a catalog rematch. Backup bytes use
+The `backup_settings` settings key stores independent automatic-backup control,
+the default destination and the default retention (`5`, `10`, `20` or `50`;
+ten when the key predates the migration). Save profiles and protection belong
+to the OS user and survive GameNode account changes. A per-profile `retention`
+override is stored with the save profile. They never inherit a catalog rematch. Backup bytes use
 `backups/manual/<installation UUID>/<profile ID>/`, outside SQLite; removing a
 registration preserves archives. Recovery snapshots are retained separately from
 ordinary history. Interrupted jobs remain durable and require reconciliation

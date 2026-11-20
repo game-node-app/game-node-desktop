@@ -8,6 +8,7 @@ import { commands } from '../../api/commands';
 import {
   createDefaultLibraryView,
   createDefaultSnapshot,
+  type AddNotice,
   type LaunchStatus,
   type LibraryView,
   type Snapshot,
@@ -22,21 +23,30 @@ function makeLibrary(overrides: Partial<LibraryView> = {}): LibraryView {
 
 function makeSnapshot(
   library: Partial<LibraryView> = {},
-  options: { account?: string | null; launch?: LaunchStatus | null } = {},
+  options: {
+    account?: string | null;
+    launch?: LaunchStatus | null;
+    addNotice?: AddNotice | null;
+    withoutLibrary?: boolean;
+  } = {},
 ): Snapshot {
   const account = options.account === undefined ? 'account-1' : options.account;
   return {
     ...createDefaultSnapshot(),
     auth: account == null ? 'signedOut' : { signedIn: { user: { id: account } } },
-    library: makeLibrary(library),
+    library: options.withoutLibrary ? null : makeLibrary(library),
+    addNotice: options.addNotice ?? null,
     launch: options.launch ?? null,
   };
 }
 
-function renderNotifications(queryClient: ReturnType<typeof createAppQueryClient>) {
+function renderNotifications(
+  queryClient: ReturnType<typeof createAppQueryClient>,
+  locale: 'en' | 'pt-BR' = 'en',
+) {
   const wrapper = ({ children }: { children: React.ReactNode }) => (
     <QueryClientProvider client={queryClient}>
-      <I18nProvider initialLocale="en">{children}</I18nProvider>
+      <I18nProvider initialLocale={locale}>{children}</I18nProvider>
     </QueryClientProvider>
   );
   return renderHook(() => useLibraryNotifications(), { wrapper });
@@ -55,10 +65,13 @@ function addSummary(overrides: Partial<NonNullable<LibraryView['addSummary']>> =
   };
 }
 
-function setup(snapshot: Snapshot = makeSnapshot()) {
+function setup(
+  snapshot: Snapshot = makeSnapshot(),
+  locale: 'en' | 'pt-BR' = 'en',
+) {
   const queryClient = createAppQueryClient();
   queryClient.setQueryData(SNAPSHOT_QUERY_KEY, snapshot);
-  const view = renderNotifications(queryClient);
+  const view = renderNotifications(queryClient, locale);
   return { queryClient, view };
 }
 
@@ -126,6 +139,202 @@ describe('useLibraryNotifications', () => {
     );
 
     expect(uiStore.state.toasts).toHaveLength(0);
+  });
+
+  it('announces a hidden batch with no additions from the notice once, with its real counts', async () => {
+    const { queryClient } = setup();
+    const notice: AddNotice = {
+      accountId: 'account-1',
+      batch: true,
+      summary: addSummary({
+        runId: 21,
+        undoable: false,
+        added: 0,
+        alreadyPresent: 0,
+        skipped: 1,
+        failed: 2,
+      }),
+    };
+
+    await publish(queryClient, makeSnapshot({}, { addNotice: notice }));
+
+    expect(uiStore.state.toasts).toHaveLength(1);
+    const toast = uiStore.state.toasts[0];
+    expect(toast.kind).toBe('danger');
+    expect(toast.title).toBe("Couldn't update GameNode");
+    expect(toast.body).toBe('0 added · 0 already in your library · 1 skipped · 2 failed');
+    expect(toast.actions?.map((action) => action.label)).toEqual(['View on GameNode']);
+
+    await publish(queryClient, makeSnapshot({}, { addNotice: notice }));
+    expect(uiStore.state.toasts).toHaveLength(1);
+  });
+
+  it('announces an all-skipped batch and an all-already-present batch', async () => {
+    const { queryClient } = setup();
+
+    await publish(
+      queryClient,
+      makeSnapshot(
+        {},
+        {
+          addNotice: {
+            accountId: 'account-1',
+            batch: true,
+            summary: addSummary({
+              runId: 22,
+              undoable: false,
+              added: 0,
+              alreadyPresent: 0,
+              skipped: 3,
+              failed: 0,
+            }),
+          },
+        },
+      ),
+    );
+    expect(uiStore.state.toasts).toHaveLength(1);
+    expect(uiStore.state.toasts[0].kind).toBe('info');
+    expect(uiStore.state.toasts[0].title).toBe('No games were added to GameNode');
+    expect(uiStore.state.toasts[0].body).toBe(
+      '0 added · 0 already in your library · 3 skipped · 0 failed',
+    );
+
+    await publish(
+      queryClient,
+      makeSnapshot(
+        {},
+        {
+          addNotice: {
+            accountId: 'account-1',
+            batch: true,
+            summary: addSummary({
+              runId: 23,
+              undoable: false,
+              added: 0,
+              alreadyPresent: 2,
+              skipped: 0,
+              failed: 0,
+            }),
+          },
+        },
+      ),
+    );
+    expect(uiStore.state.toasts).toHaveLength(2);
+    expect(uiStore.state.toasts[1].title).toBe('No games were added to GameNode');
+    expect(uiStore.state.toasts[1].body).toBe(
+      '0 added · 2 already in your library · 0 skipped · 0 failed',
+    );
+  });
+
+  it('notifies a hidden batch after sign-out without offering actions from another account', async () => {
+    const libraryInput = vi.spyOn(commands, 'libraryInput').mockResolvedValue(undefined);
+    const openPage = vi.spyOn(commands, 'openGameNodePage').mockResolvedValue(undefined);
+    const { queryClient } = setup();
+
+    await publish(
+      queryClient,
+      makeSnapshot(
+        {},
+        {
+          account: null,
+          withoutLibrary: true,
+          addNotice: {
+            accountId: 'account-1',
+            batch: true,
+            summary: addSummary({
+              runId: 24,
+              undoable: true,
+              added: 1,
+              alreadyPresent: 0,
+              skipped: 0,
+              failed: 2,
+            }),
+          },
+        },
+      ),
+    );
+
+    expect(uiStore.state.toasts).toHaveLength(1);
+    const toast = uiStore.state.toasts[0];
+    expect(toast.kind).toBe('success');
+    expect(toast.title).toBe('1 game added to GameNode');
+    expect(toast.actions ?? []).toHaveLength(0);
+
+    act(() => uiStore.state.toasts[0]?.actions?.[0]?.onClick());
+    expect(libraryInput).not.toHaveBeenCalled();
+    expect(openPage).not.toHaveBeenCalled();
+  });
+
+  it('keeps the notice identity per account when another account signs in', async () => {
+    const { queryClient } = setup();
+
+    await publish(
+      queryClient,
+      makeSnapshot(
+        {},
+        {
+          account: 'account-2',
+          addNotice: {
+            accountId: 'account-1',
+            batch: true,
+            summary: addSummary({
+              runId: 25,
+              undoable: true,
+              added: 0,
+              alreadyPresent: 0,
+              skipped: 0,
+              failed: 2,
+            }),
+          },
+        },
+      ),
+    );
+
+    expect(uiStore.state.toasts).toHaveLength(1);
+    expect(uiStore.state.toasts[0].actions ?? []).toHaveLength(0);
+
+    await publish(
+      queryClient,
+      makeSnapshot(
+        {},
+        {
+          account: 'account-2',
+          addNotice: {
+            accountId: 'account-1',
+            batch: true,
+            summary: addSummary({
+              runId: 25,
+              undoable: true,
+              added: 0,
+              alreadyPresent: 0,
+              skipped: 0,
+              failed: 2,
+            }),
+          },
+        },
+      ),
+    );
+    expect(uiStore.state.toasts).toHaveLength(1);
+  });
+
+  it('does not announce a batch twice when the notice and the library summary agree', async () => {
+    const { queryClient } = setup();
+    const summary = addSummary({ runId: 26, added: 2, undoable: true });
+
+    await publish(
+      queryClient,
+      makeSnapshot(
+        { addSummary: summary },
+        { addNotice: { accountId: 'account-1', batch: true, summary } },
+      ),
+    );
+
+    expect(uiStore.state.toasts).toHaveLength(1);
+    expect(uiStore.state.toasts[0].title).toBe('2 games added to GameNode');
+    expect(uiStore.state.toasts[0].actions?.map((action) => action.label)).toEqual([
+      'Undo',
+      'View on GameNode',
+    ]);
   });
 
   it('reports the already-present count alongside the added games', async () => {
@@ -396,5 +605,37 @@ describe('useLibraryNotifications', () => {
     await publish(queryClient, makeSnapshot({}, { launch }));
 
     expect(uiStore.state.toasts).toHaveLength(0);
+  });
+
+  it('localizes hidden zero-added batch notifications in pt-BR', async () => {
+    const { queryClient } = setup(makeSnapshot(), 'pt-BR');
+
+    await publish(
+      queryClient,
+      makeSnapshot(
+        {},
+        {
+          addNotice: {
+            accountId: 'account-1',
+            batch: true,
+            summary: addSummary({
+              runId: 31,
+              undoable: false,
+              added: 0,
+              alreadyPresent: 0,
+              skipped: 1,
+              failed: 2,
+            }),
+          },
+        },
+      ),
+    );
+
+    expect(uiStore.state.toasts).toHaveLength(1);
+    expect(uiStore.state.toasts[0].kind).toBe('danger');
+    expect(uiStore.state.toasts[0].title).toBe('Não foi possível atualizar o GameNode');
+    expect(uiStore.state.toasts[0].body).toBe(
+      '0 adicionados · 0 já na sua biblioteca · 1 ignorados · 2 com falha',
+    );
   });
 });

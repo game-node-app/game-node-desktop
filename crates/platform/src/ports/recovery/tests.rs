@@ -183,6 +183,7 @@ fn a_committed_registration_keeps_the_job_files_and_provenance() {
         removed: false,
         rediscovery_allowed: false,
         transferred_from: None,
+        custom_cover: None,
         available: true,
     };
     settings
@@ -253,6 +254,7 @@ fn a_removed_registration_counts_as_uncommitted() {
         removed: true,
         rediscovery_allowed: false,
         transferred_from: None,
+        custom_cover: None,
         available: true,
     };
     settings

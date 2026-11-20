@@ -1,8 +1,43 @@
 import React from 'react';
-import { FloatingModal } from '../../components/FloatingModal';
-import { commands, useLibraryView, type AddItem, type EntryStatus } from '../../api';
+import {
+  IconAlertTriangle,
+  IconArchive,
+  IconBookmark,
+  IconCircleCheck,
+  IconCircleX,
+  IconDeviceGamepad2,
+  IconInfinity,
+  IconLoader2,
+  IconPlus,
+  IconTrophy,
+  IconX,
+  type TablerIcon,
+} from '@tabler/icons-react';
+import { DialogShell } from '../../components/dialog';
+import {
+  Button,
+  Checkbox,
+  GameCover,
+  IconButton,
+  OptionCard,
+  OptionCardGroup,
+  ProgressBar,
+  SectionLabel,
+  TextInput,
+} from '../../components/ui';
+import {
+  commands,
+  coverAssetUrl,
+  useLibraryView,
+  type AddItem,
+  type EntryStatus,
+  type NewCollectionError,
+} from '../../api';
 import { useI18n } from '../../i18n';
 import { formatI18n, formatReason, formatStatus } from '../library/formatters';
+
+const DEFAULT_SIZE = { width: 520, height: 560 };
+const MIN_SIZE = { width: 440, height: 420 };
 
 const STATUS_LIST: EntryStatus[] = [
   'playing',
@@ -12,6 +47,90 @@ const STATUS_LIST: EntryStatus[] = [
   'ongoing',
 ];
 
+const STATUS_ICONS: Record<EntryStatus, TablerIcon> = {
+  playing: IconDeviceGamepad2,
+  finished: IconTrophy,
+  planned: IconBookmark,
+  dropped: IconArchive,
+  ongoing: IconInfinity,
+};
+
+function itemStatusText(item: AddItem, t: (key: string) => string): string {
+  switch (item.state) {
+    case 'waiting':
+      return t('Library::Waiting');
+    case 'adding':
+      return t('Library::Adding…');
+    case 'added':
+      return t('Library::Added');
+    case 'alreadyPresent':
+      return t('Library::Already in the library');
+    case 'skipped':
+      return t('Library::Skipped: no GameNode match');
+    case 'failed':
+    default:
+      return formatI18n(
+        t('Library::Failed: {}'),
+        item.error === 'rejected'
+          ? t('Library::GameNode rejected the session')
+          : item.error === 'failed'
+            ? t('Library::The request could not be completed')
+            : t('Library::Failed'),
+      );
+  }
+}
+
+function itemToneClass(item: AddItem): string {
+  switch (item.state) {
+    case 'added':
+      return 'text-success';
+    case 'skipped':
+      return 'text-warning';
+    case 'failed':
+      return 'text-danger';
+    case 'adding':
+      return 'text-text-secondary';
+    case 'waiting':
+    case 'alreadyPresent':
+    default:
+      return 'text-text-dimmed';
+  }
+}
+
+function itemIcon(item: AddItem): TablerIcon | null {
+  switch (item.state) {
+    case 'adding':
+      return IconLoader2;
+    case 'added':
+    case 'alreadyPresent':
+      return IconCircleCheck;
+    case 'skipped':
+      return IconAlertTriangle;
+    case 'failed':
+      return IconCircleX;
+    case 'waiting':
+    default:
+      return null;
+  }
+}
+
+function newCollectionErrorText(
+  error: NewCollectionError,
+  t: (key: string) => string,
+): string {
+  switch (error) {
+    case 'limitReached':
+      return t("Library::You reached GameNode's collection limit.");
+    case 'rejected':
+      return t('Library::GameNode rejected your session. Sign in again.');
+    case 'offline':
+      return t('Library::GameNode cannot be reached right now.');
+    case 'failed':
+    default:
+      return t('Library::The collection could not be created.');
+  }
+}
+
 export const AddDialog: React.FC = () => {
   const library = useLibraryView();
   const { t } = useI18n();
@@ -20,8 +139,12 @@ export const AddDialog: React.FC = () => {
 
   if (!dialog) return null;
 
-  const handleStatusClick = (status: EntryStatus) => {
-    commands.libraryInput({ setAddStatus: status });
+  const running = dialog.progress != null && dialog.summary == null;
+  const done = dialog.summary != null;
+  const batchRunning = running && dialog.targets.length > 1;
+
+  const handleStatusClick = (status: string) => {
+    commands.libraryInput({ setAddStatus: status as EntryStatus });
   };
 
   const handleToggleCollection = (id: string) => {
@@ -37,362 +160,513 @@ export const AddDialog: React.FC = () => {
   };
 
   const handleClose = () => {
-    commands.libraryInput('closeAdd');
+    commands.libraryInput(batchRunning ? 'hideAdd' : 'closeAdd');
   };
 
-  const renderOutcomeText = (item: AddItem, appliedStatus: EntryStatus) => {
-    switch (item.outcome) {
-      case 'added':
-        return formatI18n(
-          t('Library::Saved as {}'),
-          formatStatus(item.status ?? appliedStatus, t),
-        );
-      case 'alreadyPresent':
-        return t('Library::Already in your library');
-      case 'skipped':
-        return t('Library::Skipped: no GameNode match');
-      case 'failed':
-      default:
-        return t('Library::Failed');
-    }
+  const handleHide = () => {
+    commands.libraryInput('hideAdd');
   };
+
+  const handleStartNewCollection = () => {
+    commands.libraryInput('startNewCollection');
+  };
+
+  const handleNewCollectionName = (name: string) => {
+    commands.libraryInput({ setNewCollectionName: name });
+  };
+
+  const handleCreateCollection = () => {
+    commands.libraryInput('createCollection');
+  };
+
+  const handleCancelNewCollection = () => {
+    commands.libraryInput('cancelNewCollection');
+  };
+
+  const collections = dialog.collections;
+  const loadedCollections =
+    typeof collections === 'object' && 'loaded' in collections
+      ? collections.loaded
+      : null;
+  const pickedNames = loadedCollections
+    ? loadedCollections
+        .filter((collection) => collection.picked)
+        .map((collection) => collection.name)
+    : [];
+
+  // The provider whose default status the note names. A catalog game has no store provider.
+  const providerId = dialog.targets[0]?.entryKey?.split(':')[0] ?? null;
+  const providerName =
+    (providerId
+      ? library?.providers.find((provider) => provider.id === providerId)?.name
+      : null) ?? 'GameNode';
+  const defaultStatusFrom = dialog.appliedFrom ?? providerName;
+
+  const heading = done
+    ? dialog.targets.length === 1
+      ? t('Library::Add to GameNode')
+      : formatI18n(
+          t('Library::Adding {} games to GameNode'),
+          dialog.targets.length,
+        )
+    : running
+      ? dialog.targets.length === 1
+        ? t('Library::Add to GameNode')
+        : formatI18n(
+            t('Library::Adding {} games to GameNode'),
+            dialog.targets.length,
+          )
+      : dialog.editingExisting
+        ? t('Library::Edit in GameNode')
+        : t('Library::Add to GameNode');
+
+  const subtitle = running || done
+    ? pickedNames.length > 0
+      ? formatI18n(
+          t('Library::Status: {} · Collection: {}'),
+          formatStatus(dialog.appliedStatus, t),
+          pickedNames.join(', '),
+        )
+      : formatI18n(t('Library::Status: {}'), formatStatus(dialog.appliedStatus, t))
+    : dialog.targets.length === 1
+      ? dialog.targets[0].title
+      : formatI18n(t('Library::{} games'), dialog.targets.length);
+
+  const primaryCover = dialog.targets[0]?.coverFile ?? null;
+
+  const footer = (() => {
+    if (done) {
+      return (
+        <Button
+          variant="secondary"
+          size="sm"
+          data-testid="add-dialog-close-btn"
+          onClick={handleClose}
+        >
+          {t('Library::Close')}
+        </Button>
+      );
+    }
+    if (running) {
+      if (batchRunning) {
+        return (
+          <Button
+            variant="secondary"
+            size="sm"
+            data-testid="add-progress-hide-btn"
+            onClick={handleHide}
+          >
+            {t('Library::Hide')}
+          </Button>
+        );
+      }
+      return (
+        <Button
+          variant="secondary"
+          size="sm"
+          data-testid="add-dialog-cancel-btn"
+          onClick={handleClose}
+        >
+          {t('Library::Cancel')}
+        </Button>
+      );
+    }
+    return (
+      <>
+        <Button
+          variant="secondary"
+          size="sm"
+          data-testid="add-dialog-cancel-btn"
+          onClick={handleClose}
+        >
+          {t('Library::Cancel')}
+        </Button>
+        <Button
+          variant="primary"
+          size="sm"
+          leftIcon={dialog.editingExisting ? undefined : IconPlus}
+          data-testid="add-dialog-confirm-btn"
+          disabled={!dialog.canConfirm}
+          onClick={handleConfirm}
+        >
+          {dialog.editingExisting
+            ? t('Library::Save')
+            : t('Library::Add to GameNode')}
+        </Button>
+      </>
+    );
+  })();
 
   return (
-    <FloatingModal.Root
-      opened
-      onClose={handleClose}
+    <DialogShell
+      testId="add-dialog"
       geometryKey="add-dialog"
-      defaultSize={{ width: 620, height: 600 }}
-      minSize={{ width: 480, height: 360 }}
-      zIndex={2000}
-      closeOnClickOutside
+      defaultSize={DEFAULT_SIZE}
+      minSize={MIN_SIZE}
+      onClose={handleClose}
+      title={<span data-testid="add-dialog-title">{heading}</span>}
+      subtitle={<span data-testid="add-dialog-subtitle">{subtitle}</span>}
+      leading={
+        <span className="flex h-10 w-[30px] shrink-0 items-center justify-center overflow-hidden rounded-sm bg-surface">
+          <GameCover
+            data-testid="add-dialog-cover"
+            src={coverAssetUrl(primaryCover)}
+            title={dialog.targets[0]?.title ?? ''}
+            className="rounded-sm"
+          />
+        </span>
+      }
+      bodyClassName="min-h-0"
+      footerNote={
+        batchRunning ? (
+          <span data-testid="add-progress-note">
+            {t('Library::You can close this: adding continues in the background.')}
+          </span>
+        ) : undefined
+      }
+      footer={footer}
     >
-      <FloatingModal.Overlay data-testid="add-dialog-overlay" backgroundOpacity={0.75} />
-      <FloatingModal.Content
-        data-testid="add-dialog"
-        className="flex flex-col bg-secondary"
-      >
-        {/* Header */}
-        <FloatingModal.Header className="px-lg pb-sm pt-lg">
-          <FloatingModal.Title
-            data-testid="add-dialog-title"
-            className="text-lg font-semibold text-text-default"
-          >
-            {dialog.editingExisting
-              ? t('Library::Edit in GameNode')
-              : t('Library::Add to GameNode')}
-          </FloatingModal.Title>
-        </FloatingModal.Header>
-
-        {/* Dialog Body */}
-        <FloatingModal.Body className="gap-md px-lg pb-lg">
-          {/* Summary Mode */}
-          {dialog.summary ? (
+      {running || done ? (
+        <div
+          data-testid="add-progress-container"
+          className="flex min-h-0 flex-1 flex-col gap-md"
+        >
+          {done && dialog.summary && (
             <div
-              data-testid="add-dialog-summary"
-              className="flex flex-col gap-[14px]"
+              data-testid="add-summary-headline"
+              className="text-xs text-text-secondary"
             >
-              <div
-                data-testid="add-summary-headline"
-                className="text-sm text-text-default"
-              >
-                {formatI18n(
-                  t('Library::Saved {} · already in your library {} · skipped {} · failed {}'),
-                  dialog.summary.added,
-                  dialog.summary.alreadyPresent,
-                  dialog.summary.skipped,
-                  dialog.summary.failed,
-                )}
-              </div>
+              {formatI18n(
+                t('Library::Saved {} · already in your library {} · skipped {} · failed {}'),
+                dialog.summary.added,
+                dialog.summary.alreadyPresent,
+                dialog.summary.skipped,
+                dialog.summary.failed,
+              )}
+            </div>
+          )}
 
-              {/* Items List */}
-              <div
-                data-testid="add-summary-items-list"
-                className="flex max-h-[260px] flex-col gap-[6px] overflow-y-auto rounded-sm bg-raised p-xs"
-              >
-                {dialog.summary.items.map((item) => (
-                  <div
-                    key={item.entryKey ?? item.title}
-                    data-testid={`add-summary-item-${item.entryKey ?? item.title}`}
-                    className="flex flex-col border-b border-border-subtle py-1"
-                  >
-                    <span className="text-sm font-medium text-text-default">
+          <div className="flex items-center gap-[10px]">
+            <ProgressBar
+              value={dialog.progress?.done ?? 0}
+              max={dialog.progress?.total ?? 0}
+              label={formatI18n(
+                t('Library::{} of {}'),
+                dialog.progress?.done ?? 0,
+                dialog.progress?.total ?? 0,
+              )}
+              className="flex-1"
+            />
+            <span
+              data-testid="add-progress-caption"
+              className="shrink-0 text-caption font-semibold text-text-primary"
+            >
+              {formatI18n(
+                t('Library::{} of {}'),
+                dialog.progress?.done ?? 0,
+                dialog.progress?.total ?? 0,
+              )}
+            </span>
+          </div>
+
+          <div
+            data-testid={done ? 'add-summary-items-list' : 'add-progress-list'}
+            className="flex min-h-0 flex-1 flex-col overflow-y-auto"
+          >
+            {dialog.items.map((item, index) => {
+              const ToneIcon = itemIcon(item);
+              const key = item.entryKey ?? JSON.stringify(item.target);
+              const cover = dialog.targets[index]?.coverFile ?? null;
+              return (
+                <div
+                  key={key}
+                  data-testid={`${done ? 'add-summary' : 'add-progress'}-item-${key}`}
+                  className="flex items-center gap-[10px] border-b border-border-subtle px-0 py-2 last:border-b-0"
+                >
+                  <span className="flex h-8 w-6 shrink-0 items-center justify-center overflow-hidden rounded-sm bg-surface">
+                    <GameCover src={coverAssetUrl(cover)} title={item.title} />
+                  </span>
+                  <div className="flex min-w-0 flex-1 flex-col gap-[2px]">
+                    <span className="truncate text-body font-medium text-text-primary">
                       {item.title}
                     </span>
-                    <span className="mt-0.5 text-xs text-text-dimmed">
-                      {renderOutcomeText(item, dialog.appliedStatus)}
+                    <span
+                      data-testid={`${done ? 'add-summary' : 'add-progress'}-item-status-${key}`}
+                      className={`truncate text-caption ${itemToneClass(item)}`}
+                    >
+                      {itemStatusText(item, t)}
                     </span>
                   </div>
-                ))}
-              </div>
-            </div>
-          ) : (
-            /* Editing / Choosing Mode */
-            <>
-              {/* Targets list */}
-              {dialog.targets.length === 1 && (
-                <div
-                  data-testid="add-single-target"
-                  className="text-md font-medium text-text-default"
-                >
-                  {dialog.targets[0].title}
+                  {ToneIcon ? (
+                    <ToneIcon
+                      size={16}
+                      stroke={2}
+                      aria-hidden="true"
+                      className={`shrink-0 ${itemToneClass(item)} ${
+                        item.state === 'adding' ? 'animate-spin' : ''
+                      }`}
+                    />
+                  ) : (
+                    <span className="h-4 w-4 shrink-0" aria-hidden="true" />
+                  )}
                 </div>
-              )}
+              );
+            })}
+          </div>
 
-              {dialog.targets.length > 1 && (
-                <div
-                  data-testid="add-multiple-targets"
-                  className="flex flex-col gap-[6px]"
-                >
-                  <div className="text-xs text-text-dimmed">
-                    {formatI18n(t('Library::{} games'), dialog.targets.length)}
-                  </div>
-                  <div className="flex max-h-[110px] flex-col gap-1 overflow-y-auto rounded-sm bg-raised p-compact">
-                    {dialog.targets.map((tgt) => (
-                      <div
-                        key={tgt.entryKey ?? JSON.stringify(tgt.target)}
-                        data-testid={`add-target-${tgt.entryKey ?? JSON.stringify(tgt.target)}`}
-                        className={`text-xs ${
-                          tgt.matched ? 'text-text-default' : 'text-text-dimmed'
-                        }`}
+        </div>
+      ) : (
+        <div className="flex min-h-0 flex-1 flex-col gap-md overflow-y-auto">
+          <div className="flex flex-col gap-compact">
+            <SectionLabel>{t('Library::Status')}</SectionLabel>
+            <OptionCardGroup
+              role="radiogroup"
+              orientation="horizontal"
+              aria-label={t('Library::Status')}
+              value={dialog.status}
+              onChange={handleStatusClick}
+              className="grid grid-cols-5 gap-compact"
+            >
+              {STATUS_LIST.map((status) => (
+                <OptionCard
+                  key={status}
+                  data-testid={`add-status-btn-${status}`}
+                  value={status}
+                  icon={STATUS_ICONS[status]}
+                  title={formatStatus(status, t)}
+                />
+              ))}
+            </OptionCardGroup>
+            {dialog.targets.length > 1 && (
+              <div
+                data-testid="add-multiple-targets"
+                className="text-xs text-text-dimmed"
+              >
+                {formatI18n(t('Library::{} games'), dialog.targets.length)}
+                {dialog.targets
+                  .filter((target) => !target.matched)
+                  .map((target) => (
+                    <span key={target.entryKey ?? JSON.stringify(target.target)}>
+                      {' · '}
+                      <span
+                        data-testid={`add-target-${target.entryKey ?? JSON.stringify(target.target)}`}
                       >
-                        {tgt.matched
-                          ? tgt.title
-                          : formatI18n(
-                              t('Library::{} (no GameNode match, will be skipped)'),
-                              tgt.title,
-                            )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Status Picker */}
-              <div className="flex flex-col gap-[6px]">
-                <span className="text-xs text-text-dimmed">
-                  {t('Library::Status') !== 'Library::Status' ? t('Library::Status') : 'Status'}
-                </span>
-                <div className="flex flex-wrap gap-[6px]">
-                  {STATUS_LIST.map((st) => {
-                    const isSelected = dialog.status === st;
-                    return (
-                      <button
-                        key={st}
-                        type="button"
-                        data-testid={`add-status-btn-${st}`}
-                        onClick={() => handleStatusClick(st)}
-                        className={`rounded-sm border px-sm py-[6px] text-xs ${
-                          isSelected
-                            ? 'border-brand bg-brand text-on-primary'
-                            : 'border-border-subtle bg-surface text-text-default hover:bg-raised'
-                        }`}
-                      >
-                        {formatStatus(st, t)}
-                      </button>
-                    );
-                  })}
-                </div>
-
-                {/* Applied status override notice */}
-                {dialog.appliedFrom && (
-                  <div
-                    data-testid="add-applied-from-notice"
-                    className="mt-1 text-xs text-warning"
-                  >
-                    {formatI18n(
-                      t('Library::GameNode will use {}, the default status of {}.'),
-                      formatStatus(dialog.appliedStatus, t),
-                      dialog.appliedFrom,
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {/* Collections Checklist */}
-              <div className="flex flex-col gap-[6px]">
-                <span className="text-xs text-text-dimmed">
-                  {t('Library::Collections (optional)')}
-                </span>
-
-                {dialog.collections === 'loading' && (
-                  <div
-                    data-testid="add-collections-loading"
-                    className="text-xs text-text-dimmed"
-                  >
-                    {t('Library::Loading your collections…')}
-                  </div>
-                )}
-
-                {typeof dialog.collections === 'object' &&
-                  'failed' in dialog.collections && (
-                    <div
-                      data-testid="add-collections-failed"
-                      className="flex items-center justify-between gap-compact"
-                    >
-                      <span className="text-xs text-warning">
-                        {t('Library::Could not load your collections. Try again.')}
+                        {formatI18n(
+                          t('Library::{} (no GameNode match, will be skipped)'),
+                          target.title,
+                        )}
                       </span>
-                      <button
-                        type="button"
-                        data-testid="add-collections-retry-btn"
-                        onClick={handleRetryCollections}
-                        className="rounded-xs border border-border-subtle px-compact py-1 text-xs text-text-default hover:bg-raised"
-                      >
-                        {t('Library::Retry') !== 'Library::Retry' ? t('Library::Retry') : 'Retry'}
-                      </button>
-                    </div>
-                  )}
-
-                {typeof dialog.collections === 'object' &&
-                  'loaded' in dialog.collections && (
-                    <>
-                      {dialog.collections.loaded.length === 0 ? (
-                        <div
-                          data-testid="add-collections-empty"
-                          className="text-xs text-text-dimmed"
-                        >
-                          {t('Library::You have no collections.')}
-                        </div>
-                      ) : (
-                        <div
-                          data-testid="add-collections-list"
-                          className="flex max-h-[160px] flex-col gap-1 overflow-y-auto rounded-sm bg-raised p-[6px]"
-                        >
-                          {dialog.collections.loaded.map((col) => (
-                            <label
-                              key={col.id}
-                              data-testid={`add-collection-item-${col.id}`}
-                              className={`flex cursor-pointer items-center gap-compact rounded-xs px-compact py-[6px] ${
-                                col.picked ? 'bg-accent-subtle' : 'bg-transparent'
-                              }`}
-                            >
-                              <input
-                                type="checkbox"
-                                data-testid={`add-collection-checkbox-${col.id}`}
-                                checked={col.picked}
-                                onChange={() => handleToggleCollection(col.id)}
-                              />
-                              <div className="flex flex-col">
-                                <span className="text-sm text-text-default">
-                                  {col.name}
-                                </span>
-                                {col.defaultStatus && (
-                                  <span className="text-[11px] text-text-dimmed">
-                                    {formatI18n(
-                                      t('Library::Sets the status to {}'),
-                                      formatStatus(col.defaultStatus, t),
-                                    )}
-                                  </span>
-                                )}
-                              </div>
-                            </label>
-                          ))}
-                        </div>
-                      )}
-                    </>
-                  )}
+                    </span>
+                  ))}
               </div>
-
-              {/* Progress bar */}
-              {dialog.progress && (
-                <div
-                  data-testid="add-progress-container"
-                  className="flex flex-col gap-1"
-                >
-                  <div
-                    data-testid="add-progress-caption"
-                    className="text-xs text-text-dimmed"
-                  >
-                    {formatI18n(
-                      t('Library::Saving {} of {}…'),
-                      Math.min(dialog.progress.done + 1, dialog.progress.total),
-                      dialog.progress.total,
+            )}
+            {dialog.targets.length === 1 && (
+              <div
+                data-testid="add-single-target"
+                className="text-xs text-text-dimmed"
+              >
+                {dialog.targets[0].matched
+                  ? dialog.targets[0].title
+                  : formatI18n(
+                      t('Library::{} (no GameNode match, will be skipped)'),
+                      dialog.targets[0].title,
                     )}
-                  </div>
-                  <div className="h-[6px] w-full overflow-hidden rounded-full bg-surface">
-                    <div
-                      data-testid="add-progress-bar-fill"
-                      className="h-full bg-brand transition-[width] duration-200 ease-out"
-                      style={{
-                        width: `${Math.round(
-                          ((dialog.progress.done + 1) / dialog.progress.total) * 100,
-                        )}%`,
+              </div>
+            )}
+            <div
+              data-testid="add-applied-from-notice"
+              className="text-xs text-text-dimmed"
+            >
+              {formatI18n(
+                t('Library::With no choice, GameNode uses {}, the default status of {}.'),
+                formatStatus(dialog.appliedStatus, t),
+                defaultStatusFrom,
+              )}
+            </div>
+          </div>
+
+          <div className="flex min-h-0 flex-col gap-compact">
+            <SectionLabel
+              action={
+                <button
+                  type="button"
+                  data-testid="add-new-collection-btn"
+                  onClick={handleStartNewCollection}
+                  className="inline-flex items-center gap-1 text-caption font-medium text-brand hover:text-text-primary"
+                >
+                  <IconPlus size={14} stroke={2} aria-hidden="true" />
+                  {t('Library::New collection')}
+                </button>
+              }
+            >
+              {t('Library::Collections (optional)')}
+            </SectionLabel>
+
+            {dialog.newCollection && (
+              <div
+                data-testid="add-new-collection-field"
+                className="flex flex-col gap-1"
+              >
+                <div className="flex items-end gap-compact">
+                  <div className="min-w-0 flex-1">
+                    <TextInput
+                      data-testid="add-new-collection-input"
+                      aria-label={t('Library::Collection name')}
+                      placeholder={t('Library::Collection name')}
+                      value={dialog.newCollection.name}
+                      disabled={dialog.newCollection.creating}
+                      autoFocus
+                      onChange={(event) =>
+                        handleNewCollectionName(event.target.value)
+                      }
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault();
+                          if (dialog.newCollection?.canCreate) {
+                            handleCreateCollection();
+                          }
+                        }
                       }}
                     />
                   </div>
+                  <Button
+                    variant="secondary"
+                    size="md"
+                    data-testid="add-new-collection-create-btn"
+                    disabled={!dialog.newCollection.canCreate}
+                    loading={dialog.newCollection.creating}
+                    onClick={handleCreateCollection}
+                  >
+                    {t('Library::Create')}
+                  </Button>
+                  <IconButton
+                    icon={IconX}
+                    label={t('Library::Cancel')}
+                    variant="toggle"
+                    size="sm"
+                    iconSize={14}
+                    data-testid="add-new-collection-cancel-btn"
+                    disabled={dialog.newCollection.creating}
+                    onClick={handleCancelNewCollection}
+                  />
                 </div>
-              )}
+                {dialog.newCollection.error && (
+                  <span
+                    data-testid="add-new-collection-error"
+                    className="text-xs text-warning"
+                  >
+                    {newCollectionErrorText(dialog.newCollection.error, t)}
+                  </span>
+                )}
+              </div>
+            )}
 
-              {/* Error & Blocked notes */}
-              {dialog.error && (
-                <div
-                  data-testid="add-error-notice"
-                  className="text-xs text-danger"
-                >
-                  {dialog.error === 'rejected' &&
-                    t('Library::GameNode rejected your session. Sign in again.')}
-                  {dialog.error === 'failed' &&
-                    t('Library::Could not save the game. Your choices are kept; try again.')}
-                </div>
-              )}
+            {collections === 'loading' && (
+              <div
+                data-testid="add-collections-loading"
+                className="text-xs text-text-dimmed"
+              >
+                {t('Library::Loading your collections…')}
+              </div>
+            )}
 
-              {dialog.blocked && (
-                <div
-                  data-testid="add-blocked-notice"
-                  className="text-xs text-warning"
+            {typeof collections === 'object' && 'failed' in collections && (
+              <div
+                data-testid="add-collections-failed"
+                className="flex items-center justify-between gap-compact"
+              >
+                <span className="text-xs text-warning">
+                  {collections.failed === 'rejected'
+                    ? t('Library::GameNode rejected your session. Sign in again.')
+                    : t('Library::Could not load your collections. Try again.')}
+                </span>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  data-testid="add-collections-retry-btn"
+                  onClick={handleRetryCollections}
                 >
-                  {formatReason(dialog.blocked, t)}
-                </div>
-              )}
-            </>
+                  {t('Library::Retry')}
+                </Button>
+              </div>
+            )}
+
+            {loadedCollections && (
+              <>
+                {loadedCollections.length === 0 ? (
+                  <div
+                    data-testid="add-collections-empty"
+                    className="text-xs text-text-dimmed"
+                  >
+                    {t('Library::You have no collections.')}
+                  </div>
+                ) : (
+                  <div
+                    data-testid="add-collections-list"
+                    className="flex max-h-[212px] flex-col gap-[2px] overflow-y-auto rounded-md border border-border-subtle bg-body p-1"
+                  >
+                    {loadedCollections.map((collection) => (
+                      <label
+                        key={collection.id}
+                        data-testid={`add-collection-item-${collection.id}`}
+                        className="flex h-[34px] cursor-pointer items-center gap-[10px] rounded-xs px-2 hover:bg-raised"
+                      >
+                        <Checkbox
+                          data-testid={`add-collection-checkbox-${collection.id}`}
+                          checked={collection.picked}
+                          onChange={() => handleToggleCollection(collection.id)}
+                        />
+                        <span
+                          className={`min-w-0 flex-1 truncate text-body ${
+                            collection.picked
+                              ? 'text-text-primary'
+                              : 'text-text-default'
+                          }`}
+                        >
+                          {collection.name}
+                        </span>
+                        {collection.entryCount != null && (
+                          <span
+                            data-testid={`add-collection-count-${collection.id}`}
+                            className="shrink-0 text-caption text-text-dimmed"
+                          >
+                            {formatI18n(
+                              collection.entryCount === 1
+                                ? t('Library::{} game')
+                                : t('Library::{} games'),
+                              collection.entryCount,
+                            )}
+                          </span>
+                        )}
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+
+          {dialog.error && (
+            <div data-testid="add-error-notice" className="text-xs text-danger">
+              {dialog.error === 'rejected' &&
+                t('Library::GameNode rejected your session. Sign in again.')}
+              {dialog.error === 'failed' &&
+                t('Library::Could not save the game. Your choices are kept; try again.')}
+            </div>
           )}
-        </FloatingModal.Body>
 
-        {/* Footer Actions */}
-        <FloatingModal.Footer className="bg-chrome px-lg py-sm">
-          {dialog.summary ? (
-            <button
-              type="button"
-              data-testid="add-dialog-close-btn"
-              aria-label="Close"
-              onClick={handleClose}
-              className="rounded-sm bg-brand px-md py-compact text-xs font-medium text-on-primary hover:bg-brand-4"
+          {dialog.blocked && (
+            <div
+              data-testid="add-blocked-notice"
+              className="text-xs text-warning"
             >
-              {t('Library::Close')}
-            </button>
-          ) : (
-            <>
-              <button
-                type="button"
-                data-testid="add-dialog-cancel-btn"
-                aria-label="Cancel"
-                onClick={handleClose}
-                className="rounded-sm border border-border-subtle px-md py-compact text-xs text-text-default hover:bg-raised"
-              >
-                {t('Library::Cancel') !== 'Library::Cancel' ? t('Library::Cancel') : 'Cancel'}
-              </button>
-
-              <button
-                type="button"
-                data-testid="add-dialog-confirm-btn"
-                aria-label="Confirm"
-                disabled={!dialog.canConfirm || dialog.progress != null}
-                onClick={handleConfirm}
-                className="rounded-sm bg-brand px-md py-compact text-xs font-medium text-on-primary hover:bg-brand-4 disabled:cursor-default disabled:opacity-50"
-              >
-                {dialog.editingExisting
-                  ? t('Library::Save') !== 'Library::Save'
-                    ? t('Library::Save')
-                    : 'Save'
-                  : t('Library::Add')}
-              </button>
-            </>
+              {formatReason(dialog.blocked, t)}
+            </div>
           )}
-        </FloatingModal.Footer>
-
-        <FloatingModal.ResizeHandle />
-      </FloatingModal.Content>
-    </FloatingModal.Root>
+        </div>
+      )}
+    </DialogShell>
   );
 };
+
+export default AddDialog;

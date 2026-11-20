@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { MantineProvider } from '@mantine/core';
 import { appTheme, createAppQueryClient } from '../../AppProviders';
@@ -10,6 +11,7 @@ import {
   SNAPSHOT_QUERY_KEY,
   type Snapshot,
   type ToolModalView,
+  type ToolRelease,
 } from '../../api';
 import { I18nProvider } from '../../i18n';
 import { GameToolsModal } from './index';
@@ -23,13 +25,104 @@ function renderWithProviders(
   const snap = initialSnapshot ?? createDefaultSnapshot();
   queryClient.setQueryData(SNAPSHOT_QUERY_KEY, snap);
 
-  return render(
-    <MantineProvider theme={appTheme} defaultColorScheme="dark">
+  const wrap = (element: React.ReactElement) => (
+    <MantineProvider theme={appTheme} defaultColorScheme="dark" env="test">
       <QueryClientProvider client={queryClient}>
-        <I18nProvider initialLocale={locale}>{ui}</I18nProvider>
+        <I18nProvider initialLocale={locale}>{element}</I18nProvider>
       </QueryClientProvider>
-    </MantineProvider>,
+    </MantineProvider>
   );
+
+  const result = render(wrap(ui));
+  return {
+    ...result,
+    rerender: (next: React.ReactElement) => result.rerender(wrap(next)),
+  };
+}
+
+const baseRelease: ToolRelease = {
+  toolId: 'optiscaler',
+  channel: 'stable',
+  version: '0.7.2',
+  tagName: 'v0.7.2',
+  name: 'OptiScaler 0.7.2',
+  publishedAt: '2026-05-01',
+  downloadUrl:
+    'https://github.com/optiscaler/OptiScaler/releases/download/v0.7.2/OptiScaler.7z',
+  assetName: 'OptiScaler.7z',
+  sizeBytes: 39845888,
+  sha256: 'abc123',
+  cachedPath: null,
+};
+
+const olderRelease: ToolRelease = {
+  toolId: 'optiscaler',
+  channel: 'stable',
+  version: '0.7.1',
+  tagName: 'v0.7.1',
+  name: 'OptiScaler 0.7.1',
+  publishedAt: '2026-04-10',
+  downloadUrl:
+    'https://github.com/optiscaler/OptiScaler/releases/download/v0.7.1/OptiScaler.7z',
+  assetName: 'OptiScaler.7z',
+  sizeBytes: 14500000,
+};
+
+const baseModal: ToolModalView = {
+  entryKey: 'steam:1091500',
+  title: 'Cyberpunk 2077',
+  installDir: 'D:\\Steam\\steamapps\\common\\Cyberpunk2077',
+  activeToolId: 'optiscaler',
+  selectedChannel: 'stable',
+  availableVersions: [baseRelease, olderRelease],
+  selectedVersion: '0.7.2',
+  selectedProxy: 'dxgi',
+  anticheatConfirmed: false,
+  inspection: {
+    entryKey: 'steam:1091500',
+    installDir: 'D:\\Steam\\steamapps\\common\\Cyberpunk2077',
+    candidates: [
+      {
+        relativeExe: 'bin/x64/Cyberpunk2077.exe',
+        label: 'Cyberpunk 2077 Main',
+        architecture: 'x64',
+        preferred: true,
+      },
+      {
+        relativeExe: 'bin/x64/REDprelauncher.exe',
+        label: 'Launcher',
+        architecture: 'x64',
+        preferred: false,
+      },
+    ],
+    selectedExe: 'bin/x64/Cyberpunk2077.exe',
+    anticheat: {
+      detected: ['easyAntiCheat'],
+      evidence: ['EasyAntiCheat/EasyAntiCheat_x64.dll'],
+    },
+  },
+  tools: [],
+  operation: null,
+};
+
+function installedModal(overrides: Partial<ToolModalView> = {}): ToolModalView {
+  return {
+    ...baseModal,
+    anticheatConfirmed: true,
+    tools: [
+      {
+        toolId: 'optiscaler',
+        name: 'OptiScaler',
+        channel: 'stable',
+        version: '0.7.2',
+        proxyDll: 'dxgi.dll',
+        targetExe: 'bin/x64/Cyberpunk2077.exe',
+        state: 'installed',
+        summary: 'Installed version 0.7.2',
+      },
+    ],
+    ...overrides,
+  };
 }
 
 describe('GameToolsModal', () => {
@@ -37,329 +130,162 @@ describe('GameToolsModal', () => {
     vi.restoreAllMocks();
   });
 
-  const baseModal: ToolModalView = {
-    entryKey: 'steam:1091500',
-    title: 'Cyberpunk 2077',
-    installDir: '/games/Cyberpunk2077',
-    activeToolId: 'optiscaler',
-    selectedChannel: 'stable',
-    availableVersions: [
-      {
-        toolId: 'optiscaler',
-        channel: 'stable',
-        version: '0.7.2',
-        tagName: 'v0.7.2',
-        name: 'OptiScaler 0.7.2',
-        publishedAt: '2026-05-01',
-        downloadUrl: 'https://github.com/optiscaler/OptiScaler/releases/download/v0.7.2/OptiScaler.7z',
-        assetName: 'OptiScaler.7z',
-        sizeBytes: 15000000,
-        cachedPath: '/cache/OptiScaler.7z',
-      },
-      {
-        toolId: 'optiscaler',
-        channel: 'stable',
-        version: '0.7.1',
-        tagName: 'v0.7.1',
-        name: 'OptiScaler 0.7.1',
-        publishedAt: '2026-04-10',
-        downloadUrl: 'https://github.com/optiscaler/OptiScaler/releases/download/v0.7.1/OptiScaler.7z',
-        assetName: 'OptiScaler.7z',
-        sizeBytes: 14500000,
-      },
-    ],
-    selectedVersion: '0.7.2',
-    selectedProxy: 'dxgi',
-    anticheatConfirmed: false,
-    inspection: {
-      entryKey: 'steam:1091500',
-      installDir: '/games/Cyberpunk2077',
-      candidates: [
-        {
-          relativeExe: 'bin/x64/Cyberpunk2077.exe',
-          label: 'Cyberpunk 2077 Main',
-          architecture: 'x64',
-          preferred: true,
-        },
-        {
-          relativeExe: 'bin/x64/REDprelauncher.exe',
-          label: 'Launcher',
-          architecture: 'x64',
-          preferred: false,
-        },
-      ],
-      selectedExe: 'bin/x64/Cyberpunk2077.exe',
-      anticheat: {
-        detected: ['easyAntiCheat'],
-        evidence: ['EasyAntiCheat/EasyAntiCheat_x64.dll'],
-      },
-    },
-    tools: [],
-    operation: null,
-  };
-
-  it.each(['en', 'pt-BR'] as const)('attributes plugin review and keeps apply/removal separate in %s', (locale) => {
-    const installed = { toolId: 'optiscaler', name: 'OptiScaler', channel: 'stable' as const, version: '0.7.1', proxyDll: 'dxgi.dll', targetExe: 'bin/x64/Cyberpunk2077.exe', state: 'installed' as const, summary: 'Fixture' };
-    const review = { pluginId: '<fixture.plugin>', publisherFingerprint: 'publisher-fingerprint', remove: false };
-    const { unmount } = renderWithProviders(<GameToolsModal modal={{ ...baseModal, tools: [installed], pluginRequest: review }} />, undefined, locale);
-    expect(screen.getByText(/<fixture.plugin>/)).toBeInTheDocument();
-    expect(screen.getByText('publisher-fingerprint')).toBeInTheDocument();
-    expect(screen.getByTestId('anticheat-warning-banner')).toBeInTheDocument();
-    expect(screen.getByTestId('tool-update-button')).toBeDisabled();
-    expect(screen.queryByTestId('tool-uninstall-button')).not.toBeInTheDocument();
-    unmount();
-    renderWithProviders(<GameToolsModal modal={{ ...baseModal, tools: [installed], pluginRequest: { ...review, remove: true } }} />, undefined, locale);
-    expect(screen.getByTestId('tool-uninstall-button')).toBeEnabled();
-    expect(screen.queryByTestId('tool-update-button')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('tool-install-button')).not.toBeInTheDocument();
-  });
-
-  it('renders OptiScaler catalog card with GPL-3.0 badge and source repository link', () => {
-    const sourceSpy = vi.spyOn(commands, 'openToolSource').mockResolvedValue(undefined);
+  it('renders the tool card with its status pill, license and source link', () => {
+    const sourceSpy = vi
+      .spyOn(commands, 'openToolSource')
+      .mockResolvedValue(undefined);
 
     renderWithProviders(<GameToolsModal modal={baseModal} />);
 
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     expect(screen.getByText('OptiScaler')).toBeInTheDocument();
-    expect(screen.getByTestId('tool-license-badge')).toHaveTextContent('GPL-3.0');
+    expect(screen.getByTestId('tool-license-badge')).toHaveTextContent(
+      'GPL-3.0',
+    );
+    expect(screen.getByText('Not installed')).toBeInTheDocument();
+    expect(
+      screen.getByText('Cyberpunk 2077 · Steam'),
+    ).toBeInTheDocument();
 
-    const sourceBtn = screen.getByTestId('tool-source-link');
-    fireEvent.click(sourceBtn);
-    expect(sourceSpy).toHaveBeenCalledWith('https://github.com/optiscaler/OptiScaler');
+    fireEvent.click(screen.getByTestId('tool-source-link'));
+    expect(sourceSpy).toHaveBeenCalledWith(
+      'https://github.com/optiscaler/OptiScaler',
+    );
   });
 
-  it('handles channel, version, target executable, and proxy DLL selections', () => {
-    const channelSpy = vi.spyOn(commands, 'selectToolChannel').mockResolvedValue(undefined);
-    const refreshSpy = vi.spyOn(commands, 'refreshToolVersions').mockResolvedValue(undefined);
-    const versionSpy = vi.spyOn(commands, 'selectToolVersion').mockResolvedValue(undefined);
-    const targetSpy = vi.spyOn(commands, 'selectToolTargetExe').mockResolvedValue(undefined);
-    const proxySpy = vi.spyOn(commands, 'selectToolProxy').mockResolvedValue(undefined);
-    const resetConfigSpy = vi.spyOn(commands, 'setToolResetConfig').mockResolvedValue(undefined);
+  it('switches channel and refreshes the available versions', async () => {
+    const user = userEvent.setup();
+    const channelSpy = vi
+      .spyOn(commands, 'selectToolChannel')
+      .mockResolvedValue(undefined);
+    const refreshSpy = vi
+      .spyOn(commands, 'refreshToolVersions')
+      .mockResolvedValue(undefined);
 
     renderWithProviders(<GameToolsModal modal={baseModal} />);
 
-    // Channel switch
-    fireEvent.click(screen.getByTestId('channel-button-nightly'));
+    expect(screen.getByRole('radio', { name: 'Stable' })).toBeChecked();
+    await user.click(screen.getByRole('radio', { name: 'Nightly' }));
     expect(channelSpy).toHaveBeenCalledWith('nightly');
 
-    // Refresh versions
-    fireEvent.click(screen.getByTestId('refresh-versions-button'));
+    await user.click(screen.getByTestId('refresh-versions-button'));
     expect(refreshSpy).toHaveBeenCalled();
+  });
 
-    // Version select & cached indicator check
-    expect(screen.getByRole('option', { name: /v0.7.2.*Cached/ })).toBeInTheDocument();
-    fireEvent.change(screen.getByTestId('tool-version-select'), { target: { value: '0.7.1' } });
+  it('selects a version and a proxy DLL from their shared select fields', async () => {
+    const user = userEvent.setup();
+    const versionSpy = vi
+      .spyOn(commands, 'selectToolVersion')
+      .mockResolvedValue(undefined);
+    const proxySpy = vi
+      .spyOn(commands, 'selectToolProxy')
+      .mockResolvedValue(undefined);
+
+    renderWithProviders(<GameToolsModal modal={baseModal} />);
+
+    const version = screen.getByRole('combobox', { name: 'Version' });
+    expect(version).toHaveTextContent('0.7.2 (recommended)');
+    await user.click(version);
+    await user.click(
+      await screen.findByRole('option', { name: '0.7.1' }),
+    );
     expect(versionSpy).toHaveBeenCalledWith('0.7.1');
 
-    // Target executable candidate selection
-    expect(screen.getByRole('option', { name: /Cyberpunk2077.exe.*Recommended/ })).toBeInTheDocument();
-    fireEvent.change(screen.getByTestId('target-exe-select'), { target: { value: 'bin/x64/REDprelauncher.exe' } });
-    expect(targetSpy).toHaveBeenCalledWith('bin/x64/REDprelauncher.exe');
-
-    // Proxy DLL selection
-    expect(screen.getByTestId('proxy-dll-select')).toHaveValue('dxgi');
-    fireEvent.change(screen.getByTestId('proxy-dll-select'), { target: { value: 'version' } });
+    const proxy = screen.getByRole('combobox', { name: 'Proxy DLL name' });
+    expect(proxy).toHaveTextContent('dxgi.dll');
+    await user.click(proxy);
+    await user.click(
+      await screen.findByRole('option', { name: 'version.dll' }),
+    );
     expect(proxySpy).toHaveBeenCalledWith('version');
-
-    // Reset config checkbox
-    fireEvent.click(screen.getByTestId('reset-config-checkbox'));
-    expect(resetConfigSpy).toHaveBeenCalledWith(true);
   });
 
-  it('reflects proxy selections returned by the backend', () => {
-    const { rerender } = renderWithProviders(<GameToolsModal modal={baseModal} />);
-    rerender(
-      <MantineProvider theme={appTheme} defaultColorScheme="dark">
-        <QueryClientProvider client={createAppQueryClient()}>
-          <I18nProvider initialLocale="en">
-            <GameToolsModal modal={{ ...baseModal, selectedProxy: 'winmm' }} />
-          </I18nProvider>
-        </QueryClientProvider>
-      </MantineProvider>,
-    );
-    expect(screen.getByTestId('proxy-dll-select')).toHaveValue('winmm');
-    expect(screen.getByRole('option', { name: 'winmm.dll', selected: true })).toBeInTheDocument();
-  });
+  it('shows the read-only target and calls selectToolTargetExe from a candidate radio', async () => {
+    const user = userEvent.setup();
+    const targetSpy = vi
+      .spyOn(commands, 'selectToolTargetExe')
+      .mockResolvedValue(undefined);
 
-  it('shows updating state on the action button', () => {
-    const modal: ToolModalView = {
-      ...baseModal,
-      tools: [{ toolId: 'optiscaler', name: 'OptiScaler', channel: 'stable', version: '0.7.1',
-        targetExe: 'game.exe', state: 'installed', summary: '' }],
-      operation: { updating: { message: 'Updating OptiScaler', progressPercent: null } },
-    };
-    renderWithProviders(<GameToolsModal modal={modal} />);
-    expect(screen.getByTestId('tool-update-button')).toBeDisabled();
-    expect(screen.getByTestId('tool-update-button')).toHaveTextContent('Updating…');
-    expect(screen.getByTestId('tool-operation-progress')).toHaveTextContent('Updating OptiScaler');
-  });
+    renderWithProviders(<GameToolsModal modal={baseModal} />);
 
-  it('enforces anti-cheat warning confirmation gating on Install button', () => {
-    const anticheatConfirmSpy = vi.spyOn(commands, 'setToolAnticheatConfirmed').mockResolvedValue(undefined);
-    const installSpy = vi.spyOn(commands, 'installOrUpdateTool').mockResolvedValue(undefined);
-
-    // Initial state: anti-cheat detected and unconfirmed -> Install button MUST be disabled
-    const { rerender } = renderWithProviders(<GameToolsModal modal={baseModal} />);
-
-    expect(screen.getByTestId('anticheat-warning-banner')).toBeInTheDocument();
-    expect(screen.getByText(/EasyAntiCheat\/EasyAntiCheat_x64\.dll/)).toBeInTheDocument();
-
-    const installBtn = screen.getByTestId('tool-install-button');
-    expect(installBtn).toBeDisabled();
-
-    // Check anti-cheat confirmation
-    const confirmCheckbox = screen.getByTestId('anticheat-confirm-checkbox');
-    expect(confirmCheckbox).not.toBeChecked();
-    fireEvent.click(confirmCheckbox);
-    expect(anticheatConfirmSpy).toHaveBeenCalledWith(true);
-
-    // Rerender with anticheatConfirmed: true -> Install button enabled
-    const confirmedModal: ToolModalView = {
-      ...baseModal,
-      anticheatConfirmed: true,
-    };
-
-    rerender(
-      <MantineProvider theme={appTheme} defaultColorScheme="dark">
-        <QueryClientProvider client={createAppQueryClient()}>
-          <I18nProvider initialLocale="en">
-            <GameToolsModal modal={confirmedModal} />
-          </I18nProvider>
-        </QueryClientProvider>
-      </MantineProvider>,
+    const target = screen.getByTestId('target-exe-input');
+    expect(target).toHaveAttribute('readonly');
+    expect(target).toHaveValue(
+      'D:\\Steam\\steamapps\\common\\Cyberpunk2077\\bin\\x64\\Cyberpunk2077.exe',
     );
 
-    const enabledInstallBtn = screen.getByTestId('tool-install-button');
-    expect(enabledInstallBtn).toBeEnabled();
+    const selected = screen.getByRole('radio', {
+      name: 'bin/x64/Cyberpunk2077.exe',
+    });
+    expect(selected).toBeChecked();
 
-    fireEvent.click(enabledInstallBtn);
+    const launcher = screen.getByRole('radio', {
+      name: 'bin/x64/REDprelauncher.exe (launcher)',
+    });
+    await user.click(launcher);
+    expect(targetSpy).toHaveBeenCalledWith('bin/x64/REDprelauncher.exe');
+  });
+
+  it('opens the executable picker from Browse and toggles the reset-config checkbox', () => {
+    const pickSpy = vi
+      .spyOn(commands, 'pickToolTargetExe')
+      .mockResolvedValue(undefined);
+    const openFolderSpy = vi
+      .spyOn(commands, 'openInstallFolder')
+      .mockResolvedValue(undefined);
+    const resetSpy = vi
+      .spyOn(commands, 'setToolResetConfig')
+      .mockResolvedValue(undefined);
+
+    renderWithProviders(<GameToolsModal modal={baseModal} />);
+
+    fireEvent.click(screen.getByTestId('tool-browse-button'));
+    expect(pickSpy).toHaveBeenCalledOnce();
+    expect(openFolderSpy).not.toHaveBeenCalled();
+
+    const reset = screen.getByTestId('reset-config-checkbox');
+    expect(reset).not.toBeChecked();
+    fireEvent.click(reset);
+    expect(resetSpy).toHaveBeenCalledWith(true);
+  });
+
+  it('keeps Install disabled until the anti-cheat risk is confirmed', () => {
+    const confirmSpy = vi
+      .spyOn(commands, 'setToolAnticheatConfirmed')
+      .mockResolvedValue(undefined);
+    const installSpy = vi
+      .spyOn(commands, 'installOrUpdateTool')
+      .mockResolvedValue(undefined);
+
+    const { rerender } = renderWithProviders(
+      <GameToolsModal modal={baseModal} />,
+    );
+
+    const banner = screen.getByTestId('anticheat-warning-banner');
+    expect(banner).toHaveTextContent('Anti-cheat detected (Easy Anti-Cheat)');
+    expect(banner).toHaveTextContent('EasyAntiCheat/EasyAntiCheat_x64.dll');
+
+    const install = screen.getByTestId('tool-install-button');
+    expect(install).toBeDisabled();
+
+    const confirm = screen.getByTestId('anticheat-confirm-checkbox');
+    expect(confirm).not.toBeChecked();
+    fireEvent.click(confirm);
+    expect(confirmSpy).toHaveBeenCalledWith(true);
+
+    rerender(
+      <GameToolsModal
+        modal={{ ...baseModal, anticheatConfirmed: true }}
+      />,
+    );
+
+    const enabled = screen.getByTestId('tool-install-button');
+    expect(enabled).toBeEnabled();
+    fireEvent.click(enabled);
     expect(installSpy).toHaveBeenCalledWith(false);
   });
 
-  it('renders Update and Uninstall buttons when tool is installed, and triggers them', () => {
-    const updateSpy = vi.spyOn(commands, 'installOrUpdateTool').mockResolvedValue(undefined);
-    const uninstallSpy = vi.spyOn(commands, 'uninstallTool').mockResolvedValue(undefined);
-
-    const installedModal: ToolModalView = {
-      ...baseModal,
-      anticheatConfirmed: true,
-      tools: [
-        {
-          toolId: 'optiscaler',
-          name: 'OptiScaler',
-          channel: 'stable',
-          version: '0.7.1',
-          proxyDll: 'dxgi.dll',
-          targetExe: 'bin/x64/Cyberpunk2077.exe',
-          state: 'installed',
-          summary: 'Installed version 0.7.1',
-        },
-      ],
-    };
-
-    renderWithProviders(<GameToolsModal modal={installedModal} />);
-
-    expect(screen.queryByTestId('tool-install-button')).not.toBeInTheDocument();
-    expect(screen.getByTestId('installed-version')).toHaveTextContent('Installed version: 0.7.1 (Stable)');
-
-    const updateBtn = screen.getByTestId('tool-update-button');
-    expect(updateBtn).toBeEnabled();
-    fireEvent.click(updateBtn);
-    expect(updateSpy).toHaveBeenCalledWith(true);
-
-    const uninstallBtn = screen.getByTestId('tool-uninstall-button');
-    expect(uninstallBtn).toBeEnabled();
-    fireEvent.click(uninstallBtn);
-    expect(uninstallSpy).toHaveBeenCalled();
-  });
-
-  it('shows live operation progress and failure error banners', () => {
-    const installingModal: ToolModalView = {
-      ...baseModal,
-      operation: {
-        installing: {
-          progressPercent: 65,
-          message: 'Extracting OptiScaler files',
-        },
-      },
-    };
-
-    const { rerender } = renderWithProviders(<GameToolsModal modal={installingModal} />);
-
-    expect(screen.getByTestId('tool-operation-progress')).toHaveTextContent(
-      'Extracting OptiScaler files (65%)',
-    );
-    expect(screen.getByTestId('tool-install-button')).toBeDisabled();
-    expect(screen.getByTestId('tool-install-button')).toHaveTextContent('Installing…');
-    expect(screen.getByTestId('tool-operation-progress').parentElement).toHaveAttribute(
-      'aria-live',
-      'polite',
-    );
-
-    // Failed operation state
-    const failedModal: ToolModalView = {
-      ...baseModal,
-      operation: {
-        failed: {
-          message: 'Target executable locked by running process',
-        },
-      },
-    };
-
-    rerender(
-      <MantineProvider theme={appTheme} defaultColorScheme="dark">
-        <QueryClientProvider client={createAppQueryClient()}>
-          <I18nProvider initialLocale="en">
-            <GameToolsModal modal={failedModal} />
-          </I18nProvider>
-        </QueryClientProvider>
-      </MantineProvider>,
-    );
-
-    expect(screen.getByTestId('tool-operation-error')).toHaveTextContent(
-      'Target executable locked by running process',
-    );
-  });
-
-  it('renders localized modal in pt-BR', () => {
-    const installedModal: ToolModalView = {
-      ...baseModal,
-      anticheatConfirmed: true,
-      tools: [
-        {
-          toolId: 'optiscaler',
-          name: 'OptiScaler',
-          channel: 'stable',
-          version: '0.7.1',
-          proxyDll: 'dxgi.dll',
-          targetExe: 'bin/x64/Cyberpunk2077.exe',
-          state: 'installed',
-          summary: 'Installed version 0.7.1',
-        },
-      ],
-    };
-
-    renderWithProviders(<GameToolsModal modal={installedModal} />, undefined, 'pt-BR');
-
-    expect(screen.getByText('Ferramentas do jogo')).toBeInTheDocument();
-    expect(screen.getByTestId('installed-version')).toHaveTextContent('Versão instalada: 0.7.1 (Estável)');
-    expect(screen.getByTestId('tool-update-button')).toHaveTextContent('Atualizar / Aplicar');
-    expect(screen.getByTestId('tool-uninstall-button')).toHaveTextContent('Desinstalar');
-    expect(screen.getByText('Versões disponíveis')).toBeInTheDocument();
-    expect(screen.getByText('Nome da DLL proxy')).toBeInTheDocument();
-    expect(screen.getByText('Atualizar versões')).toBeInTheDocument();
-  });
-
-  it('renders localized anti-cheat warning in pt-BR', () => {
-    renderWithProviders(<GameToolsModal modal={baseModal} />, undefined, 'pt-BR');
-
-    expect(screen.getByTestId('anticheat-warning-banner')).toBeInTheDocument();
-    expect(screen.getByText(/Anti-cheat detectado \(easyAntiCheat\)/)).toBeInTheDocument();
-    expect(screen.getByTestId('tool-install-button')).toHaveTextContent('Instalar OptiScaler');
-  });
-
-  it('renders when the backend reports no anti-cheat (empty detected list)', () => {
-    // Backend serializes AntiCheatReport as { detected: [], evidence: [] } — no `systems` field.
+  it('omits the anti-cheat callout and keeps Install enabled on a clean game', () => {
     const cleanModal: ToolModalView = {
       ...baseModal,
       inspection: {
@@ -370,22 +296,305 @@ describe('GameToolsModal', () => {
 
     renderWithProviders(<GameToolsModal modal={cleanModal} />);
 
-    expect(screen.queryByTestId('anticheat-warning-banner')).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId('anticheat-warning-banner'),
+    ).not.toBeInTheDocument();
     expect(screen.getByTestId('tool-install-button')).toBeEnabled();
   });
 
-  it('renders the backend anti-cheat report shape without crashing', () => {
-    const backendModal: ToolModalView = {
-      ...baseModal,
-      inspection: {
-        ...baseModal.inspection!,
-        anticheat: { detected: ['battlEye', 'blocklisted'], evidence: ['BattlEye/BEClient.dll'] },
-      },
+  it('renders the footer download note variants', () => {
+    const { rerender } = renderWithProviders(
+      <GameToolsModal modal={baseModal} />,
+    );
+    expect(screen.getByTestId('tool-download-note')).toHaveTextContent(
+      '38 MB download, verified with SHA-256',
+    );
+
+    rerender(
+      <GameToolsModal
+        modal={{
+          ...baseModal,
+          availableVersions: [{ ...baseRelease, sha256: null }],
+        }}
+      />,
+    );
+    expect(screen.getByTestId('tool-download-note')).toHaveTextContent(
+      '38 MB download',
+    );
+
+    rerender(
+      <GameToolsModal
+        modal={{
+          ...baseModal,
+          availableVersions: [
+            { ...baseRelease, cachedPath: '/cache/OptiScaler.7z' },
+          ],
+        }}
+      />,
+    );
+    expect(screen.getByTestId('tool-download-note')).toHaveTextContent(
+      'Already downloaded, verified with SHA-256',
+    );
+
+    rerender(
+      <GameToolsModal
+        modal={{
+          ...baseModal,
+          availableVersions: [
+            {
+              ...baseRelease,
+              sha256: null,
+              cachedPath: '/cache/OptiScaler.7z',
+            },
+          ],
+        }}
+      />,
+    );
+    expect(screen.getByTestId('tool-download-note')).toHaveTextContent(
+      'Already downloaded',
+    );
+  });
+
+  it('renders installed, update and uninstall actions', () => {
+    const updateSpy = vi
+      .spyOn(commands, 'installOrUpdateTool')
+      .mockResolvedValue(undefined);
+    const uninstallSpy = vi
+      .spyOn(commands, 'uninstallTool')
+      .mockResolvedValue(undefined);
+
+    renderWithProviders(<GameToolsModal modal={installedModal()} />);
+
+    expect(screen.queryByTestId('tool-install-button')).not.toBeInTheDocument();
+    expect(screen.getByTestId('installed-version')).toHaveTextContent(
+      'Installed · 0.7.2',
+    );
+
+    const update = screen.getByTestId('tool-update-button');
+    expect(update).toHaveTextContent('Update OptiScaler');
+    expect(update).toBeEnabled();
+    fireEvent.click(update);
+    expect(updateSpy).toHaveBeenCalledWith(true);
+
+    const uninstall = screen.getByTestId('tool-uninstall-button');
+    expect(uninstall).toBeEnabled();
+    fireEvent.click(uninstall);
+    expect(uninstallSpy).toHaveBeenCalled();
+  });
+
+  it.each([false, true])('displays the publisher and limits the operation requested by a plugin (remove=%s)', (remove) => {
+    const pluginRequest = {
+      pluginId: 'org.example.tools',
+      publisherFingerprint: 'verified-publisher',
+      remove,
     };
+    renderWithProviders(<GameToolsModal modal={installedModal({ pluginRequest })} />);
 
-    renderWithProviders(<GameToolsModal modal={backendModal} />);
+    expect(screen.getByRole('region', { name: pluginRequest.pluginId })).toHaveTextContent(pluginRequest.publisherFingerprint);
+    expect(screen.queryByTestId('tool-install-button')).not.toBeInTheDocument();
+    if (remove) {
+      expect(screen.queryByTestId('tool-update-button')).not.toBeInTheDocument();
+      expect(screen.getByTestId('tool-uninstall-button')).toBeEnabled();
+    } else {
+      expect(screen.getByTestId('tool-update-button')).toBeEnabled();
+      expect(screen.queryByTestId('tool-uninstall-button')).not.toBeInTheDocument();
+    }
+  });
 
-    expect(screen.getByTestId('anticheat-warning-banner')).toHaveTextContent('battlEye, blocklisted');
+  it('shows Update available when the installed version is behind the latest release', () => {
+    renderWithProviders(
+      <GameToolsModal
+        modal={installedModal({
+          tools: [
+            {
+              toolId: 'optiscaler',
+              name: 'OptiScaler',
+              channel: 'stable',
+              version: '0.7.0',
+              proxyDll: 'dxgi.dll',
+              targetExe: 'bin/x64/Cyberpunk2077.exe',
+              state: 'installed',
+              summary: '',
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getByTestId('installed-version')).toHaveTextContent(
+      'Update available',
+    );
+  });
+
+  it('shows live operation progress and failure banners', () => {
+    const { rerender } = renderWithProviders(
+      <GameToolsModal
+        modal={{
+          ...baseModal,
+          operation: {
+            installing: {
+              progressPercent: 65,
+              message: 'Extracting OptiScaler files',
+            },
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByTestId('tool-operation-progress')).toHaveTextContent(
+      'Extracting OptiScaler files (65%)',
+    );
     expect(screen.getByTestId('tool-install-button')).toBeDisabled();
+    expect(screen.getByTestId('tool-install-button')).toHaveTextContent(
+      'Installing…',
+    );
+    expect(
+      screen.getByTestId('tool-operation-progress').parentElement,
+    ).toHaveAttribute('aria-live', 'polite');
+
+    rerender(
+      <GameToolsModal
+        modal={{
+          ...baseModal,
+          operation: {
+            failed: {
+              message: 'Target executable locked by running process',
+            },
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByTestId('tool-operation-error')).toHaveTextContent(
+      'Target executable locked by running process',
+    );
+  });
+
+  it('hides the candidate list when inspection finds no executables', () => {
+    renderWithProviders(
+      <GameToolsModal
+        modal={{
+          ...baseModal,
+          inspection: {
+            ...baseModal.inspection!,
+            candidates: [],
+            selectedExe: null,
+          },
+        }}
+      />,
+    );
+
+    expect(
+      screen.queryByRole('radiogroup', {
+        name: /Detected candidate executables/,
+      }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId('target-exe-input')).toHaveValue('');
+    expect(
+      screen.getByPlaceholderText('No executable selected'),
+    ).toBeInTheDocument();
+  });
+
+  it('localizes the dialog in pt-BR', () => {
+    renderWithProviders(
+      <GameToolsModal modal={installedModal()} />,
+      undefined,
+      'pt-BR',
+    );
+
+    expect(screen.getByText('Ferramentas do jogo')).toBeInTheDocument();
+    expect(
+      screen.getByText('Cyberpunk 2077 · Steam'),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId('installed-version')).toHaveTextContent(
+      'Instalado · 0.7.2',
+    );
+    expect(screen.getByText('Canal')).toBeInTheDocument();
+    expect(screen.getByText('Versão')).toBeInTheDocument();
+    expect(screen.getByText('Nome da DLL proxy')).toBeInTheDocument();
+    expect(screen.getByText('Executável de destino')).toBeInTheDocument();
+    expect(screen.getByText('Procurar…')).toBeInTheDocument();
+    expect(
+      screen.getByRole('radio', {
+        name: 'bin/x64/REDprelauncher.exe (inicializador)',
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId('tool-download-note')).toHaveTextContent(
+      'Download de 38 MB, verificado por SHA-256',
+    );
+    expect(screen.getByTestId('tool-cancel-button')).toHaveTextContent(
+      'Cancelar',
+    );
+    expect(screen.getByTestId('tool-uninstall-button')).toHaveTextContent(
+      'Desinstalar',
+    );
+    expect(screen.getByTestId('tool-update-button')).toHaveTextContent(
+      'Atualizar OptiScaler',
+    );
+  });
+
+  it('localizes the anti-cheat callout in pt-BR', () => {
+    renderWithProviders(<GameToolsModal modal={baseModal} />, undefined, 'pt-BR');
+
+    expect(screen.getByTestId('anticheat-warning-banner')).toHaveTextContent(
+      'Anti-cheat detectado (Easy Anti-Cheat)',
+    );
+    expect(screen.getByTestId('tool-install-button')).toHaveTextContent(
+      'Instalar OptiScaler',
+    );
+    expect(screen.getByTestId('tool-install-button')).toBeDisabled();
+  });
+
+  it('disables Browse while a tool operation is running and localizes picker errors', () => {
+    const { rerender } = renderWithProviders(
+      <GameToolsModal
+        modal={{
+          ...baseModal,
+          operation: {
+            installing: {
+              progressPercent: 40,
+              message: 'Installing',
+            },
+          },
+        }}
+      />,
+    );
+    expect(screen.getByTestId('tool-browse-button')).toBeDisabled();
+
+    rerender(
+      <GameToolsModal
+        modal={{
+          ...baseModal,
+          operation: {
+            failed: {
+              code: 'targetOutsideInstallDir',
+              message: 'Target executable path escapes the game directory',
+            },
+          },
+        }}
+      />,
+    );
+    expect(screen.getByTestId('tool-operation-error')).toHaveTextContent(
+      "The selected executable must be inside this game's install folder.",
+    );
+
+    renderWithProviders(
+      <GameToolsModal
+        modal={{
+          ...baseModal,
+          operation: {
+            failed: {
+              code: 'pickerFailed',
+              message: 'The executable picker could not open.',
+            },
+          },
+        }}
+      />,
+      undefined,
+      'pt-BR',
+    );
+    expect(screen.getAllByTestId('tool-operation-error').at(-1)).toHaveTextContent(
+      'Não foi possível abrir o seletor de executável.',
+    );
   });
 });

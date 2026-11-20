@@ -14,6 +14,7 @@ fn portal_2_match() -> ExternalMatch {
             name: "Portal 2".to_owned(),
             release_year: Some(2011),
             cover_url: None,
+            platforms: Vec::new(),
         },
     }
 }

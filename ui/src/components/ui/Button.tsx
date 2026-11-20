@@ -36,7 +36,7 @@ const SIZES: Record<ButtonSize, string> = {
 
 const VARIANTS: Record<ButtonVariant, string> = {
   primary:
-    'bg-brand font-semibold text-text-primary hover:bg-[var(--settings-accent-hover)] active:bg-tertiary',
+    'bg-brand font-semibold text-text-primary hover:bg-[var(--color-primary-hover)] active:bg-tertiary',
   secondary:
     'border border-border-subtle bg-raised font-medium text-text-default hover:bg-surface',
   ghost:

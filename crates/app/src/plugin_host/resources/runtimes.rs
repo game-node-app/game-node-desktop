@@ -3,7 +3,7 @@
 //! Plugin file handles are session scoped. Durable records keep only the host-owned approval id
 //! and relative path; reads issue a fresh handle after checking the approval and current grant.
 
-use gamenode_plugin_protocol::prost::Message;
+use gamenode_plugin_protocol::{extensions::ExtensionSet, prost::Message};
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
@@ -346,6 +346,24 @@ impl ResourceApi {
                     .map_err(|_| Status::internal("stored runtime extension is invalid"))
             })
             .collect::<Result<std::collections::HashMap<_, _>, _>>()?;
+        let extensions = ExtensionSet::from_wire(extensions)
+            .map_err(|_| Status::internal("stored runtime extensions are invalid"))?;
+        let descriptors = self
+            .providers
+            .extension_schemas_for_provider(&caller.provider_id);
+        for (namespace, payload) in extensions.as_map() {
+            if let Some(descriptor) = descriptors
+                .iter()
+                .find(|schema| schema.namespace == *namespace)
+            {
+                gamenode_plugin_protocol::extensions::validate_payload_for_schema(
+                    payload, descriptor,
+                )
+                .map_err(|_| {
+                    Status::internal("stored runtime extension does not match its signed schema")
+                })?;
+            }
+        }
         Ok(RuntimeRecord {
             id: runtime.id,
             name: runtime.name,
@@ -356,7 +374,7 @@ impl ResourceApi {
             observed_at: runtime.observed_at,
             platform: runtime.platform,
             argument_template: proto_arguments(&runtime.launch_arguments),
-            extensions,
+            extensions: extensions.into_wire(),
             provenance: None,
         })
     }
@@ -680,6 +698,7 @@ impl ResourceApi {
             .ok_or_else(|| Status::invalid_argument("runtime is required"))?;
         runtime_request_shape(&runtime_request, true)?;
         Self::authorize_runtime_namespaces(&caller, runtime_request.extensions.keys())?;
+        Self::validate_package_extensions(&self.providers, &caller, &runtime_request.extensions)?;
         let request_id = runtime_request.id.clone();
         let hash = request_hash(&[
             "runtime-register",
@@ -755,6 +774,30 @@ impl ResourceApi {
             runtime: None,
             outcome: outcome as i32,
         }))
+    }
+
+    fn validate_package_extensions(
+        providers: &super::super::provider::ProviderApi,
+        caller: &ResourceCaller,
+        extensions: &std::collections::HashMap<String, ExtensionPayload>,
+    ) -> Result<(), Status> {
+        let descriptors = providers.extension_schemas_for_provider(&caller.provider_id);
+        for (namespace, payload) in extensions {
+            if let Some(descriptor) = descriptors
+                .iter()
+                .find(|schema| schema.namespace == *namespace)
+            {
+                gamenode_plugin_protocol::extensions::validate_payload_for_schema(
+                    payload, descriptor,
+                )
+                .map_err(|_| {
+                    Status::invalid_argument(
+                        "runtime extension does not match its signed package schema",
+                    )
+                })?;
+            }
+        }
+        Ok(())
     }
 
     pub(super) async fn update_runtime(
@@ -887,6 +930,7 @@ impl ResourceApi {
                 patch,
             )
             .map_err(|_| Status::invalid_argument("invalid or stale runtime extension patch"))?;
+            Self::validate_package_extensions(&self.providers, &caller, &applied.extensions)?;
             runtime_request.name = applied.name;
             runtime_request.version = applied.version;
             runtime_request.supported_formats = applied.supported_formats;

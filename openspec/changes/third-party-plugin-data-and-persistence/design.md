@@ -16,6 +16,14 @@ The data-specific review controls build on the generic plugin activation and per
 
 `DataListReply.revision` carries the global broker revision of the returned snapshot. A client passes that exact revision to `DataWatchRequest.after_revision`; the host accepts only a current resumable position and fails closed for stale positions, so the list-to-watch handoff cannot skip intervening records.
 
+## Typed-resource extension validation and projection
+
+Extension payloads are bounded annotations beside a typed resource, never sources of identity, permissions, file access or execution. Validate the complete extension set as one unit: at most 32 namespaces, 64 KiB encoded payload bytes, depth eight and 256 total Struct object keys across all namespaces. Reject malformed envelopes, protected root fields, non-finite numbers and namespace/schema identity mismatches before persistence.
+
+Resolve schema descriptors from the active package's integrity-verified `schemas/` assets in its signed manifest, bound to the host-authenticated plugin and publisher identity. Do not accept a descriptor or field classification supplied by a runtime RPC. Encode manifest SemVer in `schema_id` as `<namespace>.v<lowercase-version-with-non-alphanumerics-normalized-to-hyphens>`; `schema_version` is `1` for this mapping and `schema_digest` is SHA-256 of the exact signed asset bytes. Convert each packaged schema deterministically to field paths and classifications; validate the descriptor and payload shape before using schema fields for projection. Treat extension schemas as optional annotations: when a schema is unsupported, preserve its bounded payload opaquely for owner round-tripping and keep the typed base resource usable. Never project an unknown namespace or interpret its fields. For known schemas, common catalog projections include only declared public fields; sensitive/custom fields additionally require the exact source/recipient/dataset policy and field grant.
+
+Register/Update and Get/List/Watch use the same validation and catalog resolution. A valid optional extension that cannot be interpreted must not make the base resource unreadable. Omitting an unsupported namespace from a projection does not delete it from the owner record.
+
 ## Persistence and administration
 
 Durable records use a logical owner namespace and explicit retention choice. Quotas, cleanup and uninstall retention operate only on the authenticated owner's data. Host administration may report physical usage, but plugin IPC never receives physical paths. Diagnostics and gameplay observations remain plugin-produced data; Core does not add collectors or dashboards here.

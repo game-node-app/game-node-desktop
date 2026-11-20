@@ -102,6 +102,13 @@ pub struct Projected {
 
 impl Projected {
     pub fn to_proto(&self) -> LibraryEntry {
+        self.to_proto_with_runtime_availability(Vec::new())
+    }
+
+    pub fn to_proto_with_runtime_availability(
+        &self,
+        runtime_availability: Vec<gamenode_plugin_protocol::proto::RuntimeAvailability>,
+    ) -> LibraryEntry {
         LibraryEntry {
             game_id: self.game_id.map(|id| id.to_string()).unwrap_or_default(),
             installation_id: self.installation_id.clone(),
@@ -113,7 +120,7 @@ impl Projected {
             display_name: self.display_name.clone().unwrap_or_default(),
             metadata_revision: self.metadata_revision,
             artwork_revision: self.artwork_revision,
-            runtime_availability: Vec::new(),
+            runtime_availability,
         }
     }
 
@@ -374,6 +381,36 @@ impl LibraryFeed {
 
     pub fn revision(&self) -> u64 {
         self.lock().revision
+    }
+
+    /// Advances the plugin-visible library revision after an external host projection changes
+    /// (for example, a runtime binding becoming available). The upsert events carry no private
+    /// source data; each RPC builds its own authorized response projection.
+    pub fn invalidate_all(&self) {
+        let mut state = self.lock();
+        if state.entries.is_empty() {
+            return;
+        }
+        let revision = state.revision.saturating_add(1);
+        state.revision = revision;
+        let mut changes = Vec::with_capacity(state.entries.len());
+        for entry in state.entries.values_mut() {
+            entry.revision = revision;
+            changes.push(Change {
+                revision,
+                kind: ChangeKind::Upserted,
+                entry: entry.clone(),
+            });
+        }
+        for change in changes {
+            if state.history.len() == HISTORY_EVENTS
+                && let Some(dropped) = state.history.pop_front()
+            {
+                state.floor = state.floor.max(dropped.revision);
+            }
+            state.history.push_back(change.clone());
+            let _ = self.live.send(change);
+        }
     }
 
     /// One page of the entries the scope admits, in installation-id order after `after`.
@@ -702,6 +739,21 @@ pub trait LibraryHost: Send + Sync {
     ) -> Result<Vec<gamenode_core::library::RuntimeResource>, Status> {
         Err(Status::unavailable("runtime resources are unavailable"))
     }
+    async fn register_runtime_owner(
+        &self,
+        _owner: gamenode_core::library::RuntimeOwnerIdentity,
+    ) -> Result<(), Status> {
+        Err(Status::unavailable("runtime owner index is unavailable"))
+    }
+    async fn runtime_catalog_records(
+        &self,
+        _profile_id: String,
+    ) -> Result<Vec<gamenode_core::library::RuntimeCatalogRecord>, Status> {
+        Err(Status::unavailable("runtime catalog is unavailable"))
+    }
+    async fn runtime_common_revision(&self) -> Result<u64, Status> {
+        Err(Status::unavailable("runtime catalog is unavailable"))
+    }
     async fn runtime_resource(
         &self,
         _owner_key: String,
@@ -975,6 +1027,9 @@ pub struct CursorBinding {
     pub grant_revision: u64,
     pub scope: Scope,
     pub search: Option<String>,
+    /// Authorized common-data selection and policy revision, when the route includes a common
+    /// projection. It prevents a cursor from crossing selectors or stale consent snapshots.
+    pub common_selection: String,
 }
 
 impl CursorBinding {
@@ -989,6 +1044,7 @@ impl CursorBinding {
             if self.scope.read_all { "all" } else { "own" },
             self.scope.provider_filter.as_deref().unwrap_or("\u{0}"),
             self.search.as_deref().unwrap_or("\u{0}"),
+            self.common_selection.as_str(),
         ] {
             hash.update((part.len() as u64).to_be_bytes());
             hash.update(part.as_bytes());

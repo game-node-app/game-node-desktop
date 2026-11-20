@@ -46,6 +46,7 @@ pub struct PackageCandidateReport {
     pub manifest: Manifest,
     pub environment: PluginEnvironment,
     pub targets: Vec<TargetCompatibilityAssessment>,
+    pub extension_schemas: Vec<gamenode_plugin_protocol::proto::ExtensionSchemaDescriptor>,
 }
 
 /// UI diagnostics for signed packages. Only the effective execution facts used
@@ -153,7 +154,7 @@ impl ManagedPackageLifecycle {
             .map_err(PackageLifecycleError::Environment)?;
         let package_root = package_root.as_ref().to_owned();
         let evaluation_environment = environment.clone();
-        let (manifest, targets) = tokio::task::spawn_blocking(move || {
+        let (manifest, targets, extension_schemas) = tokio::task::spawn_blocking(move || {
             let integrity = verify_package_directory(&package_root, &publisher_key)
                 .map_err(|error| PackageLifecycleError::InvalidPackage(error.to_string()))?;
             let manifest_bytes = read_signed_manifest(&package_root, &integrity)?;
@@ -161,11 +162,12 @@ impl ManagedPackageLifecycle {
                 .map_err(|error| PackageLifecycleError::InvalidPackage(error.to_string()))?
                 .manifest()
                 .clone();
-            validate_manifest_payload(&package_root, &integrity, &manifest)?;
+            let extension_schemas =
+                validate_manifest_payload(&package_root, &integrity, &manifest)?;
             let targets =
                 assess_manifest_targets(&manifest_bytes, &evaluation_environment, emulation_policy)
                     .map_err(|error| PackageLifecycleError::InvalidPackage(error.to_string()))?;
-            Ok::<_, PackageLifecycleError>((manifest, targets))
+            Ok::<_, PackageLifecycleError>((manifest, targets, extension_schemas))
         })
         .await
         .map_err(|_| PackageLifecycleError::WorkerFailed)??;
@@ -173,6 +175,7 @@ impl ManagedPackageLifecycle {
             manifest,
             environment,
             targets,
+            extension_schemas,
         })
     }
 
@@ -298,7 +301,8 @@ fn validate_manifest_payload(
     package_root: &Path,
     integrity: &IntegrityManifest,
     manifest: &Manifest,
-) -> Result<(), PackageLifecycleError> {
+) -> Result<Vec<gamenode_plugin_protocol::proto::ExtensionSchemaDescriptor>, PackageLifecycleError>
+{
     let mut referenced = manifest.license.files.clone();
     referenced.extend(manifest.license.notices.iter().cloned());
     referenced.extend(manifest.resources.values().cloned());
@@ -316,6 +320,7 @@ fn validate_manifest_payload(
             )));
         }
     }
+    let mut descriptors = Vec::new();
     if !manifest.schemas.is_empty() {
         let mut assets = std::collections::BTreeMap::new();
         for schema in &manifest.schemas {
@@ -327,8 +332,125 @@ fn validate_manifest_payload(
         manifest
             .validate_schema_assets(&assets)
             .map_err(|error| PackageLifecycleError::InvalidPackage(error.to_string()))?;
+        for schema in &manifest.schemas {
+            let bytes = assets.get(&schema.asset).ok_or_else(|| {
+                PackageLifecycleError::InvalidPackage("schema asset disappeared".into())
+            })?;
+            descriptors.push(packaged_schema_descriptor(schema, bytes)?);
+        }
     }
-    Ok(())
+    gamenode_plugin_protocol::extensions::validate_schema_catalog(&descriptors).map_err(|_| {
+        PackageLifecycleError::InvalidPackage("invalid extension schema catalog".into())
+    })?;
+    Ok(descriptors)
+}
+
+fn packaged_schema_descriptor(
+    packaged: &super::package::PackagedSchema,
+    bytes: &[u8],
+) -> Result<gamenode_plugin_protocol::proto::ExtensionSchemaDescriptor, PackageLifecycleError> {
+    use gamenode_plugin_protocol::proto::{
+        ExtensionFieldClassification as Classification, ExtensionSchemaDescriptor,
+        ExtensionSchemaField,
+    };
+    let schema: serde_json::Value = serde_json::from_slice(bytes)
+        .map_err(|error| PackageLifecycleError::InvalidPackage(error.to_string()))?;
+    semver::Version::parse(&packaged.version)
+        .map_err(|error| PackageLifecycleError::InvalidPackage(error.to_string()))?;
+    // Full SemVer is encoded in the id so prereleases remain distinguishable; wire version 1
+    // identifies this manifest-to-protocol descriptor mapping.
+    let encoded_version = packaged
+        .version
+        .to_ascii_lowercase()
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    let schema_id = format!("{}.v{encoded_version}", packaged.namespace);
+    if schema_id.len() > 256 {
+        return Err(PackageLifecycleError::InvalidPackage(
+            "schema identity is too long".into(),
+        ));
+    }
+    let mut fields = Vec::new();
+    collect_schema_fields(&schema, "", &mut fields)?;
+    let fields = fields
+        .into_iter()
+        .map(|(path, classification)| ExtensionSchemaField {
+            path,
+            classification: match classification {
+                1 => Classification::Public as i32,
+                2 => Classification::Sensitive as i32,
+                _ => Classification::Private as i32,
+            },
+        })
+        .collect();
+    let descriptor = ExtensionSchemaDescriptor {
+        namespace: packaged.namespace.clone(),
+        schema_id,
+        schema_version: 1,
+        schema_digest: sha2::Sha256::digest(bytes).to_vec(),
+        schema_json: bytes.to_vec(),
+        fields,
+        optional: true,
+    };
+    gamenode_plugin_protocol::extensions::validate_schema_descriptor(&descriptor).map_err(
+        |_| {
+            PackageLifecycleError::InvalidPackage(
+                "packaged schema is outside the runtime schema subset".into(),
+            )
+        },
+    )?;
+    Ok(descriptor)
+}
+
+fn collect_schema_fields(
+    schema: &serde_json::Value,
+    prefix: &str,
+    output: &mut Vec<(String, u8)>,
+) -> Result<u8, PackageLifecycleError> {
+    let object = schema.as_object().ok_or_else(|| {
+        PackageLifecycleError::InvalidPackage("schema node must be an object".into())
+    })?;
+    let own = match object
+        .get("x-gamenode-classification")
+        .and_then(serde_json::Value::as_str)
+    {
+        Some("public") => 1,
+        Some("sensitive") => 2,
+        Some("private") => 3,
+        _ if prefix.is_empty() => 1,
+        _ => {
+            return Err(PackageLifecycleError::InvalidPackage(
+                "schema field lacks a valid classification".into(),
+            ));
+        }
+    };
+    let mut maximum = own;
+    if let Some(properties) = object
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+    {
+        for (name, child) in properties {
+            let path = if prefix.is_empty() {
+                name.clone()
+            } else {
+                format!("{prefix}.{name}")
+            };
+            let class = collect_schema_fields(child, &path, output)?;
+            maximum = maximum.max(class);
+            output.push((path, class));
+        }
+    }
+    if prefix.is_empty() {
+        return Ok(maximum);
+    }
+    Ok(own.max(maximum))
 }
 
 fn read_signed_payload(
@@ -376,6 +498,35 @@ pub(super) mod tests {
     use ring::signature::KeyPair;
     use std::collections::BTreeMap;
     use tempfile::tempdir;
+
+    #[test]
+    fn signed_manifest_schema_maps_to_host_owned_optional_descriptor() {
+        let bytes = br#"{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"display":{"type":"object","properties":{"label":{"type":"string","maxLength":80,"x-gamenode-classification":"public"},"notes":{"type":"string","maxLength":80,"x-gamenode-classification":"sensitive"}},"required":["label","notes"],"additionalProperties":false,"x-gamenode-classification":"public"}},"required":["display"],"additionalProperties":false}"#;
+        let descriptor = packaged_schema_descriptor(
+            &super::super::package::PackagedSchema {
+                namespace: "org.example.catalog".into(),
+                version: "1.2.3".into(),
+                classification: super::super::package::DataClassification::Sensitive,
+                asset: "schemas/catalog.json".into(),
+            },
+            bytes,
+        )
+        .unwrap();
+        assert_eq!(descriptor.schema_id, "org.example.catalog.v1-2-3");
+        assert_eq!(descriptor.schema_version, 1);
+        assert!(descriptor.optional);
+        assert!(descriptor.fields.iter().any(|field| {
+            field.path == "display.label"
+                && field.classification
+                    == gamenode_plugin_protocol::proto::ExtensionFieldClassification::Public as i32
+        }));
+        assert!(descriptor.fields.iter().any(|field| {
+            field.path == "display"
+                && field.classification
+                    == gamenode_plugin_protocol::proto::ExtensionFieldClassification::Sensitive
+                        as i32
+        }));
+    }
 
     pub(in crate::plugin_host) fn write_signed_package(
         root: &Path,

@@ -74,8 +74,8 @@ pub use query::{
     TitleSourceKind,
 };
 pub use runtime::{
-    ApprovedFileReference, RuntimeArgumentTemplate, RuntimeContentBinding, RuntimeMutation,
-    RuntimeResource,
+    ApprovedFileReference, RuntimeArgumentTemplate, RuntimeCatalogRecord, RuntimeContentBinding,
+    RuntimeExtension, RuntimeMutation, RuntimeOwnerIdentity, RuntimeResource,
 };
 pub use selection::{Direction, SelectMode, Selection};
 pub use store::{

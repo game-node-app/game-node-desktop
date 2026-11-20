@@ -56,7 +56,9 @@ use super::saves::SaveAccess;
 use super::shared_data::{
     BrokerError, DataBroker, ProjectedRecord, QueryCursor, QueryRequest, SubscriptionEnd,
 };
-use super::sharing_policy::{AccessDecision, AccessRequest, Authorizer, Delivery};
+use super::sharing_policy::{
+    AccessDecision, AccessRequest, Authorizer, Delivery, SharingPolicyError,
+};
 use super::storage::PluginStorage;
 
 /// Open `LibraryWatch` streams allowed per plugin session.
@@ -386,6 +388,158 @@ impl Authorizer for DenySharedData {
 }
 
 impl ResourceApi {
+    async fn common_runtime_availability(
+        &self,
+        caller: &ResourceCaller,
+        context: Option<&ServiceContext>,
+        entry: &super::library::Projected,
+        selector: Option<&CommonDataSelector>,
+    ) -> Result<Vec<RuntimeAvailability>, Status> {
+        let selected = gamenode_plugin_protocol::common_data::categories(selector)
+            .map_err(|_| Status::invalid_argument("invalid common-data selector"))?
+            .contains(&CommonDataCategory::ContentAvailability);
+        if !selected {
+            return Ok(Vec::new());
+        }
+        let identity = caller
+            .namespace
+            .as_ref()
+            .map(|namespace| namespace.identity())
+            .ok_or_else(|| {
+                Status::permission_denied("common availability requires a plugin identity")
+            })?;
+        let policy_revision = self.shared_authorizer.revision(identity);
+        let policy_selection = self.authorize_common_selection(caller, selector)?;
+        if !policy_selection.includes_category(CommonDataCategory::ContentAvailability) {
+            return Ok(Vec::new());
+        }
+        let context =
+            context.ok_or_else(|| Status::unauthenticated("resource context required"))?;
+        self.providers
+            .authorize_resource(Some(context), cap::COMMON_CONTENT_AVAILABILITY_READ)?;
+        if !caller.has(cap::COMMON_CONTENT_AVAILABILITY_READ) {
+            return Err(Status::permission_denied(
+                "common content-availability read is not granted",
+            ));
+        }
+        let Some(game_id) = entry.game_id else {
+            return Ok(Vec::new());
+        };
+        let profile_id = caller
+            .namespace
+            .as_ref()
+            .map(|namespace| namespace.identity().profile_id.clone())
+            .ok_or_else(|| {
+                Status::permission_denied("common availability requires a plugin identity")
+            })?;
+        let host = self
+            .library
+            .host()
+            .ok_or_else(|| Status::unavailable("runtime catalog is unavailable"))?;
+        let records = host.runtime_catalog_records(profile_id).await?;
+        let mut availability = Vec::new();
+        for record in records {
+            for binding in record
+                .bindings
+                .iter()
+                .filter(|binding| binding.game_id == game_id)
+            {
+                if !record
+                    .runtime
+                    .supported_formats
+                    .contains(&binding.content_kind)
+                    || (!binding.supported_platforms.is_empty()
+                        && !binding
+                            .supported_platforms
+                            .contains(&record.runtime.platform))
+                {
+                    continue;
+                }
+                availability.push(RuntimeAvailability {
+                    content_id: binding.content_id.clone(),
+                    content_kind: binding.content_kind.clone(),
+                    runtime_id: runtimes::common_runtime_id(&record.owner, &record.runtime.id),
+                    runtime_name: record.runtime.name.clone(),
+                    platform: record.runtime.platform.clone(),
+                    publisher_id: record.owner.plugin_id.clone(),
+                    revision: binding.revision.max(record.runtime.revision),
+                });
+            }
+        }
+        availability.sort_by(|left, right| {
+            (&left.publisher_id, &left.content_id, &left.runtime_id).cmp(&(
+                &right.publisher_id,
+                &right.content_id,
+                &right.runtime_id,
+            ))
+        });
+        availability.dedup_by(|left, right| {
+            left.publisher_id == right.publisher_id
+                && left.content_id == right.content_id
+                && left.runtime_id == right.runtime_id
+        });
+        if self.shared_authorizer.revision(identity) != policy_revision {
+            return Err(Status::failed_precondition(
+                "common-data policy changed; retry the query",
+            ));
+        }
+        self.providers
+            .authorize_resource(Some(context), cap::COMMON_CONTENT_AVAILABILITY_READ)?;
+        Ok(availability)
+    }
+
+    async fn event_with_common_availability(
+        &self,
+        caller: &ResourceCaller,
+        context: Option<&ServiceContext>,
+        change: &Change,
+        selector: Option<&CommonDataSelector>,
+    ) -> Result<LibraryEvent, Status> {
+        let availability = self
+            .common_runtime_availability(caller, context, &change.entry, selector)
+            .await?;
+        Ok(LibraryEvent {
+            revision: change.revision,
+            event_type: change.kind.as_str().to_owned(),
+            entry: Some(
+                change
+                    .entry
+                    .to_proto_with_runtime_availability(availability),
+            ),
+        })
+    }
+
+    pub(super) fn authorize_common_selection(
+        &self,
+        caller: &ResourceCaller,
+        selector: Option<&CommonDataSelector>,
+    ) -> Result<gamenode_plugin_protocol::common_data::AuthorizedSelection, Status> {
+        // Validate even when this caller is official or has no grants, so malformed selectors do
+        // not become success-shaped private-only responses.
+        gamenode_plugin_protocol::common_data::categories(selector)
+            .map_err(|_| Status::invalid_argument("invalid common-data selector"))?;
+        gamenode_plugin_protocol::common_data::selected_record_ids(selector)
+            .map_err(|_| Status::invalid_argument("invalid common-data selector"))?;
+        let Some(identity) = caller
+            .namespace
+            .as_ref()
+            .map(|namespace| namespace.identity())
+        else {
+            return Ok(gamenode_plugin_protocol::common_data::AuthorizedSelection::default());
+        };
+        self.shared_authorizer
+            .authorize_common_query(identity, selector)
+            .map_err(|error| match error {
+                SharingPolicyError::Selector(_) | SharingPolicyError::InvalidCategory => {
+                    Status::invalid_argument("invalid common-data selector")
+                }
+                SharingPolicyError::LockPoisoned => {
+                    Status::unavailable("common-data policy is unavailable")
+                }
+                _ => Status::internal("common-data authorization failed"),
+            })
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         providers: ProviderApi,
@@ -551,18 +705,30 @@ impl Drop for WatchSlot {
     }
 }
 
-/// Library projections for common-data categories (such as runtime availability) are not part
-/// of this build; a query that selects one is refused rather than silently narrowed.
-fn no_common_data(selector: Option<&CommonDataSelector>) -> Result<(), Status> {
-    match selector {
-        Some(selector)
-            if !selector.categories.is_empty() || !selector.selected_record_ids.is_empty() =>
-        {
-            Err(Status::unimplemented(
-                "common-data projections are not available for Library",
-            ))
-        }
-        _ => Ok(()),
+fn validate_library_common_selector(selector: Option<&CommonDataSelector>) -> Result<(), Status> {
+    let categories = gamenode_plugin_protocol::common_data::categories(selector)
+        .map_err(|_| Status::invalid_argument("invalid common-data selector"))?;
+    gamenode_plugin_protocol::common_data::selected_record_ids(selector)
+        .map_err(|_| Status::invalid_argument("invalid common-data selector"))?;
+    if categories
+        .iter()
+        .any(|category| *category != CommonDataCategory::ContentAvailability)
+    {
+        return Err(Status::unimplemented(
+            "Library supports only the content-availability common-data projection",
+        ));
+    }
+    Ok(())
+}
+
+/// Reject common-data fields on ResourceHost routes that have no common-data projection.
+fn no_common_data<T>(value: Option<&T>) -> Result<(), Status> {
+    if value.is_some() {
+        Err(Status::unimplemented(
+            "this ResourceHost route does not support common data",
+        ))
+    } else {
+        Ok(())
     }
 }
 
@@ -774,7 +940,19 @@ impl resource_host_server::ResourceHost for ResourceApi {
         let caller = self
             .providers
             .authorize_resource(page.context.as_ref(), cap::LIBRARY_READ)?;
-        no_common_data(page.common_data_categories.as_ref())?;
+        validate_library_common_selector(page.common_data_categories.as_ref())?;
+        let common_selection =
+            self.authorize_common_selection(&caller, page.common_data_categories.as_ref())?;
+        let requests_availability =
+            gamenode_plugin_protocol::common_data::categories(page.common_data_categories.as_ref())
+                .map_err(|_| Status::invalid_argument("invalid common-data selector"))?
+                .contains(&CommonDataCategory::ContentAvailability);
+        if requests_availability
+            && common_selection.includes_category(CommonDataCategory::ContentAvailability)
+        {
+            self.providers
+                .authorize_resource(page.context.as_ref(), cap::COMMON_CONTENT_AVAILABILITY_READ)?;
+        }
         let scope = Self::scope(&caller, &request.provider_id)?;
         let search = request.search.trim();
         if search.len() > MAX_SEARCH_BYTES {
@@ -792,6 +970,16 @@ impl resource_host_server::ResourceHost for ResourceApi {
             grant_revision: caller.grant_revision,
             scope,
             search,
+            common_selection: format!(
+                "selector={:?};content={};policy={}",
+                page.common_data_categories,
+                common_selection.includes_category(CommonDataCategory::ContentAvailability),
+                caller
+                    .namespace
+                    .as_ref()
+                    .map(|namespace| self.shared_authorizer.revision(namespace.identity()))
+                    .unwrap_or_default()
+            ),
         };
         let resumed =
             if page.cursor.is_empty() {
@@ -826,8 +1014,20 @@ impl resource_host_server::ResourceHost for ResourceApi {
             }
             _ => String::new(),
         };
+        let mut projected_entries = Vec::with_capacity(entries.len());
+        for entry in &entries {
+            let availability = self
+                .common_runtime_availability(
+                    &caller,
+                    page.context.as_ref(),
+                    entry,
+                    page.common_data_categories.as_ref(),
+                )
+                .await?;
+            projected_entries.push(entry.to_proto_with_runtime_availability(availability));
+        }
         Ok(Response::new(LibraryListReply {
-            entries: entries.iter().map(|entry| entry.to_proto()).collect(),
+            entries: projected_entries,
             next_cursor,
             revision,
         }))
@@ -841,7 +1041,7 @@ impl resource_host_server::ResourceHost for ResourceApi {
         let caller = self
             .providers
             .authorize_resource(request.context.as_ref(), cap::LIBRARY_READ)?;
-        no_common_data(request.common_data_categories.as_ref())?;
+        validate_library_common_selector(request.common_data_categories.as_ref())?;
         let scope = Self::scope(&caller, "")?;
         let game_id = match request.game_id.as_str() {
             "" => None,
@@ -872,8 +1072,16 @@ impl resource_host_server::ResourceHost for ResourceApi {
                 "installation_id or game_id is required",
             ));
         };
+        let availability = self
+            .common_runtime_availability(
+                &caller,
+                request.context.as_ref(),
+                &entry,
+                request.common_data_categories.as_ref(),
+            )
+            .await?;
         Ok(Response::new(LibraryGetReply {
-            entry: Some(entry.to_proto()),
+            entry: Some(entry.to_proto_with_runtime_availability(availability)),
             revision,
         }))
     }
@@ -887,7 +1095,24 @@ impl resource_host_server::ResourceHost for ResourceApi {
         let caller = self
             .providers
             .authorize_resource(context.as_ref(), cap::LIBRARY_READ)?;
-        no_common_data(request.common_data_categories.as_ref())?;
+        validate_library_common_selector(request.common_data_categories.as_ref())?;
+        let selector = request.common_data_categories.clone();
+        let requests_availability =
+            gamenode_plugin_protocol::common_data::categories(selector.as_ref())
+                .map_err(|_| Status::invalid_argument("invalid common-data selector"))?
+                .contains(&CommonDataCategory::ContentAvailability);
+        let policy_selection = self.authorize_common_selection(&caller, selector.as_ref())?;
+        let requests_availability = requests_availability
+            && policy_selection.includes_category(CommonDataCategory::ContentAvailability);
+        let policy_revision = caller
+            .namespace
+            .as_ref()
+            .map(|namespace| self.shared_authorizer.revision(namespace.identity()))
+            .unwrap_or_default();
+        if requests_availability {
+            self.providers
+                .authorize_resource(context.as_ref(), cap::COMMON_CONTENT_AVAILABILITY_READ)?;
+        }
         Self::scope(&caller, &request.provider_id)?;
         let slot = self.watch_slot(&caller.session_id)?;
         let (_, backlog, mut live) = self.library.subscribe(request.after_revision).map_err(
@@ -900,6 +1125,7 @@ impl resource_host_server::ResourceHost for ResourceApi {
         )?;
         let (tx, rx) = mpsc::channel(WATCH_QUEUE);
         let providers = self.providers.clone();
+        let resource = self.clone();
         let provider_filter = request.provider_id;
         tokio::spawn(async move {
             let _slot = slot;
@@ -912,10 +1138,20 @@ impl resource_host_server::ResourceHost for ResourceApi {
                         "plugin permissions changed; list again",
                     ));
                 }
+                if requests_availability {
+                    providers.authorize_resource(
+                        context.as_ref(),
+                        cap::COMMON_CONTENT_AVAILABILITY_READ,
+                    )?;
+                    if caller.namespace.as_ref().is_some_and(|namespace| {
+                        resource.shared_authorizer.revision(namespace.identity()) != policy_revision
+                    }) {
+                        return Err(Status::failed_precondition(
+                            "common-data policy changed; list again",
+                        ));
+                    }
+                }
                 Self::scope(&current, &provider_filter)
-            };
-            let deliver = |change: &Change, scope: &Scope| {
-                scope.admits(&change.entry).then(|| Ok(event(change)))
             };
             for change in &backlog {
                 let scope = match check() {
@@ -925,10 +1161,26 @@ impl resource_host_server::ResourceHost for ResourceApi {
                         return;
                     }
                 };
-                if let Some(item) = deliver(change, &scope)
-                    && tx.send(item).await.is_err()
-                {
-                    return;
+                if scope.admits(&change.entry) {
+                    match resource
+                        .event_with_common_availability(
+                            &caller,
+                            context.as_ref(),
+                            change,
+                            selector.as_ref(),
+                        )
+                        .await
+                    {
+                        Ok(item) => {
+                            if tx.send(Ok(item)).await.is_err() {
+                                return;
+                            }
+                        }
+                        Err(status) => {
+                            let _ = tx.send(Err(status)).await;
+                            return;
+                        }
+                    }
                 }
             }
             let mut recheck = tokio::time::interval(WATCH_RECHECK);
@@ -957,10 +1209,26 @@ impl resource_host_server::ResourceHost for ResourceApi {
                         return;
                     }
                 };
-                if let Some(item) = change.as_ref().and_then(|change| deliver(change, &scope))
-                    && tx.send(item).await.is_err()
-                {
-                    return;
+                if let Some(change) = change.as_ref().filter(|change| scope.admits(&change.entry)) {
+                    match resource
+                        .event_with_common_availability(
+                            &caller,
+                            context.as_ref(),
+                            change,
+                            selector.as_ref(),
+                        )
+                        .await
+                    {
+                        Ok(item) => {
+                            if tx.send(Ok(item)).await.is_err() {
+                                return;
+                            }
+                        }
+                        Err(status) => {
+                            let _ = tx.send(Err(status)).await;
+                            return;
+                        }
+                    }
                 }
             }
         });

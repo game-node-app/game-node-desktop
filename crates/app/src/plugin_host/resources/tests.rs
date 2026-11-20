@@ -34,6 +34,7 @@ mod locations;
 mod network;
 mod notifications;
 mod ports;
+mod runtimes;
 mod saves;
 mod sdk;
 mod sdk_actions;
@@ -84,6 +85,7 @@ struct Fixture {
     /// The time the notification rate limit sees; tests move it.
     notice_clock: Arc<std::sync::atomic::AtomicU64>,
     notices: Arc<notifications::Collected>,
+    shared_policies: Arc<crate::plugin_host::sharing_policy::SharedSharingPolicies>,
     /// The seconds the storage clock reads; tests move it to expire values.
     clock: Arc<std::sync::atomic::AtomicI64>,
     plugin_data: std::path::PathBuf,
@@ -93,6 +95,12 @@ struct Fixture {
     _commands: tonic::Streaming<ProviderCommand>,
     _server: crate::plugin_host::PluginApiServer,
     _temp: tempfile::TempDir,
+}
+
+struct SecondIdentity {
+    host: HostClient,
+    context: ServiceContext,
+    _commands: tonic::Streaming<ProviderCommand>,
 }
 
 impl Fixture {
@@ -154,11 +162,15 @@ impl Fixture {
         });
         let notices = Arc::new(notifications::Collected::default());
         notifications.set_sink(notices.clone());
+        let shared_policies = Arc::new(
+            crate::plugin_host::sharing_policy::SharedSharingPolicies::open(&plugin_data).unwrap(),
+        );
         let root = crate::plugin_host::PluginApi {
             storage: storage.clone(),
             files: files.clone(),
             network: network.clone(),
             notifications: notifications.clone(),
+            shared_policies: shared_policies.clone(),
             ..Default::default()
         };
         root.set_state_layout(crate::plugin_host::profile::PluginStateLayout::new(
@@ -266,6 +278,7 @@ impl Fixture {
             snapshots,
             notice_clock,
             notices,
+            shared_policies,
             clock,
             plugin_data,
             endpoint,
@@ -283,6 +296,64 @@ impl Fixture {
 
     fn context(&self) -> ServiceContext {
         self.host.resource_context().unwrap().clone()
+    }
+
+    async fn second_identity(&self, grants: &[&'static str]) -> SecondIdentity {
+        let provider_id = "fixture-second";
+        let mut capabilities = vec![cap::CONTEXT];
+        capabilities.extend_from_slice(grants);
+        self.api
+            .register(Registration {
+                declared_developer: "Second fixture developer".into(),
+                package_digest: vec![8; 32],
+                provider_id: provider_id.into(),
+                plugin_id: "fixture.second".into(),
+                kind: crate::plugin_host::provider::RegistrationKind::Provider,
+                origin: RegistrationOrigin::ThirdParty {
+                    publisher_fingerprint: "cd".repeat(32),
+                },
+                capabilities: capabilities.iter().map(|grant| (*grant).into()).collect(),
+                shared_catalog: false,
+                playtime: Default::default(),
+                services: Arc::new(NoServices),
+            })
+            .unwrap();
+        let launch = self.api.begin_launch(provider_id).unwrap();
+        let credential = launch
+            .credential
+            .as_bytes()
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|bytes| u8::from_str_radix(std::str::from_utf8(bytes).unwrap(), 16).unwrap())
+            .collect();
+        let session = Session::open_with_options(
+            Launch {
+                endpoint: self.endpoint.clone(),
+                credential,
+                operation_id: "second-identity-launch".into(),
+            },
+            "fixture.second",
+            provider_id,
+            "1.0",
+            &capabilities,
+            SessionOptions {
+                min_api_major: 1,
+                min_api_minor: cap::THIRD_PARTY_API_MINOR,
+                max_api_major: 1,
+                max_api_minor: gamenode_plugin_protocol::API_MINOR,
+                ..SessionOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+        launch.ready.await.unwrap();
+        let context = session.host.resource_context().unwrap().clone();
+        SecondIdentity {
+            host: session.host,
+            context,
+            _commands: session.commands,
+        }
     }
 
     /// Syncs library rows and gives each the id `id-<key>`.

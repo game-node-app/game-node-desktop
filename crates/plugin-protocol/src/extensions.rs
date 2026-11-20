@@ -145,23 +145,9 @@ pub struct ExtensionSet {
 
 impl ExtensionSet {
     pub fn from_wire(values: HashMap<String, proto::ExtensionPayload>) -> Result<Self, WireError> {
-        if values.len() > MAX_NAMESPACES
-            || values.values().map(Message::encoded_len).sum::<usize>() > MAX_EXTENSION_BYTES
-        {
-            return Err(WireError);
-        }
-        for (namespace, payload) in &values {
-            validate_namespace(namespace)?;
-            validate_payload(payload)?;
-            if !payload.schema_id.starts_with(&format!("{namespace}."))
-                && payload.schema_id != *namespace
-            {
-                return Err(WireError);
-            }
-        }
-        Ok(Self {
-            namespaces: values.into_iter().collect(),
-        })
+        let namespaces = values.into_iter().collect();
+        validate_extension_set(&namespaces)?;
+        Ok(Self { namespaces })
     }
 
     pub fn as_map(&self) -> &BTreeMap<String, proto::ExtensionPayload> {
@@ -211,11 +197,7 @@ impl ExtensionSet {
                 }
             }
         }
-        if candidate.len() > MAX_NAMESPACES
-            || candidate.values().map(Message::encoded_len).sum::<usize>() > MAX_EXTENSION_BYTES
-        {
-            return Err(WireError);
-        }
+        validate_extension_set(&candidate)?;
         self.namespaces = candidate;
         Ok(next_revision)
     }
@@ -340,6 +322,14 @@ pub fn validate_schema_descriptor(
 }
 
 pub fn validate_payload(payload: &proto::ExtensionPayload) -> Result<(), WireError> {
+    let mut key_count = 0;
+    validate_payload_with_key_count(payload, &mut key_count)
+}
+
+fn validate_payload_with_key_count(
+    payload: &proto::ExtensionPayload,
+    key_count: &mut usize,
+) -> Result<(), WireError> {
     if !valid_schema_id(&payload.schema_id)
         || payload.schema_version == 0
         || payload.schema_digest.len() != 32
@@ -348,8 +338,28 @@ pub fn validate_payload(payload: &proto::ExtensionPayload) -> Result<(), WireErr
     {
         return Err(WireError);
     }
-    let mut count = 0;
-    validate_struct(payload.data.as_ref().ok_or(WireError)?, 0, &mut count)?;
+    validate_struct(payload.data.as_ref().ok_or(WireError)?, 0, key_count)?;
+    Ok(())
+}
+
+fn validate_extension_set(
+    namespaces: &BTreeMap<String, proto::ExtensionPayload>,
+) -> Result<(), WireError> {
+    if namespaces.len() > MAX_NAMESPACES
+        || namespaces.values().map(Message::encoded_len).sum::<usize>() > MAX_EXTENSION_BYTES
+    {
+        return Err(WireError);
+    }
+    let mut key_count = 0;
+    for (namespace, payload) in namespaces {
+        validate_namespace(namespace)?;
+        validate_payload_with_key_count(payload, &mut key_count)?;
+        if !payload.schema_id.starts_with(&format!("{namespace}."))
+            && payload.schema_id != *namespace
+        {
+            return Err(WireError);
+        }
+    }
     Ok(())
 }
 
@@ -649,6 +659,22 @@ fn schema_subset_valid(schema: &serde_json::Value) -> bool {
     };
     for (key, value) in object {
         match key.as_str() {
+            "$schema" => {
+                if value.as_str() != Some("https://json-schema.org/draft/2020-12/schema") {
+                    return false;
+                }
+            }
+            "title" | "description" => {
+                let maximum = if key == "title" { 128 } else { 1024 };
+                if value.as_str().is_none_or(|text| text.len() > maximum) {
+                    return false;
+                }
+            }
+            "x-gamenode-classification" => {
+                if !matches!(value.as_str(), Some("public" | "sensitive" | "private")) {
+                    return false;
+                }
+            }
             "type" => {
                 let valid_type = |name: &str| {
                     matches!(

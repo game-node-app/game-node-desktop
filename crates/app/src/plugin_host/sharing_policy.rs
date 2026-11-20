@@ -295,6 +295,22 @@ pub struct AccessDecision {
 pub trait Authorizer: Send + Sync {
     fn revision(&self, recipient: &PluginIdentity) -> u64;
     fn decide(&self, request: &AccessRequest<'_>) -> AccessDecision;
+
+    /// Resolve a route's explicit common-data selector against the same persisted activation
+    /// grants used by Data queries. Implementations that do not own the policy store deny all.
+    fn authorize_common_query(
+        &self,
+        _recipient: &PluginIdentity,
+        selector: Option<&CommonDataSelector>,
+    ) -> Result<AuthorizedSelection, SharingPolicyError> {
+        let empty_categories = BTreeSet::new();
+        let empty_records = BTreeSet::new();
+        Ok(common_data::authorize_selector(
+            selector,
+            &empty_categories,
+            &empty_records,
+        )?)
+    }
 }
 
 /// Thread-safe handle for host services that need to share policy reads and serialize durable
@@ -424,6 +440,14 @@ impl Authorizer for SharedSharingPolicies {
                 revision: u64::MAX,
                 ..AccessDecision::default()
             })
+    }
+
+    fn authorize_common_query(
+        &self,
+        recipient: &PluginIdentity,
+        selector: Option<&CommonDataSelector>,
+    ) -> Result<AuthorizedSelection, SharingPolicyError> {
+        self.read()?.authorize_common_query(recipient, selector)
     }
 }
 
@@ -975,6 +999,14 @@ impl Authorizer for SharingPolicies {
 
     fn decide(&self, request: &AccessRequest<'_>) -> AccessDecision {
         self.decide_access(request)
+    }
+
+    fn authorize_common_query(
+        &self,
+        recipient: &PluginIdentity,
+        selector: Option<&CommonDataSelector>,
+    ) -> Result<AuthorizedSelection, SharingPolicyError> {
+        SharingPolicies::authorize_common_query(self, recipient, selector)
     }
 }
 

@@ -3,6 +3,7 @@
 //! Plugin file handles are session scoped. Durable records keep only the host-owned approval id
 //! and relative path; reads issue a fresh handle after checking the approval and current grant.
 
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
@@ -12,6 +13,8 @@ use gamenode_core::library::{
     ApprovedFileReference, LaunchPlanResource, RuntimeArgumentTemplate as CoreArgument,
     RuntimeContentBinding, RuntimeMutation, RuntimeResource,
 };
+use gamenode_plugin_protocol::extensions::ExtensionSet;
+use gamenode_plugin_protocol::prost_types;
 use gamenode_plugin_protocol::{capability as cap, proto::*};
 use tonic::{Request, Response, Status};
 
@@ -54,6 +57,29 @@ fn unix_now() -> i64 {
         .unwrap_or_default()
 }
 
+pub(super) fn common_runtime_id(
+    owner: &gamenode_core::library::RuntimeOwnerIdentity,
+    id: &str,
+) -> String {
+    let mut hash = Sha256::new();
+    for part in [
+        owner.plugin_id.as_str(),
+        owner.publisher_fingerprint.as_str(),
+        owner.profile_id.as_str(),
+        id,
+    ] {
+        hash.update((part.len() as u64).to_be_bytes());
+        hash.update(part.as_bytes());
+    }
+    let digest = hash.finalize();
+    let encoded = digest
+        .iter()
+        .take(16)
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("shared-{encoded}")
+}
+
 fn mutation_outcome(value: RuntimeMutation) -> (MutationOutcome, u64, bool) {
     match value {
         RuntimeMutation::Applied { revision } => (MutationOutcome::Applied, revision, true),
@@ -74,11 +100,129 @@ fn runtime_request_shape(record: &RuntimeRecord, require_executable: bool) -> Re
         || record.supported_formats.is_empty()
         || record.supported_formats.len() > 128
         || record.argument_template.len() > 128
-        || !record.extensions.is_empty()
     {
         return Err(Status::invalid_argument("invalid runtime resource"));
     }
+    ExtensionSet::from_wire(record.extensions.clone())
+        .map_err(|_| Status::invalid_argument("invalid runtime extension payload"))?;
     Ok(())
+}
+
+fn json_value_from_proto(value: &prost_types::Value) -> Result<serde_json::Value, Status> {
+    use prost_types::value::Kind;
+    Ok(
+        match value
+            .kind
+            .as_ref()
+            .ok_or_else(|| Status::invalid_argument("invalid runtime extension value"))?
+        {
+            Kind::NullValue(_) => serde_json::Value::Null,
+            Kind::NumberValue(number) => serde_json::Number::from_f64(*number)
+                .map(serde_json::Value::Number)
+                .ok_or_else(|| Status::invalid_argument("invalid runtime extension number"))?,
+            Kind::StringValue(value) => serde_json::Value::String(value.clone()),
+            Kind::BoolValue(value) => serde_json::Value::Bool(*value),
+            Kind::StructValue(value) => serde_json::Value::Object(json_object_from_proto(value)?),
+            Kind::ListValue(value) => serde_json::Value::Array(
+                value
+                    .values
+                    .iter()
+                    .map(json_value_from_proto)
+                    .collect::<Result<_, _>>()?,
+            ),
+        },
+    )
+}
+
+fn json_object_from_proto(
+    value: &prost_types::Struct,
+) -> Result<serde_json::Map<String, serde_json::Value>, Status> {
+    value
+        .fields
+        .iter()
+        .map(|(key, value)| Ok((key.clone(), json_value_from_proto(value)?)))
+        .collect()
+}
+
+fn proto_value_from_json(value: &serde_json::Value) -> Result<prost_types::Value, Status> {
+    use prost_types::value::Kind;
+    let kind = match value {
+        serde_json::Value::Null => Kind::NullValue(0),
+        serde_json::Value::Bool(value) => Kind::BoolValue(*value),
+        serde_json::Value::Number(value) => Kind::NumberValue(
+            value
+                .as_f64()
+                .ok_or_else(|| Status::invalid_argument("invalid runtime extension number"))?,
+        ),
+        serde_json::Value::String(value) => Kind::StringValue(value.clone()),
+        serde_json::Value::Array(values) => Kind::ListValue(prost_types::ListValue {
+            values: values
+                .iter()
+                .map(proto_value_from_json)
+                .collect::<Result<_, _>>()?,
+        }),
+        serde_json::Value::Object(values) => Kind::StructValue(prost_types::Struct {
+            fields: values
+                .iter()
+                .map(|(key, value)| Ok((key.clone(), proto_value_from_json(value)?)))
+                .collect::<Result<_, Status>>()?,
+        }),
+    };
+    Ok(prost_types::Value { kind: Some(kind) })
+}
+
+fn core_extensions(
+    values: &std::collections::HashMap<String, ExtensionPayload>,
+) -> Result<std::collections::BTreeMap<String, gamenode_core::library::RuntimeExtension>, Status> {
+    let validated = ExtensionSet::from_wire(values.clone())
+        .map_err(|_| Status::invalid_argument("invalid runtime extension payload"))?;
+    validated
+        .as_map()
+        .iter()
+        .map(|(namespace, payload)| {
+            let data = payload
+                .data
+                .as_ref()
+                .ok_or_else(|| Status::invalid_argument("runtime extension data is required"))?;
+            Ok((
+                namespace.clone(),
+                gamenode_core::library::RuntimeExtension {
+                    schema_id: payload.schema_id.clone(),
+                    schema_version: payload.schema_version,
+                    schema_digest: payload.schema_digest.clone(),
+                    data: json_object_from_proto(data)?,
+                },
+            ))
+        })
+        .collect()
+}
+
+fn proto_extensions(
+    values: &std::collections::BTreeMap<String, gamenode_core::library::RuntimeExtension>,
+) -> Result<std::collections::HashMap<String, ExtensionPayload>, Status> {
+    let values = values
+        .iter()
+        .map(|(namespace, extension)| {
+            Ok((
+                namespace.clone(),
+                ExtensionPayload {
+                    schema_id: extension.schema_id.clone(),
+                    schema_version: extension.schema_version,
+                    schema_digest: extension.schema_digest.clone(),
+                    data: Some(prost_types::Struct {
+                        fields: extension
+                            .data
+                            .iter()
+                            .map(|(key, value)| Ok((key.clone(), proto_value_from_json(value)?)))
+                            .collect::<Result<_, Status>>()?,
+                    }),
+                },
+            ))
+        })
+        .collect::<Result<std::collections::HashMap<_, _>, Status>>()?;
+    ExtensionSet::from_wire(values.clone())
+        .map_err(|_| Status::failed_precondition("stored runtime extension is invalid"))?;
+    Ok(values)
 }
 
 fn core_arguments(values: &[RuntimeArgumentTemplate]) -> Result<Vec<CoreArgument>, Status> {
@@ -113,11 +257,16 @@ fn proto_arguments(values: &[CoreArgument]) -> Vec<RuntimeArgumentTemplate> {
 }
 
 fn validate_common_selector(selector: Option<&CommonDataSelector>) -> Result<(), Status> {
-    if selector.is_some_and(|selector| {
-        !selector.categories.is_empty() || !selector.selected_record_ids.is_empty()
-    }) {
+    let categories = gamenode_plugin_protocol::common_data::categories(selector)
+        .map_err(|_| Status::invalid_argument("invalid common-data selector"))?;
+    gamenode_plugin_protocol::common_data::selected_record_ids(selector)
+        .map_err(|_| Status::invalid_argument("invalid common-data selector"))?;
+    if categories
+        .iter()
+        .any(|category| *category != CommonDataCategory::RuntimeCatalog)
+    {
         return Err(Status::unimplemented(
-            "common runtime catalog projections are not available in this build",
+            "this runtime route only supports the runtime catalog category",
         ));
     }
     Ok(())
@@ -132,6 +281,99 @@ fn valid_id(value: &str) -> bool {
 }
 
 impl ResourceApi {
+    async fn runtime_snapshot(
+        &self,
+        caller: &ResourceCaller,
+        context: &ServiceContext,
+        selector: Option<&CommonDataSelector>,
+    ) -> Result<(u64, Vec<RuntimeRecord>), Status> {
+        validate_common_selector(selector)?;
+        let selected_runtime_catalog = gamenode_plugin_protocol::common_data::categories(selector)
+            .map_err(|_| Status::invalid_argument("invalid common-data selector"))?
+            .contains(&CommonDataCategory::RuntimeCatalog);
+        let policy_identity = caller
+            .namespace
+            .as_ref()
+            .map(|namespace| namespace.identity());
+        let policy_revision =
+            policy_identity.map(|identity| self.shared_authorizer.revision(identity));
+        let policy_selection = self.authorize_common_selection(caller, selector)?;
+        let include_common = selected_runtime_catalog
+            && policy_selection.includes_category(CommonDataCategory::RuntimeCatalog);
+        if include_common {
+            self.providers
+                .authorize_resource(Some(context), cap::COMMON_RUNTIME_CATALOG_READ)?;
+        }
+        let include_private = caller.has(cap::FILES_READ);
+        if include_private {
+            self.providers
+                .authorize_resource(Some(context), cap::FILES_READ)?;
+        } else if !include_common {
+            self.providers
+                .authorize_resource(Some(context), cap::FILES_READ)?;
+        }
+        if include_common {
+            self.providers
+                .authorize_resource(Some(context), cap::COMMON_RUNTIME_CATALOG_READ)?;
+        }
+        let host = self.library.host().ok_or_else(unavailable)?;
+        let owner_key = mutation_owner(caller);
+        let mut revision = if include_common {
+            host.runtime_common_revision().await?
+        } else {
+            host.runtime_catalog_revision(owner_key.clone()).await?
+        };
+        let mut projected = Vec::new();
+        if include_private {
+            let own_revision = host.runtime_catalog_revision(owner_key.clone()).await?;
+            let own_records = host.runtime_resources(owner_key.clone()).await?;
+            if !include_common {
+                revision = own_revision;
+            }
+            for record in own_records {
+                projected.push(self.runtime_proto(caller, context, record).await?);
+            }
+        }
+        if include_common {
+            let profile_id = caller
+                .namespace
+                .as_ref()
+                .map(|namespace| namespace.identity().profile_id.clone())
+                .ok_or_else(|| {
+                    Status::permission_denied("common runtime catalog requires a plugin identity")
+                })?;
+            for record in host.runtime_catalog_records(profile_id).await? {
+                if record.owner.owner_key == owner_key && include_private {
+                    continue;
+                }
+                projected.push(
+                    self.common_runtime_proto(&record.runtime, &record.owner)
+                        .await?,
+                );
+            }
+            // Re-read after the data to give list/watch consumers a revision that fences the
+            // exact common snapshot returned above.
+            revision = host.runtime_common_revision().await?;
+        }
+        if include_common
+            && policy_identity.is_some_and(|identity| {
+                Some(self.shared_authorizer.revision(identity)) != policy_revision
+            })
+        {
+            return Err(Status::failed_precondition(
+                "common-data policy changed; retry the query",
+            ));
+        }
+        projected.sort_by(|left, right| left.id.cmp(&right.id));
+        self.providers
+            .authorize_resource(Some(context), cap::GAME_RUNTIME_READ)?;
+        if include_common {
+            self.providers
+                .authorize_resource(Some(context), cap::COMMON_RUNTIME_CATALOG_READ)?;
+        }
+        Ok((revision, projected))
+    }
+
     pub(super) fn authorize_commit(
         &self,
         context: &ServiceContext,
@@ -337,6 +579,23 @@ impl ResourceApi {
         let executable_handle = self
             .session_handle(caller, runtime.executable.clone())
             .await?;
+        let extensions = proto_extensions(&runtime.extensions)?;
+        let descriptors = self
+            .providers
+            .extension_schemas_for_provider(&caller.provider_id);
+        for (namespace, payload) in &extensions {
+            if let Some(descriptor) = descriptors
+                .iter()
+                .find(|schema| schema.namespace == *namespace)
+            {
+                gamenode_plugin_protocol::extensions::validate_payload_for_schema(
+                    payload, descriptor,
+                )
+                .map_err(|_| {
+                    Status::internal("stored runtime extension does not match its signed schema")
+                })?;
+            }
+        }
         Ok(RuntimeRecord {
             id: runtime.id,
             name: runtime.name,
@@ -347,9 +606,112 @@ impl ResourceApi {
             observed_at: runtime.observed_at,
             platform: runtime.platform,
             argument_template: proto_arguments(&runtime.launch_arguments),
-            extensions: Default::default(),
+            extensions,
             provenance: None,
         })
+    }
+
+    async fn common_runtime_proto(
+        &self,
+        runtime: &RuntimeResource,
+        owner: &gamenode_core::library::RuntimeOwnerIdentity,
+    ) -> Result<RuntimeRecord, Status> {
+        let source_schemas = self
+            .providers
+            .extension_schemas_for_identity(&owner.plugin_id, &owner.publisher_fingerprint);
+        let payloads = proto_extensions(&runtime.extensions)?;
+        let mut extensions = std::collections::HashMap::new();
+        for (namespace, payload) in payloads {
+            let Some(descriptor) = source_schemas
+                .iter()
+                .find(|schema| schema.namespace == namespace && schema.optional)
+            else {
+                continue;
+            };
+            let public_fields = descriptor
+                .fields
+                .iter()
+                .filter(|field| field.classification == ExtensionFieldClassification::Public as i32)
+                .map(|field| field.path.clone())
+                .collect::<std::collections::BTreeSet<_>>();
+            if public_fields.is_empty() {
+                continue;
+            }
+            if let Ok(projected) = gamenode_plugin_protocol::extensions::project_payload_fields(
+                &payload,
+                descriptor,
+                &public_fields,
+            ) {
+                extensions.insert(namespace, projected);
+            }
+        }
+        Ok(RuntimeRecord {
+            id: common_runtime_id(owner, &runtime.id),
+            name: runtime.name.clone(),
+            version: runtime.version.clone(),
+            // Common projections are catalog descriptions only. They carry no launch handle,
+            // argument vector, path, bytes, or execution context.
+            executable_handle: String::new(),
+            supported_formats: runtime.supported_formats.clone(),
+            revision: runtime.revision,
+            observed_at: runtime.observed_at,
+            platform: runtime.platform.clone(),
+            argument_template: Vec::new(),
+            extensions,
+            provenance: Some(DataProvenance {
+                producer_plugin_id: owner.plugin_id.clone(),
+                publisher_fingerprint: owner.publisher_fingerprint.clone(),
+                resource_id: runtime.id.clone(),
+                observed_at: runtime.observed_at,
+                ..Default::default()
+            }),
+        })
+    }
+
+    fn validate_package_extensions(
+        providers: &super::super::provider::ProviderApi,
+        caller: &ResourceCaller,
+        extensions: &std::collections::HashMap<String, ExtensionPayload>,
+    ) -> Result<(), Status> {
+        let descriptors = providers.extension_schemas_for_provider(&caller.provider_id);
+        for (namespace, payload) in extensions {
+            if let Some(descriptor) = descriptors
+                .iter()
+                .find(|schema| schema.namespace == *namespace)
+            {
+                gamenode_plugin_protocol::extensions::validate_payload_for_schema(
+                    payload, descriptor,
+                )
+                .map_err(|_| {
+                    Status::invalid_argument(
+                        "runtime extension does not match its signed package schema",
+                    )
+                })?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn register_owner_identity(
+        &self,
+        caller: &ResourceCaller,
+    ) -> Result<Option<gamenode_core::library::RuntimeOwnerIdentity>, Status> {
+        let Some(namespace) = caller.namespace.as_ref() else {
+            return Ok(None);
+        };
+        let identity = namespace.identity();
+        let owner = gamenode_core::library::RuntimeOwnerIdentity {
+            owner_key: mutation_owner(caller),
+            plugin_id: identity.plugin_id.clone(),
+            publisher_fingerprint: identity.publisher_fingerprint.clone(),
+            profile_id: identity.profile_id.clone(),
+        };
+        self.library
+            .host()
+            .ok_or_else(unavailable)?
+            .register_runtime_owner(owner.clone())
+            .await?;
+        Ok(Some(owner))
     }
 
     /// Resolves a recipe's runtime and selected binding under the authenticated plugin owner.
@@ -465,6 +827,7 @@ impl ResourceApi {
         observed_at: i64,
     ) -> Result<RuntimeResource, Status> {
         runtime_request_shape(&request, true)?;
+        let extensions = core_extensions(&request.extensions)?;
         let runtime = RuntimeResource {
             id,
             name: request.name,
@@ -472,6 +835,7 @@ impl ResourceApi {
             executable,
             platform: request.platform,
             supported_formats: request.supported_formats,
+            extensions,
             launch_arguments: core_arguments(&request.argument_template)?,
             revision,
             observed_at,
@@ -496,8 +860,7 @@ impl ResourceApi {
         let caller = self
             .providers
             .authorize_resource(page.context.as_ref(), cap::GAME_RUNTIME_READ)?;
-        self.providers
-            .authorize_resource(page.context.as_ref(), cap::FILES_READ)?;
+        self.register_owner_identity(&caller).await?;
         validate_common_selector(page.common_data_categories.as_ref())?;
         if !request.kind.is_empty() && request.kind != "runtime" {
             return Err(Status::invalid_argument("unsupported runtime kind"));
@@ -507,15 +870,17 @@ impl ResourceApi {
                 "foreign runtime scope is not granted",
             ));
         }
-        let owner = mutation_owner(&caller);
-        let host = self.library.host().ok_or_else(unavailable)?;
-        let mut revision = host.runtime_catalog_revision(owner.clone()).await?;
-        let mut records = host.runtime_resources(owner.clone()).await?;
-        if host.runtime_catalog_revision(owner.clone()).await? != revision {
-            revision = host.runtime_catalog_revision(owner.clone()).await?;
-            records = host.runtime_resources(owner.clone()).await?;
+        let selector = page.common_data_categories.as_ref();
+        let (revision, mut records) = self.runtime_snapshot(&caller, &context, selector).await?;
+        if !request.owner_filter.is_empty() {
+            records.retain(|record| {
+                record
+                    .provenance
+                    .as_ref()
+                    .map(|provenance| provenance.producer_plugin_id == request.owner_filter)
+                    .unwrap_or_else(|| request.owner_filter == caller.provider_id)
+            });
         }
-        records.sort_by(|left, right| left.id.cmp(&right.id));
         let limit = match page.page_size as usize {
             0 => DEFAULT_PAGE_SIZE,
             size => size.min(MAX_PAGE_SIZE),
@@ -530,7 +895,16 @@ impl ResourceApi {
                 read_all: false,
                 provider_filter: None,
             },
-            search: None,
+            search: Some(format!(
+                "selector={:?};policy={}",
+                selector,
+                caller
+                    .namespace
+                    .as_ref()
+                    .map(|namespace| self.shared_authorizer.revision(namespace.identity()))
+                    .unwrap_or_default()
+            )),
+            common_selection: String::new(),
         };
         let after = if page.cursor.is_empty() {
             None
@@ -558,14 +932,8 @@ impl ResourceApi {
             Some(last) => self.library.issue_cursor(&binding, revision, &last.id),
             None => String::new(),
         };
-        let mut runtimes = Vec::with_capacity(selected.len());
-        for record in selected {
-            runtimes.push(self.runtime_proto(&caller, &context, record).await?);
-        }
-        self.providers
-            .authorize_resource(page.context.as_ref(), cap::GAME_RUNTIME_READ)?;
         Ok(Response::new(RuntimesListReply {
-            runtimes,
+            runtimes: selected,
             next_cursor,
             revision,
         }))
@@ -583,21 +951,21 @@ impl ResourceApi {
         let caller = self
             .providers
             .authorize_resource(request.context.as_ref(), cap::GAME_RUNTIME_READ)?;
-        self.providers
-            .authorize_resource(request.context.as_ref(), cap::FILES_READ)?;
+        self.register_owner_identity(&caller).await?;
         validate_common_selector(request.shared_records.as_ref())?;
         if !valid_id(&request.resource_id) {
             return Err(Status::invalid_argument("runtime id is required"));
         }
-        let host = self.library.host().ok_or_else(unavailable)?;
-        let runtime = host
-            .runtime_resource(mutation_owner(&caller), request.resource_id.clone())
-            .await?
+        let (_catalog_revision, runtimes) = self
+            .runtime_snapshot(&caller, &context, request.shared_records.as_ref())
+            .await?;
+        let runtime = runtimes
+            .into_iter()
+            .find(|runtime| runtime.id == request.resource_id)
             .ok_or_else(|| Status::not_found("runtime not found"))?;
         if request.expected_revision != 0 && request.expected_revision != runtime.revision {
             return Err(Status::aborted("runtime revision changed"));
         }
-        let runtime = self.runtime_proto(&caller, &context, runtime).await?;
         self.providers
             .authorize_resource(request.context.as_ref(), cap::GAME_RUNTIME_READ)?;
         Ok(Response::new(RuntimeRecordReply {
@@ -622,6 +990,7 @@ impl ResourceApi {
         let caller = self
             .providers
             .authorize_resource(Some(context), cap::GAME_RUNTIME_CREATE)?;
+        self.register_owner_identity(&caller).await?;
         let key = mutation_key(mutation)?;
         if mutation.expected_revision != 0 {
             return Err(Status::invalid_argument(
@@ -632,7 +1001,10 @@ impl ResourceApi {
             .runtime
             .ok_or_else(|| Status::invalid_argument("runtime is required"))?;
         runtime_request_shape(&runtime_request, true)?;
+        Self::validate_package_extensions(&self.providers, &caller, &runtime_request.extensions)?;
         let request_id = runtime_request.id.clone();
+        let extension_json = serde_json::to_string(&core_extensions(&runtime_request.extensions)?)
+            .map_err(|_| Status::invalid_argument("invalid runtime extension payload"))?;
         let hash = request_hash(&[
             "runtime-register",
             &request_id,
@@ -642,6 +1014,7 @@ impl ResourceApi {
             &runtime_request.platform,
             &runtime_request.supported_formats.join("\0"),
             &format!("{:?}", runtime_request.argument_template),
+            &extension_json,
             &mutation.expected_revision.to_string(),
         ]);
         let lock = self.mutations.lock.lock().await;
@@ -685,6 +1058,7 @@ impl ResourceApi {
         let reply = super::mutations::reply(&id, revision, outcome);
         if commit {
             self.mutations.remember(&caller, key, hash, &reply);
+            self.library.invalidate_all();
             runtime_request.id = id.clone();
             runtime_request.revision = revision;
             runtime_request.observed_at = unix_now();
@@ -724,6 +1098,7 @@ impl ResourceApi {
         let caller = self
             .providers
             .authorize_resource(Some(context), cap::GAME_RUNTIME_UPDATE)?;
+        self.register_owner_identity(&caller).await?;
         let key = mutation_key(mutation)?;
         let mut runtime_request = request
             .runtime
@@ -829,6 +1204,7 @@ impl ResourceApi {
             } else {
                 current.supported_formats
             },
+            extensions: current.extensions,
             launch_arguments: if mask.contains("argument_template") {
                 core_arguments(&runtime_request.argument_template)?
             } else {
@@ -849,6 +1225,7 @@ impl ResourceApi {
         let reply = super::mutations::reply(&runtime_request.id, revision, outcome);
         if commit {
             self.mutations.remember(&caller, key, hash, &reply);
+            self.library.invalidate_all();
             runtime_request.revision = revision;
             runtime_request.observed_at = unix_now();
             let updated = host
@@ -884,6 +1261,7 @@ impl ResourceApi {
         let caller = self
             .providers
             .authorize_resource(Some(context), cap::GAME_RUNTIME_DELETE)?;
+        self.register_owner_identity(&caller).await?;
         let key = mutation_key(mutation)?;
         if !valid_id(&request.resource_id) || mutation.expected_revision == 0 {
             return Err(Status::invalid_argument(
@@ -920,6 +1298,7 @@ impl ResourceApi {
         let reply = super::mutations::reply(&request.resource_id, revision, outcome);
         if commit {
             self.mutations.remember(&caller, key, hash, &reply);
+            self.library.invalidate_all();
         }
         drop(lock);
         Ok(Response::new(reply))
@@ -941,6 +1320,7 @@ impl ResourceApi {
         let caller = self
             .providers
             .authorize_resource(Some(context), cap::DISCOVERY)?;
+        self.register_owner_identity(&caller).await?;
         let key = mutation_key(mutation)?;
         if !valid_id(&request.installation_id)
             || !valid_id(&request.content_kind)
@@ -1061,6 +1441,7 @@ impl ResourceApi {
         let reply = super::mutations::reply(&content_id, revision, outcome);
         if commit {
             self.mutations.remember(&caller, key, hash, &reply);
+            self.library.invalidate_all();
         }
         drop(lock);
         Ok(Response::new(reply))
@@ -1074,24 +1455,34 @@ impl ResourceApi {
         let caller = self
             .providers
             .authorize_resource(request.context.as_ref(), cap::GAME_RUNTIME_READ)?;
-        self.providers
-            .authorize_resource(request.context.as_ref(), cap::FILES_READ)?;
+        self.register_owner_identity(&caller).await?;
         validate_common_selector(request.shared_records.as_ref())?;
-        let host = self.library.host().ok_or_else(unavailable)?;
-        let owner = mutation_owner(&caller);
+        let context = request
+            .context
+            .clone()
+            .ok_or_else(|| Status::unauthenticated("resource context required"))?;
+        let selector = request.shared_records.clone();
+        let (initial_revision, initial) = self
+            .runtime_snapshot(&caller, &context, selector.as_ref())
+            .await?;
+        let common_selected = gamenode_plugin_protocol::common_data::categories(selector.as_ref())
+            .map_err(|_| Status::invalid_argument("invalid common-data selector"))?
+            .contains(&CommonDataCategory::RuntimeCatalog)
+            && caller.has(cap::COMMON_RUNTIME_CATALOG_READ);
+        let policy_revision = caller
+            .namespace
+            .as_ref()
+            .map(|namespace| self.shared_authorizer.revision(namespace.identity()))
+            .unwrap_or_default();
         let slot = self.watch_slot(&caller.session_id)?;
-        let initial_revision = host.runtime_catalog_revision(owner.clone()).await?;
         if request.after_revision > initial_revision {
             return Err(Status::invalid_argument(
                 "runtime watch revision is in the future",
             ));
         }
-        let mut initial = host.runtime_resources(owner.clone()).await?;
-        initial.sort_by(|left, right| left.id.cmp(&right.id));
         let (sender, receiver) = mpsc::channel(32);
         let providers = self.providers.clone();
         let resource = self.clone();
-        let context = request.context.unwrap_or_default();
         let resource_id = request.resource_id;
         tokio::spawn(async move {
             let _slot = slot;
@@ -1110,27 +1501,16 @@ impl ResourceApi {
                     if !resource_id.is_empty() && runtime.id != resource_id {
                         continue;
                     }
-                    match resource
-                        .runtime_proto(&caller, &context, runtime.clone())
+                    if sender
+                        .send(Ok(RuntimeRecordEvent {
+                            revision: initial_revision,
+                            event_type: "upserted".into(),
+                            runtime: Some(runtime.clone()),
+                        }))
                         .await
+                        .is_err()
                     {
-                        Ok(runtime) => {
-                            if sender
-                                .send(Ok(RuntimeRecordEvent {
-                                    revision: initial_revision,
-                                    event_type: "upserted".into(),
-                                    runtime: Some(runtime),
-                                }))
-                                .await
-                                .is_err()
-                            {
-                                return;
-                            }
-                        }
-                        Err(error) => {
-                            let _ = sender.send(Err(error)).await;
-                            return;
-                        }
+                        return;
                     }
                 }
                 last_revision = initial_revision;
@@ -1140,38 +1520,45 @@ impl ResourceApi {
             loop {
                 tokio::select! {
                     _ = recheck.tick() => {
-                        if let Err(error) = providers.authorize_resource(Some(&context), cap::GAME_RUNTIME_READ)
-                            .and_then(|_| providers.authorize_resource(Some(&context), cap::FILES_READ)) {
+                        let auth = providers.authorize_resource(Some(&context), cap::GAME_RUNTIME_READ)
+                            .and_then(|_| {
+                                if common_selected {
+                                    providers.authorize_resource(Some(&context), cap::COMMON_RUNTIME_CATALOG_READ).map(|_| ())
+                                } else if caller.has(cap::FILES_READ) {
+                                    providers.authorize_resource(Some(&context), cap::FILES_READ).map(|_| ())
+                                } else {
+                                    Ok(())
+                                }
+                            });
+                        if let Err(error) = auth {
                             let _ = sender.send(Err(error)).await;
+                            return;
+                        }
+                        if common_selected && caller.namespace.as_ref().is_some_and(|namespace| {
+                            resource.shared_authorizer.revision(namespace.identity()) != policy_revision
+                        }) {
+                            let _ = sender.send(Err(Status::failed_precondition("common-data policy changed; list again"))).await;
                             return;
                         }
                     }
                     _ = poll.tick() => {
-                        let revision = match host.runtime_catalog_revision(owner.clone()).await {
-                            Ok(revision) => revision,
+                        let (revision, current) = match resource.runtime_snapshot(&caller, &context, selector.as_ref()).await {
+                            Ok(snapshot) => snapshot,
                             Err(error) => { let _ = sender.send(Err(error)).await; return; }
                         };
                         if revision == last_revision { continue; }
-                        let mut current = match host.runtime_resources(owner.clone()).await {
-                            Ok(records) => records,
-                            Err(error) => { let _ = sender.send(Err(error)).await; return; }
-                        };
-                        current.sort_by(|left, right| left.id.cmp(&right.id));
                         let removed = last.iter().any(|old| !current.iter().any(|new| new.id == old.id));
                         if removed {
                             if sender.send(Ok(RuntimeRecordEvent { revision, event_type: "reset".into(), runtime: None })).await.is_err() { return; }
                         }
                         for runtime in &current {
-                            let changed = last.iter().find(|old| old.id == runtime.id).is_none_or(|old| old.revision != runtime.revision);
+                            let changed = last.iter().find(|old| old.id == runtime.id).is_none_or(|old| old != runtime);
                             if !changed || (!resource_id.is_empty() && runtime.id != resource_id) { continue; }
-                            match resource.runtime_proto(&caller, &context, runtime.clone()).await {
-                                Ok(runtime) => {
-                                    if sender.send(Ok(RuntimeRecordEvent { revision, event_type: "upserted".into(), runtime: Some(runtime) })).await.is_err() { return; }
-                                }
-                                Err(error) => { let _ = sender.send(Err(error)).await; return; }
+                            if sender.send(Ok(RuntimeRecordEvent { revision, event_type: "upserted".into(), runtime: Some(runtime.clone()) })).await.is_err() {
+                                return;
                             }
                         }
-                        if current.iter().all(|runtime| last.iter().any(|old| old.id == runtime.id && old.revision == runtime.revision)) {
+                        if current.iter().all(|runtime| last.iter().any(|old| old == runtime)) {
                             let _ = sender.send(Ok(RuntimeRecordEvent { revision, event_type: "bindings_changed".into(), runtime: None })).await;
                         }
                         last = current;

@@ -16,7 +16,7 @@ pub struct Migration {
 }
 
 /// The latest supported schema version.
-pub const CURRENT_SCHEMA_VERSION: u32 = 18;
+pub const CURRENT_SCHEMA_VERSION: u32 = 19;
 
 /// Every migration this build knows. Append new ones; never edit or reorder released ones.
 pub const MIGRATIONS: &[Migration] = &[
@@ -109,6 +109,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 18,
         name: "library_launch_recipe_selection",
         sql: include_str!("../migrations/0018_library_launch_recipe_selection.sql"),
+    },
+    Migration {
+        version: 19,
+        name: "shared_runtime_catalog",
+        sql: include_str!("../migrations/0019_shared_runtime_catalog.sql"),
     },
 ];
 
@@ -1475,10 +1480,10 @@ mod tests {
 
         let store = SqliteSettingsStore::open(&path).unwrap();
         let conn = store.conn();
-        assert_eq!(CURRENT_SCHEMA_VERSION, 18);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 19);
         assert_eq!(
             versions(&conn).last(),
-            Some(&(18, "library_launch_recipe_selection".to_owned()))
+            Some(&(19, "shared_runtime_catalog".to_owned()))
         );
         let steam: (String, String, i64, i64, i64) = conn
             .query_row(
@@ -1578,10 +1583,10 @@ mod tests {
 
         let reopened = SqliteSettingsStore::open(&path).unwrap();
         let conn = reopened.conn();
-        assert_eq!(CURRENT_SCHEMA_VERSION, 18);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 19);
         assert_eq!(
             versions(&conn).last(),
-            Some(&(18, "library_launch_recipe_selection".to_owned()))
+            Some(&(19, "shared_runtime_catalog".to_owned()))
         );
         assert_eq!(
             conn.query_row(

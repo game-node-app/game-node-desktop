@@ -512,6 +512,37 @@ pub trait LibraryStore: Send + Sync {
         ))
     }
 
+    /// Records the authenticated owner identity for cross-plugin catalog projection. The owner
+    /// key and identity must have been derived together from the active verified package/profile.
+    fn register_runtime_owner(
+        &self,
+        owner: &super::runtime::RuntimeOwnerIdentity,
+    ) -> Result<(), StorageError> {
+        let _ = owner;
+        Err(StorageError::Failed(
+            "runtime owners are unavailable in this store".into(),
+        ))
+    }
+
+    /// Lists host-owned runtime descriptors and content bindings for one profile. Callers must
+    /// authorize each returned owner through the persisted common-data policy before projection.
+    fn runtime_catalog_records(
+        &self,
+        profile_id: &str,
+    ) -> Result<Vec<super::runtime::RuntimeCatalogRecord>, StorageError> {
+        let _ = profile_id;
+        Err(StorageError::Failed(
+            "runtime catalog is unavailable in this store".into(),
+        ))
+    }
+
+    /// Global monotonic revision for common runtime and content-availability projections.
+    fn runtime_common_revision(&self) -> Result<u64, StorageError> {
+        Err(StorageError::Failed(
+            "runtime catalog is unavailable in this store".into(),
+        ))
+    }
+
     /// Looks up one runtime without exposing another plugin owner's private record.
     fn runtime_resource(
         &self,

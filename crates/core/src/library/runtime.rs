@@ -4,6 +4,7 @@
 //! identifiers, and game/install identity remains independent of the runtime that can launch it.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 pub const MAX_RUNTIME_ID_BYTES: usize = 128;
 pub const MAX_RUNTIME_FIELD_BYTES: usize = 4096;
@@ -54,11 +55,43 @@ pub struct RuntimeResource {
     pub platform: String,
     /// Content formats this runtime can execute, such as `snes-rom`.
     pub supported_formats: Vec<String>,
+    /// Publisher-owned descriptive extension annotations. The host validates these at the
+    /// protocol boundary and never interprets them as authority or launch instructions.
+    #[serde(default)]
+    pub extensions: BTreeMap<String, RuntimeExtension>,
     /// Ordered argument template. Each token is a literal or a content path; never shell text.
     pub launch_arguments: Vec<RuntimeArgumentTemplate>,
     pub revision: u64,
     /// Unix seconds assigned by the host when the resource is stored.
     pub observed_at: i64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeExtension {
+    pub schema_id: String,
+    pub schema_version: u32,
+    pub schema_digest: Vec<u8>,
+    pub data: serde_json::Map<String, serde_json::Value>,
+}
+
+/// Authenticated identity registered against a durable runtime owner key.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeOwnerIdentity {
+    pub owner_key: String,
+    pub plugin_id: String,
+    pub publisher_fingerprint: String,
+    pub profile_id: String,
+}
+
+/// Host-only common-catalog row. It contains approved references internally; RPC projections
+/// must omit them and authorize the owner identity before returning any metadata.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeCatalogRecord {
+    pub owner: RuntimeOwnerIdentity,
+    pub runtime: RuntimeResource,
+    pub bindings: Vec<RuntimeContentBinding>,
 }
 
 impl RuntimeResource {
@@ -85,6 +118,21 @@ impl RuntimeResource {
                 .launch_arguments
                 .iter()
                 .all(RuntimeArgumentTemplate::validate)
+            && self.extensions.len() <= 32
+            && self.extensions.iter().all(|(namespace, extension)| {
+                !namespace.is_empty()
+                    && namespace.len() <= 256
+                    && namespace.split('.').count() >= 2
+                    && !namespace.chars().any(char::is_control)
+                    && !extension.schema_id.is_empty()
+                    && extension.schema_id.len() <= 256
+                    && extension.schema_version > 0
+                    && extension.schema_digest.len() == 32
+                    && (extension.schema_id == *namespace
+                        || extension.schema_id.starts_with(&format!("{namespace}.")))
+                    && serde_json::to_vec(&extension.data)
+                        .is_ok_and(|bytes| bytes.len() <= 64 * 1024)
+            })
             && self.revision > 0
             && self.observed_at >= 0
     }

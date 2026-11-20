@@ -2377,6 +2377,7 @@ fn runtime_resources_and_content_bindings_keep_identity_and_survive_runtime_remo
         },
         platform: "linux".into(),
         supported_formats: vec!["snes-rom".into()],
+        extensions: Default::default(),
         launch_arguments: vec![
             RuntimeArgumentTemplate::Literal("--fullscreen".into()),
             RuntimeArgumentTemplate::ContentPath,
@@ -2560,4 +2561,76 @@ fn runtime_resources_and_content_bindings_keep_identity_and_survive_runtime_remo
     );
     assert_eq!(history, 600);
     assert_eq!(saves, 1);
+}
+
+#[test]
+fn shared_runtime_projection_is_profile_scoped_and_keeps_typed_extensions_durable() {
+    use gamenode_core::library::{
+        ApprovedFileReference, RuntimeExtension, RuntimeOwnerIdentity, RuntimeResource,
+    };
+
+    let dir = TempDir::new().unwrap();
+    let db = SqliteSettingsStore::open(&dir.path().join("test.sqlite3")).unwrap();
+    let store = db.library_store();
+    let owner = RuntimeOwnerIdentity {
+        owner_key: "plugin-a/profile-1".into(),
+        plugin_id: "org.example.emulator".into(),
+        publisher_fingerprint: "ab".repeat(32),
+        profile_id: "profile-1".into(),
+    };
+    store.register_runtime_owner(&owner).unwrap();
+    let runtime = RuntimeResource {
+        id: "runtime-snes".into(),
+        name: "Example SNES Runtime".into(),
+        version: "1.0".into(),
+        executable: ApprovedFileReference {
+            approval_id: "approved-root".into(),
+            relative_path: vec!["bin".into(), "emulator".into()],
+        },
+        platform: "linux".into(),
+        supported_formats: vec!["snes-rom".into()],
+        extensions: [(
+            "org.example.compat".into(),
+            RuntimeExtension {
+                schema_id: "org.example.compat.v1".into(),
+                schema_version: 1,
+                schema_digest: vec![9; 32],
+                data: serde_json::Map::from_iter([(
+                    "compatibility_mode".into(),
+                    serde_json::Value::String("accurate".into()),
+                )]),
+            },
+        )]
+        .into(),
+        launch_arguments: vec![],
+        revision: 1,
+        observed_at: 10,
+    };
+    assert!(runtime.validate());
+    assert_eq!(
+        store
+            .save_runtime_resource(&owner.owner_key, &runtime)
+            .unwrap(),
+        gamenode_core::library::RuntimeMutation::Applied { revision: 1 }
+    );
+
+    let foreign_profile = RuntimeOwnerIdentity {
+        owner_key: "plugin-b/profile-2".into(),
+        plugin_id: "org.example.other".into(),
+        publisher_fingerprint: "cd".repeat(32),
+        profile_id: "profile-2".into(),
+    };
+    store.register_runtime_owner(&foreign_profile).unwrap();
+    assert_eq!(store.runtime_common_revision().unwrap(), 1);
+
+    let records = store.runtime_catalog_records("profile-1").unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].owner, owner);
+    assert_eq!(records[0].runtime, runtime);
+    assert!(
+        store
+            .runtime_catalog_records("profile-2")
+            .unwrap()
+            .is_empty()
+    );
 }

@@ -393,6 +393,7 @@ impl ResourceApi {
                 provider_filter: None,
             },
             search: None,
+            common_selection: String::new(),
         };
         let resumed = if page.cursor.is_empty() {
             None

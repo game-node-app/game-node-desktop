@@ -61,6 +61,21 @@ fn bump_runtime_catalog_revision(
     .and_then(|revision| u64::try_from(revision).map_err(failed))
 }
 
+fn bump_runtime_common_revision(tx: &rusqlite::Transaction<'_>) -> Result<u64, StorageError> {
+    tx.execute(
+        "UPDATE plugin_runtime_common_state SET revision = revision + 1 WHERE singleton = 1",
+        [],
+    )
+    .map_err(failed)?;
+    tx.query_row(
+        "SELECT revision FROM plugin_runtime_common_state WHERE singleton = 1",
+        [],
+        |row| row.get::<_, i64>(0),
+    )
+    .map_err(failed)
+    .and_then(|revision| u64::try_from(revision).map_err(failed))
+}
+
 impl SqliteLibraryStore {
     pub(crate) fn new(conn: Arc<Mutex<Connection>>) -> Self {
         Self { conn }
@@ -1201,6 +1216,147 @@ impl LibraryStore for SqliteLibraryStore {
         .collect()
     }
 
+    fn register_runtime_owner(
+        &self,
+        owner: &gamenode_core::library::RuntimeOwnerIdentity,
+    ) -> Result<(), StorageError> {
+        if owner.owner_key.is_empty()
+            || owner.plugin_id.trim().is_empty()
+            || owner.publisher_fingerprint.trim().is_empty()
+            || owner.profile_id.trim().is_empty()
+            || [
+                owner.owner_key.as_str(),
+                owner.plugin_id.as_str(),
+                owner.publisher_fingerprint.as_str(),
+                owner.profile_id.as_str(),
+            ]
+            .iter()
+            .any(|value| value.len() > 512 || value.chars().any(char::is_control))
+        {
+            return Err(failed("invalid runtime owner identity"));
+        }
+        let mut conn = self.conn();
+        let tx = conn.transaction().map_err(failed)?;
+        tx.execute(
+            "INSERT INTO plugin_runtime_owners
+                (owner_key, plugin_id, publisher_fingerprint, profile_id)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(owner_key) DO NOTHING",
+            params![
+                owner.owner_key,
+                owner.plugin_id,
+                owner.publisher_fingerprint,
+                owner.profile_id
+            ],
+        )
+        .map_err(failed)?;
+        let stored: (String, String, String) = tx
+            .query_row(
+                "SELECT plugin_id, publisher_fingerprint, profile_id
+                 FROM plugin_runtime_owners WHERE owner_key = ?1",
+                [&owner.owner_key],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(failed)?;
+        if stored
+            != (
+                owner.plugin_id.clone(),
+                owner.publisher_fingerprint.clone(),
+                owner.profile_id.clone(),
+            )
+        {
+            return Err(failed(
+                "runtime owner identity conflicts with its stored identity",
+            ));
+        }
+        tx.commit().map_err(failed)
+    }
+
+    fn runtime_catalog_records(
+        &self,
+        profile_id: &str,
+    ) -> Result<Vec<gamenode_core::library::RuntimeCatalogRecord>, StorageError> {
+        use gamenode_core::library::{RuntimeCatalogRecord, RuntimeOwnerIdentity};
+        if profile_id.trim().is_empty() || profile_id.len() > 512 {
+            return Err(failed("invalid runtime profile"));
+        }
+        let conn = self.conn();
+        let mut owners = conn
+            .prepare(
+                "SELECT owner_key, plugin_id, publisher_fingerprint, profile_id
+                 FROM plugin_runtime_owners WHERE profile_id = ?1 ORDER BY owner_key",
+            )
+            .map_err(failed)?;
+        let owners = owners
+            .query_map([profile_id], |row| {
+                Ok(RuntimeOwnerIdentity {
+                    owner_key: row.get(0)?,
+                    plugin_id: row.get(1)?,
+                    publisher_fingerprint: row.get(2)?,
+                    profile_id: row.get(3)?,
+                })
+            })
+            .map_err(failed)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(failed)?;
+        let mut records = Vec::new();
+        for owner in owners {
+            let mut statement = conn
+                .prepare(
+                    "SELECT runtime_json FROM plugin_runtime_resources
+                     WHERE owner_key = ?1 ORDER BY runtime_id",
+                )
+                .map_err(failed)?;
+            let runtimes = statement
+                .query_map([&owner.owner_key], |row| row.get::<_, String>(0))
+                .map_err(failed)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(failed)?;
+            for json in runtimes {
+                let runtime: RuntimeResource = serde_json::from_str(&json).map_err(failed)?;
+                if !runtime.validate() {
+                    return Err(failed("stored runtime resource is invalid"));
+                }
+                // The binding JSON is deliberately decoded and filtered in Rust. Avoid relying on
+                // JSON1 availability in SQLite builds and keep the store migration portable.
+                let bindings_json = conn
+                    .prepare(
+                        "SELECT binding_json FROM plugin_runtime_content_bindings
+                         WHERE owner_key = ?1 AND runtime_id = ?2 ORDER BY game_id, installation_id, content_id",
+                    )
+                    .map_err(failed)?
+                    .query_map(params![owner.owner_key, runtime.id], |row| row.get::<_, String>(0))
+                    .map_err(failed)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(failed)?;
+                let bindings = bindings_json
+                    .into_iter()
+                    .map(|json| serde_json::from_str(&json).map_err(failed))
+                    .collect::<Result<Vec<RuntimeContentBinding>, _>>()?;
+                if bindings.iter().any(|binding| !binding.validate()) {
+                    return Err(failed("stored runtime binding is invalid"));
+                }
+                records.push(RuntimeCatalogRecord {
+                    owner: owner.clone(),
+                    runtime,
+                    bindings,
+                });
+            }
+        }
+        Ok(records)
+    }
+
+    fn runtime_common_revision(&self) -> Result<u64, StorageError> {
+        self.conn()
+            .query_row(
+                "SELECT revision FROM plugin_runtime_common_state WHERE singleton = 1",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(failed)
+            .and_then(|revision| u64::try_from(revision).map_err(failed))
+    }
+
     fn runtime_resource(
         &self,
         owner_key: &str,
@@ -1277,6 +1433,7 @@ impl LibraryStore for SqliteLibraryStore {
         )
         .map_err(failed)?;
         bump_runtime_catalog_revision(&tx, owner_key)?;
+        bump_runtime_common_revision(&tx)?;
         tx.commit().map_err(failed)?;
         Ok(RuntimeMutation::Applied {
             revision: runtime.revision,
@@ -1322,6 +1479,7 @@ impl LibraryStore for SqliteLibraryStore {
         )
         .map_err(failed)?;
         bump_runtime_catalog_revision(&tx, owner_key)?;
+        bump_runtime_common_revision(&tx)?;
         tx.commit().map_err(failed)?;
         Ok(RuntimeMutation::Applied {
             revision: expected_revision,
@@ -1540,6 +1698,8 @@ impl LibraryStore for SqliteLibraryStore {
                 .map_err(failed)?;
             }
         }
+        bump_runtime_catalog_revision(&tx, owner_key)?;
+        bump_runtime_common_revision(&tx)?;
         tx.commit().map_err(failed)?;
         Ok(RuntimeMutation::Applied {
             revision: binding.revision,
@@ -1592,6 +1752,8 @@ impl LibraryStore for SqliteLibraryStore {
             ],
         )
         .map_err(failed)?;
+        bump_runtime_catalog_revision(&tx, owner_key)?;
+        bump_runtime_common_revision(&tx)?;
         tx.commit().map_err(failed)?;
         Ok(RuntimeMutation::Applied {
             revision: binding.revision,

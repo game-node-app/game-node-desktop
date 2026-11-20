@@ -2126,6 +2126,39 @@ impl PluginLibraryHost {
 
 #[async_trait::async_trait]
 impl crate::plugin_host::library::LibraryHost for PluginLibraryHost {
+    async fn register_runtime_owner(
+        &self,
+        owner: gamenode_core::library::RuntimeOwnerIdentity,
+    ) -> Result<(), tonic::Status> {
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || store.register_runtime_owner(&owner))
+            .await
+            .map_err(|_| tonic::Status::unavailable("library worker stopped"))?
+            .map_err(|_| tonic::Status::internal("could not record runtime owner identity"))
+    }
+
+    async fn runtime_catalog_records(
+        &self,
+        profile_id: String,
+    ) -> Result<Vec<gamenode_core::library::RuntimeCatalogRecord>, tonic::Status> {
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || store.runtime_catalog_records(&profile_id))
+            .await
+            .map_err(|_| tonic::Status::unavailable("library worker stopped"))?
+            .map_err(|_| tonic::Status::internal("could not read common runtime catalog"))
+    }
+
+    async fn runtime_common_revision(&self) -> Result<u64, tonic::Status> {
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || store.runtime_common_revision())
+            .await
+            .map_err(|_| tonic::Status::unavailable("library worker stopped"))?
+            .map_err(|_| tonic::Status::internal("could not read common runtime revision"))
+    }
+
     async fn runtime_resources(
         &self,
         owner_key: String,

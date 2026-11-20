@@ -55,6 +55,7 @@ fn binding(scope: Scope) -> CursorBinding {
         grant_revision: 1,
         scope,
         search: None,
+        common_selection: String::new(),
     }
 }
 

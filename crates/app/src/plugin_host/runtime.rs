@@ -1569,9 +1569,22 @@ impl HostedProviders {
                 compatibility_details: Some(report.compatibility_review()),
             };
             let services = if report.manifest.kind == super::package::PluginKind::Provider {
+                // ProviderServices validates the host context as a provider TOML manifest. A
+                // managed package has its own signed JSON manifest instead, so compose the
+                // minimal context from that already verified identity. Do not accept a manifest
+                // supplied over RPC or copy package data into host capabilities/actions.
+                let context_manifest = format!(
+                    "id = {:?}\nname = {:?}\nplatforms = [{:?}]\nsource = {:?}\n\n[scan]\n",
+                    provider_id,
+                    report.manifest.name,
+                    std::env::consts::OS,
+                    installed.plugin_id
+                );
                 Some(Arc::new(ProviderServices::new_external(
                     ProviderContext {
                         provider_id: provider_id.clone(),
+                        platform: std::env::consts::OS.into(),
+                        manifest_toml: context_manifest,
                         ..Default::default()
                     },
                     paths.clone(),

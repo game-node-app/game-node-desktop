@@ -189,18 +189,19 @@ impl ManagedPackageLifecycle {
         let report = self
             .inspect_candidate(&package_root, publisher_key, emulation_policy)
             .await?;
-        report.selected_target()?;
+        let entrypoint = report.selected_target()?.target.entrypoint.clone();
         let plugin_id = report.manifest.id;
         let version = report.manifest.version;
         let registry = self.registry.clone();
         tokio::task::spawn_blocking(move || {
             let _publisher = activate.then(lock_publisher_identity);
             registry
-                .install_signed(
+                .install_signed_with_entrypoint(
                     &plugin_id,
                     &version,
                     &package_root,
                     &publisher_key,
+                    &entrypoint,
                     activate,
                 )
                 .map_err(|error| PackageLifecycleError::Registry(error.to_string()))

@@ -87,11 +87,56 @@ impl PluginPackageRegistry {
         publisher_key: &[u8],
         activate: bool,
     ) -> Result<InstalledPluginVersion, InstallSignedError> {
+        self.install_signed_impl(
+            plugin_id,
+            version,
+            package_source,
+            publisher_key,
+            None,
+            activate,
+        )
+    }
+
+    /// Import a signed package and prepare only its manifest-selected executable entrypoint.
+    /// The entrypoint must be a regular file below the copied package root and no path component
+    /// may be a symlink. ZIP permission bits are deliberately ignored; on Unix the host grants
+    /// execute permission only to this exact file before changing the active pointer.
+    pub fn install_signed_with_entrypoint(
+        &self,
+        plugin_id: &str,
+        version: &str,
+        package_source: &Path,
+        publisher_key: &[u8],
+        entrypoint: &str,
+        activate: bool,
+    ) -> Result<InstalledPluginVersion, InstallSignedError> {
+        self.install_signed_impl(
+            plugin_id,
+            version,
+            package_source,
+            publisher_key,
+            Some(entrypoint),
+            activate,
+        )
+    }
+
+    fn install_signed_impl(
+        &self,
+        plugin_id: &str,
+        version: &str,
+        package_source: &Path,
+        publisher_key: &[u8],
+        entrypoint: Option<&str>,
+        activate: bool,
+    ) -> Result<InstalledPluginVersion, InstallSignedError> {
         crate::plugin_packages::verify_package_directory(package_source, publisher_key)
             .map_err(InstallSignedError::Integrity)?;
         let installed = self.install_verified(plugin_id, version, package_source, false)?;
         crate::plugin_packages::verify_installed_package(&installed.package_path, publisher_key)
             .map_err(InstallSignedError::Integrity)?;
+        if let Some(entrypoint) = entrypoint {
+            prepare_signed_entrypoint(&installed.package_path, entrypoint)?;
+        }
         if activate {
             self.set_active(plugin_id, version)?;
         }
@@ -726,6 +771,51 @@ pub enum InstallSignedError {
     Io(#[from] io::Error),
 }
 
+fn prepare_signed_entrypoint(package_root: &Path, entrypoint: &str) -> io::Result<()> {
+    let relative = Path::new(entrypoint);
+    if relative.as_os_str().is_empty()
+        || relative
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "signed plugin entrypoint must be a normalized package-relative path",
+        ));
+    }
+
+    let mut current = package_root.to_owned();
+    for component in relative.components() {
+        current.push(component.as_os_str());
+        let metadata = fs::symlink_metadata(&current)?;
+        if metadata.file_type().is_symlink() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "signed plugin entrypoint cannot traverse a symlink",
+            ));
+        }
+        if current != package_root.join(relative) && !metadata.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "signed plugin entrypoint parent must be a directory",
+            ));
+        }
+        if current == package_root.join(relative) && !metadata.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "signed plugin entrypoint must be a regular file",
+            ));
+        }
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(current, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum InstallCheckpoint {
     PayloadCopied,
@@ -974,6 +1064,43 @@ mod tests {
                 crate::plugin_packages::IntegrityError::HashMismatch
             ))
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn signed_entrypoint_preparation_is_exact_and_rejects_symlinks() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("package");
+        fs::create_dir_all(root.join("bin")).unwrap();
+        fs::write(root.join("bin/provider"), b"executable").unwrap();
+        fs::write(root.join("README.md"), b"data").unwrap();
+
+        prepare_signed_entrypoint(&root, "bin/provider").unwrap();
+        assert_eq!(
+            fs::metadata(root.join("bin/provider"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(root.join("README.md"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o111,
+            0,
+            "data files must not gain executable bits"
+        );
+
+        let outside = temp.path().join("outside");
+        fs::write(&outside, b"outside").unwrap();
+        symlink(&outside, root.join("linked-provider")).unwrap();
+        assert!(prepare_signed_entrypoint(&root, "linked-provider").is_err());
+        assert!(prepare_signed_entrypoint(&root, "../outside").is_err());
     }
 
     #[test]

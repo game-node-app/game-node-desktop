@@ -392,9 +392,16 @@ func (w *systemConfigWindow) Stop(ctx context.Context) error {
 
 func helperPath(name string) string {
 	if executable, err := os.Executable(); err == nil {
+		// A packaged plugin carries the window helpers in its signed payload:
+		// <package>/bin/<os>/<binary> -> <package>/shared/<name>.
+		packageRoot := filepath.Dir(filepath.Dir(filepath.Dir(executable)))
+		if candidate := filepath.Join(packageRoot, "shared", name); isRegular(candidate) {
+			return candidate
+		}
+		// A host-wide copy under <data>/plugins/shared remains usable for development.
 		for parent := filepath.Dir(executable); parent != filepath.Dir(parent); parent = filepath.Dir(parent) {
 			candidate := filepath.Join(parent, "plugins", "shared", name)
-			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			if isRegular(candidate) {
 				return candidate
 			}
 		}
@@ -404,4 +411,9 @@ func helperPath(name string) string {
 		return filepath.Join(filepath.Dir(file), "..", "shared", name)
 	}
 	return name
+}
+
+func isRegular(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }

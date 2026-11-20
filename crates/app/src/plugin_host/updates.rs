@@ -2216,6 +2216,82 @@ pub(super) mod tests {
         fs::write(root.join("signature.ed25519"), key.sign(&signed).as_ref()).unwrap();
     }
 
+    /// Stages the real example `package/` tree as a signed fixture. The source tree contains no
+    /// built executable, so every target entrypoint the manifest declares is filled with inert
+    /// fixture bytes. Everything else — the manifest, license, notices and payload helpers — is
+    /// copied exactly as the pack tool would ship it.
+    fn signed_example_package(root: &Path, example: &str, key: &ring::signature::Ed25519KeyPair) {
+        fn collect(base: &Path, current: &Path, files: &mut BTreeMap<String, Vec<u8>>) {
+            for entry in fs::read_dir(current).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    collect(base, &path, files);
+                    continue;
+                }
+                let relative = path
+                    .strip_prefix(base)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if relative == "plugin.json" {
+                    continue;
+                }
+                files.insert(relative, fs::read(&path).unwrap());
+            }
+        }
+
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let source = workspace
+            .join("examples/plugins")
+            .join(example)
+            .join("package");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(source.join("plugin.json")).unwrap()).unwrap();
+        manifest["publisher"]["public_key"] = serde_json::Value::String(
+            base64::engine::general_purpose::STANDARD.encode(key.public_key().as_ref()),
+        );
+        let manifest = serde_json::to_vec_pretty(&manifest).unwrap();
+        let mut files = BTreeMap::new();
+        collect(&source, &source, &mut files);
+        for target in manifest_targets(&manifest) {
+            files.insert(
+                target,
+                b"fixture executable; never run in import test".to_vec(),
+            );
+        }
+        files.insert("plugin.json".to_owned(), manifest);
+
+        for (relative, bytes) in &files {
+            let path = root.join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, bytes).unwrap();
+        }
+        let integrity = serde_json::to_vec(&serde_json::json!({
+            "schema": 1,
+            "files": files
+                .iter()
+                .map(|(path, bytes)| (path.clone(), format!("{:x}", sha2::Sha256::digest(bytes))))
+                .collect::<BTreeMap<_, _>>()
+        }))
+        .unwrap();
+        let mut signed = SIGNATURE_DOMAIN_PREFIX.to_vec();
+        signed.extend_from_slice(&integrity);
+        fs::write(root.join("integrity.json"), integrity).unwrap();
+        fs::write(root.join("signature.ed25519"), key.sign(&signed).as_ref()).unwrap();
+    }
+
+    /// The entrypoints a manifest declares, read from the JSON before the typed parser runs so a
+    /// malformed manifest fails in the importer rather than in this fixture.
+    fn manifest_targets(manifest: &[u8]) -> Vec<String> {
+        let value: serde_json::Value = serde_json::from_slice(manifest).unwrap();
+        value["targets"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|target| target["entrypoint"].as_str().map(str::to_owned))
+            .collect()
+    }
+
     pub(in crate::plugin_host) fn add_tree(
         zip: &mut ZipWriter<fs::File>,
         base: &Path,
@@ -2457,6 +2533,162 @@ pub(super) mod tests {
             .import_confirm_publisher(&review.token, &review.publisher_fingerprint)
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn mvp_example_packages_use_production_import_and_consent_validators() {
+        use crate::plugin_host::{
+            PluginApi, grants::PermissionDecision, grants::PermissionState,
+            managed_packages::ManagedPackageLifecycle, process::ProviderProcesses,
+            profile::PluginStateLayout, runtime::HostedProviders,
+            runtime::ThirdPartyPluginLifecycle,
+        };
+        use gamenode_core::library::LibraryStore;
+        use gamenode_platform::{
+            db::{self, SqliteSettingsStore},
+            paths::DataPaths,
+            plugin_registry::PluginPackageRegistry,
+        };
+
+        for (example, plugin_id, seed, requested) in [
+            ("go-grpc", "org.example.gamenode.go-grpc", 71_u8, 8),
+            ("rust-sdk", "org.example.gamenode.rust-mvp", 72_u8, 4),
+        ] {
+            let base = tempfile::tempdir().unwrap();
+            let paths = DataPaths::at(base.path().join("app"));
+            let endpoint = base.path().join("plugins.sock");
+            let api = PluginApi::default();
+            let state = PluginStateLayout::managed(&paths);
+            api.set_state_layout(state.clone());
+            api.providers.profiles().update(Some("account-one"), true);
+            let registry = PluginPackageRegistry::open(&paths).unwrap();
+            let preliminary_processes = ProviderProcesses::new_for_lifecycle(
+                api.providers.clone(),
+                endpoint.clone(),
+                vec![],
+                state.clone(),
+            )
+            .unwrap();
+            let prelimary = std::sync::Arc::new(ThirdPartyPluginLifecycle::new(
+                api.providers.clone(),
+                preliminary_processes,
+                state,
+                registry.clone(),
+                ManagedPackageLifecycle::new(registry.clone()),
+            ));
+            let service = PluginUpdateService::open(&paths).unwrap();
+            service.set_lifecycle(prelimary);
+
+            let key = ring::signature::Ed25519KeyPair::from_seed_unchecked(&[seed; 32]).unwrap();
+            let package = base.path().join(format!("{example}-package"));
+            signed_example_package(&package, example, &key);
+            let review = service
+                .import_review(archive_package(&package))
+                .await
+                .unwrap();
+            assert_eq!(review.plugin_id, plugin_id);
+            assert_eq!(review.trust, "untrusted");
+            assert_eq!(review.compatibility, "compatible");
+            assert_eq!(review.license_files, vec!["licenses/LICENSE".to_owned()]);
+            assert_eq!(
+                review.license_notices,
+                vec!["licenses/THIRD-PARTY-NOTICES.txt".to_owned()]
+            );
+            assert!(
+                service
+                    .import_license_text(&review.token, "licenses/LICENSE")
+                    .await
+                    .unwrap()
+                    .contains("MIT License")
+            );
+            assert!(
+                !service
+                    .import_license_text(&review.token, "outside.txt")
+                    .await
+                    .is_ok()
+            );
+            assert!(
+                service
+                    .import_install(&review.token, false)
+                    .await
+                    .unwrap_err()
+                    .contains("confirm the publisher")
+            );
+
+            let pinned = service
+                .import_confirm_publisher(&review.token, &review.publisher_fingerprint)
+                .await
+                .unwrap();
+            assert_eq!(pinned.trust, "trusted");
+            assert_eq!(
+                service.import_install(&review.token, false).await.unwrap(),
+                plugin_id
+            );
+
+            // Startup composes the registry into the runtime; that composition is what registers
+            // the installed provider for consent review. Rebuild it here as an application
+            // launch would, then review permissions through the production validator.
+            let library: std::sync::Arc<dyn LibraryStore> = std::sync::Arc::new(
+                SqliteSettingsStore::new(db::open(Path::new(":memory:")).unwrap()).library_store(),
+            );
+            let host = HostedProviders::bundled(
+                api.providers.clone(),
+                std::sync::Arc::new(Default::default()),
+                Some(endpoint),
+                paths,
+                library,
+                None,
+            )
+            .await
+            .unwrap();
+
+            let snapshot = host
+                .lifecycle()
+                .permission_snapshot(plugin_id.into())
+                .await
+                .unwrap();
+            assert_eq!(snapshot.requested_permissions.len(), requested);
+            let decisions = snapshot
+                .requested_permissions
+                .iter()
+                .map(|request| PermissionDecision {
+                    permission_id: request.permission_id.clone(),
+                    scope: request
+                        .allowed_scopes
+                        .iter()
+                        .next()
+                        .cloned()
+                        .expect("manifest permission exposes a reviewable scope"),
+                    granted: request.permission_id != "library.discovery",
+                })
+                .collect();
+            let reviewed = host
+                .lifecycle()
+                .replace_permissions(
+                    &tokio::sync::Mutex::new(()),
+                    plugin_id.into(),
+                    snapshot.profile_id.clone(),
+                    snapshot.publisher_fingerprint.clone(),
+                    snapshot.grant_revision,
+                    decisions,
+                )
+                .await
+                .unwrap();
+            assert!(
+                reviewed
+                    .effective_grants
+                    .iter()
+                    .any(|grant| grant.permission_id == "library.discovery"
+                        && grant.state == PermissionState::Denied)
+            );
+            assert!(
+                reviewed
+                    .effective_grants
+                    .iter()
+                    .any(|grant| grant.permission_id == "library.catalog"
+                        && grant.state == PermissionState::Granted)
+            );
+        }
     }
 
     #[tokio::test]

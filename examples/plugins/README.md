@@ -1,9 +1,8 @@
-# Plugin-owned configuration examples
+# Third-party plugin examples
 
-The Rust SDK and Go examples implement the same small provider: a native window edits the
-non-secret `preferred-catalog-label` value through the host's persistent plugin storage. They
-request `ui.configure`, `storage.read`, `storage.write` and `storage.persist`; no preference value
-is stored in a file owned by the plugin.
+The Rust and Go MVP providers demonstrate API 1.6 session negotiation, authenticated provider
+context, fictional discovery, catalog records, and playtime counters. They do not implement game
+actions, custom launch, file access, shared data, or telemetry.
 
 ## Build and fixture checks
 
@@ -11,35 +10,31 @@ Run from the repository root:
 
 ```sh
 CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target \
-  cargo check --manifest-path examples/plugins/rust-sdk/Cargo.toml
-CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target \
   cargo test --manifest-path examples/plugins/rust-sdk/Cargo.toml
 go -C examples/plugins/go-grpc test ./...
 ```
 
-For a Linux native build, install `zenity` and `wmctrl`; for Windows, use PowerShell with
-Windows Forms available. Include the files in `shared/` beside each packaged plugin under
-`plugins/shared/`. The dialog runs in a child process owned by the plugin. Its output is saved
-through `StoragePut` with persistent durability when the user saves and closes it.
+The Rust example uses the published `gamenode-plugin-sdk` dependency. Its local fixture can be run
+before registry publication with a temporary Cargo patch to this checkout's matching SDK source.
+The Go provider has no GameNode SDK dependency and uses pinned protobuf generation.
 
-## Native acceptance walkthrough
+The [Rust configuration example](rust-configuration/README.md) and the Go example's configuration
+lifecycle show plugin-owned configuration and persistent preference storage. Those features are
+outside the minimal Rust provider example contract.
 
-Build the Rust plugin and the Go plugin natively for the machine running GameNode. Package each
-binary with its `plugin.json`, the matching platform entrypoint, `shared/config-window.sh` and
-`shared/config-window.ps1`; sign the package with a local development key as described in
-[`docs/plugin-package-manifest.md`](../../docs/plugin-package-manifest.md#building-and-checking-a-package).
-At import, grant `ui.configure`, `storage.read`, `storage.write` and `storage.persist` to the
-example. The persistent-storage grant is required for the preference to survive a plugin restart.
+## Package and sign
 
-After enabling the plugin, open its Configure window and leave it visible. While it remains open,
-trigger a provider refresh or counter read from GameNode. The example returns the Open result as
-soon as the child window starts, so the provider stream can continue servicing those operations.
-Choose Configure again to focus the existing window, save a new label, close it, and reopen it to
-confirm the stored value survived. A host close request stops the owned window process; profile
-changes start a fresh plugin session with its own host storage context.
+Each MVP example has a self-contained `package/` directory with its `plugin.json`, MIT license and
+third-party notices. Its README shows how to build the binary, generate a development-only key,
+replace the placeholder publisher key, and run `scripts/plugin-package.py pack` and `verify`.
+Development keys exist for local import fixtures; they are not production identities, and the
+private key must never be committed.
 
-The host configuration lifecycle from task 1.1 is implemented in this checkout. The full native
-walkthrough still depends on third-party process supervision (source task 8.3) and the permission
-inventory/approval UI (source tasks 10.1 and 10.2). Until those land, the fixture tests cover
-lifecycle correlation and concurrent provider dispatch, while the package build commands only
-compile the examples.
+The packaged examples are exercised by the host's production import review, publisher
+confirmation, signature/integrity validation, license display and permission review in
+`plugin_host::updates::tests::mvp_example_packages_use_production_import_and_consent_validators`.
+That test signs fixtures derived from these manifests; it does not execute the examples.
+
+Run `python3 scripts/check-plugin-conformance.py` from the repository root after touching the
+protocol, an example manifest, or the served-method tables. See
+[`docs/plugin-development.md`](../../docs/plugin-development.md#conformance-checks-for-examples-and-the-public-surface).

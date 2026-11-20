@@ -28,6 +28,63 @@ must grant `provider.context.read`, `library.discovery`, `library.catalog`, `pla
 is required for the preference to survive a plugin restart. Linux configuration uses `zenity` and
 `wmctrl`; Windows uses the bundled PowerShell Forms and focus helpers in `../shared/`.
 
+## Package, sign and install
+
+`package/` is the pack source: the manifest, the MIT license and this example's third-party
+notices. It declares one Linux x86-64 target; the host selects the entrypoint from the signed
+target tuple. The manifest requests exactly the eight capabilities the example negotiates, so the
+host can grant the configuration and persistent-storage scopes its Configure window uses.
+
+1. Build a static binary and place it at the declared entrypoint:
+
+   ```sh
+   CGO_ENABLED=0 go build -trimpath -o package/bin/linux-x64/plugin ./cmd/provider
+   ```
+
+   To package Windows instead, change the `targets` entry in `package/plugin.json` to
+   `{"os":"windows","arch":"x86_64","abi":"msvc","entrypoint":"bin/windows-x64/plugin.exe"}`,
+   build with
+   `GOOS=windows GOARCH=amd64 go build -trimpath -o package/bin/windows-x64/plugin.exe ./cmd/provider`,
+   and keep the Windows transport test evidence separate. A target whose entrypoint is missing
+   from the signed payload is rejected at import.
+
+   `package/shared/` carries the native window helpers inside the signed payload. The plugin looks
+   beside its installed entrypoint for them, so an installed package needs no host-wide copy.
+
+2. Generate a development-only signing key and note the printed public key:
+
+   ```sh
+   python3 -m pip install -r scripts/plugin-package-requirements.txt
+   python3 scripts/plugin-package.py keygen --development --private-key ./fixture-dev.pem
+   ```
+
+   Replace `publisher.public_key` in `package/plugin.json` with the printed value and choose any
+   `key_id`. The committed placeholder key cannot sign a package: `pack` refuses a private key that
+   does not match the manifest publisher key. A development key adds `DEVELOPMENT-KEY.txt` to the
+   archive and is never a production identity; keep the private key out of the repository.
+
+3. Pack and verify without executing anything:
+
+   ```sh
+   python3 scripts/plugin-package.py pack \
+     --source examples/plugins/go-grpc/package \
+     --private-key ./fixture-dev.pem \
+     --output ./go-grpc.gnplugin
+   python3 scripts/plugin-package.py verify ./go-grpc.gnplugin
+   ```
+
+4. In GameNode, import `go-grpc.gnplugin`. The review shows the untrusted publisher fingerprint,
+   the MIT license and these notices; confirm that exact fingerprint to pin the publisher, then
+   install the package. It stays disabled until you review permissions: grant
+   `provider.context.read` and `library.discovery` and enable the plugin. The catalog, counter,
+   `ui.configure` and storage scopes are optional; the Configure window only opens with
+   `ui.configure`, and the label only survives a plugin restart with `storage.persist`.
+
+5. After enabling, the fictional `example-go` provider reports its fixture games, catalog and
+   counter. Configure opens or focuses the example's preference window over the bundled
+   `shared/` helpers; the preference is saved through host-owned storage, not a plugin file. The
+   example never starts a game.
+
 ## Regenerate protocol bindings
 
 Generation reads the canonical workspace proto, but the checked-in generated code lets this module

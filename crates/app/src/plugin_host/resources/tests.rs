@@ -25,6 +25,7 @@ mod artwork_handles;
 mod backups;
 mod data;
 mod declared_locations;
+mod diagnostics;
 mod files;
 mod fingerprints;
 mod games;
@@ -33,7 +34,11 @@ mod libraries;
 mod locations;
 mod network;
 mod notifications;
+mod observations;
+mod performance;
+mod persistence;
 mod ports;
+mod runtimes;
 mod saves;
 mod sdk;
 mod sdk_actions;
@@ -81,6 +86,10 @@ struct Fixture {
     saves: Arc<crate::plugin_host::saves::SaveAccess>,
     /// The fingerprints of approved places.
     snapshots: Arc<crate::plugin_host::fingerprints::Snapshots>,
+    /// Shared observations inserted by source fixtures for cross-plugin read tests.
+    data_broker: Arc<crate::plugin_host::shared_data::DataBroker>,
+    /// Host-owned cross-plugin consent store used by producer/consumer fixtures.
+    shared_policies: Arc<crate::plugin_host::sharing_policy::SharedSharingPolicies>,
     /// The time the notification rate limit sees; tests move it.
     notice_clock: Arc<std::sync::atomic::AtomicU64>,
     notices: Arc<notifications::Collected>,
@@ -154,13 +163,16 @@ impl Fixture {
         });
         let notices = Arc::new(notifications::Collected::default());
         notifications.set_sink(notices.clone());
+        let data_broker = Arc::new(crate::plugin_host::shared_data::DataBroker::new());
         let root = crate::plugin_host::PluginApi {
             storage: storage.clone(),
             files: files.clone(),
             network: network.clone(),
             notifications: notifications.clone(),
+            data_broker: data_broker.clone(),
             ..Default::default()
         };
+        let shared_policies = root.shared_policies.clone();
         root.set_state_layout(crate::plugin_host::profile::PluginStateLayout::new(
             &plugin_data,
         ));
@@ -266,6 +278,8 @@ impl Fixture {
             snapshots,
             notice_clock,
             notices,
+            data_broker,
+            shared_policies,
             clock,
             plugin_data,
             endpoint,
@@ -725,6 +739,13 @@ async fn custom_launch_without_its_own_grant_is_denied_and_describe_lists_the_ro
             ("BackupsList", MAX_PAGE_SIZE as u32),
             ("BackupsRequestCreate", 0),
             ("BackupsRequestRestore", 0),
+            ("StorageDiagnosticsPublishBenchmark", 0),
+            ("StorageDiagnosticsPublishSmart", 0),
+            ("ComputerPublishHardware", 0),
+            ("GamePresencePublish", 0),
+            ("GamePresenceClear", 0),
+            ("GamePerformancePublishSamples", 0),
+            ("GamePerformanceEndSeries", 0),
             ("LibrariesList", MAX_PAGE_SIZE as u32),
             ("LibrariesGet", 0),
             ("LibrariesWatch", 0),
@@ -754,6 +775,11 @@ async fn custom_launch_without_its_own_grant_is_denied_and_describe_lists_the_ro
             ("StorageGet", 0),
             ("StoragePut", 0),
             ("StorageDelete", 0),
+            ("PersistenceGetUsage", 0),
+            ("PersistenceListEntries", MAX_PAGE_SIZE as u32),
+            ("PersistenceDeleteEntries", 0),
+            ("PersistenceClear", 0),
+            ("PersistenceSetRetentionPolicy", 0),
             ("FilesRequestAccess", 0),
             ("FilesList", MAX_PAGE_SIZE as u32),
             ("FilesRead", 0),

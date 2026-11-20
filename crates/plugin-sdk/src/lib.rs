@@ -342,6 +342,42 @@ impl HostClient {
             .max_encoding_message_size(MAX_MESSAGE_BYTES)
     }
 
+    /// The raw client of the `StorageDiagnostics` service. Calls still require the session's
+    /// resource context and the corresponding host-reviewed permission.
+    pub fn storage_diagnostics_client(
+        &self,
+    ) -> proto::storage_diagnostics_client::StorageDiagnosticsClient<Channel> {
+        proto::storage_diagnostics_client::StorageDiagnosticsClient::new(self.channel.clone())
+            .max_decoding_message_size(MAX_MESSAGE_BYTES)
+            .max_encoding_message_size(MAX_MESSAGE_BYTES)
+    }
+
+    /// The raw client of the `Computer` service (sensitive hardware observations). Calls still
+    /// require the session's resource context and the corresponding host-reviewed permission.
+    pub fn computer_client(&self) -> proto::computer_client::ComputerClient<Channel> {
+        proto::computer_client::ComputerClient::new(self.channel.clone())
+            .max_decoding_message_size(MAX_MESSAGE_BYTES)
+            .max_encoding_message_size(MAX_MESSAGE_BYTES)
+    }
+
+    /// The raw client of the `GamePresence` service (expiring game/session status). Calls still
+    /// require the session's resource context and the corresponding host-reviewed permission.
+    pub fn game_presence_client(&self) -> proto::game_presence_client::GamePresenceClient<Channel> {
+        proto::game_presence_client::GamePresenceClient::new(self.channel.clone())
+            .max_decoding_message_size(MAX_MESSAGE_BYTES)
+            .max_encoding_message_size(MAX_MESSAGE_BYTES)
+    }
+
+    /// The raw client of the `GamePerformance` service (retained FPS/CPU/RAM observations).
+    /// Calls require the session's resource context and the corresponding read permission.
+    pub fn game_performance_client(
+        &self,
+    ) -> proto::game_performance_client::GamePerformanceClient<Channel> {
+        proto::game_performance_client::GamePerformanceClient::new(self.channel.clone())
+            .max_decoding_message_size(MAX_MESSAGE_BYTES)
+            .max_encoding_message_size(MAX_MESSAGE_BYTES)
+    }
+
     /// Typed convenience calls for the library resources (library reads, display names,
     /// favorites, catalog matching and covers), bound to this session's resource context. `None`
     /// when the session negotiated a minor before API 1.6, like [`resource_context`](Self::resource_context).

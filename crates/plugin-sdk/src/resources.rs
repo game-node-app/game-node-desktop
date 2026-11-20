@@ -194,6 +194,7 @@ fn runtime_update_request(
         }),
         runtime: Some(runtime_record(spec, runtime_id, expected_revision)),
         field_mask,
+        extension_patch: None,
     }
 }
 
@@ -606,6 +607,33 @@ impl Resources {
                 key,
                 expected_revision,
             )))
+            .await
+            .map(tonic::Response::into_inner)
+    }
+
+    /// Applies the protocol's revision checked typed and namespace patch to an owned runtime.
+    /// Namespace operations are further restricted by the host to this plugin's namespace.
+    pub async fn runtime_update_patch(
+        &self,
+        runtime_id: &str,
+        runtime: RuntimeSpec,
+        patch: ExtensionPatch,
+        field_mask: impl IntoIterator<Item = impl Into<String>>,
+        expected_revision: u64,
+        key: &str,
+    ) -> Result<RuntimeMutationReply, Status> {
+        let mut request = runtime_update_request(
+            &self.context,
+            runtime_id,
+            runtime,
+            field_mask.into_iter().map(Into::into).collect(),
+            key,
+            expected_revision,
+        );
+        request.extension_patch = Some(patch);
+        self.client
+            .clone()
+            .runtimes_update(timed(request))
             .await
             .map(tonic::Response::into_inner)
     }

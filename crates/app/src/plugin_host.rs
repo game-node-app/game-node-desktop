@@ -36,6 +36,7 @@ pub mod process;
 pub mod profile;
 pub mod provider;
 pub mod publisher_trust;
+pub mod resource_leases;
 pub mod resources;
 pub mod runtime;
 pub mod saves;
@@ -679,6 +680,26 @@ impl plugin_host_server::PluginHost for PluginApi {
                             .iter()
                             .map(|served| ("Locations", served)),
                     )
+                    .chain(
+                        resources::DIAGNOSTICS_SERVED
+                            .iter()
+                            .map(|served| ("StorageDiagnostics", served)),
+                    )
+                    .chain(
+                        resources::COMPUTER_SERVED
+                            .iter()
+                            .map(|served| ("Computer", served)),
+                    )
+                    .chain(
+                        resources::PRESENCE_SERVED
+                            .iter()
+                            .map(|served| ("GamePresence", served)),
+                    )
+                    .chain(
+                        resources::PERFORMANCE_SERVED
+                            .iter()
+                            .map(|served| ("GamePerformance", served)),
+                    )
                     .map(|(service, served)| ApiMethod {
                         service: service.into(),
                         method: served.method.into(),
@@ -824,6 +845,20 @@ impl PluginApiServer {
             let locations = locations_server::LocationsServer::new(resource_api.clone())
                 .max_decoding_message_size(MAX_MESSAGE_BYTES)
                 .max_encoding_message_size(MAX_MESSAGE_BYTES);
+            let diagnostics =
+                storage_diagnostics_server::StorageDiagnosticsServer::new(resource_api.clone())
+                    .max_decoding_message_size(MAX_MESSAGE_BYTES)
+                    .max_encoding_message_size(MAX_MESSAGE_BYTES);
+            let computer = computer_server::ComputerServer::new(resource_api.clone())
+                .max_decoding_message_size(MAX_MESSAGE_BYTES)
+                .max_encoding_message_size(MAX_MESSAGE_BYTES);
+            let presence = game_presence_server::GamePresenceServer::new(resource_api.clone())
+                .max_decoding_message_size(MAX_MESSAGE_BYTES)
+                .max_encoding_message_size(MAX_MESSAGE_BYTES);
+            let performance =
+                game_performance_server::GamePerformanceServer::new(resource_api.clone())
+                    .max_decoding_message_size(MAX_MESSAGE_BYTES)
+                    .max_encoding_message_size(MAX_MESSAGE_BYTES);
             let resources = resource_host_server::ResourceHostServer::new(resource_api)
                 .max_decoding_message_size(MAX_MESSAGE_BYTES)
                 .max_encoding_message_size(MAX_MESSAGE_BYTES);
@@ -838,6 +873,10 @@ impl PluginApiServer {
                 .add_service(resources)
                 .add_service(saves)
                 .add_service(locations)
+                .add_service(diagnostics)
+                .add_service(computer)
+                .add_service(presence)
+                .add_service(performance)
                 .serve_with_incoming_shutdown(incoming, async move {
                     let _ = shutdown_rx.await;
                 })
@@ -926,6 +965,20 @@ impl PluginApiServer {
             let locations = locations_server::LocationsServer::new(resource_api.clone())
                 .max_decoding_message_size(MAX_MESSAGE_BYTES)
                 .max_encoding_message_size(MAX_MESSAGE_BYTES);
+            let diagnostics =
+                storage_diagnostics_server::StorageDiagnosticsServer::new(resource_api.clone())
+                    .max_decoding_message_size(MAX_MESSAGE_BYTES)
+                    .max_encoding_message_size(MAX_MESSAGE_BYTES);
+            let computer = computer_server::ComputerServer::new(resource_api.clone())
+                .max_decoding_message_size(MAX_MESSAGE_BYTES)
+                .max_encoding_message_size(MAX_MESSAGE_BYTES);
+            let presence = game_presence_server::GamePresenceServer::new(resource_api.clone())
+                .max_decoding_message_size(MAX_MESSAGE_BYTES)
+                .max_encoding_message_size(MAX_MESSAGE_BYTES);
+            let performance =
+                game_performance_server::GamePerformanceServer::new(resource_api.clone())
+                    .max_decoding_message_size(MAX_MESSAGE_BYTES)
+                    .max_encoding_message_size(MAX_MESSAGE_BYTES);
             let resources = resource_host_server::ResourceHostServer::new(resource_api)
                 .max_decoding_message_size(MAX_MESSAGE_BYTES)
                 .max_encoding_message_size(MAX_MESSAGE_BYTES);
@@ -940,6 +993,10 @@ impl PluginApiServer {
                 .add_service(resources)
                 .add_service(saves)
                 .add_service(locations)
+                .add_service(diagnostics)
+                .add_service(computer)
+                .add_service(presence)
+                .add_service(performance)
                 .serve_with_incoming_shutdown(incoming, async {
                     let _ = stopped.await;
                 })

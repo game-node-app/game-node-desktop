@@ -4,6 +4,7 @@
 //! identifiers, and game/install identity remains independent of the runtime that can launch it.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 pub const MAX_RUNTIME_ID_BYTES: usize = 128;
 pub const MAX_RUNTIME_FIELD_BYTES: usize = 4096;
@@ -56,6 +57,10 @@ pub struct RuntimeResource {
     pub supported_formats: Vec<String>,
     /// Ordered argument template. Each token is a literal or a content path; never shell text.
     pub launch_arguments: Vec<RuntimeArgumentTemplate>,
+    /// Opaque, versioned plugin annotations keyed by their declared namespace. Values are
+    /// encoded protocol payloads so Core can persist and return them without interpreting them.
+    #[serde(default)]
+    pub extensions: BTreeMap<String, Vec<u8>>,
     pub revision: u64,
     /// Unix seconds assigned by the host when the resource is stored.
     pub observed_at: i64,
@@ -85,6 +90,16 @@ impl RuntimeResource {
                 .launch_arguments
                 .iter()
                 .all(RuntimeArgumentTemplate::validate)
+            && self.extensions.len() <= 32
+            && self.extensions.iter().all(|(namespace, value)| {
+                !namespace.is_empty()
+                    && namespace.len() <= 256
+                    && !namespace.chars().any(char::is_control)
+                    && !namespace.starts_with("org.gamenode")
+                    && namespace.split('.').count() >= 2
+                    && value.len() <= 64 * 1024
+            })
+            && self.extensions.values().map(Vec::len).sum::<usize>() <= 64 * 1024
             && self.revision > 0
             && self.observed_at >= 0
     }

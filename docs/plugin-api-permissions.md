@@ -57,7 +57,7 @@ unserved handlers as requirements, not evidence of runtime enforcement.
 | `PortsList`, `PortsDetail`, `PortsRequestInstall` | `ports.read`, `ports.install` |
 | `JobsGet`, `JobsWatch`, `JobsCancel` | the permission of the operation that created the job, plus ownership of the job (see [Jobs](#jobs)) |
 
-The domain services use these grants (of them, only the `Saves` profile methods and `Locations.GetSize`, `GetAccess`, `GetLastModified`, `GetFingerprint` and `Compare` are served by this build; see [Save profiles](#save-profiles) and [Inspecting approved places](#inspecting-approved-places)):
+The domain services use these grants. This build serves the `Saves`, `Locations` and `StorageDiagnostics` methods listed below; the remaining service rows describe reserved methods:
 
 | Service methods | Permission |
 | --- | --- |

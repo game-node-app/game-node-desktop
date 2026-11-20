@@ -84,6 +84,7 @@ fn discovery_location_round_trips_and_stays_absent_when_not_reported() {
             name: "Portal 2".into(),
             install_dir: r"C:\Program Files (x86)\Steam\steamapps\common\Portal 2".into(),
             fields: Default::default(),
+            target: None,
         }],
         install_root: Some(r"C:\Program Files (x86)\Steam".into()),
         library_folders: Some(4),

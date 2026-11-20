@@ -3,6 +3,7 @@
 //! Plugin file handles are session scoped. Durable records keep only the host-owned approval id
 //! and relative path; reads issue a fresh handle after checking the approval and current grant.
 
+use gamenode_plugin_protocol::{extensions::ExtensionSet, prost::Message};
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
@@ -74,7 +75,6 @@ fn runtime_request_shape(record: &RuntimeRecord, require_executable: bool) -> Re
         || record.supported_formats.is_empty()
         || record.supported_formats.len() > 128
         || record.argument_template.len() > 128
-        || !record.extensions.is_empty()
     {
         return Err(Status::invalid_argument("invalid runtime resource"));
     }
@@ -337,6 +337,33 @@ impl ResourceApi {
         let executable_handle = self
             .session_handle(caller, runtime.executable.clone())
             .await?;
+        let extensions = runtime
+            .extensions
+            .into_iter()
+            .map(|(namespace, bytes)| {
+                ExtensionPayload::decode(bytes.as_slice())
+                    .map(|payload| (namespace, payload))
+                    .map_err(|_| Status::internal("stored runtime extension is invalid"))
+            })
+            .collect::<Result<std::collections::HashMap<_, _>, _>>()?;
+        let extensions = ExtensionSet::from_wire(extensions)
+            .map_err(|_| Status::internal("stored runtime extensions are invalid"))?;
+        let descriptors = self
+            .providers
+            .extension_schemas_for_provider(&caller.provider_id);
+        for (namespace, payload) in extensions.as_map() {
+            if let Some(descriptor) = descriptors
+                .iter()
+                .find(|schema| schema.namespace == *namespace)
+            {
+                gamenode_plugin_protocol::extensions::validate_payload_for_schema(
+                    payload, descriptor,
+                )
+                .map_err(|_| {
+                    Status::internal("stored runtime extension does not match its signed schema")
+                })?;
+            }
+        }
         Ok(RuntimeRecord {
             id: runtime.id,
             name: runtime.name,
@@ -347,7 +374,7 @@ impl ResourceApi {
             observed_at: runtime.observed_at,
             platform: runtime.platform,
             argument_template: proto_arguments(&runtime.launch_arguments),
-            extensions: Default::default(),
+            extensions: extensions.into_wire(),
             provenance: None,
         })
     }
@@ -473,6 +500,7 @@ impl ResourceApi {
             platform: request.platform,
             supported_formats: request.supported_formats,
             launch_arguments: core_arguments(&request.argument_template)?,
+            extensions: Self::encode_extensions(request.extensions)?,
             revision,
             observed_at,
         };
@@ -481,6 +509,43 @@ impl ResourceApi {
         } else {
             Err(Status::invalid_argument("invalid runtime resource"))
         }
+    }
+
+    fn encode_extensions(
+        extensions: std::collections::HashMap<String, ExtensionPayload>,
+    ) -> Result<std::collections::BTreeMap<String, Vec<u8>>, Status> {
+        let set = gamenode_plugin_protocol::extensions::ExtensionSet::from_wire(extensions)
+            .map_err(|_| Status::invalid_argument("invalid runtime extensions"))?;
+        Ok(set
+            .into_wire()
+            .into_iter()
+            .map(|(namespace, payload)| (namespace, payload.encode_to_vec()))
+            .collect())
+    }
+
+    fn authorize_runtime_namespaces<'a>(
+        caller: &ResourceCaller,
+        namespaces: impl IntoIterator<Item = &'a String>,
+    ) -> Result<(), Status> {
+        let namespaces: Vec<_> = namespaces.into_iter().collect();
+        if namespaces.is_empty() {
+            return Ok(());
+        }
+        let plugin_id = caller
+            .namespace
+            .as_ref()
+            .map(|namespace| namespace.identity().plugin_id.as_str())
+            .ok_or_else(|| {
+                Status::permission_denied("runtime extensions require a plugin owner")
+            })?;
+        if namespaces.into_iter().any(|namespace| {
+            namespace != plugin_id && !namespace.starts_with(&format!("{plugin_id}."))
+        }) {
+            return Err(Status::permission_denied(
+                "runtime extension namespace is not owned by this plugin",
+            ));
+        }
+        Ok(())
     }
 
     pub(super) async fn list_runtimes(
@@ -632,6 +697,8 @@ impl ResourceApi {
             .runtime
             .ok_or_else(|| Status::invalid_argument("runtime is required"))?;
         runtime_request_shape(&runtime_request, true)?;
+        Self::authorize_runtime_namespaces(&caller, runtime_request.extensions.keys())?;
+        Self::validate_package_extensions(&self.providers, &caller, &runtime_request.extensions)?;
         let request_id = runtime_request.id.clone();
         let hash = request_hash(&[
             "runtime-register",
@@ -642,6 +709,7 @@ impl ResourceApi {
             &runtime_request.platform,
             &runtime_request.supported_formats.join("\0"),
             &format!("{:?}", runtime_request.argument_template),
+            &format!("{:?}", runtime_request.extensions),
             &mutation.expected_revision.to_string(),
         ]);
         let lock = self.mutations.lock.lock().await;
@@ -708,6 +776,30 @@ impl ResourceApi {
         }))
     }
 
+    fn validate_package_extensions(
+        providers: &super::super::provider::ProviderApi,
+        caller: &ResourceCaller,
+        extensions: &std::collections::HashMap<String, ExtensionPayload>,
+    ) -> Result<(), Status> {
+        let descriptors = providers.extension_schemas_for_provider(&caller.provider_id);
+        for (namespace, payload) in extensions {
+            if let Some(descriptor) = descriptors
+                .iter()
+                .find(|schema| schema.namespace == *namespace)
+            {
+                gamenode_plugin_protocol::extensions::validate_payload_for_schema(
+                    payload, descriptor,
+                )
+                .map_err(|_| {
+                    Status::invalid_argument(
+                        "runtime extension does not match its signed package schema",
+                    )
+                })?;
+            }
+        }
+        Ok(())
+    }
+
     pub(super) async fn update_runtime(
         &self,
         request: Request<RuntimeUpdateRequest>,
@@ -743,7 +835,11 @@ impl ResourceApi {
             "argument_template",
         ];
         let mut mask = HashSet::new();
-        if request.field_mask.is_empty()
+        let mut patch_mask = HashSet::new();
+        if let Some(patch) = request.extension_patch.as_ref() {
+            patch_mask.extend(patch.typed_field_mask.iter().map(String::as_str));
+        }
+        if (request.field_mask.is_empty() && request.extension_patch.is_none())
             || request
                 .field_mask
                 .iter()
@@ -767,6 +863,7 @@ impl ResourceApi {
             &runtime_request.platform,
             &runtime_request.supported_formats.join("\0"),
             &format!("{:?}", runtime_request.argument_template),
+            &format!("{:?}", request.extension_patch),
         ]);
         let lock = self.mutations.lock.lock().await;
         if let Some(replay) = self.mutations.replay(&caller, key, hash)? {
@@ -796,6 +893,53 @@ impl ResourceApi {
                 outcome: MutationOutcome::RevisionConflict as i32,
             }));
         }
+        let mut extensions = current.extensions.clone();
+        if let Some(patch) = request.extension_patch.as_ref() {
+            Self::authorize_runtime_namespaces(
+                &caller,
+                patch.namespaces.iter().map(|change| &change.namespace),
+            )?;
+            let current_wire = RuntimeRecord {
+                id: current.id.clone(),
+                name: current.name.clone(),
+                version: current.version.clone(),
+                supported_formats: current.supported_formats.clone(),
+                revision: current.revision,
+                extensions: current
+                    .extensions
+                    .iter()
+                    .map(|(namespace, bytes)| {
+                        ExtensionPayload::decode(bytes.as_slice())
+                            .map(|payload| (namespace.clone(), payload))
+                            .map_err(|_| Status::internal("stored runtime extension is invalid"))
+                    })
+                    .collect::<Result<_, _>>()?,
+                ..Default::default()
+            };
+            let proposed_wire = RuntimeRecord {
+                id: current.id.clone(),
+                name: runtime_request.name.clone(),
+                version: runtime_request.version.clone(),
+                supported_formats: runtime_request.supported_formats.clone(),
+                extensions: current_wire.extensions.clone(),
+                ..Default::default()
+            };
+            let applied = gamenode_plugin_protocol::extensions::apply_runtime_patch(
+                &current_wire,
+                &proposed_wire,
+                patch,
+            )
+            .map_err(|_| Status::invalid_argument("invalid or stale runtime extension patch"))?;
+            Self::validate_package_extensions(&self.providers, &caller, &applied.extensions)?;
+            runtime_request.name = applied.name;
+            runtime_request.version = applied.version;
+            runtime_request.supported_formats = applied.supported_formats;
+            extensions = Self::encode_extensions(applied.extensions)?;
+        } else if runtime_request.extensions.len() > 0 {
+            return Err(Status::invalid_argument(
+                "runtime extensions require a revision-checked extension_patch",
+            ));
+        }
         let executable = if mask.contains("executable_handle") {
             self.providers
                 .authorize_resource(Some(context), cap::FILES_READ)?;
@@ -808,12 +952,12 @@ impl ResourceApi {
         };
         let updated = RuntimeResource {
             id: current.id.clone(),
-            name: if mask.contains("name") {
+            name: if mask.contains("name") || patch_mask.contains("name") {
                 runtime_request.name
             } else {
                 current.name
             },
-            version: if mask.contains("version") {
+            version: if mask.contains("version") || patch_mask.contains("version") {
                 runtime_request.version
             } else {
                 current.version
@@ -824,7 +968,9 @@ impl ResourceApi {
             } else {
                 current.platform
             },
-            supported_formats: if mask.contains("supported_formats") {
+            supported_formats: if mask.contains("supported_formats")
+                || patch_mask.contains("supported_formats")
+            {
                 runtime_request.supported_formats
             } else {
                 current.supported_formats
@@ -834,6 +980,7 @@ impl ResourceApi {
             } else {
                 current.launch_arguments
             },
+            extensions,
             revision: current.revision.saturating_add(1),
             observed_at: unix_now(),
         };

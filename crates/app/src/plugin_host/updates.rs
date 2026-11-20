@@ -370,6 +370,7 @@ pub struct PluginUpdateService {
 
 impl PluginUpdateService {
     pub fn open(paths: &gamenode_platform::paths::DataPaths) -> Result<Self, String> {
+        PluginStateLayout::refuse_legacy_layouts(paths).map_err(|error| error.to_string())?;
         let registry = PluginPackageRegistry::open(paths).map_err(|error| error.to_string())?;
         let verifier =
             UpdateIndexVerifier::open(paths.plugin_packages_dir().join("update-sequences"))

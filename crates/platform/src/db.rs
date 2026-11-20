@@ -1473,6 +1473,53 @@ mod tests {
     }
 
     #[test]
+    fn integration_branch_migration_history_is_rejected_without_changing_the_file() {
+        // This is the unpublished history used by the integration branch before reconciliation.
+        // Several version numbers overlap with main but identify different migrations.
+        let dir = TempDir::new().unwrap();
+        let path = db_path(&dir);
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL);
+             CREATE TABLE integration_user_data (id TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO integration_user_data VALUES ('sentinel', 'preserve me');",
+        )
+        .unwrap();
+        let integration_history = [
+            "initial_settings",
+            "library",
+            "playtime",
+            "drm_free_backups",
+            "game_tools",
+            "store_accounts_and_catalog",
+            "favorites",
+            "ports",
+            "achievements",
+            "library_installations",
+            "library_display_overrides",
+            "chosen_match_source",
+            "library_artwork_overrides",
+            "library_entry_targets",
+            "library_organization",
+            "plugin_custom_launch_recipes",
+            "plugin_runtime_resources",
+            "library_launch_recipe_selection",
+        ];
+        for (index, name) in integration_history.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO schema_migrations (version, name) VALUES (?1, ?2)",
+                params![index as u32 + 1, name],
+            )
+            .unwrap();
+        }
+        drop(conn);
+
+        let before = std::fs::read(&path).unwrap();
+        assert!(matches!(open(&path), Err(StorageError::Failed(_))));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
     fn failed_upgrade_keeps_the_latest_verified_snapshot_with_user_data() {
         const V18_BAD: Migration = Migration {
             version: 18,

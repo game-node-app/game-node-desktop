@@ -47,3 +47,25 @@ A changed publisher key MUST establish a distinct identity. Old data MUST remain
 #### Scenario: Publisher key is re-trusted
 - **WHEN** the user trusts a changed publisher key
 - **THEN** old data and grants remain inaccessible to the new identity until any separate authorized migration or grant is completed
+
+### Requirement: Shared save-resource scope requires explicit review
+The host MUST bind each shared emulator save resource to the authenticated plugin, publisher and profile and its host-resolved backing handle. The host MUST resolve the complete affected game/installation set and require explicit user consent bound to that exact set, resource and revisions before creating or changing the scope.
+
+#### Scenario: The user reviews the full affected-game scope
+- **WHEN** a plugin proposes to create or widen a shared memory-card resource used by multiple games or installations
+- **THEN** the host presents the complete host-resolved affected set and approved backing location for explicit consent, and records the decision against the exact authenticated identity, resource and revisions
+
+#### Scenario: A plugin attempts to widen an approved scope
+- **WHEN** a plugin changes the backing handle, runtime binding or affected-game set after review
+- **THEN** the host refuses the mutation or requires a fresh user review before applying it; existing grants do not silently widen
+
+### Requirement: Backup and restore coordinate with host-observed resource use
+The host MUST coordinate shared-resource access with host-issued use leases for supervised runtime process trees and platform checks against approved runtime executable identities. Unsafe backup/restore MUST be denied while use is active or unknown. Plugin-reported activity MUST NOT establish that a resource is idle.
+
+#### Scenario: Restore races with a supervised emulator launch
+- **WHEN** a restore holds the exclusive resource lease while a supervised runtime attempts to use the same resource
+- **THEN** the restore and launch are serialized, and the runtime cannot use the resource until the restore commits or aborts
+
+#### Scenario: An emulator is active or its state is unknown
+- **WHEN** a backup/restore operation targets a resource with an active supervised lease, a matching externally observed approved runtime process, or indeterminate process state
+- **THEN** the host refuses the unsafe operation with an actionable busy/unknown result; plugin-reported inactivity cannot override the refusal

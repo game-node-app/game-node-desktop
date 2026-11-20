@@ -6,7 +6,7 @@ Cross-plugin data, diagnostics and durable storage need separate producer/recipi
 
 ## What Changes
 
-Adds typed shared data and projections, diagnostic/gameplay telemetry, durable plugin-owned persistence, cleanup administration, and consent UI connected to persisted data-sharing policies. It includes two-client interoperability coverage and explicit downgrade/publisher-key re-trust review with a rollback-safe private-data policy.
+Adds typed shared data and projections, diagnostic/gameplay telemetry, durable plugin-owned persistence, cleanup administration, and consent UI connected to persisted data-sharing policies. It also coordinates emulator-backed save resources across every affected game with reviewed scope and host-controlled backup/restore safety. It includes two-client interoperability coverage and explicit downgrade/publisher-key re-trust review with a rollback-safe private-data policy.
 
 ## Out of Scope
 

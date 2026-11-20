@@ -1573,7 +1573,14 @@ impl ProviderApi {
         if extension_session {
             granted.insert(cap::CONTEXT.to_owned());
         }
-        if !granted.contains(cap::CONTEXT) {
+        // A full provider may be settings- or configuration-only, without library context; the
+        // registration check above accepts exactly those three capabilities. Context-requiring
+        // calls stay denied per operation, so the session still cannot enumerate the library.
+        const SESSION_SCOPE: [&str; 3] = [cap::CONTEXT, cap::SETTINGS, cap::CONFIGURE];
+        if !SESSION_SCOPE
+            .iter()
+            .any(|capability| granted.contains(*capability))
+        {
             return Err(denial(DenialReason::NotGranted, cap::CONTEXT, 0));
         }
         if let Some(permission) = pending

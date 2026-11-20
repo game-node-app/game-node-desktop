@@ -304,9 +304,6 @@ pub const SERVED: &[Served] = &[
         false,
         PRIVATE_NAMESPACE,
     ),
-    Served::new("DataPublish", cap::DATA_PUBLISH, false, PRIVATE_NAMESPACE),
-    Served::new("DataGet", cap::DATA_PUBLISH, false, PRIVATE_NAMESPACE),
-    Served::new("DataList", cap::DATA_PUBLISH, true, PRIVATE_NAMESPACE),
     Served::new(
         "FilesRequestAccess",
         cap::FILES_READ,

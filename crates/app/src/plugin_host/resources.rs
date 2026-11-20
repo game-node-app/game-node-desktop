@@ -35,6 +35,7 @@ mod matching;
 mod mutations;
 mod network;
 mod notifications;
+mod observations;
 mod ports;
 mod runtimes;
 mod saves;
@@ -126,6 +127,24 @@ pub const SERVED: &[Served] = &[
         cap::STORAGE_DIAGNOSTICS_PUBLISH,
         false,
         "host-attributed volume report; Core starts no SMART process",
+    ),
+    Served::new(
+        "ComputerPublishHardware",
+        cap::COMPUTER_HARDWARE_PUBLISH,
+        false,
+        "host-attributed sensitive hardware observation; no collector is started",
+    ),
+    Served::new(
+        "GamePresencePublish",
+        cap::GAME_PRESENCE_PUBLISH,
+        false,
+        "host-attributed sensitive game status with bounded expiry",
+    ),
+    Served::new(
+        "GamePresenceClear",
+        cap::GAME_PRESENCE_PUBLISH,
+        false,
+        "the caller's own game/session presence",
     ),
     Served::new(
         "LibrariesList",
@@ -320,6 +339,12 @@ pub const LOCATIONS_SERVED: &[Served] = locations::SERVED;
 
 /// The `StorageDiagnostics` service methods this build serves, for `DescribeApi`.
 pub const DIAGNOSTICS_SERVED: &[Served] = diagnostics::SERVED;
+
+/// The `Computer` service methods this build serves, for `DescribeApi`.
+pub const COMPUTER_SERVED: &[Served] = observations::COMPUTER_SERVED;
+
+/// The `GamePresence` service methods this build serves, for `DescribeApi`.
+pub const PRESENCE_SERVED: &[Served] = observations::PRESENCE_SERVED;
 
 /// A served method's `DescribeApi` facts.
 pub struct Served {
@@ -1767,10 +1792,25 @@ impl resource_host_server::ResourceHost for ResourceApi {
     ) -> Result<Response<ReportMutationReply>, Status> {
         self.publish_smart(request).await
     }
+    async fn computer_publish_hardware(
+        &self,
+        request: Request<HardwareReportRequest>,
+    ) -> Result<Response<ReportMutationReply>, Status> {
+        self.publish_hardware(request).await
+    }
+    async fn game_presence_publish(
+        &self,
+        request: Request<PresencePublishRequest>,
+    ) -> Result<Response<ReportMutationReply>, Status> {
+        self.publish_presence(request).await
+    }
+    async fn game_presence_clear(
+        &self,
+        request: Request<PresenceClearRequest>,
+    ) -> Result<Response<MutationReply>, Status> {
+        self.clear_presence(request).await
+    }
     not_served! {
-        computer_publish_hardware(HardwareReportRequest) -> ReportMutationReply;
-        game_presence_publish(PresencePublishRequest) -> ReportMutationReply;
-        game_presence_clear(PresenceClearRequest) -> MutationReply;
         game_performance_publish_samples(PerformanceSamplesRequest) -> ReportMutationReply;
         game_performance_end_series(PerformanceEndSeriesRequest) -> MutationReply;
         persistence_get_usage(PersistenceUsageRequest) -> PersistenceUsageReply;

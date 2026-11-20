@@ -685,6 +685,16 @@ impl plugin_host_server::PluginHost for PluginApi {
                             .iter()
                             .map(|served| ("StorageDiagnostics", served)),
                     )
+                    .chain(
+                        resources::COMPUTER_SERVED
+                            .iter()
+                            .map(|served| ("Computer", served)),
+                    )
+                    .chain(
+                        resources::PRESENCE_SERVED
+                            .iter()
+                            .map(|served| ("GamePresence", served)),
+                    )
                     .map(|(service, served)| ApiMethod {
                         service: service.into(),
                         method: served.method.into(),
@@ -834,6 +844,12 @@ impl PluginApiServer {
                 storage_diagnostics_server::StorageDiagnosticsServer::new(resource_api.clone())
                     .max_decoding_message_size(MAX_MESSAGE_BYTES)
                     .max_encoding_message_size(MAX_MESSAGE_BYTES);
+            let computer = computer_server::ComputerServer::new(resource_api.clone())
+                .max_decoding_message_size(MAX_MESSAGE_BYTES)
+                .max_encoding_message_size(MAX_MESSAGE_BYTES);
+            let presence = game_presence_server::GamePresenceServer::new(resource_api.clone())
+                .max_decoding_message_size(MAX_MESSAGE_BYTES)
+                .max_encoding_message_size(MAX_MESSAGE_BYTES);
             let resources = resource_host_server::ResourceHostServer::new(resource_api)
                 .max_decoding_message_size(MAX_MESSAGE_BYTES)
                 .max_encoding_message_size(MAX_MESSAGE_BYTES);
@@ -849,6 +865,8 @@ impl PluginApiServer {
                 .add_service(saves)
                 .add_service(locations)
                 .add_service(diagnostics)
+                .add_service(computer)
+                .add_service(presence)
                 .serve_with_incoming_shutdown(incoming, async move {
                     let _ = shutdown_rx.await;
                 })
@@ -941,6 +959,12 @@ impl PluginApiServer {
                 storage_diagnostics_server::StorageDiagnosticsServer::new(resource_api.clone())
                     .max_decoding_message_size(MAX_MESSAGE_BYTES)
                     .max_encoding_message_size(MAX_MESSAGE_BYTES);
+            let computer = computer_server::ComputerServer::new(resource_api.clone())
+                .max_decoding_message_size(MAX_MESSAGE_BYTES)
+                .max_encoding_message_size(MAX_MESSAGE_BYTES);
+            let presence = game_presence_server::GamePresenceServer::new(resource_api.clone())
+                .max_decoding_message_size(MAX_MESSAGE_BYTES)
+                .max_encoding_message_size(MAX_MESSAGE_BYTES);
             let resources = resource_host_server::ResourceHostServer::new(resource_api)
                 .max_decoding_message_size(MAX_MESSAGE_BYTES)
                 .max_encoding_message_size(MAX_MESSAGE_BYTES);
@@ -956,6 +980,8 @@ impl PluginApiServer {
                 .add_service(saves)
                 .add_service(locations)
                 .add_service(diagnostics)
+                .add_service(computer)
+                .add_service(presence)
                 .serve_with_incoming_shutdown(incoming, async {
                     let _ = stopped.await;
                 })

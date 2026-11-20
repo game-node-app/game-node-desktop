@@ -34,6 +34,7 @@ mod libraries;
 mod locations;
 mod network;
 mod notifications;
+mod observations;
 mod ports;
 mod runtimes;
 mod saves;
@@ -83,6 +84,8 @@ struct Fixture {
     saves: Arc<crate::plugin_host::saves::SaveAccess>,
     /// The fingerprints of approved places.
     snapshots: Arc<crate::plugin_host::fingerprints::Snapshots>,
+    /// Shared observations inserted by source fixtures for cross-plugin read tests.
+    data_broker: Arc<crate::plugin_host::shared_data::DataBroker>,
     /// The time the notification rate limit sees; tests move it.
     notice_clock: Arc<std::sync::atomic::AtomicU64>,
     notices: Arc<notifications::Collected>,
@@ -156,11 +159,13 @@ impl Fixture {
         });
         let notices = Arc::new(notifications::Collected::default());
         notifications.set_sink(notices.clone());
+        let data_broker = Arc::new(crate::plugin_host::shared_data::DataBroker::new());
         let root = crate::plugin_host::PluginApi {
             storage: storage.clone(),
             files: files.clone(),
             network: network.clone(),
             notifications: notifications.clone(),
+            data_broker: data_broker.clone(),
             ..Default::default()
         };
         root.set_state_layout(crate::plugin_host::profile::PluginStateLayout::new(
@@ -268,6 +273,7 @@ impl Fixture {
             snapshots,
             notice_clock,
             notices,
+            data_broker,
             clock,
             plugin_data,
             endpoint,

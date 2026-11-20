@@ -19,6 +19,21 @@ The host MUST keep published datasets private by default and persist common-cate
 
 ## ADDED Requirements
 
+### Requirement: Typed resource extensions remain bounded and optional
+The host MUST validate extension envelopes as a bounded set and resolve schemas from integrity-verified package assets bound to the authenticated plugin and publisher. Extensions MUST NOT replace typed authority fields. Unknown optional schemas MUST leave the typed base usable; only schema-validated fields may be projected under current policy.
+
+#### Scenario: Reader encounters an unsupported optional schema
+- **WHEN** a valid runtime has a supported typed base and a bounded optional extension whose schema the reader does not support
+- **THEN** the reader can use the typed base, the owner record retains the opaque extension, and the extension fields are omitted from the reader's projection
+
+#### Scenario: Resource extension exceeds the aggregate budget
+- **WHEN** the combined extensions exceed the namespace, encoded-byte, depth or total-object-key budget
+- **THEN** the host rejects the mutation without changing the resource or its revision
+
+#### Scenario: Projection uses declared fields and current grants
+- **WHEN** a reader selects fields from a known extension schema
+- **THEN** the host returns only fields declared by that schema and permitted by the reader's current policy
+
 ### Requirement: Sensitive and custom sharing remains separately scoped
 Sensitive/custom datasets MUST use a separate persisted review bound to the exact source, recipient and dataset. The review MUST specify allowed fields and history/live delivery. A common grant MUST NOT widen it; plugin RPC MUST NOT create or widen policy. Neither kind of grant authorizes recipient persistence or retention; durable copies require separate consent.
 

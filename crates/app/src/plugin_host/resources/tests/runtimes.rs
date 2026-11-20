@@ -5,6 +5,7 @@ use gamenode_plugin_sdk::proto::{
 };
 use gamenode_plugin_sdk::resources::{RuntimeArgumentTemplate as SdkArgument, RuntimeSpec};
 use prost_types::{Struct, Value, value::Kind};
+use sha2::{Digest, Sha256};
 
 struct PersistentRuntimeHost {
     database: std::sync::Arc<gamenode_platform::db::SqliteSettingsStore>,
@@ -121,7 +122,36 @@ impl LibraryHost for PersistentRuntimeHost {
 }
 
 fn extension(note: &str) -> ExtensionPayload {
-    extension_for("fixture.plugin.runtime.v1", note)
+    let schema = br#"{"type":"object","properties":{"note":{"type":"string","x-gamenode-classification":"public"}},"required":["note"],"additionalProperties":false}"#;
+    ExtensionPayload {
+        schema_id: "fixture.plugin.runtime.v1".into(),
+        schema_version: 1,
+        schema_digest: Sha256::digest(schema).to_vec(),
+        data: Some(Struct {
+            fields: BTreeMap::from([(
+                "note".into(),
+                Value {
+                    kind: Some(Kind::StringValue(note.into())),
+                },
+            )]),
+        }),
+    }
+}
+
+fn runtime_schema() -> ExtensionSchemaDescriptor {
+    let schema = br#"{"type":"object","properties":{"note":{"type":"string","x-gamenode-classification":"public"}},"required":["note"],"additionalProperties":false}"#;
+    ExtensionSchemaDescriptor {
+        namespace: "fixture.plugin.runtime".into(),
+        schema_id: "fixture.plugin.runtime.v1".into(),
+        schema_version: 1,
+        schema_digest: Sha256::digest(schema).to_vec(),
+        schema_json: schema.to_vec(),
+        fields: vec![ExtensionSchemaField {
+            path: "note".into(),
+            classification: ExtensionFieldClassification::Public as i32,
+        }],
+        optional: true,
+    }
 }
 
 fn extension_for(schema_id: &str, note: &str) -> ExtensionPayload {
@@ -167,6 +197,15 @@ async fn runtime_namespace_patches_are_owner_checked_revisioned_and_preserve_old
         cap::GAME_RUNTIME_UPDATE,
     ])
     .await;
+    fixture
+        .api
+        .set_extension_schemas(
+            "fixture",
+            "fixture.plugin",
+            &"ab".repeat(32),
+            vec![runtime_schema()],
+        )
+        .unwrap();
     let database_path = fixture._temp.path().join("runtime.sqlite3");
     let database = std::sync::Arc::new(
         gamenode_platform::db::SqliteSettingsStore::open(&database_path).unwrap(),
@@ -180,6 +219,7 @@ async fn runtime_namespace_patches_are_owner_checked_revisioned_and_preserve_old
     let root = fixture.root_handle("id-fixture:1", &["read"]).await;
     let executable = fixture.child(&root, "emulator").await;
     let resources = fixture.host.resources().unwrap();
+    let mut watch = resources.runtimes_watch(0, None).await.unwrap();
     let registered = resources
         .runtime_register(runtime(executable), 0, "register-runtime")
         .await
@@ -187,8 +227,60 @@ async fn runtime_namespace_patches_are_owner_checked_revisioned_and_preserve_old
     assert_eq!(registered.outcome, MutationOutcome::Applied as i32);
     let first = registered.runtime.unwrap();
     assert_eq!(first.revision, 1);
+    let mut invalid_known = extension("wrong shape");
+    invalid_known.data.as_mut().unwrap().fields.insert(
+        "note".into(),
+        Value {
+            kind: Some(Kind::NumberValue(7.0)),
+        },
+    );
+    assert!(
+        resources
+            .runtime_update_patch(
+                &first.id,
+                runtime(String::new()),
+                ExtensionPatch {
+                    expected_revision: 1,
+                    typed_field_mask: vec!["name".into()],
+                    namespaces: vec![ExtensionNamespacePatch {
+                        namespace: "fixture.plugin.runtime".into(),
+                        operation: Some(Operation::Set(invalid_known)),
+                    }],
+                },
+                std::iter::empty::<String>(),
+                1,
+                "reject-invalid-signed-schema-payload",
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        resources
+            .runtime_get(&first.id, None)
+            .await
+            .unwrap()
+            .revision,
+        1
+    );
     assert_eq!(
         first.extensions["fixture.plugin.future"],
+        extension_for("fixture.plugin.future.v1", "unknown-to-old-client")
+    );
+    let page = resources.runtimes_page(20, "", None).await.unwrap();
+    assert_eq!(page.runtimes.len(), 1);
+    assert_eq!(page.runtimes[0].id, first.id);
+    assert_eq!(
+        page.runtimes[0].extensions["fixture.plugin.future"],
+        extension_for("fixture.plugin.future.v1", "unknown-to-old-client"),
+        "the owner can list a usable typed runtime with its opaque optional namespace"
+    );
+    let event = watch
+        .message()
+        .await
+        .unwrap()
+        .expect("runtime registration should publish a watch event");
+    assert_eq!(
+        event.runtime.unwrap().extensions["fixture.plugin.future"],
         extension_for("fixture.plugin.future.v1", "unknown-to-old-client")
     );
 

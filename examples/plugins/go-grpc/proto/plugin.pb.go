@@ -2802,11 +2802,17 @@ func (x *DiscoveryRecord) GetTarget() *DetectedTarget {
 }
 
 type DiscoveryResult struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Records       []*DiscoveryRecord     `protobuf:"bytes,1,rep,name=records,proto3" json:"records,omitempty"`
-	ProviderId    string                 `protobuf:"bytes,2,opt,name=provider_id,json=providerId,proto3" json:"provider_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Records    []*DiscoveryRecord     `protobuf:"bytes,1,rep,name=records,proto3" json:"records,omitempty"`
+	ProviderId string                 `protobuf:"bytes,2,opt,name=provider_id,json=providerId,proto3" json:"provider_id,omitempty"`
+	// Where the provider is installed, as the plugin read it. Absent when the
+	// scan found no installation or the provider has no install location.
+	InstallRoot *string `protobuf:"bytes,3,opt,name=install_root,json=installRoot,proto3,oneof" json:"install_root,omitempty"`
+	// How many library folders the scan used. Absent when the provider does not
+	// report a count; a reported zero is a real value.
+	LibraryFolders *uint32 `protobuf:"varint,4,opt,name=library_folders,json=libraryFolders,proto3,oneof" json:"library_folders,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *DiscoveryResult) Reset() {
@@ -2851,6 +2857,20 @@ func (x *DiscoveryResult) GetProviderId() string {
 		return x.ProviderId
 	}
 	return ""
+}
+
+func (x *DiscoveryResult) GetInstallRoot() string {
+	if x != nil && x.InstallRoot != nil {
+		return *x.InstallRoot
+	}
+	return ""
+}
+
+func (x *DiscoveryResult) GetLibraryFolders() uint32 {
+	if x != nil && x.LibraryFolders != nil {
+		return *x.LibraryFolders
+	}
+	return 0
 }
 
 type PluginFailure struct {
@@ -18428,15 +18448,18 @@ func (x *AchievementsRequest) GetLanguage() string {
 }
 
 type Achievement struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
-	Description   string                 `protobuf:"bytes,3,opt,name=description,proto3" json:"description,omitempty"`
-	Hidden        bool                   `protobuf:"varint,4,opt,name=hidden,proto3" json:"hidden,omitempty"`
-	IconUrl       string                 `protobuf:"bytes,5,opt,name=icon_url,json=iconUrl,proto3" json:"icon_url,omitempty"`
-	IconGrayUrl   string                 `protobuf:"bytes,6,opt,name=icon_gray_url,json=iconGrayUrl,proto3" json:"icon_gray_url,omitempty"`
-	Unlocked      bool                   `protobuf:"varint,7,opt,name=unlocked,proto3" json:"unlocked,omitempty"`
-	UnlockedAt    *int64                 `protobuf:"varint,8,opt,name=unlocked_at,json=unlockedAt,proto3,oneof" json:"unlocked_at,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Id          string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Name        string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	Description string                 `protobuf:"bytes,3,opt,name=description,proto3" json:"description,omitempty"`
+	Hidden      bool                   `protobuf:"varint,4,opt,name=hidden,proto3" json:"hidden,omitempty"`
+	IconUrl     string                 `protobuf:"bytes,5,opt,name=icon_url,json=iconUrl,proto3" json:"icon_url,omitempty"`
+	IconGrayUrl string                 `protobuf:"bytes,6,opt,name=icon_gray_url,json=iconGrayUrl,proto3" json:"icon_gray_url,omitempty"`
+	Unlocked    bool                   `protobuf:"varint,7,opt,name=unlocked,proto3" json:"unlocked,omitempty"`
+	UnlockedAt  *int64                 `protobuf:"varint,8,opt,name=unlocked_at,json=unlockedAt,proto3,oneof" json:"unlocked_at,omitempty"`
+	// Global unlock percentage in hundredths of a percent (420 = 4.2%). Optional because a
+	// provider may not publish rarity; old plugins leave it unset.
+	GlobalPercent *uint32 `protobuf:"varint,9,opt,name=global_percent,json=globalPercent,proto3,oneof" json:"global_percent,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -18523,6 +18546,13 @@ func (x *Achievement) GetUnlocked() bool {
 func (x *Achievement) GetUnlockedAt() int64 {
 	if x != nil && x.UnlockedAt != nil {
 		return *x.UnlockedAt
+	}
+	return 0
+}
+
+func (x *Achievement) GetGlobalPercent() uint32 {
+	if x != nil && x.GlobalPercent != nil {
+		return *x.GlobalPercent
 	}
 	return 0
 }
@@ -20366,11 +20396,15 @@ const file_plugin_proto_rawDesc = "" +
 	"\x06target\x18\x05 \x01(\v2\".gamenode.plugin.v1.DetectedTargetR\x06target\x1a9\n" +
 	"\vFieldsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"q\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xec\x01\n" +
 	"\x0fDiscoveryResult\x12=\n" +
 	"\arecords\x18\x01 \x03(\v2#.gamenode.plugin.v1.DiscoveryRecordR\arecords\x12\x1f\n" +
 	"\vprovider_id\x18\x02 \x01(\tR\n" +
-	"providerId\"=\n" +
+	"providerId\x12&\n" +
+	"\finstall_root\x18\x03 \x01(\tH\x00R\vinstallRoot\x88\x01\x01\x12,\n" +
+	"\x0flibrary_folders\x18\x04 \x01(\rH\x01R\x0elibraryFolders\x88\x01\x01B\x0f\n" +
+	"\r_install_rootB\x12\n" +
+	"\x10_library_folders\"=\n" +
 	"\rPluginFailure\x12\x12\n" +
 	"\x04code\x18\x01 \x01(\tR\x04code\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\"\x96\x02\n" +
@@ -21779,7 +21813,7 @@ const file_plugin_proto_rawDesc = "" +
 	"\x0e_configuration\"L\n" +
 	"\x13AchievementsRequest\x12\x19\n" +
 	"\bgame_ids\x18\x01 \x03(\tR\agameIds\x12\x1a\n" +
-	"\blanguage\x18\x02 \x01(\tR\blanguage\"\xfc\x01\n" +
+	"\blanguage\x18\x02 \x01(\tR\blanguage\"\xbb\x02\n" +
 	"\vAchievement\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12 \n" +
@@ -21789,8 +21823,10 @@ const file_plugin_proto_rawDesc = "" +
 	"\ricon_gray_url\x18\x06 \x01(\tR\viconGrayUrl\x12\x1a\n" +
 	"\bunlocked\x18\a \x01(\bR\bunlocked\x12$\n" +
 	"\vunlocked_at\x18\b \x01(\x03H\x00R\n" +
-	"unlockedAt\x88\x01\x01B\x0e\n" +
-	"\f_unlocked_at\"V\n" +
+	"unlockedAt\x88\x01\x01\x12*\n" +
+	"\x0eglobal_percent\x18\t \x01(\rH\x01R\rglobalPercent\x88\x01\x01B\x0e\n" +
+	"\f_unlocked_atB\x11\n" +
+	"\x0f_global_percent\"V\n" +
 	"\x0fAchievementGame\x12C\n" +
 	"\fachievements\x18\x01 \x03(\v2\x1f.gamenode.plugin.v1.AchievementR\fachievements\"\xc9\x01\n" +
 	"\x12AchievementOutcome\x12\x17\n" +
@@ -23088,6 +23124,7 @@ func file_plugin_proto_init() {
 		(*DetectedTarget_Uri)(nil),
 		(*DetectedTarget_Executable)(nil),
 	}
+	file_plugin_proto_msgTypes[19].OneofWrappers = []any{}
 	file_plugin_proto_msgTypes[21].OneofWrappers = []any{
 		(*SubmitDiscoveryRequest_Completed)(nil),
 		(*SubmitDiscoveryRequest_Failed)(nil),

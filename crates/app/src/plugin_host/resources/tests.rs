@@ -796,6 +796,41 @@ async fn custom_launch_without_its_own_grant_is_denied_and_describe_lists_the_ro
     );
 }
 
+/// The protocol carries routes this build has not mounted. They must stay invisible in
+/// `DescribeApi` and answer `UNIMPLEMENTED`, never a partial success or a permission error.
+#[tokio::test]
+async fn deferred_resource_routes_are_unadvertised_and_unimplemented() {
+    let fixture = Fixture::new(&[cap::LIBRARY_READ]).await;
+    let described = fixture.host.describe_api().await.unwrap();
+    for method in [
+        "StorageDiagnosticsPublishBenchmark",
+        "PersistenceGetUsage",
+        "GamePerformancePublishSamples",
+    ] {
+        assert!(
+            !described
+                .methods
+                .iter()
+                .any(|advertised| advertised.method == method),
+            "deferred route {method} was advertised"
+        );
+    }
+    let status = fixture
+        .client()
+        .persistence_get_usage(PersistenceUsageRequest {
+            context: Some(fixture.context()),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::Unimplemented);
+    let status = fixture
+        .client()
+        .storage_diagnostics_publish_benchmark(BenchmarkReportRequest::default())
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::Unimplemented);
+}
+
 // ---- Display metadata and favorites (task 5.2) ----
 
 /// An entry's explicit match: the game, whether the user made it, and the entry revision.

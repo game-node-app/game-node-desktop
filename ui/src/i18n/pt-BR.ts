@@ -2071,6 +2071,8 @@ export const ptBR: TranslationCatalog = {
   "Detail::Install": "Instalar",
   "Detail::Running · {}": "Em execução · {}",
   "Detail::More actions": "Mais ações",
+  "Detail::Stop custom launch": "Parar lançamento personalizado",
+  "Detail::Could not stop custom launch": "Não foi possível confirmar o encerramento. Tente novamente.",
   "Detail::Installed on this PC": "Instalado neste PC",
   "Detail::Not installed": "Não instalado",
   "Detail::Matched": "Associado",

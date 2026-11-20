@@ -283,6 +283,7 @@ pub(super) fn resolve(
             runtime_revision,
             content_id,
             binding_revision,
+            ..
         }) => {
             let mut components = vec![LaunchPlanComponent {
                 kind: "runtime".into(),

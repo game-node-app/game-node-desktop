@@ -454,6 +454,9 @@ impl ResourceApi {
             binding_revision,
             arguments: runtime.launch_arguments,
             resources,
+            // This branch cannot create shared-save scopes. Data 1.8 must populate these keys
+            // from its reviewed host-owned resource bindings before enabling those scopes.
+            lease_keys: Vec::new(),
         })
     }
 

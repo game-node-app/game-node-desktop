@@ -121,6 +121,12 @@ fn set_webview_visible(window: &tauri::WebviewWindow, visible: bool) {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(target_os = "linux")]
+    if let Some(result) =
+        gamenode_app::plugin_host::launch_supervisor::run_linux_helper_if_requested()
+    {
+        return result;
+    }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -647,6 +653,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         commands::provider_sign_out,
         commands::provider_check,
         commands::plugin_stop,
+        commands::custom_launch_ids,
+        commands::custom_launch_stop,
         commands::plugin_start,
         commands::achievement_list,
         commands::open_achievements_page,

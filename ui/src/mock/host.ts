@@ -4198,6 +4198,8 @@ export function createMockHost(options: {
         }
         return [steamPlugin, epicPlugin, communityPlugin, communitySaveSyncPlugin];
       }
+      if (cmd === 'custom_launch_ids') return [];
+      if (cmd === 'custom_launch_stop') return undefined;
       if (cmd === 'plugin_stop' || cmd === 'plugin_start') {
         const providerId = args.providerId as string;
         if (!(providerId in pluginSessions)) {

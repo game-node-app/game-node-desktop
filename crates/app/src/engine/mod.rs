@@ -159,6 +159,36 @@ fn unix_now() -> i64 {
         })
 }
 
+fn validate_user_launch_authority(
+    profiles: &crate::plugin_host::profile::PluginProfiles,
+    authority: &crate::plugin_host::library::UserLaunchAuthority,
+) -> Result<(), tonic::Status> {
+    let current = profiles.require()?;
+    if !current.verified()
+        || current.epoch() != authority.profile_epoch
+        || current.profile_id() != authority.profile_id
+        || !profiles.is_enabled(&authority.plugin_id)?
+    {
+        return Err(tonic::Status::permission_denied(
+            "plugin profile or activation changed",
+        ));
+    }
+    let (revision, grants) =
+        profiles.granted_permissions(&authority.plugin_id, &authority.publisher_fingerprint)?;
+    if authority
+        .grant_revision
+        .is_some_and(|expected| revision != expected)
+        || !grants.contains(gamenode_plugin_protocol::capability::GAME_CUSTOM_LAUNCH)
+        || (authority.requires_files
+            && !grants.contains(gamenode_plugin_protocol::capability::FILES_READ))
+    {
+        return Err(tonic::Status::permission_denied(
+            "plugin launch permission changed",
+        ));
+    }
+    Ok(())
+}
+
 type Job = Box<dyn FnOnce() + Send>;
 
 /// Runs blocking storage jobs one at a time, in submission order.
@@ -280,6 +310,11 @@ struct Shared {
     plugin_profiles: Mutex<Option<Arc<crate::plugin_host::profile::PluginProfiles>>>,
     /// Shared host resource adapter used for user-initiated custom Play selections.
     selected_launch_api: Mutex<Option<Arc<crate::plugin_host::resources::ResourceApi>>>,
+    /// Owns reviewed custom launches and their shared-resource leases off the UI thread.
+    #[cfg(any(target_os = "linux", windows))]
+    custom_launch_supervisor: Option<Arc<crate::plugin_host::launch_supervisor::LaunchSupervisor>>,
+    #[cfg(any(target_os = "linux", windows))]
+    custom_launch_leases: Arc<crate::plugin_host::resource_leases::ResourceLeases>,
     /// The library projection plugins read through `ResourceHost`.
     library_feed: Mutex<Option<Arc<crate::plugin_host::library::LibraryFeed>>>,
     /// Serialize checks and catalog commits without delaying account cancellation.
@@ -406,6 +441,13 @@ impl Engine {
             providers: Mutex::new(None),
             plugin_profiles: Mutex::new(None),
             selected_launch_api: Mutex::new(None),
+            #[cfg(any(target_os = "linux", windows))]
+            custom_launch_supervisor:
+                crate::plugin_host::launch_supervisor::LaunchSupervisor::start_monitor().ok(),
+            #[cfg(any(target_os = "linux", windows))]
+            custom_launch_leases: Arc::new(
+                crate::plugin_host::resource_leases::ResourceLeases::default(),
+            ),
             library_feed: Mutex::new(None),
             provider_checks: Mutex::new(std::collections::HashMap::new()),
             catalog_syncs: Mutex::new(std::collections::HashMap::new()),
@@ -776,6 +818,179 @@ impl Engine {
             .selected_launch_api
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(api);
+    }
+
+    async fn launch_authorized_uri(
+        &self,
+        uri: url::Url,
+        arguments: Vec<String>,
+        working_directory: String,
+        environment: gamenode_core::drm_free::LaunchEnvironmentDelta,
+        authority: crate::plugin_host::library::UserLaunchAuthority,
+    ) -> Result<(), tonic::Status> {
+        let profiles = self
+            .shared
+            .plugin_profiles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| tonic::Status::unavailable("plugin profile is unavailable"))?;
+        let opener = Arc::clone(&self.shared.ports.uri);
+        tokio::task::spawn_blocking(move || {
+            let _transition = profiles.lock_transition();
+            validate_user_launch_authority(&profiles, &authority)?;
+            opener
+                .open_custom(&uri, &arguments, &working_directory, &environment)
+                .map_err(|error| match error {
+                    gamenode_core::ports::UriError::NoHandler => {
+                        tonic::Status::failed_precondition("no application handles this launch URI")
+                    }
+                    gamenode_core::ports::UriError::Unsupported => tonic::Status::unimplemented(
+                        "the URI handler cannot apply custom launch fields",
+                    ),
+                    gamenode_core::ports::UriError::Failed => {
+                        tonic::Status::unavailable("the launch URI failed")
+                    }
+                })
+        })
+        .await
+        .map_err(|_| tonic::Status::unavailable("custom launch worker stopped"))?
+    }
+
+    /// Starts a reviewed executable on a worker and returns its host-owned launch identity.
+    /// The caller supplies only resource keys resolved by the host, never plugin-provided keys.
+    #[cfg(any(target_os = "linux", windows))]
+    pub(crate) async fn start_supervised_custom_launch(
+        &self,
+        command: gamenode_core::drm_free::CustomLaunchCommand,
+        keys: Vec<crate::plugin_host::resource_leases::ResourceLeaseKey>,
+        entry_key: Option<String>,
+        authority: Option<crate::plugin_host::library::UserLaunchAuthority>,
+    ) -> Result<u64, tonic::Status> {
+        let supervisor = self
+            .shared
+            .custom_launch_supervisor
+            .clone()
+            .ok_or_else(|| tonic::Status::unavailable("custom launch supervisor is unavailable"))?;
+        let leases = Arc::clone(&self.shared.custom_launch_leases);
+        let installations = self.shared.ports.installations.clone().ok_or_else(|| {
+            tonic::Status::unimplemented("custom executable launch is unavailable")
+        })?;
+        let profiles = self
+            .shared
+            .plugin_profiles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        tokio::task::spawn_blocking(move || {
+            // Persisted permission changes and profile transitions take this same lock. A
+            // revocation that commits first must prevent spawn, while a revocation after spawn
+            // must leave the already-running game alone.
+            let _transition = match (&authority, &profiles) {
+                (Some(_), Some(profiles)) => Some(profiles.lock_transition()),
+                (Some(_), None) => {
+                    return Err(tonic::Status::unavailable("plugin profile is unavailable"));
+                }
+                (None, _) => None,
+            };
+            if let Some(authority) = &authority {
+                validate_user_launch_authority(
+                    profiles.as_ref().expect("authority requires profiles"),
+                    authority,
+                )?;
+            }
+            let inspected = installations.inspect(&command.executable).map_err(|_| {
+                tonic::Status::failed_precondition("approved executable cannot be inspected")
+            })?;
+            if inspected.file_identity != command.file_identity
+                || !std::fs::canonicalize(&command.working_directory)
+                    .is_ok_and(|path| path.is_dir())
+                || !command.environment.validate()
+            {
+                return Err(tonic::Status::failed_precondition(
+                    "approved launch inputs changed",
+                ));
+            }
+            supervisor
+                .start_for_entry(leases.as_ref(), &keys, entry_key, || {
+                    // Repeat identity inspection after reserving resources and immediately before
+                    // handing the command to the OS. Failed inspection must never spawn a process.
+                    let valid = installations
+                        .inspect(&command.executable)
+                        .is_ok_and(|current| current.file_identity == command.file_identity);
+                    if valid {
+                        crate::plugin_host::launch_supervisor::spawn_native(&command)
+                    } else {
+                        crate::plugin_host::launch_supervisor::SpawnOutcome::NotStarted
+                    }
+                })
+                .map_err(|error| match error {
+                    crate::plugin_host::resource_leases::ResourceLeaseError::Busy => {
+                        tonic::Status::failed_precondition("a shared resource is busy")
+                    }
+                    crate::plugin_host::resource_leases::ResourceLeaseError::Unknown => {
+                        tonic::Status::unavailable("custom launch could not be confirmed")
+                    }
+                })
+        })
+        .await
+        .map_err(|_| tonic::Status::unavailable("custom launch worker stopped"))?
+    }
+
+    /// Explicitly terminates and fences a previously supervised launch on a worker.
+    #[cfg(any(target_os = "linux", windows))]
+    pub async fn stop_supervised_custom_launch(&self, id: u64) -> Result<(), tonic::Status> {
+        let supervisor = self
+            .shared
+            .custom_launch_supervisor
+            .clone()
+            .ok_or_else(|| tonic::Status::unavailable("custom launch supervisor is unavailable"))?;
+        tokio::task::spawn_blocking(move || supervisor.stop(id))
+            .await
+            .map_err(|_| tonic::Status::unavailable("custom launch worker stopped"))?
+            .map(|_| ())
+            .map_err(|_| {
+                tonic::Status::unavailable("custom launch termination could not be confirmed")
+            })
+    }
+
+    /// Returns identifiers for running or indeterminate reviewed custom launches.
+    #[cfg(any(target_os = "linux", windows))]
+    pub async fn supervised_custom_launch_ids(&self) -> Result<Vec<u64>, tonic::Status> {
+        let supervisor = self
+            .shared
+            .custom_launch_supervisor
+            .clone()
+            .ok_or_else(|| tonic::Status::unavailable("custom launch supervisor is unavailable"))?;
+        tokio::task::spawn_blocking(move || supervisor.active_ids())
+            .await
+            .map_err(|_| tonic::Status::unavailable("custom launch worker stopped"))?
+            .map_err(|_| tonic::Status::unavailable("custom launch state is unavailable"))
+    }
+
+    /// Finds supervised launches belonging to a specific library entry.
+    #[cfg(any(target_os = "linux", windows))]
+    pub async fn supervised_custom_launch_ids_for_entry(
+        &self,
+        entry_key: String,
+    ) -> Result<Vec<u64>, tonic::Status> {
+        let supervisor = self
+            .shared
+            .custom_launch_supervisor
+            .clone()
+            .ok_or_else(|| tonic::Status::unavailable("custom launch supervisor is unavailable"))?;
+        tokio::task::spawn_blocking(move || supervisor.ids_for_entry(&entry_key))
+            .await
+            .map_err(|_| tonic::Status::unavailable("custom launch worker stopped"))?
+            .map_err(|_| tonic::Status::unavailable("custom launch state is unavailable"))
+    }
+
+    /// Returns the same host-owned coordinator used by launches for backup/restore integration.
+    #[cfg(any(target_os = "linux", windows))]
+    pub(crate) fn shared_resource_leases(
+        &self,
+    ) -> Arc<crate::plugin_host::resource_leases::ResourceLeases> {
+        Arc::clone(&self.shared.custom_launch_leases)
     }
 
     /// Reads the last signed-in account, then the stored session and, if there is one,
@@ -2742,6 +2957,7 @@ impl crate::plugin_host::library::LibraryHost for PluginLibraryHost {
                     runtime_revision: runtime.runtime_revision,
                     content_id: runtime.content_id,
                     binding_revision: runtime.binding_revision,
+                    lease_keys: runtime.lease_keys,
                 });
             }
             if !recipe.runtime_handle.is_empty() {
@@ -2789,6 +3005,26 @@ impl crate::plugin_host::library::LibraryHost for PluginLibraryHost {
         dispatch: crate::plugin_host::library::CustomLaunchDispatch,
     ) -> Result<(), tonic::Status> {
         let engine = self.engine()?;
+        #[cfg(any(target_os = "linux", windows))]
+        let dispatch = match dispatch {
+            crate::plugin_host::library::CustomLaunchDispatch::Executable(command) => {
+                return engine
+                    .start_supervised_custom_launch(command, Vec::new(), None, None)
+                    .await
+                    .map(|_| ());
+            }
+            crate::plugin_host::library::CustomLaunchDispatch::Runtime {
+                command,
+                lease_keys,
+                ..
+            } => {
+                return engine
+                    .start_supervised_custom_launch(command, lease_keys, None, None)
+                    .await
+                    .map(|_| ());
+            }
+            uri => uri,
+        };
         let ports = engine.shared.ports.clone();
         tokio::task::spawn_blocking(move || {
             use crate::plugin_host::library::CustomLaunchDispatch;
@@ -2857,6 +3093,96 @@ impl crate::plugin_host::library::LibraryHost for PluginLibraryHost {
         })
         .await
         .map_err(|_| tonic::Status::unavailable("custom launch worker stopped"))?
+    }
+
+    async fn launch_custom_for_entry(
+        &self,
+        dispatch: crate::plugin_host::library::CustomLaunchDispatch,
+        entry_key: String,
+    ) -> Result<(), tonic::Status> {
+        #[cfg(any(target_os = "linux", windows))]
+        {
+            let engine = self.engine()?;
+            match dispatch {
+                crate::plugin_host::library::CustomLaunchDispatch::Executable(command) => {
+                    return engine
+                        .start_supervised_custom_launch(command, Vec::new(), Some(entry_key), None)
+                        .await
+                        .map(|_| ());
+                }
+                crate::plugin_host::library::CustomLaunchDispatch::Runtime {
+                    command,
+                    lease_keys,
+                    ..
+                } => {
+                    return engine
+                        .start_supervised_custom_launch(command, lease_keys, Some(entry_key), None)
+                        .await
+                        .map(|_| ());
+                }
+                uri => return self.launch_custom(uri).await,
+            }
+        }
+        #[cfg(not(any(target_os = "linux", windows)))]
+        {
+            let _ = entry_key;
+            self.launch_custom(dispatch).await
+        }
+    }
+
+    async fn launch_custom_for_entry_authorized(
+        &self,
+        dispatch: crate::plugin_host::library::CustomLaunchDispatch,
+        entry_key: String,
+        authority: crate::plugin_host::library::UserLaunchAuthority,
+    ) -> Result<(), tonic::Status> {
+        let engine = self.engine()?;
+        match dispatch {
+            #[cfg(any(target_os = "linux", windows))]
+            crate::plugin_host::library::CustomLaunchDispatch::Executable(command) => engine
+                .start_supervised_custom_launch(
+                    command,
+                    Vec::new(),
+                    Some(entry_key),
+                    Some(authority),
+                )
+                .await
+                .map(|_| ()),
+            #[cfg(any(target_os = "linux", windows))]
+            crate::plugin_host::library::CustomLaunchDispatch::Runtime {
+                command,
+                lease_keys,
+                ..
+            } => engine
+                .start_supervised_custom_launch(
+                    command,
+                    lease_keys,
+                    Some(entry_key),
+                    Some(authority),
+                )
+                .await
+                .map(|_| ()),
+            crate::plugin_host::library::CustomLaunchDispatch::Uri {
+                uri,
+                arguments,
+                working_directory,
+                environment,
+            } => {
+                engine
+                    .launch_authorized_uri(
+                        uri,
+                        arguments,
+                        working_directory,
+                        environment,
+                        authority,
+                    )
+                    .await
+            }
+            #[cfg(not(any(target_os = "linux", windows)))]
+            _ => Err(tonic::Status::unimplemented(
+                "custom executable launch is unavailable",
+            )),
+        }
     }
 
     fn ports_supported(&self) -> bool {

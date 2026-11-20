@@ -2069,6 +2069,8 @@ export const en = {
   "Detail::Install": "Install",
   "Detail::Running · {}": "Running · {}",
   "Detail::More actions": "More actions",
+  "Detail::Stop custom launch": "Stop custom launch",
+  "Detail::Could not stop custom launch": "Could not confirm that the launch stopped. Try again.",
   "Detail::Installed on this PC": "Installed on this PC",
   "Detail::Not installed": "Not installed",
   "Detail::Matched": "Matched",

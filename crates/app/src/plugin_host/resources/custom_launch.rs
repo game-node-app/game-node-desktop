@@ -63,6 +63,7 @@ pub(super) struct ResolvedLaunchPath {
 
 struct ResolvedSelectedRecipe {
     dispatch: crate::plugin_host::library::CustomLaunchDispatch,
+    authority: crate::plugin_host::library::UserLaunchAuthority,
     fingerprint: String,
     review: super::super::launch_plan::LaunchPlanReview,
     game_name: String,
@@ -354,7 +355,7 @@ impl ResourceApi {
                 .ok_or_else(|| Status::unavailable("custom launch recipes are unavailable"))?;
             match library
                 .approve_launch_recipe_plan(
-                    entry_key,
+                    entry_key.clone(),
                     selected.recipe_id.clone(),
                     selected.recipe_revision,
                     selected.base_target_revision,
@@ -373,7 +374,7 @@ impl ResourceApi {
         self.library
             .host()
             .ok_or_else(|| Status::unavailable("custom launch recipes are unavailable"))?
-            .launch_custom(current.dispatch)
+            .launch_custom_for_entry_authorized(current.dispatch, entry_key, current.authority)
             .await?;
         Ok(true)
     }
@@ -562,6 +563,14 @@ impl ResourceApi {
         .map_err(|_| Status::unavailable("launch plan worker stopped"))??;
         Ok(ResolvedSelectedRecipe {
             dispatch,
+            authority: crate::plugin_host::library::UserLaunchAuthority {
+                plugin_id: identity.plugin_id,
+                publisher_fingerprint: identity.publisher_fingerprint,
+                profile_id: identity.profile_id,
+                profile_epoch: caller.profile_epoch,
+                grant_revision: Some(grant_revision),
+                requires_files: needs_files,
+            },
             fingerprint,
             review,
             game_name: projection.display_name.unwrap_or_else(|| projection.name),
@@ -583,6 +592,7 @@ impl ResourceApi {
                 runtime_revision,
                 content_id,
                 binding_revision,
+                lease_keys,
             } = dispatch
             else {
                 return Err(Status::failed_precondition(
@@ -607,6 +617,7 @@ impl ResourceApi {
             let mut resources = resolved.resources.clone();
             if resolved.runtime_revision != *runtime_revision
                 || resolved.binding_revision != *binding_revision
+                || resolved.lease_keys != *lease_keys
             {
                 return Err(Status::failed_precondition(
                     "the approved runtime or content binding changed before launch",
@@ -646,12 +657,14 @@ impl ResourceApi {
                     runtime_revision: current_revision,
                     content_id: current_content,
                     binding_revision: current_binding,
+                    lease_keys: current_lease_keys,
                 } if &current == command
                     && current_runtime == *runtime_id
                     && current_version == *runtime_version
                     && current_revision == *runtime_revision
                     && current_content == *content_id
-                    && current_binding == *binding_revision =>
+                    && current_binding == *binding_revision
+                    && current_lease_keys == *lease_keys =>
                 {
                     return Ok(resources);
                 }

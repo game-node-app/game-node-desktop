@@ -668,6 +668,8 @@ pub enum CustomLaunchDispatch {
         runtime_revision: u64,
         content_id: String,
         binding_revision: Option<u64>,
+        /// Opaque keys created by the host for reviewed shared resources, never by a plugin.
+        lease_keys: Vec<crate::plugin_host::resource_leases::ResourceLeaseKey>,
     },
     Uri {
         uri: url::Url,
@@ -692,6 +694,20 @@ pub struct ResolvedRuntimeLaunch {
     pub binding_revision: Option<u64>,
     pub arguments: Vec<gamenode_core::library::RuntimeArgumentTemplate>,
     pub resources: Vec<gamenode_core::library::LaunchPlanResource>,
+    pub(crate) lease_keys: Vec<crate::plugin_host::resource_leases::ResourceLeaseKey>,
+}
+
+/// Host-captured authorization for a user-selected plugin launch plan.
+#[derive(Clone, Debug)]
+pub struct UserLaunchAuthority {
+    pub(crate) plugin_id: String,
+    pub(crate) publisher_fingerprint: String,
+    pub(crate) profile_id: String,
+    pub(crate) profile_epoch: u64,
+    /// User-selected plans bind a specific persisted revision. Session-originated plans are
+    /// additionally fenced by their provider commit lock and recheck current persisted grants.
+    pub(crate) grant_revision: Option<u64>,
+    pub(crate) requires_files: bool,
 }
 
 #[async_trait::async_trait]
@@ -814,6 +830,24 @@ pub trait LibraryHost: Send + Sync {
         Err(Status::unimplemented(
             "custom launch is unavailable on this platform",
         ))
+    }
+
+    /// Launches a plan associated with the library entry selected by the host.
+    async fn launch_custom_for_entry(
+        &self,
+        dispatch: CustomLaunchDispatch,
+        _entry_key: String,
+    ) -> Result<(), Status> {
+        self.launch_custom(dispatch).await
+    }
+
+    async fn launch_custom_for_entry_authorized(
+        &self,
+        dispatch: CustomLaunchDispatch,
+        entry_key: String,
+        _authority: UserLaunchAuthority,
+    ) -> Result<(), Status> {
+        self.launch_custom_for_entry(dispatch, entry_key).await
     }
 
     fn ports_supported(&self) -> bool {

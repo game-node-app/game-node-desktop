@@ -1662,3 +1662,141 @@ async fn normal_and_custom_launch_permissions_are_independent_for_extensions() {
     assert_eq!(*host.opened.lock().unwrap(), [("steam:1".into(), false)]);
     assert!(host.custom_launch_recipes.lock().unwrap().is_empty());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn custom_launch_commit_serializes_with_permission_revocation() {
+    let (fixture, host, _) = Fixture::game(
+        &[cap::GAME_LAUNCH, cap::GAME_CUSTOM_LAUNCH],
+        Some(answering(&[APPROVE])),
+    )
+    .await;
+    host.launch_target.store(1, Ordering::SeqCst);
+    let revision = fixture.revision().await;
+    let recipe = fixture
+        .client()
+        .games_propose_custom_launch(CustomLaunchRequest {
+            context: Some(fixture.context()),
+            game_id: "3".into(),
+            installation_id: INSTALLATION.into(),
+            expected_revision: revision,
+            idempotency_key: "race-recipe".into(),
+            uri: "steam://rungameid/3".into(),
+            ..CustomLaunchRequest::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let intent = fixture
+        .intents
+        .issue(
+            fixture
+                .binding_for(
+                    Operation::CustomLaunch,
+                    1,
+                    "3",
+                    INSTALLATION,
+                    &recipe.recipe_id,
+                )
+                .await,
+        )
+        .unwrap();
+    let gate = Arc::new(Notify::new());
+    *host.custom_launch_gate.lock().unwrap() = Some(gate.clone());
+    let entered = host.custom_launch_entered.notified();
+    let owner = fixture.game_owner();
+    let reply = fixture
+        .client()
+        .games_request_custom_launch(CustomLaunchRequest {
+            context: Some(fixture.context()),
+            game_id: "3".into(),
+            installation_id: INSTALLATION.into(),
+            expected_revision: revision,
+            user_intent_id: intent,
+            idempotency_key: "race-execute".into(),
+            recipe_id: recipe.recipe_id,
+            recipe_revision: recipe.recipe_revision,
+            ..CustomLaunchRequest::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    tokio::time::timeout(Duration::from_secs(5), entered)
+        .await
+        .unwrap();
+    let provider = fixture.api.clone();
+    let mut revoke = tokio::spawn(async move {
+        provider
+            .revoke_session_permission("fixture", cap::GAME_CUSTOM_LAUNCH)
+            .await
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), &mut revoke)
+            .await
+            .is_err(),
+        "revocation must wait for the launch commit"
+    );
+    gate.notify_one();
+    tokio::time::timeout(Duration::from_secs(5), revoke)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        fixture.ended_for(&owner, &reply.job_id).await.state(),
+        JobState::Succeeded
+    );
+    assert_eq!(host.custom_launch_dispatches.lock().unwrap().len(), 1);
+    assert!(
+        fixture
+            .api
+            .authorize_resource(Some(&fixture.context()), cap::GAME_CUSTOM_LAUNCH)
+            .is_err()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn custom_launch_revoked_before_approval_never_dispatches() {
+    let (dialog, gate) = held(&[APPROVE]);
+    let (fixture, host, dialog) =
+        Fixture::game(&[cap::GAME_LAUNCH, cap::GAME_CUSTOM_LAUNCH], Some(dialog)).await;
+    host.launch_target.store(1, Ordering::SeqCst);
+    let revision = fixture.revision().await;
+    let recipe = fixture
+        .client()
+        .games_propose_custom_launch(CustomLaunchRequest {
+            context: Some(fixture.context()),
+            game_id: "3".into(),
+            installation_id: INSTALLATION.into(),
+            expected_revision: revision,
+            idempotency_key: "revoke-recipe".into(),
+            uri: "steam://rungameid/3".into(),
+            ..CustomLaunchRequest::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let owner = fixture.game_owner();
+    let reply = fixture
+        .client()
+        .games_request_custom_launch(CustomLaunchRequest {
+            context: Some(fixture.context()),
+            game_id: "3".into(),
+            installation_id: INSTALLATION.into(),
+            expected_revision: revision,
+            idempotency_key: "revoke-execute".into(),
+            recipe_id: recipe.recipe_id,
+            recipe_revision: recipe.recipe_revision,
+            ..CustomLaunchRequest::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    Fixture::dialog_shown(&dialog.unwrap(), 1).await;
+    fixture
+        .api
+        .revoke_session_permission("fixture", cap::GAME_CUSTOM_LAUNCH)
+        .await;
+    gate.notify_one();
+    let done = fixture.ended_for(&owner, &reply.job_id).await;
+    assert_ne!(done.state(), JobState::Succeeded);
+    assert!(host.custom_launch_dispatches.lock().unwrap().is_empty());
+}

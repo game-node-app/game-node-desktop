@@ -836,6 +836,8 @@ struct FakeHost {
         Mutex<HashMap<(String, String), gamenode_core::library::CustomLaunchRecipe>>,
     launch_recipe_selections: Mutex<HashMap<String, gamenode_core::library::LaunchRecipeSelection>>,
     custom_launch_dispatches: Mutex<Vec<crate::plugin_host::library::CustomLaunchDispatch>>,
+    custom_launch_gate: Mutex<Option<Arc<tokio::sync::Notify>>>,
+    custom_launch_entered: tokio::sync::Notify,
     runtime_resources: Mutex<HashMap<(String, String), gamenode_core::library::RuntimeResource>>,
     runtime_bindings:
         Mutex<HashMap<(String, u64, String), Vec<gamenode_core::library::RuntimeContentBinding>>>,
@@ -1184,6 +1186,11 @@ impl LibraryHost for FakeHost {
         &self,
         dispatch: crate::plugin_host::library::CustomLaunchDispatch,
     ) -> Result<(), Status> {
+        let gate = self.custom_launch_gate.lock().unwrap().clone();
+        if let Some(gate) = gate {
+            self.custom_launch_entered.notify_one();
+            gate.notified().await;
+        }
         self.custom_launch_dispatches.lock().unwrap().push(dispatch);
         Ok(())
     }

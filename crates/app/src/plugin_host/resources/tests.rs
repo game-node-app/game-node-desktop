@@ -836,9 +836,23 @@ struct FakeHost {
         Mutex<HashMap<(String, String), gamenode_core::library::CustomLaunchRecipe>>,
     launch_recipe_selections: Mutex<HashMap<String, gamenode_core::library::LaunchRecipeSelection>>,
     custom_launch_dispatches: Mutex<Vec<crate::plugin_host::library::CustomLaunchDispatch>>,
+    runtime_resources: Mutex<HashMap<(String, String), gamenode_core::library::RuntimeResource>>,
+    runtime_bindings:
+        Mutex<HashMap<(String, u64, String), Vec<gamenode_core::library::RuntimeContentBinding>>>,
 }
 
 impl FakeHost {
+    fn seed_runtime_resource(
+        &self,
+        owner_key: String,
+        runtime: gamenode_core::library::RuntimeResource,
+    ) {
+        self.runtime_resources
+            .lock()
+            .unwrap()
+            .insert((owner_key, runtime.id.clone()), runtime);
+    }
+
     fn hook(&self) -> Option<(ProviderApi, &'static str)> {
         self.revoke_before_commit
             .lock()
@@ -977,6 +991,84 @@ impl LibraryHost for FakeHost {
 
     async fn launch_target_revision(&self, _entry_key: String) -> Result<u64, Status> {
         Ok(1)
+    }
+
+    async fn runtime_resource(
+        &self,
+        owner_key: String,
+        runtime_id: String,
+    ) -> Result<Option<gamenode_core::library::RuntimeResource>, Status> {
+        Ok(self
+            .runtime_resources
+            .lock()
+            .unwrap()
+            .get(&(owner_key, runtime_id))
+            .cloned())
+    }
+
+    async fn save_runtime_resource(
+        &self,
+        owner_key: String,
+        runtime: gamenode_core::library::RuntimeResource,
+    ) -> Result<gamenode_core::library::RuntimeMutation, Status> {
+        use gamenode_core::library::RuntimeMutation;
+        let mut resources = self.runtime_resources.lock().unwrap();
+        let key = (owner_key, runtime.id.clone());
+        let current = resources.get(&key).map(|resource| resource.revision);
+        if current.unwrap_or(0).saturating_add(1) != runtime.revision {
+            return Ok(RuntimeMutation::Conflict {
+                current: current.unwrap_or(0),
+            });
+        }
+        let revision = runtime.revision;
+        resources.insert(key, runtime);
+        Ok(RuntimeMutation::Applied { revision })
+    }
+
+    async fn runtime_content_bindings(
+        &self,
+        owner_key: String,
+        game_id: u64,
+        installation_id: String,
+    ) -> Result<Vec<gamenode_core::library::RuntimeContentBinding>, Status> {
+        Ok(self
+            .runtime_bindings
+            .lock()
+            .unwrap()
+            .get(&(owner_key, game_id, installation_id))
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    async fn save_runtime_content_binding(
+        &self,
+        owner_key: String,
+        binding: gamenode_core::library::RuntimeContentBinding,
+    ) -> Result<gamenode_core::library::RuntimeMutation, Status> {
+        use gamenode_core::library::RuntimeMutation;
+        let key = (owner_key, binding.game_id, binding.installation_id.clone());
+        let mut bindings = self.runtime_bindings.lock().unwrap();
+        let rows = bindings.entry(key).or_default();
+        let current = rows
+            .iter()
+            .find(|row| {
+                row.content_id == binding.content_id && row.runtime_id == binding.runtime_id
+            })
+            .map(|row| row.revision);
+        if current.unwrap_or(0).saturating_add(1) != binding.revision {
+            return Ok(RuntimeMutation::Conflict {
+                current: current.unwrap_or(0),
+            });
+        }
+        let revision = binding.revision;
+        if let Some(existing) = rows.iter_mut().find(|row| {
+            row.content_id == binding.content_id && row.runtime_id == binding.runtime_id
+        }) {
+            *existing = binding;
+        } else {
+            rows.push(binding);
+        }
+        Ok(RuntimeMutation::Applied { revision })
     }
 
     async fn custom_launch_recipe(

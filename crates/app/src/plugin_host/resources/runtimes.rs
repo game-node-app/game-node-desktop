@@ -941,6 +941,11 @@ impl ResourceApi {
         let caller = self
             .providers
             .authorize_resource(Some(context), cap::DISCOVERY)?;
+        // A discovery grant authorizes submitting observations, but it does not authorize
+        // reading a content file. Require the independent file grant before resolving game or
+        // runtime records, so discovery-only callers cannot probe those namespaces.
+        self.providers
+            .authorize_resource(Some(context), cap::FILES_READ)?;
         let key = mutation_key(mutation)?;
         if !valid_id(&request.installation_id)
             || !valid_id(&request.content_kind)
@@ -976,13 +981,9 @@ impl ResourceApi {
         let all_bindings = host
             .runtime_content_bindings(owner.clone(), game_id, request.installation_id.clone())
             .await?;
-        if !request.content_id.is_empty()
-            && !all_bindings
-                .iter()
-                .any(|binding| binding.content_id == request.content_id)
-        {
-            return Err(Status::not_found("runtime content not found"));
-        }
+        // A stable content id can have been selected from another runtime's discovery. Accept
+        // that identity as a new owner-scoped binding after validating this caller's game,
+        // installation and approved file handle; never read or mutate the foreign binding row.
         let requested_content_id = request.content_id.clone();
         let hash = request_hash(&[
             "runtime-content-register",
@@ -1004,8 +1005,6 @@ impl ResourceApi {
         } else {
             requested_content_id
         };
-        self.providers
-            .authorize_resource(Some(context), cap::FILES_READ)?;
         let content = self
             .capture_reference(
                 &caller,

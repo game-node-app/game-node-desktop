@@ -1107,6 +1107,235 @@ async fn an_extension_session_reaches_only_its_target_and_reading_the_library_ad
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn runtime_content_discovery_requires_a_scoped_context_and_separate_file_grant() {
+    let target = TargetGameContext {
+        game_id: "5".into(),
+        installation_id: "id-steam:1".into(),
+        profile_id: "account-a".into(),
+        revision: "1".into(),
+    };
+    let (fixture, _, _) =
+        Fixture::extension_game(&[cap::DISCOVERY, cap::GAME_CUSTOM_LAUNCH], target, None).await;
+    let context = fixture.context();
+    assert!(
+        context.provider_id.is_empty(),
+        "extensions do not impersonate providers"
+    );
+    let request = |context: Option<ServiceContext>, game_id: &str, installation_id: &str| {
+        ContentRegistrationRequest {
+            mutation: Some(MutationContext {
+                context,
+                operation_id: String::new(),
+                idempotency_key: "runtime-content-discovery".into(),
+                expected_revision: 0,
+            }),
+            game_id: game_id.into(),
+            installation_id: installation_id.into(),
+            content_handle: "approved-content-handle".into(),
+            content_kind: "snes-rom".into(),
+            runtime_id: "runtime-zsnes".into(),
+            supported_platforms: vec!["linux".into()],
+            content_id: "rom:zelda".into(),
+        }
+    };
+
+    // The extension's host-issued context is bound to the selected game. Omitting it or
+    // substituting another session/target cannot turn discovery into provider impersonation.
+    assert_eq!(
+        fixture
+            .client()
+            .games_register_content(request(None, "5", "id-steam:1"))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::InvalidArgument
+    );
+    let mut unscoped = context.clone();
+    unscoped.target_game = None;
+    assert_eq!(
+        fixture
+            .client()
+            .games_register_content(request(Some(unscoped), "5", "id-steam:1"))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::PermissionDenied
+    );
+    let foreign = Fixture::new(&[cap::DISCOVERY]).await;
+    assert_eq!(
+        fixture
+            .client()
+            .games_register_content(request(Some(foreign.context()), "5", "id-steam:1",))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::Unauthenticated
+    );
+    assert_eq!(
+        fixture
+            .client()
+            .games_register_content(request(Some(context.clone()), "6", "id-steam:2"))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::PermissionDenied,
+        "discovery alone cannot read an approved content handle"
+    );
+
+    // A provider session with discovery alone cannot launch its own game; execution has an
+    // independent permission. Extensions also need a game-action grant to negotiate a session.
+    let launch_discovery_only = Fixture::new(&[cap::DISCOVERY]).await;
+    launch_discovery_only.library(&[("fixture:1", Some(5), "Observed game")]);
+    assert_eq!(
+        launch_discovery_only
+            .client()
+            .games_request_launch(GameLaunchRequest {
+                context: Some(launch_discovery_only.context()),
+                game_id: "5".into(),
+                installation_id: "id-fixture:1".into(),
+                expected_revision: 0,
+                user_intent_id: String::new(),
+                idempotency_key: "discovery-is-not-launch".into(),
+            })
+            .await
+            .unwrap_err()
+            .code(),
+        Code::PermissionDenied
+    );
+
+    // A properly scoped but foreign game remains outside the extension's selected context even
+    // when file reading is independently granted.
+    let (with_file_read, _, _) = Fixture::extension_game(
+        &[cap::DISCOVERY, cap::FILES_READ, cap::GAME_CUSTOM_LAUNCH],
+        TargetGameContext {
+            game_id: "5".into(),
+            installation_id: "id-steam:1".into(),
+            profile_id: "account-a".into(),
+            revision: "1".into(),
+        },
+        None,
+    )
+    .await;
+    assert_eq!(
+        with_file_read
+            .client()
+            .games_register_content(request(Some(with_file_read.context()), "6", "id-steam:2",))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::NotFound
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn runtime_plugins_reconcile_observations_as_selectable_bindings_on_one_game() {
+    use gamenode_core::library::{ApprovedFileReference, RuntimeArgumentTemplate, RuntimeResource};
+
+    let target = TargetGameContext {
+        game_id: "5".into(),
+        installation_id: "id-steam:1".into(),
+        profile_id: "account-a".into(),
+        revision: "1".into(),
+    };
+    let (fixture, host, _) = Fixture::extension_game(
+        &[cap::DISCOVERY, cap::FILES_READ, cap::GAME_CUSTOM_LAUNCH],
+        target,
+        None,
+    )
+    .await;
+    let content_root = fixture.game_dir("selected-rom", &[("zelda.sfc", b"rom bytes")]);
+    fixture.library_in(&[
+        ("steam:1", Some(5), "Selected Steam game", &content_root),
+        ("steam:2", Some(6), "Other Steam game", &content_root),
+    ]);
+    let library_revision = fixture.feed.revision();
+    fixture.user_approving(&content_root);
+    let root = fixture.root_handle("id-steam:1", &["read"]).await;
+    let content_handle = fixture.child(&root, "zelda.sfc").await;
+    let context = fixture.context();
+    let caller = fixture
+        .api
+        .authorize_resource(Some(&context), cap::DISCOVERY)
+        .unwrap();
+    let owner = super::super::mutations::mutation_owner(&caller);
+
+    for id in ["runtime-zsnes", "runtime-bsnes"] {
+        host.seed_runtime_resource(
+            owner.clone(),
+            RuntimeResource {
+                id: id.into(),
+                name: id.into(),
+                version: "1.0".into(),
+                executable: ApprovedFileReference {
+                    approval_id: format!("runtime-approval-{id}"),
+                    relative_path: vec!["bin".into(), "emulator".into()],
+                },
+                platform: "linux".into(),
+                supported_formats: vec!["snes-rom".into()],
+                launch_arguments: vec![RuntimeArgumentTemplate::ContentPath],
+                revision: 1,
+                observed_at: 1,
+            },
+        );
+    }
+
+    // The stable id came from the user's selected existing content context; this owner's
+    // namespace has no previous binding for it.
+    let content_id = "rom:zelda".to_owned();
+    for (id, key) in [
+        ("runtime-zsnes", "discover-zsnes"),
+        ("runtime-bsnes", "discover-bsnes"),
+    ] {
+        let reply = fixture
+            .client()
+            .games_register_content(ContentRegistrationRequest {
+                mutation: Some(MutationContext {
+                    context: Some(context.clone()),
+                    operation_id: String::new(),
+                    idempotency_key: key.into(),
+                    expected_revision: 0,
+                }),
+                game_id: "5".into(),
+                installation_id: "id-steam:1".into(),
+                content_handle: content_handle.clone(),
+                content_kind: "snes-rom".into(),
+                runtime_id: id.into(),
+                supported_platforms: vec!["linux".into()],
+                content_id: content_id.clone(),
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(reply.revision, 1);
+        assert_eq!(reply.outcome, MutationOutcome::Applied as i32);
+        assert_eq!(reply.resource_id, content_id);
+    }
+
+    let bindings = host
+        .runtime_content_bindings(owner, 5, "id-steam:1".into())
+        .await
+        .unwrap();
+    assert_eq!(bindings.len(), 2);
+    assert!(
+        bindings
+            .iter()
+            .all(|binding| binding.content_id == content_id)
+    );
+    assert_eq!(
+        bindings
+            .iter()
+            .map(|binding| binding.runtime_id.as_str())
+            .collect::<std::collections::BTreeSet<_>>(),
+        ["runtime-bsnes", "runtime-zsnes"].into()
+    );
+    assert_eq!(
+        fixture.feed.revision(),
+        library_revision,
+        "runtime observations attach to existing entries and never create another library entry"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn extension_custom_overlay_targets_selected_steam_without_read_or_provider_identity() {
     let target = TargetGameContext {
         game_id: "5".into(),

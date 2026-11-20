@@ -392,6 +392,191 @@ async fn imported_signed_provider_runs_from_registry_and_profile_fences_after_pe
     server.shutdown().await;
 }
 
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn official_linux_providers_remain_composed_across_managed_registry_states() {
+    use crate::plugin_host::{
+        PluginApi, grants::PermissionDecision, process::ProviderProcesses,
+        profile::PluginStateLayout, runtime::ThirdPartyPluginLifecycle,
+        updates::PluginUpdateService,
+    };
+    use gamenode_platform::{
+        db::{self, SqliteSettingsStore},
+        paths::DataPaths,
+        plugin_registry::PluginPackageRegistry,
+    };
+    use std::os::unix::fs::PermissionsExt;
+
+    for state_name in ["empty", "invalid", "enabled", "disabled"] {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), PermissionsExt::from_mode(0o700)).unwrap();
+        let endpoint = directory.path().join("plugins.sock");
+        let paths = DataPaths::at(directory.path().join("app-data"));
+        let api = PluginApi::default();
+        let state = PluginStateLayout::managed(&paths);
+        api.set_state_layout(state.clone());
+        api.providers.profiles().update(Some("account-one"), true);
+        let registry = PluginPackageRegistry::open(&paths).unwrap();
+
+        match state_name {
+            "invalid" => {
+                // A complete registry record pointing at an invalid manifest is ignored by
+                // runtime composition; it must not hide or replace an official provider.
+                let source = directory.path().join("invalid-package");
+                std::fs::create_dir_all(&source).unwrap();
+                std::fs::write(source.join("plugin.json"), b"{").unwrap();
+                registry
+                    .install_verified("invalid.plugin", "1.0.0", &source, true)
+                    .unwrap();
+            }
+            "enabled" | "disabled" => {
+                let preliminary_processes = ProviderProcesses::new_for_lifecycle(
+                    api.providers.clone(),
+                    endpoint.clone(),
+                    vec![],
+                    state.clone(),
+                )
+                .unwrap();
+                let preliminary = Arc::new(ThirdPartyPluginLifecycle::new(
+                    api.providers.clone(),
+                    preliminary_processes,
+                    state.clone(),
+                    registry.clone(),
+                    crate::plugin_host::managed_packages::ManagedPackageLifecycle::new(
+                        registry.clone(),
+                    ),
+                ));
+                let importer = PluginUpdateService::open(&paths).unwrap();
+                importer.set_lifecycle(preliminary);
+                let archive = signed_provider_archive(&directory.path().join("package"));
+                let review = importer.import_review(archive).await.unwrap();
+                assert_eq!(review.compatibility, "compatible", "{state_name}");
+                importer
+                    .import_confirm_publisher(&review.token, &review.publisher_fingerprint)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    importer.import_install(&review.token, false).await.unwrap(),
+                    "fixture.plugin",
+                    "{state_name}"
+                );
+            }
+            "empty" => {}
+            _ => unreachable!(),
+        }
+
+        // Normal application startup has initialized the package trust store before composing
+        // provider registrations; create the same host-owned state for every fixture variant.
+        let _updates = PluginUpdateService::open(&paths).unwrap();
+        let store = SqliteSettingsStore::new(db::open(Path::new(":memory:")).unwrap());
+        let library: Arc<dyn gamenode_core::library::LibraryStore> =
+            Arc::new(store.library_store());
+        let host = HostedProviders::bundled(
+            api.providers.clone(),
+            Arc::new(Default::default()),
+            Some(endpoint.clone()),
+            paths,
+            library,
+            None,
+        )
+        .await
+        .unwrap();
+        let server =
+            PluginApiServer::start(&tokio::runtime::Handle::current(), &endpoint, api.clone())
+                .unwrap();
+
+        // Official services remain registered and their static plugin-backed descriptors remain
+        // identical, whether the managed registry is empty, malformed, enabled or disabled.
+        for provider in ["steam", "packagekit"] {
+            if provider == "packagekit" {
+                assert_eq!(
+                    gamenode_core::provider::Platform::current(),
+                    Some(gamenode_core::provider::Platform::Linux)
+                );
+            }
+            assert!(
+                host.services(provider).is_some(),
+                "{state_name}: {provider}"
+            );
+            assert_eq!(
+                host.availability(provider),
+                "missing",
+                "{state_name}: {provider}"
+            );
+            let unavailable = host
+                .execute(provider, ProviderOperation::Initialize)
+                .await
+                .expect_err("a missing official executable must not use an in-process substitute");
+            assert_eq!(
+                unavailable.code(),
+                tonic::Code::Unavailable,
+                "{state_name}: {provider}"
+            );
+            assert_eq!(
+                host.availability(provider),
+                "missing",
+                "{state_name}: {provider}"
+            );
+            assert!(!host.connected(provider), "{state_name}: {provider}");
+            assert_eq!(
+                host.processes.process_id(provider).await,
+                None,
+                "{state_name}: {provider}"
+            );
+        }
+
+        match state_name {
+            "enabled" => {
+                let lifecycle = host.lifecycle();
+                let snapshot = lifecycle
+                    .permission_snapshot("fixture.plugin".into())
+                    .await
+                    .unwrap();
+                let scope = snapshot.requested_permissions[0]
+                    .allowed_scopes
+                    .iter()
+                    .next()
+                    .unwrap()
+                    .clone();
+                let activation = tokio::sync::Mutex::new(());
+                lifecycle
+                    .replace_permissions(
+                        &activation,
+                        "fixture.plugin".into(),
+                        snapshot.profile_id,
+                        snapshot.publisher_fingerprint,
+                        snapshot.grant_revision,
+                        vec![PermissionDecision {
+                            permission_id: cap::CATALOG.into(),
+                            scope,
+                            granted: true,
+                        }],
+                    )
+                    .await
+                    .unwrap();
+                lifecycle.enable("fixture.plugin".into()).await.unwrap();
+                assert!(host.connected("fixture"));
+                assert_eq!(host.availability("steam"), "missing");
+                assert_eq!(host.availability("packagekit"), "missing");
+            }
+            "disabled" => {
+                assert!(
+                    !host
+                        .lifecycle()
+                        .enabled("fixture.plugin".into())
+                        .await
+                        .unwrap()
+                );
+                assert!(!host.connected("fixture"));
+            }
+            _ => assert!(host.managed_plugin_inventory().is_empty(), "{state_name}"),
+        }
+
+        host.shutdown().await;
+        server.shutdown().await;
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_stopped_provider_stays_installed_and_start_clears_obsolete_failures() {
     let (host, _server, _directory) = hosted_fixture().await;

@@ -55,6 +55,100 @@ mod tests {
     }
 
     #[test]
+    fn third_party_registry_states_do_not_change_official_linux_providers() {
+        let platform = Platform::Linux;
+        let official = crate::plugin_host::backends(platform);
+        let expected = load_bundled_with_plugins(platform, &official);
+        assert!(
+            expected.diagnostics.is_empty(),
+            "{:?}",
+            expected.diagnostics
+        );
+        let expected_steam = expected.get("steam").unwrap().manifest().clone();
+        let expected_packagekit = expected.get("packagekit").unwrap().manifest().clone();
+
+        // An empty or disabled third-party registry contributes no backend. Invalid/untrusted
+        // entries must not be allowed to impersonate Steam, while an enabled, unrelated provider
+        // may add only its own backend. The host also rejects duplicate provider registrations;
+        // this matrix verifies the Core manifest loader preserves the official definitions for
+        // every backend set that can reach it.
+        let mut invalid = official.clone();
+        invalid.push(PluginBackend {
+            plugin_id: "org.untrusted.replacement".into(),
+            provider_id: "steam".into(),
+            discovery: true,
+            catalog: true,
+            counter: true,
+            actions: true,
+            achievements: true,
+        });
+        let mut enabled = official.clone();
+        enabled.push(PluginBackend {
+            plugin_id: "org.example.third-party".into(),
+            provider_id: "example-store".into(),
+            discovery: true,
+            catalog: true,
+            counter: true,
+            actions: true,
+            achievements: true,
+        });
+
+        for (state, backends) in [
+            ("empty", official.clone()),
+            ("invalid", invalid),
+            ("enabled", enabled),
+            ("disabled", official),
+        ] {
+            let loaded = load_bundled_with_plugins(platform, &backends);
+            assert!(
+                loaded.diagnostics.is_empty(),
+                "{state}: {:?}",
+                loaded.diagnostics
+            );
+            let steam = loaded.get("steam").expect("Steam remains registered");
+            assert_eq!(
+                steam.manifest(),
+                &expected_steam,
+                "Steam changed for {state}"
+            );
+            assert_eq!(
+                steam.discovery_plugin(),
+                Some("org.gamenode.plugin.steam-discovery"),
+                "Steam discovery must remain plugin-backed for {state}"
+            );
+            assert_eq!(
+                steam.catalog_backend(),
+                Some("org.gamenode.plugin.steam-discovery"),
+                "Steam catalog must remain plugin-backed for {state}"
+            );
+            assert_eq!(
+                steam.counter_plugin(),
+                Some("org.gamenode.plugin.steam-discovery"),
+                "Steam counter must remain plugin-backed for {state}"
+            );
+            assert_eq!(
+                steam.achievement_plugin(),
+                Some("org.gamenode.plugin.steam-discovery"),
+                "Steam achievements integration must remain unchanged for {state}"
+            );
+
+            let packagekit = loaded
+                .get("packagekit")
+                .expect("Linux package discovery remains registered");
+            assert_eq!(
+                packagekit.manifest(),
+                &expected_packagekit,
+                "PackageKit changed for {state}"
+            );
+            assert_eq!(
+                packagekit.discovery_plugin(),
+                Some("org.gamenode.plugin.packagekit-discovery"),
+                "Linux package discovery must remain plugin-backed for {state}"
+            );
+        }
+    }
+
+    #[test]
     fn the_bundled_manifests_are_all_valid_on_every_platform() {
         for platform in [Platform::Windows, Platform::Linux] {
             let loaded = load_bundled_for_tests(platform);

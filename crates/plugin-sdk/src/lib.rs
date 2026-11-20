@@ -633,8 +633,9 @@ impl HostClient {
         let context = self.resource_context.clone().ok_or(Error::Configuration)?;
         let target = context.target_game.as_ref().ok_or(Error::Denied)?;
         if report.correlation_id.is_empty()
-            || report.game_id != target.game_id
-            || report.installation_id != target.installation_id
+            || ((report.runtime_context_id.is_empty())
+                && (report.game_id != target.game_id
+                    || report.installation_id != target.installation_id))
             || report.content_id.is_empty()
             || report.runtime_id.is_empty()
             || report.runtime_instance_id.is_empty()
@@ -651,6 +652,30 @@ impl HostClient {
         }
         self.send_with_context(context, provider_event::Event::RuntimeSession(report))
             .await
+    }
+
+    /// Requests one explicitly approved reporting context for a game/install observed by this
+    /// already-running runtime instance. The identifiers are proposals; the host resolves and
+    /// validates the current library binding before asking the user.
+    pub async fn request_runtime_session_context(
+        &self,
+        request: RuntimeSessionContextRequest,
+    ) -> Result<(), Error> {
+        if request.correlation_id.is_empty()
+            || request.game_id.is_empty()
+            || request.installation_id.is_empty()
+            || request.runtime_id.is_empty()
+            || request.runtime_instance_id.is_empty()
+            || request.content_id.is_empty()
+        {
+            return Err(Error::Protocol);
+        }
+        let context = self.resource_context.clone().ok_or(Error::Configuration)?;
+        self.send_with_context(
+            context,
+            provider_event::Event::RuntimeSessionContext(request),
+        )
+        .await
     }
 
     async fn send(&self, event: provider_event::Event) -> Result<(), Error> {
@@ -946,6 +971,13 @@ pub trait ProviderPlugin: Send + Sync + 'static {
     ) -> Result<(), Error> {
         Ok(())
     }
+    async fn runtime_session_context_result(
+        &self,
+        _result: RuntimeSessionContextResult,
+        _host: HostClient,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
     /// Plugin-owned semantic validation and persistence. Check the immutable
     /// request's profile/session scope again immediately before applying work.
     /// The default keeps settings unavailable for existing provider plugins.
@@ -1000,6 +1032,14 @@ pub trait ExtensionPlugin: Send + Sync + 'static {
         Ok(())
     }
 
+    async fn runtime_session_context_result(
+        &self,
+        _result: RuntimeSessionContextResult,
+        _host: HostClient,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+
     async fn configure(
         &self,
         command: ProviderCommand,
@@ -1047,6 +1087,13 @@ impl<P: ExtensionPlugin> ProviderPlugin for ExtensionAdapter<P> {
     ) -> Result<(), Error> {
         self.0.runtime_session_result(result, host).await
     }
+    async fn runtime_session_context_result(
+        &self,
+        result: RuntimeSessionContextResult,
+        host: HostClient,
+    ) -> Result<(), Error> {
+        self.0.runtime_session_context_result(result, host).await
+    }
     async fn shutdown(&self) {
         self.0.shutdown().await;
     }
@@ -1090,6 +1137,17 @@ pub async fn run<P: ProviderPlugin>(
                     let plugin = plugin.clone();
                     tasks.spawn(async move {
                         plugin.runtime_session_result(result, host).await
+                    });
+                    continue;
+                }
+                if operation == ProviderOperation::RuntimeSessionContextResult {
+                    let result = command.runtime_session_context_result.clone().ok_or(Error::Protocol)?;
+                    if result.correlation_id != command.target_operation_id {
+                        return Err(Error::Protocol);
+                    }
+                    let plugin = plugin.clone();
+                    tasks.spawn(async move {
+                        plugin.runtime_session_context_result(result, host).await
                     });
                     continue;
                 }

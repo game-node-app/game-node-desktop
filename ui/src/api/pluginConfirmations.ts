@@ -7,7 +7,7 @@ export const PLUGIN_CONFIRMATION_EVENT = 'plugin:confirmation';
 /** The event that says a confirmation stopped waiting (withdrawn by the plugin, or timed out). */
 export const PLUGIN_CONFIRMATION_CLOSED_EVENT = 'plugin:confirmation-closed';
 
-export type PluginConfirmationOperation = 'launch' | 'custom_launch' | 'install' | 'backup_restore';
+export type PluginConfirmationOperation = 'launch' | 'custom_launch' | 'install' | 'backup_restore' | 'runtime_session_context';
 
 export interface LaunchPlanReviewComponent {
   kind: string;
@@ -65,7 +65,7 @@ export const CONFIRMATION_GAME_MAX = 120;
 const FINGERPRINT = /^[0-9a-f]{64}$/;
 
 function isOperation(value: unknown): value is PluginConfirmationOperation {
-  return value === 'launch' || value === 'custom_launch' || value === 'install' || value === 'backup_restore';
+  return value === 'launch' || value === 'custom_launch' || value === 'install' || value === 'backup_restore' || value === 'runtime_session_context';
 }
 
 // Display control and bidirectional characters visibly so a literal launch value cannot disguise

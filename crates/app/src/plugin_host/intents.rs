@@ -39,6 +39,7 @@ pub enum Operation {
     CustomLaunch,
     Install,
     BackupRestore,
+    RuntimeSessionContext,
 }
 
 impl Operation {
@@ -49,6 +50,7 @@ impl Operation {
             Self::CustomLaunch => "custom_launch",
             Self::Install => "install",
             Self::BackupRestore => "backup_restore",
+            Self::RuntimeSessionContext => "runtime_session_context",
         }
     }
 }

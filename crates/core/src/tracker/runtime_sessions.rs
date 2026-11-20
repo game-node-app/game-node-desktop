@@ -5,7 +5,10 @@
 //! the process tracker, bounded by the last fresh observation.
 
 use crate::playtime::Session;
-use std::collections::{BTreeMap, VecDeque};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    time::Instant,
+};
 
 /// Reports older than this are not allowed to extend a measured interval.
 pub const FRESHNESS_SECONDS: i64 = 30;
@@ -48,6 +51,10 @@ pub struct Report {
     pub observed_at: i64,
     pub transition: Transition,
     pub source_observation_id: String,
+    /// Set only by the host after validating an explicitly approved context transition.
+    pub context_authorized: bool,
+    /// Host monotonic receipt time. Plugin wall clocks never control expiry.
+    pub received_at: Instant,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -79,6 +86,7 @@ struct Active {
     runtime_id: String,
     sequence: u64,
     observed_at: i64,
+    received_at: Instant,
     session: Option<Session>,
     terminal: bool,
 }
@@ -149,13 +157,19 @@ impl RuntimeSessions {
                 vec![],
             );
         }
+        let context_changed = self.instances.get(&key).is_some_and(|active| {
+            report.game_id != active.game_id
+                || report.installation_id != active.installation_id
+                || report.runtime_id != active.runtime_id
+        });
         if self.instances.get(&key).is_some_and(|active| {
             active.terminal
                 || report.sequence <= active.sequence
                 || report.observed_at < active.observed_at
-                || report.game_id != active.game_id
-                || report.installation_id != active.installation_id
-                || report.runtime_id != active.runtime_id
+                || (context_changed
+                    && (!report.context_authorized
+                        || report.transition != Transition::ContentChanged
+                        || report.runtime_id != active.runtime_id))
         }) {
             return (
                 Outcome::Conflict("sequence or runtime identity changed"),
@@ -174,13 +188,27 @@ impl RuntimeSessions {
             runtime_id: report.runtime_id.clone(),
             sequence: 0,
             observed_at: at,
+            received_at: report.received_at,
             session: None,
             terminal: false,
         });
-        let content_changed = current.content_id != report.content_id;
+        let identity_changed = current.game_id != report.game_id
+            || current.installation_id != report.installation_id
+            || current.runtime_id != report.runtime_id;
+        let content_changed = current.content_id != report.content_id || identity_changed;
         let was_active = current.session.is_some();
         if content_changed {
-            close(&mut current, at, &mut effects);
+            // A gap between the last accepted observation for A and the approved observation
+            // for B is unknown; never attribute it to either game.
+            let close_at = if identity_changed {
+                current.observed_at
+            } else {
+                at
+            };
+            close(&mut current, close_at, &mut effects);
+            current.game_id = game_id;
+            current.installation_id.clone_from(&report.installation_id);
+            current.runtime_id.clone_from(&report.runtime_id);
             current.content_id.clone_from(&report.content_id);
         }
 
@@ -235,6 +263,7 @@ impl RuntimeSessions {
 
         current.sequence = report.sequence;
         current.observed_at = at;
+        current.received_at = report.received_at;
         current.terminal = transition == Transition::Ended;
         let observation_id = report.source_observation_id.clone();
         self.observations.insert(observation_id.clone(), report);
@@ -254,11 +283,13 @@ impl RuntimeSessions {
     }
 
     /// Closes at the last supported observation, never at the later time of discovery.
-    pub fn expire(&mut self, now: i64) -> Vec<Effect> {
+    pub fn expire(&mut self, now: Instant) -> Vec<Effect> {
         let expired: Vec<_> = self
             .instances
             .iter()
-            .filter(|(_, active)| now.saturating_sub(active.observed_at) > FRESHNESS_SECONDS)
+            .filter(|(_, active)| {
+                now.duration_since(active.received_at).as_secs() > FRESHNESS_SECONDS as u64
+            })
             .map(|(key, _)| key.clone())
             .collect();
         let mut effects = Vec::new();
@@ -350,6 +381,8 @@ mod tests {
             observed_at: at,
             transition,
             source_observation_id: format!("observation-{sequence}"),
+            context_authorized: false,
+            received_at: Instant::now(),
         }
     }
 
@@ -387,6 +420,38 @@ mod tests {
         assert!(
             matches!(&effects[1], Effect::Open(session) if session.started_at == 120 && session.entry_key == "install-a")
         );
+    }
+
+    #[test]
+    fn same_instance_changes_game_only_after_host_authorizes_new_context() {
+        let mut tracker = RuntimeSessions::default();
+        apply(
+            &mut tracker,
+            report(1, Transition::Started, 100, "rom-a"),
+            "session-a",
+            100,
+        );
+
+        let mut denied = report(2, Transition::ContentChanged, 130, "rom-b");
+        denied.game_id = 84;
+        denied.installation_id = "install-b".into();
+        assert!(matches!(
+            apply(&mut tracker, denied, "unused", 130).0,
+            Outcome::Conflict(_)
+        ));
+
+        let mut approved = report(2, Transition::ContentChanged, 130, "rom-b");
+        approved.game_id = 84;
+        approved.installation_id = "install-b".into();
+        approved.context_authorized = true;
+        let (_, effects) = apply(&mut tracker, approved, "session-b", 130);
+        assert!(matches!(
+            effects.as_slice(),
+            [
+                Effect::Close { ended_at: 100, game_id: Some(42), .. },
+                Effect::Open(Session { game_id: Some(84), entry_key, started_at: 130, .. })
+            ] if entry_key == "install-b"
+        ));
     }
 
     #[test]
@@ -441,7 +506,9 @@ mod tests {
         );
         assert!(matches!(opened.first(), Some(Effect::Open(_))));
         assert!(matches!(
-            tracker.expire(200).as_slice(),
+            tracker
+                .expire(Instant::now() + std::time::Duration::from_secs(31))
+                .as_slice(),
             [Effect::Close { ended_at: 101, .. }]
         ));
     }

@@ -1,5 +1,5 @@
 use super::*;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use gamenode_plugin_protocol::prost::Message;
 use gamenode_plugin_sdk::{Error, HostClient, Launch, Session as ClientSession, SessionOptions};
@@ -37,15 +37,42 @@ async fn configuration_modes_separate_declarations_from_active_authorization() {
 struct RuntimeSessionFixture {
     reports: AtomicUsize,
     disconnects: AtomicUsize,
+    delay_next_authorization: AtomicBool,
+    authorization_started: tokio::sync::Notify,
+    continue_authorization: tokio::sync::Notify,
 }
 
 #[tonic::async_trait]
 impl super::super::runtime::RuntimeSessionHandler for RuntimeSessionFixture {
+    async fn authorize_context(
+        &self,
+        _plugin_id: String,
+        _publisher_fingerprint: String,
+        _owner_key: String,
+        _profile_epoch: u64,
+        request: RuntimeSessionContextRequest,
+    ) -> Result<super::super::runtime::RuntimeContextRevision, Status> {
+        if self.delay_next_authorization.swap(false, Ordering::Relaxed) {
+            self.authorization_started.notify_one();
+            self.continue_authorization.notified().await;
+        }
+        if request.game_id == "85" {
+            return Err(Status::permission_denied("user declined runtime context"));
+        }
+        Ok(super::super::runtime::RuntimeContextRevision {
+            library_revision: 1,
+            binding_revision: 1,
+        })
+    }
+
     async fn report(
         &self,
         _plugin_id: String,
         _owner_key: String,
         report: RuntimeSessionReport,
+        _context_authorized: bool,
+        _context_revision: Option<super::super::runtime::RuntimeContextRevision>,
+        _received_at: std::time::Instant,
     ) -> RuntimeSessionResult {
         self.reports.fetch_add(1, Ordering::Relaxed);
         RuntimeSessionResult {
@@ -61,6 +88,46 @@ impl super::super::runtime::RuntimeSessionHandler for RuntimeSessionFixture {
     async fn disconnected(&self, _plugin_id: String) {
         self.disconnects.fetch_add(1, Ordering::Relaxed);
     }
+}
+
+#[test]
+fn runtime_context_requires_a_matching_fresh_active_report() {
+    let now = std::time::Instant::now();
+    let active = super::RuntimeInstanceEvidence {
+        last_received_at: now - Duration::from_secs(29),
+        runtime_id: "runtime:snes".into(),
+        active: true,
+    };
+    assert!(super::runtime_instance_has_fresh_active_report(
+        Some(&active),
+        "runtime:snes",
+        now
+    ));
+    assert!(!super::runtime_instance_has_fresh_active_report(
+        Some(&active),
+        "runtime:other",
+        now
+    ));
+
+    let expired = super::RuntimeInstanceEvidence {
+        last_received_at: now - Duration::from_secs(31),
+        ..active.clone()
+    };
+    assert!(!super::runtime_instance_has_fresh_active_report(
+        Some(&expired),
+        "runtime:snes",
+        now
+    ));
+
+    let stopped = super::RuntimeInstanceEvidence {
+        active: false,
+        ..active
+    };
+    assert!(!super::runtime_instance_has_fresh_active_report(
+        Some(&stopped),
+        "runtime:snes",
+        now
+    ));
 }
 
 #[tonic::async_trait]
@@ -1240,7 +1307,7 @@ async fn provider_free_extension_gets_only_its_host_selected_launch_context() {
     .unwrap();
     launch.ready.await.unwrap();
     assert!(session.host.context().provider_id.is_empty());
-    let resource_context = session.host.resource_context().unwrap();
+    let resource_context = session.host.resource_context().unwrap().clone();
     assert!(resource_context.provider_id.is_empty());
     assert_eq!(resource_context.target_game.as_ref().unwrap().game_id, "42");
 
@@ -1256,6 +1323,7 @@ async fn provider_free_extension_gets_only_its_host_selected_launch_context() {
         observed_at: 100,
         transition: RuntimeSessionTransition::Started as i32,
         source_observation_id: "observation:one".into(),
+        runtime_context_id: String::new(),
     };
     session
         .host
@@ -1278,17 +1346,309 @@ async fn provider_free_extension_gets_only_its_host_selected_launch_context() {
     assert_eq!(result.accepted_sequence, 1);
     assert_eq!(runtime_sessions.reports.load(Ordering::Relaxed), 1);
 
-    api.replace_session_grants(&resource_context.session_id, BTreeSet::new())
+    let mut unapproved_b = report.clone();
+    unapproved_b.game_id = "84".into();
+    unapproved_b.installation_id = "steam:456".into();
+    unapproved_b.correlation_id = "runtime-report-unapproved".into();
+    assert!(matches!(
+        session.host.report_runtime_session(unapproved_b).await,
+        Err(gamenode_plugin_sdk::Error::Protocol)
+    ));
+    assert_eq!(runtime_sessions.reports.load(Ordering::Relaxed), 1);
+
+    runtime_sessions
+        .delay_next_authorization
+        .store(true, Ordering::Relaxed);
+    session
+        .host
+        .request_runtime_session_context(RuntimeSessionContextRequest {
+            correlation_id: "context-stale".into(),
+            game_id: "84".into(),
+            installation_id: "steam:456".into(),
+            runtime_id: "runtime:snes".into(),
+            runtime_instance_id: "instance:one".into(),
+            content_id: "rom:metroid".into(),
+        })
+        .await
+        .unwrap();
+    runtime_sessions.authorization_started.notified().await;
+    {
+        let mut state = api.state.lock().unwrap();
+        state
+            .sessions
+            .get_mut(&resource_context.session_id)
+            .unwrap()
+            .runtime_instances
+            .get_mut("instance:one")
+            .unwrap()
+            .last_received_at = std::time::Instant::now() - Duration::from_secs(31);
+    }
+    runtime_sessions.continue_authorization.notify_one();
+    let stale_context = tokio::time::timeout(Duration::from_secs(2), session.commands.message())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap()
+        .runtime_session_context_result
+        .unwrap();
+    assert_eq!(
+        stale_context.outcome,
+        RuntimeSessionOutcome::RejectedStale as i32
+    );
+    assert!(stale_context.runtime_context_id.is_empty());
+    {
+        let mut state = api.state.lock().unwrap();
+        state
+            .sessions
+            .get_mut(&resource_context.session_id)
+            .unwrap()
+            .runtime_instances
+            .get_mut("instance:one")
+            .unwrap()
+            .last_received_at = std::time::Instant::now();
+    }
+
+    session
+        .host
+        .request_runtime_session_context(RuntimeSessionContextRequest {
+            correlation_id: "context-b".into(),
+            game_id: "84".into(),
+            installation_id: "steam:456".into(),
+            runtime_id: "runtime:snes".into(),
+            runtime_instance_id: "instance:one".into(),
+            content_id: "rom:metroid".into(),
+        })
+        .await
+        .unwrap();
+    let context_approval = tokio::time::timeout(Duration::from_secs(2), session.commands.message())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        context_approval.operation,
+        ProviderOperation::RuntimeSessionContextResult as i32
+    );
+    let context_token = context_approval
+        .runtime_session_context_result
+        .unwrap()
+        .runtime_context_id;
+    assert!(!context_token.is_empty());
+
+    let mut report_b = report.clone();
+    report_b.correlation_id = "runtime-report-b".into();
+    report_b.game_id = "84".into();
+    report_b.installation_id = "steam:456".into();
+    report_b.content_id = "rom:metroid".into();
+    report_b.runtime_context_id = context_token.clone();
+    report_b.sequence = 2;
+    report_b.observed_at = 110;
+    report_b.transition = RuntimeSessionTransition::ContentChanged as i32;
+    report_b.source_observation_id = "observation:b".into();
+    session
+        .host
+        .report_runtime_session(report_b.clone())
+        .await
+        .unwrap();
+    let accepted_b = tokio::time::timeout(Duration::from_secs(2), session.commands.message())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        accepted_b.runtime_session_result.unwrap().outcome,
+        RuntimeSessionOutcome::Accepted as i32
+    );
+    assert_eq!(runtime_sessions.reports.load(Ordering::Relaxed), 2);
+
+    let mut forged_b = report_b;
+    forged_b.correlation_id = "runtime-report-forged".into();
+    forged_b.game_id = "85".into();
+    forged_b.sequence = 3;
+    forged_b.source_observation_id = "observation:forged".into();
+    session.host.report_runtime_session(forged_b).await.unwrap();
+    let rejected_b = tokio::time::timeout(Duration::from_secs(2), session.commands.message())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        rejected_b.runtime_session_result.unwrap().outcome,
+        RuntimeSessionOutcome::RejectedUnauthorized as i32
+    );
+    assert_eq!(runtime_sessions.reports.load(Ordering::Relaxed), 2);
+
+    session
+        .host
+        .request_runtime_session_context(RuntimeSessionContextRequest {
+            correlation_id: "context-denied".into(),
+            game_id: "85".into(),
+            installation_id: "steam:789".into(),
+            runtime_id: "runtime:snes".into(),
+            runtime_instance_id: "instance:one".into(),
+            content_id: "rom:castlevania".into(),
+        })
+        .await
+        .unwrap();
+    let denied_context = tokio::time::timeout(Duration::from_secs(2), session.commands.message())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap()
+        .runtime_session_context_result
+        .unwrap();
+    assert_eq!(
+        denied_context.outcome,
+        RuntimeSessionOutcome::RejectedUnauthorized as i32
+    );
+    assert!(denied_context.runtime_context_id.is_empty());
+
+    // A process/session restart discards the old host-issued target token. The new process must
+    // report its selected game under a new runtime instance and obtain a fresh approval for B.
+    drop(session);
+    api.disconnect(&internal_id).await;
+    let restarted_launch = api
+        .begin_extension_launch(
+            &internal_id,
+            api.profiles().epoch(),
+            resource_context.target_game.as_ref().unwrap().clone(),
+        )
+        .unwrap();
+    let restarted_credential: Vec<u8> = (0..restarted_launch.credential.len())
+        .step_by(2)
+        .map(|index| {
+            u8::from_str_radix(&restarted_launch.credential[index..index + 2], 16).unwrap()
+        })
+        .collect();
+    let mut restarted = gamenode_plugin_sdk::Session::open_extension(
+        gamenode_plugin_sdk::Launch {
+            endpoint: endpoint.clone(),
+            credential: restarted_credential,
+            operation_id: "extension-launch-restarted".into(),
+        },
+        plugin_id,
+        "1.0.0",
+        resource_context.target_game.as_ref().unwrap().clone(),
+        &[cap::GAME_CUSTOM_LAUNCH, cap::GAME_SESSIONS_REPORT],
+    )
+    .await
+    .unwrap();
+    restarted_launch.ready.await.unwrap();
+    let restarted_context = restarted.host.resource_context().unwrap();
+    let mut restarted_report = report.clone();
+    restarted_report.correlation_id = "runtime-report-restarted".into();
+    restarted_report.reporter_session_id = restarted_context.session_id.clone();
+    restarted_report.runtime_instance_id = "instance:two".into();
+    restarted_report.sequence = 1;
+    restarted_report.observed_at = 120;
+    restarted_report.source_observation_id = "observation:restarted".into();
+    restarted
+        .host
+        .report_runtime_session(restarted_report.clone())
+        .await
+        .unwrap();
+    let restarted_started =
+        tokio::time::timeout(Duration::from_secs(2), restarted.commands.message())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    assert_eq!(
+        restarted_started.runtime_session_result.unwrap().outcome,
+        RuntimeSessionOutcome::Accepted as i32
+    );
+
+    let mut old_token_report = restarted_report.clone();
+    old_token_report.correlation_id = "runtime-report-old-token".into();
+    old_token_report.game_id = "84".into();
+    old_token_report.installation_id = "steam:456".into();
+    old_token_report.content_id = "rom:metroid".into();
+    old_token_report.runtime_instance_id = "instance:two".into();
+    old_token_report.runtime_context_id = context_token.clone();
+    old_token_report.sequence = 2;
+    old_token_report.observed_at = 130;
+    old_token_report.transition = RuntimeSessionTransition::ContentChanged as i32;
+    old_token_report.source_observation_id = "observation:old-token".into();
+    restarted
+        .host
+        .report_runtime_session(old_token_report)
+        .await
+        .unwrap();
+    let old_token_result =
+        tokio::time::timeout(Duration::from_secs(2), restarted.commands.message())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    assert_eq!(
+        old_token_result.runtime_session_result.unwrap().outcome,
+        RuntimeSessionOutcome::RejectedUnauthorized as i32
+    );
+    assert_eq!(runtime_sessions.reports.load(Ordering::Relaxed), 3);
+
+    restarted
+        .host
+        .request_runtime_session_context(RuntimeSessionContextRequest {
+            correlation_id: "context-b-after-restart".into(),
+            game_id: "84".into(),
+            installation_id: "steam:456".into(),
+            runtime_id: "runtime:snes".into(),
+            runtime_instance_id: "instance:two".into(),
+            content_id: "rom:metroid".into(),
+        })
+        .await
+        .unwrap();
+    let fresh_context = tokio::time::timeout(Duration::from_secs(2), restarted.commands.message())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap()
+        .runtime_session_context_result
+        .unwrap();
+    assert_eq!(
+        fresh_context.outcome,
+        RuntimeSessionOutcome::Accepted as i32
+    );
+    assert!(!fresh_context.runtime_context_id.is_empty());
+    assert_ne!(fresh_context.runtime_context_id, context_token);
+
+    let mut fresh_report = restarted_report;
+    fresh_report.correlation_id = "runtime-report-b-after-restart".into();
+    fresh_report.game_id = "84".into();
+    fresh_report.installation_id = "steam:456".into();
+    fresh_report.content_id = "rom:metroid".into();
+    fresh_report.runtime_context_id = fresh_context.runtime_context_id;
+    fresh_report.sequence = 2;
+    fresh_report.observed_at = 140;
+    fresh_report.transition = RuntimeSessionTransition::ContentChanged as i32;
+    fresh_report.source_observation_id = "observation:b-after-restart".into();
+    restarted
+        .host
+        .report_runtime_session(fresh_report)
+        .await
+        .unwrap();
+    let fresh_result = tokio::time::timeout(Duration::from_secs(2), restarted.commands.message())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        fresh_result.runtime_session_result.unwrap().outcome,
+        RuntimeSessionOutcome::Accepted as i32
+    );
+    assert_eq!(runtime_sessions.reports.load(Ordering::Relaxed), 4);
+
+    api.replace_session_grants(&restarted_context.session_id, BTreeSet::new())
         .await
         .unwrap();
     assert!(!api.connected(&internal_id));
     assert!(
-        api.authorize_resource_session(Some(&resource_context))
+        api.authorize_resource_session(Some(&restarted_context))
             .is_err()
     );
-    assert_eq!(runtime_sessions.reports.load(Ordering::Relaxed), 1);
+    assert_eq!(runtime_sessions.reports.load(Ordering::Relaxed), 4);
 
-    drop(session);
+    drop(restarted);
     api.disconnect(&internal_id).await;
     assert!(matches!(
         api.begin_launch(&internal_id),

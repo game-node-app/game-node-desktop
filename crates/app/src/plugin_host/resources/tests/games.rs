@@ -148,6 +148,7 @@ impl Fixture {
             Operation::CustomLaunch => cap::GAME_CUSTOM_LAUNCH,
             Operation::Install => cap::GAMES_INSTALL,
             Operation::BackupRestore => cap::BACKUPS_RESTORE,
+            Operation::RuntimeSessionContext => cap::GAME_SESSIONS_REPORT,
         };
         let caller = self
             .api

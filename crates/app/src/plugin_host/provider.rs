@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::{Arc, Mutex, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gamenode_plugin_protocol::{
     capability as cap, catalog::CatalogTransfer, models, proto::*, settings,
@@ -260,6 +260,41 @@ struct Session {
     /// negotiated an earlier minor, which cannot call resource services.
     resource_operation: Option<String>,
     resource_context: Option<ServiceContext>,
+    runtime_contexts: HashMap<String, RuntimeContextGrant>,
+    runtime_instances: HashMap<String, RuntimeInstanceEvidence>,
+}
+
+#[derive(Clone)]
+struct RuntimeInstanceEvidence {
+    last_received_at: Instant,
+    runtime_id: String,
+    active: bool,
+}
+
+#[derive(Clone)]
+struct RuntimeContextGrant {
+    game_id: String,
+    installation_id: String,
+    runtime_id: String,
+    runtime_instance_id: String,
+    content_id: String,
+    profile_epoch: u64,
+    grant_revision: u64,
+    library_revision: u64,
+    binding_revision: u64,
+    expires_at: Instant,
+}
+
+fn runtime_instance_has_fresh_active_report(
+    evidence: Option<&RuntimeInstanceEvidence>,
+    runtime_id: &str,
+    now: Instant,
+) -> bool {
+    evidence.is_some_and(|evidence| {
+        evidence.active
+            && evidence.runtime_id == runtime_id
+            && now.saturating_duration_since(evidence.last_received_at) <= Duration::from_secs(30)
+    })
 }
 
 impl Session {
@@ -751,11 +786,216 @@ impl ProviderApi {
         *lock(&self.runtime_session_handler) = Some(handler);
     }
 
+    async fn runtime_session_context_event(
+        &self,
+        context: ServiceContext,
+        request: RuntimeSessionContextRequest,
+    ) -> Result<(), Status> {
+        if request.correlation_id.is_empty() || request.correlation_id.len() > 128 {
+            return Err(Status::invalid_argument(
+                "invalid runtime context correlation id",
+            ));
+        }
+        let (provider, commands, grant_revision, owner_key, publisher_fingerprint) = {
+            let state = lock(&self.state);
+            let session = state
+                .sessions
+                .get(&context.session_id)
+                .ok_or_else(|| Status::unauthenticated("provider session expired"))?;
+            if !super::constant_time_eq(&session.credential, &context.session_credential)
+                || session.resource_context.as_ref() != Some(&context)
+                || session.kind != SessionKind::Extension as i32
+                || session.provider.registration.kind != RegistrationKind::Extension
+                || !session.extension_authority()
+            {
+                return Err(Status::permission_denied(
+                    "runtime context requires an active extension session",
+                ));
+            }
+            if !session.grants.contains(cap::GAME_SESSIONS_REPORT) {
+                return Err(Status::permission_denied(
+                    "runtime reporting is not granted",
+                ));
+            }
+            let current = epoch(&session.provider);
+            if current.1 != context.profile_epoch || current.0 != context.account_epoch {
+                return Err(Status::failed_precondition(
+                    "runtime context session is stale",
+                ));
+            }
+            let RegistrationOrigin::ThirdParty {
+                publisher_fingerprint,
+            } = &session.provider.registration.origin
+            else {
+                return Err(Status::permission_denied(
+                    "runtime context requires an authenticated plugin",
+                ));
+            };
+            if request.runtime_instance_id.is_empty()
+                || request.runtime_id.is_empty()
+                || request.content_id.is_empty()
+                || request.game_id.is_empty()
+                || request.installation_id.is_empty()
+            {
+                return Err(Status::invalid_argument("runtime context is incomplete"));
+            }
+            let active_runtime = runtime_instance_has_fresh_active_report(
+                session.runtime_instances.get(&request.runtime_instance_id),
+                &request.runtime_id,
+                Instant::now(),
+            );
+            if !active_runtime {
+                return Err(Status::failed_precondition(
+                    "runtime context requires a fresh active instance report",
+                ));
+            }
+            let playtime = session
+                .extension
+                .as_ref()
+                .and_then(|extension| extension.playtime)
+                .unwrap_or(session.provider.registration.playtime);
+            if !playtime.can_report_runtime_sessions() {
+                return Err(Status::permission_denied(
+                    "runtime reporting is disabled by package policy",
+                ));
+            }
+            let profiles = session
+                .provider
+                .profiles
+                .as_ref()
+                .ok_or_else(super::profile::no_profile)?;
+            let resolver = profiles
+                .resolver(
+                    &session.provider.registration.plugin_id,
+                    publisher_fingerprint,
+                    None,
+                )
+                .map_err(|_| Status::unavailable("plugin scope is unavailable"))?;
+            (
+                session.provider.clone(),
+                session.commands.clone().ok_or_else(|| {
+                    Status::failed_precondition("provider stream is not connected")
+                })?,
+                session.grant_revision,
+                resolver.library_recipe_owner_key(),
+                publisher_fingerprint.clone(),
+            )
+        };
+
+        // This call validates the current library and content binding before asking the user.
+        let handler = { lock(&self.runtime_session_handler).clone() };
+        let authorization = if let Some(handler) = handler {
+            handler
+                .authorize_context(
+                    provider.registration.plugin_id.clone(),
+                    publisher_fingerprint,
+                    owner_key,
+                    context.profile_epoch,
+                    request.clone(),
+                )
+                .await
+        } else {
+            Err(Status::unavailable(
+                "runtime context authorization is unavailable",
+            ))
+        };
+
+        let (outcome, token, reason) = match authorization {
+            Ok(revisions) => {
+                let token = super::random_session_id()?;
+                let mut state = lock(&self.state);
+                let Some(session) = state.sessions.get_mut(&context.session_id) else {
+                    return Err(Status::unauthenticated("provider session expired"));
+                };
+                let current = epoch(&session.provider);
+                let runtime_still_active = runtime_instance_has_fresh_active_report(
+                    session.runtime_instances.get(&request.runtime_instance_id),
+                    &request.runtime_id,
+                    Instant::now(),
+                );
+                if !runtime_still_active {
+                    (
+                        RuntimeSessionOutcome::RejectedStale,
+                        String::new(),
+                        "runtime evidence expired or ended during confirmation".to_owned(),
+                    )
+                } else if !super::constant_time_eq(&session.credential, &context.session_credential)
+                    || session.resource_context.as_ref() != Some(&context)
+                    || epoch(&session.provider) != (context.account_epoch, context.profile_epoch)
+                    || current.1 != context.profile_epoch
+                    || current.0 != context.account_epoch
+                    || session.grant_revision != grant_revision
+                    || !session.grants.contains(cap::GAME_SESSIONS_REPORT)
+                    || !session.extension_authority()
+                {
+                    (
+                        RuntimeSessionOutcome::RejectedUnauthorized,
+                        String::new(),
+                        "session or grant changed during approval".to_owned(),
+                    )
+                } else {
+                    session
+                        .runtime_contexts
+                        .retain(|_, grant| grant.expires_at > Instant::now());
+                    if session.runtime_contexts.len() >= 64 {
+                        return Err(Status::resource_exhausted(
+                            "too many runtime context approvals",
+                        ));
+                    }
+                    session.runtime_contexts.insert(
+                        token.clone(),
+                        RuntimeContextGrant {
+                            game_id: request.game_id.clone(),
+                            installation_id: request.installation_id.clone(),
+                            runtime_id: request.runtime_id.clone(),
+                            runtime_instance_id: request.runtime_instance_id.clone(),
+                            content_id: request.content_id.clone(),
+                            profile_epoch: context.profile_epoch,
+                            grant_revision,
+                            library_revision: revisions.library_revision,
+                            binding_revision: revisions.binding_revision,
+                            expires_at: Instant::now() + Duration::from_secs(30),
+                        },
+                    );
+                    (RuntimeSessionOutcome::Accepted, token, String::new())
+                }
+            }
+            Err(status) => (
+                if status.code() == tonic::Code::PermissionDenied {
+                    RuntimeSessionOutcome::RejectedUnauthorized
+                } else {
+                    RuntimeSessionOutcome::RejectedUnavailable
+                },
+                String::new(),
+                status.message().to_owned(),
+            ),
+        };
+        commands
+            .send(Ok(ProviderCommand {
+                context: Some(context),
+                operation: ProviderOperation::RuntimeSessionContextResult as i32,
+                target_operation_id: request.correlation_id.clone(),
+                settings: None,
+                achievements: None,
+                runtime_session_result: None,
+                runtime_session_context_result: Some(RuntimeSessionContextResult {
+                    correlation_id: request.correlation_id,
+                    outcome: outcome as i32,
+                    runtime_context_id: token,
+                    reason,
+                    denial: None,
+                }),
+            }))
+            .await
+            .map_err(|_| Status::unavailable("provider command stream closed"))
+    }
+
     async fn runtime_session_event(
         &self,
         context: ServiceContext,
         report: RuntimeSessionReport,
     ) -> Result<(), Status> {
+        let received_at = Instant::now();
         let (provider, commands, grant_revision, target_game, owner_key) = {
             let state = lock(&self.state);
             let session = state
@@ -828,13 +1068,21 @@ impl ProviderApi {
         };
 
         let _commit = provider.commits.lock().await;
-        let (has_grant, scope_matches, revision_unchanged, denial_audit) = {
+        let (
+            has_grant,
+            scope_matches,
+            revision_unchanged,
+            denial_audit,
+            context_authorized,
+            context_revision,
+        ) = {
             let state = lock(&self.state);
             let Some(session) = state.sessions.get(&context.session_id) else {
                 return Err(Status::unauthenticated("provider session expired"));
             };
             if !super::constant_time_eq(&session.credential, &context.session_credential)
                 || session.resource_context.as_ref() != Some(&context)
+                || epoch(&session.provider) != (context.account_epoch, context.profile_epoch)
             {
                 return Err(Status::unauthenticated(
                     "provider session context is invalid",
@@ -846,9 +1094,33 @@ impl ProviderApi {
                 ));
             }
             let has_grant = session.grants.contains(cap::GAME_SESSIONS_REPORT);
-            let scope_matches = target_game.as_ref().is_some_and(|target| {
-                target.game_id == report.game_id && target.installation_id == report.installation_id
-            }) && report.reporter_session_id == context.session_id;
+            let initial_scope = report.runtime_context_id.is_empty()
+                && target_game.as_ref().is_some_and(|target| {
+                    target.game_id == report.game_id
+                        && target.installation_id == report.installation_id
+                });
+            let now = Instant::now();
+            let issued_context = (!report.runtime_context_id.is_empty())
+                .then(|| session.runtime_contexts.get(&report.runtime_context_id))
+                .flatten()
+                .filter(|grant| {
+                    grant.expires_at > now
+                        && grant.profile_epoch == context.profile_epoch
+                        && grant.grant_revision == session.grant_revision
+                        && grant.game_id == report.game_id
+                        && grant.installation_id == report.installation_id
+                        && grant.runtime_id == report.runtime_id
+                        && grant.runtime_instance_id == report.runtime_instance_id
+                        && grant.content_id == report.content_id
+                });
+            let context_authorized = issued_context.is_some();
+            let context_revision =
+                issued_context.map(|grant| super::runtime::RuntimeContextRevision {
+                    library_revision: grant.library_revision,
+                    binding_revision: grant.binding_revision,
+                });
+            let scope_matches = (initial_scope || context_authorized)
+                && report.reporter_session_id == context.session_id;
             let reason = if !has_grant {
                 DenialReason::NotGranted
             } else if !scope_matches {
@@ -862,6 +1134,8 @@ impl ProviderApi {
                 session.grant_revision == grant_revision,
                 (!has_grant || !scope_matches || session.grant_revision != grant_revision)
                     .then(|| denial_event(session, cap::GAME_SESSIONS_REPORT, reason)),
+                context_authorized,
+                context_revision,
             )
         };
         let authorized = has_grant && scope_matches && revision_unchanged;
@@ -895,6 +1169,9 @@ impl ProviderApi {
                     provider.registration.plugin_id.clone(),
                     owner_key,
                     report.clone(),
+                    context_authorized,
+                    context_revision,
+                    received_at,
                 )
                 .await
         } else {
@@ -908,6 +1185,50 @@ impl ProviderApi {
                 denial: None,
             }
         };
+        if result.outcome == RuntimeSessionOutcome::Accepted as i32 {
+            let mut state = lock(&self.state);
+            if let Some(session) = state.sessions.get_mut(&context.session_id) {
+                if !report.runtime_context_id.is_empty()
+                    && let Some(grant) =
+                        session.runtime_contexts.get_mut(&report.runtime_context_id)
+                {
+                    grant.expires_at = Instant::now() + Duration::from_secs(30);
+                }
+                let prior_active = session
+                    .runtime_instances
+                    .get(&report.runtime_instance_id)
+                    .is_some_and(|evidence| evidence.active);
+                let active = match RuntimeSessionTransition::try_from(report.transition) {
+                    Ok(RuntimeSessionTransition::Started | RuntimeSessionTransition::Resumed) => {
+                        true
+                    }
+                    Ok(
+                        RuntimeSessionTransition::Paused
+                        | RuntimeSessionTransition::Ended
+                        | RuntimeSessionTransition::IdentificationLost,
+                    ) => false,
+                    Ok(RuntimeSessionTransition::ContentChanged) => prior_active,
+                    _ => false,
+                };
+                session.runtime_instances.retain(|_, evidence| {
+                    evidence.last_received_at.elapsed() <= Duration::from_secs(30)
+                });
+                if session.runtime_instances.len() < 128
+                    || session
+                        .runtime_instances
+                        .contains_key(&report.runtime_instance_id)
+                {
+                    session.runtime_instances.insert(
+                        report.runtime_instance_id.clone(),
+                        RuntimeInstanceEvidence {
+                            last_received_at: received_at,
+                            runtime_id: report.runtime_id.clone(),
+                            active,
+                        },
+                    );
+                }
+            }
+        }
         result.correlation_id = report.correlation_id.clone();
         commands
             .send(Ok(ProviderCommand {
@@ -916,6 +1237,7 @@ impl ProviderApi {
                 target_operation_id: report.correlation_id,
                 settings: None,
                 runtime_session_result: Some(result),
+                runtime_session_context_result: None,
                 achievements: None,
             }))
             .await
@@ -1176,6 +1498,7 @@ impl ProviderApi {
                 target_operation_id: String::new(),
                 settings: None,
                 runtime_session_result: None,
+                runtime_session_context_result: None,
                 achievements: None,
             }));
         }
@@ -1644,6 +1967,8 @@ impl ProviderApi {
                 resource_operation: resource_context
                     .as_ref()
                     .map(|context| context.operation_id.clone()),
+                runtime_contexts: HashMap::new(),
+                runtime_instances: HashMap::new(),
             },
         );
         Ok(OpenSessionReply {
@@ -2538,6 +2863,7 @@ impl ProviderApi {
                 target_operation_id: window.window_id,
                 settings: None,
                 runtime_session_result: None,
+                runtime_session_context_result: None,
                 achievements: None,
             }))
             .is_err()
@@ -2916,6 +3242,7 @@ impl ProviderApi {
                 target_operation_id,
                 settings: settings.map(Into::into),
                 runtime_session_result: None,
+                runtime_session_context_result: None,
                 achievements: achievements.map(Into::into),
             }))
             .is_err()
@@ -2943,6 +3270,11 @@ impl ProviderApi {
         if let Some(provider_event::Event::RuntimeSession(report)) = event.event.as_ref() {
             return self.runtime_session_event(context, report.clone()).await;
         }
+        if let Some(provider_event::Event::RuntimeSessionContext(request)) = event.event.as_ref() {
+            return self
+                .runtime_session_context_event(context, request.clone())
+                .await;
+        }
         let permission = match event.event.as_ref() {
             Some(provider_event::Event::AccountStatus(_)) => cap::ACCOUNT_PUBLISH,
             Some(provider_event::Event::CatalogChunk(_)) => cap::CATALOG,
@@ -2954,6 +3286,7 @@ impl ProviderApi {
             }
             Some(provider_event::Event::Result(_)) => cap::CONTEXT,
             Some(provider_event::Event::RuntimeSession(_)) => cap::GAME_SESSIONS_REPORT,
+            Some(provider_event::Event::RuntimeSessionContext(_)) => cap::GAME_SESSIONS_REPORT,
             _ => return Err(Status::invalid_argument("invalid provider event")),
         };
         let provider = self.authorize(&context, permission)?;
@@ -3001,6 +3334,7 @@ impl ProviderApi {
                     .map_err(|_| Status::invalid_argument("invalid catalog transfer"))?;
             }
             provider_event::Event::RuntimeSession(_) => unreachable!("handled above"),
+            provider_event::Event::RuntimeSessionContext(_) => unreachable!("handled above"),
             provider_event::Event::Result(result) => {
                 for (present, permission) in [
                     (result.status.is_some(), cap::ACCOUNT_PUBLISH),
@@ -3188,6 +3522,7 @@ impl ProviderApi {
                         target_operation_id: String::new(),
                         settings: None,
                         runtime_session_result: None,
+                        runtime_session_context_result: None,
                         achievements: None,
                     }));
                 }

@@ -383,6 +383,43 @@ impl Authorizer for DenySharedData {
 }
 
 impl ResourceApi {
+    pub(crate) async fn confirm_runtime_context(
+        &self,
+        plugin_id: String,
+        publisher_fingerprint: String,
+        profile_epoch: u64,
+        game_id: String,
+        installation_id: String,
+        game_name: String,
+    ) -> Result<bool, Status> {
+        use super::intents::{Binding, ConfirmationRequest, Operation, Verdict};
+        let _pending = self.intents.begin_pending(&Binding {
+            plugin_id: plugin_id.clone(),
+            publisher_fingerprint: publisher_fingerprint.clone(),
+            profile_epoch,
+            game_id,
+            installation_id,
+            operation: Operation::RuntimeSessionContext,
+            target_revision: 0,
+            recipe_id: String::new(),
+            recipe_revision: 0,
+            plan_fingerprint: String::new(),
+        })?;
+        Ok(matches!(
+            self.intents
+                .confirm(ConfirmationRequest {
+                    plugin_id,
+                    publisher_fingerprint,
+                    game_name,
+                    operation: Operation::RuntimeSessionContext,
+                    details: Vec::new(),
+                    launch_plan: None,
+                })
+                .await?,
+            Verdict::Approved { .. }
+        ))
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         providers: ProviderApi,

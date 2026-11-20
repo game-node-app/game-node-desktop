@@ -51,11 +51,35 @@ The host MUST bind runtime and content resources to existing game and installati
 - **THEN** the library retains one game identity and presents selectable runtime bindings
 
 ### Requirement: Runtime reports are scoped evidence
-The host MUST validate plugin runtime-session reports against the authenticated plugin, game/runtime grants, session epoch and freshness policy before Core uses them for attribution.
+The host MUST validate plugin runtime-session reports against authenticated identity, current game/runtime grants, session epoch, target binding and timestamp policy before Core uses them for attribution. `observed_at` is Unix time in seconds, accepted no more than 30 seconds stale or 5 seconds in the future; expiry uses host monotonic receipt time.
+
+#### Scenario: A runtime changes to another game in the same process
+- **WHEN** an extension requests reporting context for another game or installation on an instance with a fresh active report
+- **THEN** the host validates the active plugin identity, reporter session, profile epoch, current `game.sessions.report` grant and current runtime/content binding, obtains host confirmation for the new target, and returns a context id bound to those revisions and that runtime instance; a plugin-supplied target context or token is never authority
+
+#### Scenario: A host-issued runtime context is reused
+- **WHEN** a report for the new game includes the context id returned by the host
+- **THEN** the host rechecks the context id, instance, target, profile, grant and binding before Core closes the old interval at its last accepted observation and starts the new one at the approved report's event time; a forged, expired, revoked or cross-instance context is refused
+
+#### Scenario: A runtime context request is denied or becomes stale
+- **WHEN** the user declines, the profile or grant changes, or the target binding changes before a report is accepted
+- **THEN** the host issues no usable context, records no playtime for the new target, and treats the interval after the last fresh report as unknown
+
+#### Scenario: A runtime instance id is reused after PID reuse
+- **WHEN** an adapter observes that an operating-system PID now belongs to another runtime process
+- **THEN** it starts a new runtime instance id and Core never merges the new process with the prior instance or session
 
 #### Scenario: A report is stale or revoked
 - **WHEN** a runtime report arrives after its session or grant is fenced
 - **THEN** Core rejects it without changing playtime or session attribution
+
+#### Scenario: Runtime observations stop arriving
+- **WHEN** no authorized report is received for 30 seconds
+- **THEN** Core closes the interval at its last host monotonic receipt and leaves the later time unattributed until a fresh authorized report arrives
+
+#### Scenario: A context token expires after reports stop
+- **WHEN** no report using a host-issued context id is accepted for 30 seconds
+- **THEN** the token expires, the runtime instance is no longer eligible to request another game context, and new reporting requires fresh active evidence and user confirmation
 
 ### Requirement: Provider-free extensions use their own supervised session lifecycle
 The host MUST run an activated extension as a supervised process bound to its authenticated plugin identity, active account profile and user-selected target-game context. An extension MUST NOT receive a provider id or provider-owned service context. The host MUST fence the session and stop its process tree when activation, profile, target context or required grants become invalid, and MUST apply bounded readiness and package-integrity checks before committing an activation or update.

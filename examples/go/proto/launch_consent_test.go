@@ -14,10 +14,11 @@ func TestLaunchConsentFixturesKeepReviewAndInstallSeparate(t *testing.T) {
 		request *CustomLaunchRequest
 	}{
 		{
-			name: "emulator runtime",
+			name: "Proton-style runtime wrapper",
 			request: &CustomLaunchRequest{GameId: "fixture-game", InstallationId: "fixture-install",
-				ExpectedRevision: 7, RuntimeHandle: "opaque-runtime-handle", ContentId: "fixture-rom",
-				Argv: []string{"--fullscreen", "fixture-rom"}},
+				ExpectedRevision: 12, RuntimeHandle: "runtime-handle", ContentId: "content-variant-1",
+				Argv: []string{"--literal value"}, WorkingDirectoryHandle: "cwd-handle",
+				EnvironmentSet: map[string]string{"A": "value with spaces"}, EnvironmentUnset: []string{"B"}},
 		},
 		{
 			name: "known mod layer",

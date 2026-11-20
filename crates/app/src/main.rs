@@ -401,9 +401,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 paths.data_dir(),
             )?)),
             local_games: Some(local_game_store),
-            installations: Some(Arc::new(
-                gamenode_platform::installations::WindowsInstallations,
-            )),
+            installations: Some(Arc::new({
+                #[cfg(target_os = "windows")]
+                {
+                    gamenode_platform::installations::WindowsInstallations
+                }
+                #[cfg(target_os = "linux")]
+                {
+                    gamenode_platform::installations::LinuxInstallations
+                }
+            })),
             tools: Some(Arc::new(store.tool_store())),
             tool_catalog: Some(Arc::new(
                 gamenode_platform::tools::catalog::GitHubToolCatalog::new(paths.tools_cache_dir())?,

@@ -17,6 +17,21 @@ The host MUST resolve custom launch requests into immutable typed plans and bind
 - **WHEN** the selected recipe is missing, disabled, revised or no longer authorized
 - **THEN** the host refuses to dispatch it, keeps it visibly unavailable, and offers an explicit choice of another recipe or the detected default
 
+### Requirement: Linux custom launch preserves the reviewed plan
+The Linux host MUST execute supported direct-executable and wrapper-based custom plans with their reviewed executable, arguments, working directory and environment changes. It MUST preserve the original GameNode game and installation identity, revalidate approved resources before dispatch, and fail explicitly when an operation or wrapper form is unsupported. It MUST NOT silently fall back to the detected default or omit requested plan fields.
+
+#### Scenario: A direct Linux executable is selected
+- **WHEN** a user approves a custom plan whose effective target is an approved Linux executable
+- **THEN** the Linux adapter starts that executable with the reviewed arguments, working directory and environment delta under the original game identity
+
+#### Scenario: A Proton-style wrapper is selected
+- **WHEN** a user approves a custom plan whose approved wrapper launches a Windows game executable through Proton
+- **THEN** the Linux adapter passes the reviewed game executable and arguments using the selected wrapper invocation form and retains the original game identity
+
+#### Scenario: The Linux adapter cannot honor a reviewed field
+- **WHEN** the wrapper is missing, its invocation form is unsupported, or a requested environment operation cannot be applied
+- **THEN** the host returns an explicit unsupported/failed outcome and does not dispatch the detected default or a partial plan
+
 ### Requirement: Per-game launch choices are explicit
 The host MUST keep one active launch recipe per library entry and profile. No active custom recipe means the detected default is selected; returning to that default requires an explicit user choice. User-initiated launches MUST use the shared host review before dispatch.
 

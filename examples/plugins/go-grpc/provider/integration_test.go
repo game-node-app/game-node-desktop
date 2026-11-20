@@ -26,12 +26,17 @@ type observedExchange struct {
 type fixtureHost struct {
 	proto.UnimplementedPluginHostServer
 	proto.UnimplementedProviderHostServer
+	proto.UnimplementedResourceHostServer
 
-	credential []byte
-	mu         sync.Mutex
-	open       *proto.OpenSessionRequest
-	context    *proto.ServiceContext
-	exchange   observedExchange
+	credential           []byte
+	mu                   sync.Mutex
+	open                 *proto.OpenSessionRequest
+	context              *proto.ServiceContext
+	exchange             observedExchange
+	configuration        bool
+	preference           []byte
+	preferenceRevision   uint64
+	preferenceDurability proto.StorageDurability
 }
 
 func (h *fixtureHost) OpenSession(_ context.Context, request *proto.OpenSessionRequest) (*proto.OpenSessionReply, error) {
@@ -83,6 +88,14 @@ func (h *fixtureHost) Exchange(stream grpc.BidiStreamingServer[proto.ProviderEve
 		fixtureCommand("discover-1", proto.ProviderOperation_PROVIDER_OPERATION_DISCOVER),
 		fixtureCommand("catalog-1", proto.ProviderOperation_PROVIDER_OPERATION_SYNC_CATALOG),
 		fixtureCommand("counter-1", proto.ProviderOperation_PROVIDER_OPERATION_READ_COUNTER),
+	}
+	if h.configuration {
+		commands = append(commands,
+			fixtureConfigurationCommand("config-open-1", "window-1", proto.ProviderOperation_PROVIDER_OPERATION_CONFIGURATION_OPEN),
+			fixtureConfigurationCommand("config-focus-1", "window-1", proto.ProviderOperation_PROVIDER_OPERATION_CONFIGURATION_FOCUS),
+			fixtureConfigurationCommand("config-open-2", "window-2", proto.ProviderOperation_PROVIDER_OPERATION_CONFIGURATION_OPEN),
+			fixtureConfigurationCommand("config-close-2", "window-2", proto.ProviderOperation_PROVIDER_OPERATION_CONFIGURATION_CLOSE),
+		)
 	}
 	for _, command := range commands {
 		if err := stream.Send(command); err != nil {
@@ -146,12 +159,112 @@ func fixtureCommand(operationID string, operation proto.ProviderOperation) *prot
 	}
 }
 
+func fixtureConfigurationCommand(operationID, windowID string, operation proto.ProviderOperation) *proto.ProviderCommand {
+	command := fixtureCommand(operationID, operation)
+	command.TargetOperationId = windowID
+	return command
+}
+
+func (h *fixtureHost) StorageGet(_ context.Context, request *proto.StorageGetRequest) (*proto.StorageGetReply, error) {
+	if request.GetContext().GetSessionId() != "fixture-session" || request.GetContext().GetProviderId() != ProviderID ||
+		request.GetContext().GetOperationId() != "fixture-launch" || request.GetKey() != preferenceKey {
+		return nil, status.Error(codes.PermissionDenied, "fixture storage read scope mismatch")
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return &proto.StorageGetReply{
+		Value:      append([]byte(nil), h.preference...),
+		Revision:   h.preferenceRevision,
+		Found:      h.preferenceRevision > 0,
+		Durability: h.preferenceDurability,
+	}, nil
+}
+
+func (h *fixtureHost) StoragePut(_ context.Context, request *proto.StoragePutRequest) (*proto.StorageMutationReply, error) {
+	mutation := request.GetMutation()
+	if mutation.GetContext().GetSessionId() != "fixture-session" || mutation.GetContext().GetProviderId() != ProviderID ||
+		mutation.GetContext().GetOperationId() != "fixture-launch" || mutation.GetIdempotencyKey() == "" || request.GetKey() != preferenceKey ||
+		request.GetDurability() != proto.StorageDurability_STORAGE_DURABILITY_PERSISTENT {
+		return nil, status.Error(codes.PermissionDenied, "fixture storage write scope mismatch")
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if mutation.GetExpectedRevision() != h.preferenceRevision {
+		return &proto.StorageMutationReply{
+			Revision:   h.preferenceRevision,
+			Outcome:    proto.MutationOutcome_MUTATION_OUTCOME_REVISION_CONFLICT,
+			Durability: h.preferenceDurability,
+		}, nil
+	}
+	h.preference = append([]byte(nil), request.GetValue()...)
+	h.preferenceRevision++
+	h.preferenceDurability = request.GetDurability()
+	return &proto.StorageMutationReply{
+		Revision:   h.preferenceRevision,
+		Outcome:    proto.MutationOutcome_MUTATION_OUTCOME_APPLIED,
+		Durability: h.preferenceDurability,
+	}, nil
+}
+
+type fixtureConfigWindow struct {
+	index int
+	mu    sync.Mutex
+	exit  WindowExit
+	done  chan struct{}
+	once  sync.Once
+}
+
+func (w *fixtureConfigWindow) Focus(context.Context) bool {
+	if w.index == 0 {
+		w.finish(WindowExit{Preference: []byte("Library"), Saved: true})
+	}
+	return true
+}
+
+func (w *fixtureConfigWindow) Stop(context.Context) error {
+	w.finish(WindowExit{})
+	return nil
+}
+
+func (w *fixtureConfigWindow) Done() <-chan struct{} { return w.done }
+
+func (w *fixtureConfigWindow) Result() WindowExit {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.exit
+}
+
+func (w *fixtureConfigWindow) finish(exit WindowExit) {
+	w.once.Do(func() {
+		w.mu.Lock()
+		w.exit = exit
+		w.mu.Unlock()
+		close(w.done)
+	})
+}
+
+type fixtureWindowLauncher struct {
+	mu          sync.Mutex
+	preferences []string
+	windows     []*fixtureConfigWindow
+}
+
+func (l *fixtureWindowLauncher) Start(preference string) (ConfigWindow, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	window := &fixtureConfigWindow{index: len(l.windows), done: make(chan struct{})}
+	l.preferences = append(l.preferences, preference)
+	l.windows = append(l.windows, window)
+	return window, nil
+}
+
 func TestProviderExchangeOverLocalTransport(t *testing.T) {
 	listener, endpoint := listenFixture(t)
 	host := &fixtureHost{credential: []byte("0123456789abcdef0123456789abcdef")}
 	server := grpc.NewServer()
 	proto.RegisterPluginHostServer(server, host)
 	proto.RegisterProviderHostServer(server, host)
+	proto.RegisterResourceHostServer(server, host)
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- server.Serve(listener) }()
 	t.Cleanup(func() {
@@ -224,5 +337,76 @@ func TestProviderExchangeOverLocalTransport(t *testing.T) {
 	if counter == nil || len(counter.GetCounters()) != 1 || counter.GetCounters()[0].GetId() != "demo-catalog-game" ||
 		counter.GetCounters()[0].GetSeconds() != 7200 || counter.GetCounters()[0].LastPlayed == nil {
 		t.Fatalf("unexpected counter result: %v", counter)
+	}
+}
+
+func TestConfigurationLifecyclePersistsPreferenceThroughHostFixture(t *testing.T) {
+	listener, endpoint := listenFixture(t)
+	host := &fixtureHost{
+		credential:    []byte("0123456789abcdef0123456789abcdef"),
+		configuration: true,
+	}
+	server := grpc.NewServer()
+	proto.RegisterPluginHostServer(server, host)
+	proto.RegisterProviderHostServer(server, host)
+	proto.RegisterResourceHostServer(server, host)
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve(listener) }()
+	t.Cleanup(func() {
+		server.Stop()
+		_ = listener.Close()
+		select {
+		case <-serveDone:
+		case <-time.After(time.Second):
+			t.Error("fixture gRPC server did not stop")
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client, err := Open(ctx, endpoint, host.credential, "fixture-launch")
+	if err != nil {
+		t.Fatalf("open provider: %v", err)
+	}
+	launcher := &fixtureWindowLauncher{}
+	client.configuration = NewConfigurationLifecycle(
+		resourcePreferenceStore{client: proto.NewResourceHostClient(client.conn)},
+		launcher,
+		client.Context(),
+	)
+	if err := client.Run(ctx, Demo{}); err != nil {
+		t.Fatalf("run provider: %v", err)
+	}
+
+	windowIDs := map[string]string{
+		"config-open-1":  "window-1",
+		"config-focus-1": "window-1",
+		"config-open-2":  "window-2",
+		"config-close-2": "window-2",
+	}
+	for id, windowID := range windowIDs {
+		result := host.exchange.results[id]
+		if result == nil || result.GetConfiguration() == nil || !result.GetConfiguration().GetAccepted() {
+			t.Fatalf("configuration operation %s was not accepted: %v", id, result)
+		}
+		if result.GetConfiguration().GetSessionId() != "fixture-session" {
+			t.Fatalf("configuration operation %s lost session correlation: %v", id, result.GetConfiguration())
+		}
+		if result.GetConfiguration().GetWindowId() != windowID {
+			t.Fatalf("configuration operation %s lost window correlation: %v", id, result.GetConfiguration())
+		}
+	}
+	launcher.mu.Lock()
+	preferences := append([]string(nil), launcher.preferences...)
+	launcher.mu.Unlock()
+	if !reflect.DeepEqual(preferences, []string{"Games", "Library"}) {
+		t.Fatalf("configuration window preferences = %v, want default then persisted value", preferences)
+	}
+	host.mu.Lock()
+	defer host.mu.Unlock()
+	if string(host.preference) != "Library" || host.preferenceRevision != 1 ||
+		host.preferenceDurability != proto.StorageDurability_STORAGE_DURABILITY_PERSISTENT {
+		t.Fatalf("host did not persist the non-secret preference: value=%q revision=%d durability=%s",
+			host.preference, host.preferenceRevision, host.preferenceDurability)
 	}
 }

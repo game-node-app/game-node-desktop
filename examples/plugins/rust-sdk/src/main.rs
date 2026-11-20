@@ -11,9 +11,24 @@ use tokio::{
 };
 
 const PREFERENCE_KEY: &str = "preferred-catalog-label";
-#[derive(Default)]
 struct ExamplePlugin {
     window: Arc<Mutex<Option<OpenWindow>>>,
+    launcher: Arc<dyn WindowLauncher>,
+}
+
+impl Default for ExamplePlugin {
+    fn default() -> Self {
+        Self::with_launcher(Arc::new(SystemWindowLauncher))
+    }
+}
+
+impl ExamplePlugin {
+    fn with_launcher(launcher: Arc<dyn WindowLauncher>) -> Self {
+        Self {
+            window: Arc::new(Mutex::new(None)),
+            launcher,
+        }
+    }
 }
 
 struct OpenWindow {
@@ -21,48 +36,96 @@ struct OpenWindow {
     process: Child,
 }
 
-impl ExamplePlugin {
-    async fn preference(host: &HostClient) -> Result<(String, u64), Status> {
-        let resources = host
+#[async_trait::async_trait]
+trait PreferenceStore: Send + Sync {
+    async fn get(&self) -> Result<(Option<Vec<u8>>, u64), Status>;
+    async fn put(&self, revision: u64, value: Vec<u8>) -> Result<bool, Status>;
+}
+
+struct HostPreferenceStore(HostClient);
+
+#[async_trait::async_trait]
+impl PreferenceStore for HostPreferenceStore {
+    async fn get(&self) -> Result<(Option<Vec<u8>>, u64), Status> {
+        let resources = self
+            .0
             .resources()
             .ok_or_else(|| Status::failed_precondition("API 1.6 storage is unavailable"))?;
         let stored = resources.storage_get(PREFERENCE_KEY).await?;
-        Ok(if stored.found {
-            (
-                String::from_utf8_lossy(&stored.value).into_owned(),
-                stored.revision,
-            )
-        } else {
-            ("Games".into(), 0)
-        })
+        Ok((stored.found.then_some(stored.value), stored.revision))
     }
 
-    async fn save_preference(host: &HostClient, value: Vec<u8>) -> Result<(), Status> {
-        let resources = host
+    async fn put(&self, revision: u64, value: Vec<u8>) -> Result<bool, Status> {
+        let resources = self
+            .0
             .resources()
             .ok_or_else(|| Status::failed_precondition("API 1.6 storage is unavailable"))?;
+        let write = resources
+            .storage_put(
+                PREFERENCE_KEY,
+                revision,
+                &gamenode_plugin_sdk::idempotency_key(),
+                value,
+                Durability::Persistent,
+                None,
+            )
+            .await?;
+        Ok(write.outcome == Outcome::RevisionConflict)
+    }
+}
+
+#[async_trait::async_trait]
+trait WindowLauncher: Send + Sync {
+    fn start(&self, preference: &str) -> Result<Child, String>;
+    async fn focus(&self, pid: u32) -> bool;
+}
+
+struct SystemWindowLauncher;
+
+#[async_trait::async_trait]
+impl WindowLauncher for SystemWindowLauncher {
+    fn start(&self, preference: &str) -> Result<Child, String> {
+        start_window(preference)
+    }
+
+    async fn focus(&self, pid: u32) -> bool {
+        focus(pid).await
+    }
+}
+
+impl ExamplePlugin {
+    async fn preference(store: &dyn PreferenceStore) -> Result<(String, u64), Status> {
+        let (value, revision) = store.get().await?;
+        Ok((
+            value
+                .map(|value| String::from_utf8_lossy(&value).into_owned())
+                .unwrap_or_else(|| "Games".into()),
+            revision,
+        ))
+    }
+
+    async fn save_preference(store: &dyn PreferenceStore, value: Vec<u8>) -> Result<(), Status> {
         // Read immediately before the write so the host can reject a stale edit safely.
-        let mut current = resources.storage_get(PREFERENCE_KEY).await?;
+        let (_, mut revision) = store.get().await?;
         for _ in 0..2 {
-            let write = resources
-                .storage_put(
-                    PREFERENCE_KEY,
-                    current.revision,
-                    &gamenode_plugin_sdk::idempotency_key(),
-                    value.clone(),
-                    Durability::Persistent,
-                    None,
-                )
-                .await?;
-            if write.outcome != Outcome::RevisionConflict {
+            if !store.put(revision, value.clone()).await? {
                 return Ok(());
             }
-            current = resources.storage_get(PREFERENCE_KEY).await?;
+            (_, revision) = store.get().await?;
         }
         Err(Status::aborted("preference changed while saving"))
     }
 
     async fn show_or_focus(&self, command: ProviderCommand, host: HostClient) -> OperationResult {
+        self.show_or_focus_with(command, Arc::new(HostPreferenceStore(host)))
+            .await
+    }
+
+    async fn show_or_focus_with(
+        &self,
+        command: ProviderCommand,
+        store: Arc<dyn PreferenceStore>,
+    ) -> OperationResult {
         let target_id = command.target_operation_id.clone();
         if target_id.is_empty() {
             return configuration_result(command, false, "missing-window-id");
@@ -73,7 +136,8 @@ impl ExamplePlugin {
                 if current.id == target_id
                     && timeout(
                         Duration::from_secs(2),
-                        focus(current.process.id().unwrap_or_default()),
+                        self.launcher
+                            .focus(current.process.id().unwrap_or_default()),
                     )
                     .await
                     .unwrap_or(false)
@@ -87,7 +151,7 @@ impl ExamplePlugin {
                     && output.status.success()
                     && let Err(error) = timeout(
                         Duration::from_secs(2),
-                        Self::save_preference(&host, output.stdout),
+                        Self::save_preference(store.as_ref(), output.stdout),
                     )
                     .await
                     .unwrap_or_else(|_| Err(Status::deadline_exceeded("preference save timed out")))
@@ -96,21 +160,22 @@ impl ExamplePlugin {
                 }
             }
         }
-        let (preference, _) = match timeout(Duration::from_secs(2), Self::preference(&host)).await {
-            Ok(Ok(value)) => value,
-            Ok(Err(error)) => {
-                return configuration_result(command, false, &error.code().to_string());
-            }
-            Err(_) => return configuration_result(command, false, "preference-read-timeout"),
-        };
-        match start_window(&preference) {
+        let (preference, _) =
+            match timeout(Duration::from_secs(2), Self::preference(store.as_ref())).await {
+                Ok(Ok(value)) => value,
+                Ok(Err(error)) => {
+                    return configuration_result(command, false, &error.code().to_string());
+                }
+                Err(_) => return configuration_result(command, false, "preference-read-timeout"),
+            };
+        match self.launcher.start(&preference) {
             Ok(process) => {
                 *window = Some(OpenWindow {
                     id: target_id,
                     process,
                 });
                 let shared_window = self.window.clone();
-                let saved_host = host.clone();
+                let saved_store = store.clone();
                 let target_id = command.target_operation_id.clone();
                 tokio::spawn(async move {
                     loop {
@@ -131,7 +196,7 @@ impl ExamplePlugin {
                             if let Ok(output) = open.process.wait_with_output().await
                                 && output.status.success()
                                 && let Err(error) =
-                                    Self::save_preference(&saved_host, output.stdout).await
+                                    Self::save_preference(saved_store.as_ref(), output.stdout).await
                             {
                                 eprintln!("could not save plugin preference: {error}");
                             }
@@ -146,6 +211,15 @@ impl ExamplePlugin {
     }
 
     async fn close(&self, command: ProviderCommand, host: HostClient) -> OperationResult {
+        self.close_with(command, Arc::new(HostPreferenceStore(host)))
+            .await
+    }
+
+    async fn close_with(
+        &self,
+        command: ProviderCommand,
+        store: Arc<dyn PreferenceStore>,
+    ) -> OperationResult {
         let mut window = self.window.lock().await;
         let Some(mut current) = window.take() else {
             return configuration_result(command, true, "");
@@ -163,7 +237,7 @@ impl ExamplePlugin {
             && output.status.success()
             && let Err(error) = timeout(
                 Duration::from_secs(2),
-                Self::save_preference(&host, output.stdout),
+                Self::save_preference(store.as_ref(), output.stdout),
             )
             .await
             .unwrap_or_else(|_| Err(Status::deadline_exceeded("preference save timed out")))
@@ -238,7 +312,8 @@ impl ProviderPlugin for ExamplePlugin {
                     }
                     let accepted = timeout(
                         Duration::from_secs(2),
-                        focus(current.process.id().unwrap_or_default()),
+                        self.launcher
+                            .focus(current.process.id().unwrap_or_default()),
                     )
                     .await
                     .unwrap_or(false);
@@ -386,21 +461,159 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{
+        Mutex as StdMutex,
+        atomic::{AtomicUsize, Ordering},
+    };
 
-    #[test]
-    fn configuration_replies_keep_host_session_and_window_correlation() {
-        let command = ProviderCommand {
+    #[derive(Default)]
+    struct FixturePreferences(StdMutex<(Option<Vec<u8>>, u64)>);
+
+    #[async_trait::async_trait]
+    impl PreferenceStore for FixturePreferences {
+        async fn get(&self) -> Result<(Option<Vec<u8>>, u64), Status> {
+            let state = self.0.lock().unwrap();
+            Ok((state.0.clone(), state.1))
+        }
+
+        async fn put(&self, revision: u64, value: Vec<u8>) -> Result<bool, Status> {
+            let mut state = self.0.lock().unwrap();
+            if state.1 != revision {
+                return Ok(true);
+            }
+            state.0 = Some(value);
+            state.1 += 1;
+            Ok(false)
+        }
+    }
+
+    struct FixtureWindows {
+        starts: AtomicUsize,
+        focuses: AtomicUsize,
+        preferences: StdMutex<Vec<String>>,
+        delay_seconds: u64,
+    }
+
+    #[async_trait::async_trait]
+    impl WindowLauncher for FixtureWindows {
+        fn start(&self, preference: &str) -> Result<Child, String> {
+            self.starts.fetch_add(1, Ordering::Relaxed);
+            self.preferences.lock().unwrap().push(preference.to_owned());
+            #[cfg(target_os = "linux")]
+            let child = Command::new("sh")
+                .args([
+                    "-c",
+                    &format!("sleep {}; printf Library", self.delay_seconds),
+                ])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn();
+            #[cfg(target_os = "windows")]
+            let child = Command::new("powershell.exe")
+                .args([
+                    "-NoProfile",
+                    "-Command",
+                    &format!(
+                        "Start-Sleep -Seconds {}; [Console]::Out.Write('Library')",
+                        self.delay_seconds
+                    ),
+                ])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn();
+            #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+            let child: Result<Child, std::io::Error> = Err(std::io::Error::other(
+                "fixture process unsupported on this OS",
+            ));
+            child.map_err(|error| error.to_string())
+        }
+
+        async fn focus(&self, _: u32) -> bool {
+            self.focuses.fetch_add(1, Ordering::Relaxed);
+            true
+        }
+    }
+
+    fn configuration_command(operation: ProviderOperation, window_id: &str) -> ProviderCommand {
+        ProviderCommand {
+            operation: operation as i32,
             context: Some(ServiceContext {
                 session_id: "session-fixture".into(),
                 ..Default::default()
             }),
-            target_operation_id: "opaque-window-fixture".into(),
+            target_operation_id: window_id.into(),
             ..Default::default()
-        };
+        }
+    }
+
+    #[test]
+    fn configuration_replies_keep_host_session_and_window_correlation() {
+        let command = configuration_command(
+            ProviderOperation::ConfigurationOpen,
+            "opaque-window-fixture",
+        );
         let result = configuration_result(command, true, "");
         let reply = result.configuration.unwrap();
         assert!(reply.accepted);
         assert_eq!(reply.session_id, "session-fixture");
         assert_eq!(reply.window_id, "opaque-window-fixture");
+    }
+
+    #[tokio::test]
+    async fn fixture_configure_focus_close_and_persist_preference_lifecycle() {
+        let windows = Arc::new(FixtureWindows {
+            starts: AtomicUsize::new(0),
+            focuses: AtomicUsize::new(0),
+            preferences: StdMutex::new(Vec::new()),
+            delay_seconds: 1,
+        });
+        let plugin = ExamplePlugin::with_launcher(windows.clone());
+        let preferences = Arc::new(FixturePreferences::default());
+        let store: Arc<dyn PreferenceStore> = preferences.clone();
+
+        let opened = plugin
+            .show_or_focus_with(
+                configuration_command(ProviderOperation::ConfigurationOpen, "window-fixture"),
+                store.clone(),
+            )
+            .await;
+        assert!(opened.configuration.unwrap().accepted);
+        let focused = plugin
+            .show_or_focus_with(
+                configuration_command(ProviderOperation::ConfigurationOpen, "window-fixture"),
+                store.clone(),
+            )
+            .await;
+        assert!(focused.configuration.unwrap().accepted);
+        assert_eq!(windows.starts.load(Ordering::Relaxed), 1);
+        assert_eq!(windows.focuses.load(Ordering::Relaxed), 1);
+
+        tokio::time::timeout(Duration::from_secs(4), async {
+            loop {
+                let (value, revision) = preferences.get().await.unwrap();
+                if value.as_deref() == Some(b"Library") && revision == 1 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("closed fixture window should persist its preference");
+
+        let reopened = plugin
+            .show_or_focus_with(
+                configuration_command(ProviderOperation::ConfigurationOpen, "window-fixture-2"),
+                store.clone(),
+            )
+            .await;
+        assert!(reopened.configuration.unwrap().accepted);
+        assert_eq!(*windows.preferences.lock().unwrap(), ["Games", "Library"]);
+        let closed = plugin
+            .close_with(
+                configuration_command(ProviderOperation::ConfigurationClose, "window-fixture-2"),
+                store,
+            )
+            .await;
+        assert!(closed.configuration.unwrap().accepted);
     }
 }

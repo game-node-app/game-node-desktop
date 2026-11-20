@@ -36,6 +36,7 @@ pub mod process;
 pub mod profile;
 pub mod provider;
 pub mod publisher_trust;
+pub mod resource_leases;
 pub mod resources;
 pub mod runtime;
 pub mod saves;

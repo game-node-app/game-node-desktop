@@ -420,7 +420,12 @@ message LibraryRecordReply { LibraryRecord library = 1; uint64 revision = 2; }
 message LibraryRecordEvent { uint64 revision = 1; string event_type = 2; LibraryRecord library = 3; }
 message LibraryMutationReply { string resource_id = 1; uint64 revision = 2; MutationOutcome outcome = 3; }
 message RuntimeRegisterRequest { MutationContext mutation = 1; RuntimeRecord runtime = 2; }
-message RuntimeUpdateRequest { MutationContext mutation = 1; RuntimeRecord runtime = 2; repeated string field_mask = 3; }
+message RuntimeUpdateRequest {
+  MutationContext mutation = 1;
+  RuntimeRecord runtime = 2;
+  repeated string field_mask = 3;
+  ExtensionPatch extension_patch = 4;
+}
 message RuntimeMutationReply { RuntimeRecord runtime = 1; MutationOutcome outcome = 2; }
 message RuntimeRecordReply { RuntimeRecord runtime = 1; uint64 revision = 2; }
 message RuntimeRecordEvent { uint64 revision = 1; string event_type = 2; RuntimeRecord runtime = 3; }

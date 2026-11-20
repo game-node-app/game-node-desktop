@@ -17,8 +17,8 @@ This follow-up is part of the delivery split documented in `../add-third-party-p
 - [ ] 1.6 **Source 12.6.** Implement structural Struct validation, size/depth/key budgets and namespace/field projection; verify metadata cannot shadow typed execution/ownership/grant fields and unknown optional schemas do not invalidate usable base resources.
   - Review (2026-11-18): `6330a94` adds broker-side Struct budgets and reserved field rejection. Verify namespace projection and preservation of base resources with unknown optional schemas before closing.
 
-- [ ] 1.7 **Source 12.7.** Implement revision-checked typed field masks and owner-authorized namespace patches; verify old-client updates preserve unfamiliar namespaces and read-only/foreign/stale writers cannot overwrite resource data.
-  - Status (2026-11-18, integration `7e4e0b9`): Not started. `field_mask` exists only for library and runtime updates; there is no typed field mask or owner-authorized namespace patch for shared data records.
+- [x] 1.7 **Source 12.7.** Implement revision-checked typed field masks and owner-authorized namespace patches; verify old-client updates preserve unfamiliar namespaces and read-only/foreign/stale writers cannot overwrite resource data.
+  - Public ResourceHost regression covers typed-field and namespace updates, old-client preservation, owner/read-only denial, and stale revision conflicts without mutation. The SQLite store regression reopens opaque namespace data and races two writers at the same revision; exactly one commits.
 
 
 - [ ] 1.8 **Source 13.2.** Add shared-emulator-resource declarations and backing-resource coordination for backup/restore; verify changing a memory card scope requires full affected-game consent and active emulator use blocks unsafe restore.

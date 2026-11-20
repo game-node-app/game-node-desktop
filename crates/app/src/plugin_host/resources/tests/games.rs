@@ -349,6 +349,100 @@ async fn cancelling_a_waiting_request_withdraws_it_and_frees_the_game() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn cancelling_an_install_review_prevents_the_provider_install_flow() {
+    let (dialog, gate) = held(&[APPROVE]);
+    let (fixture, host, dialog) = Fixture::game(GRANTS, Some(dialog)).await;
+    let reply = fixture.install_game("cancel-install", "").await.unwrap();
+    Fixture::dialog_shown(&dialog.unwrap(), 1).await;
+
+    assert_eq!(reply.message, "awaiting confirmation");
+    assert!(host.opened.lock().unwrap().is_empty());
+    let cancelled = fixture
+        .cancel_job("cancel-install-job", &reply.job_id)
+        .await
+        .unwrap();
+    assert_eq!(cancelled.state(), JobState::Cancelled);
+    gate.notify_one();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(host.opened.lock().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pre_issued_install_intent_skips_only_the_plugin_prompt() {
+    // Core's explicit action supplies an install intent; the request still enters the provider's
+    // install flow and has no launch target revision to validate or bind.
+    let (fixture, host, _) = Fixture::game(GRANTS, None).await;
+    let binding = fixture.binding(Operation::Install, 0).await;
+    let id = fixture.intents.issue(binding).unwrap();
+    let reply = fixture
+        .install_game("preissued-install", &id)
+        .await
+        .unwrap();
+    let done = fixture.ended(&reply.job_id).await;
+    assert_eq!(
+        (done.state(), done.result_code.as_str()),
+        (JobState::Succeeded, "opened")
+    );
+    assert_eq!(*host.opened.lock().unwrap(), [(ENTRY.to_owned(), true)]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_remembered_install_confirmation_is_scoped_to_install() {
+    let (fixture, host, dialog) =
+        Fixture::game(GRANTS, Some(answering(&[APPROVE_AND_REMEMBER, APPROVE]))).await;
+    let dialog = dialog.unwrap();
+
+    let first = fixture
+        .install_game("remember-install-one", "")
+        .await
+        .unwrap();
+    assert_eq!(first.message, "awaiting confirmation");
+    assert_eq!(
+        fixture.ended(&first.job_id).await.state(),
+        JobState::Succeeded
+    );
+    assert_eq!(dialog.shown.lock().unwrap().len(), 1);
+
+    let remembered = fixture
+        .install_game("remember-install-two", "")
+        .await
+        .unwrap();
+    assert_ne!(remembered.message, "awaiting confirmation");
+    assert_eq!(
+        fixture.ended(&remembered.job_id).await.state(),
+        JobState::Succeeded
+    );
+    assert_eq!(dialog.shown.lock().unwrap().len(), 1);
+    assert_eq!(host.opened.lock().unwrap().len(), 2);
+
+    // The same stored approval does not authorize launch.
+    let launch = fixture
+        .launch_game("remember-install-launch", "")
+        .await
+        .unwrap();
+    assert_eq!(launch.message, "awaiting confirmation");
+    assert_eq!(dialog.shown.lock().unwrap().len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn revocation_during_install_review_prevents_dispatch() {
+    let (dialog, gate) = held(&[APPROVE]);
+    let (fixture, host, dialog) = Fixture::game(GRANTS, Some(dialog)).await;
+    let owner = fixture.game_owner();
+    let reply = fixture.install_game("revoke-install", "").await.unwrap();
+    Fixture::dialog_shown(&dialog.unwrap(), 1).await;
+
+    fixture
+        .api
+        .revoke_session_permission("fixture", cap::GAMES_INSTALL)
+        .await;
+    gate.notify_one();
+    let done = fixture.ended_for(&owner, &reply.job_id).await;
+    assert_eq!(done.state(), JobState::Failed);
+    assert!(host.opened.lock().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_retry_opens_no_second_dialog() {
     let (dialog, gate) = held(&[APPROVE]);
     let (fixture, host, dialog) = Fixture::game(GRANTS, Some(dialog)).await;

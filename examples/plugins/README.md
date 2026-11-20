@@ -14,7 +14,7 @@ CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target \
   cargo check --manifest-path examples/plugins/rust-sdk/Cargo.toml
 CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target \
   cargo test --manifest-path examples/plugins/rust-sdk/Cargo.toml
-go -C examples/go test ./...
+go -C examples/plugins/go-grpc test ./...
 ```
 
 For a Linux native build, install `zenity` and `wmctrl`; for Windows, use PowerShell with

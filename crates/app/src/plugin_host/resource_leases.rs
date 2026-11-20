@@ -13,9 +13,9 @@ const MAX_LEASE_KEYS: usize = 64;
 
 /// An opaque host-derived identity for one reviewed shared save resource.
 ///
-/// The key is bound to the authenticated plugin/publisher/profile, profile epoch, resource id and
-/// revision, and the identity of its approved backing handle. It must never be accepted from a
-/// plugin request or serialized into plugin-visible data.
+/// The key identifies the host-resolved backing resource. Authorization remains bound to the
+/// plugin, profile, epoch and reviewed revision, but those values must not split the lock for
+/// the same backing resource. It is never accepted from plugin input or exposed over IPC.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct ResourceLeaseKey([u8; 32]);
 
@@ -37,12 +37,9 @@ impl ResourceLeaseKey {
         }
         let mut digest = Sha256::new();
         digest.update(b"gamenode.shared-save-resource.lease.v1\0");
-        hash_part(&mut digest, identity.plugin_id.as_bytes());
-        hash_part(&mut digest, identity.publisher_fingerprint.as_bytes());
-        hash_part(&mut digest, identity.profile_id.as_bytes());
-        hash_part(&mut digest, &profile_epoch.to_be_bytes());
-        hash_part(&mut digest, resource_id.as_bytes());
-        hash_part(&mut digest, &resource_revision.to_be_bytes());
+        // These fields establish that the request was reviewed; they are deliberately not part
+        // of the lock identity. All aliases and revisions of a backing resource must serialize.
+        let _ = identity;
         hash_part(&mut digest, approved_handle_identity);
         Some(Self(digest.finalize().into()))
     }
@@ -242,7 +239,7 @@ mod tests {
     }
 
     #[test]
-    fn resource_identity_changes_when_any_bound_revision_or_identity_changes() {
+    fn resource_identity_remains_stable_across_authorization_changes() {
         let identity = PluginIdentity {
             plugin_id: "org.example.emulator".into(),
             publisher_fingerprint: "ab".repeat(32),
@@ -252,16 +249,25 @@ mod tests {
             ResourceLeaseKey::derive(&identity, epoch, id, revision, handle).unwrap()
         };
         let baseline = derive(1, "card-1", 4, b"approved-folder-a");
-        assert_ne!(baseline, derive(2, "card-1", 4, b"approved-folder-a"));
-        assert_ne!(baseline, derive(1, "card-2", 4, b"approved-folder-a"));
-        assert_ne!(baseline, derive(1, "card-1", 5, b"approved-folder-a"));
+        assert_eq!(baseline, derive(2, "card-1", 4, b"approved-folder-a"));
+        assert_eq!(baseline, derive(1, "card-2", 4, b"approved-folder-a"));
+        assert_eq!(baseline, derive(1, "card-1", 5, b"approved-folder-a"));
         assert_ne!(baseline, derive(1, "card-1", 4, b"approved-folder-b"));
         let mut other_identity = identity;
         other_identity.profile_id = "account-b".into();
-        assert_ne!(
+        assert_eq!(
             baseline,
             ResourceLeaseKey::derive(&other_identity, 1, "card-1", 4, b"approved-folder-a")
                 .unwrap()
         );
+        let leases = ResourceLeases::default();
+        let _use_lease = leases.acquire_use(&[baseline]).unwrap();
+        let after_review =
+            ResourceLeaseKey::derive(&other_identity, 2, "renamed", 7, b"approved-folder-a")
+                .unwrap();
+        assert!(matches!(
+            leases.acquire_exclusive(&[after_review]),
+            Err(ResourceLeaseError::Busy)
+        ));
     }
 }

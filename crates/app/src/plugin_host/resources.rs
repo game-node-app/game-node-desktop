@@ -36,6 +36,8 @@ mod mutations;
 mod network;
 mod notifications;
 mod observations;
+mod performance;
+mod persistence;
 mod ports;
 mod runtimes;
 mod saves;
@@ -145,6 +147,18 @@ pub const SERVED: &[Served] = &[
         cap::GAME_PRESENCE_PUBLISH,
         false,
         "the caller's own game/session presence",
+    ),
+    Served::new(
+        "GamePerformancePublishSamples",
+        cap::GAME_PERFORMANCE_PUBLISH,
+        false,
+        "authenticated, bounded session-retained performance series",
+    ),
+    Served::new(
+        "GamePerformanceEndSeries",
+        cap::GAME_PERFORMANCE_PUBLISH,
+        false,
+        "the caller's own performance series",
     ),
     Served::new(
         "LibrariesList",
@@ -260,6 +274,36 @@ pub const SERVED: &[Served] = &[
         false,
         PRIVATE_NAMESPACE,
     ),
+    Served::new(
+        "PersistenceGetUsage",
+        cap::STORAGE_PERSIST,
+        false,
+        PRIVATE_NAMESPACE,
+    ),
+    Served::new(
+        "PersistenceListEntries",
+        cap::STORAGE_PERSIST,
+        true,
+        PRIVATE_NAMESPACE,
+    ),
+    Served::new(
+        "PersistenceDeleteEntries",
+        cap::STORAGE_PERSIST,
+        false,
+        PRIVATE_NAMESPACE,
+    ),
+    Served::new(
+        "PersistenceClear",
+        cap::STORAGE_PERSIST,
+        false,
+        PRIVATE_NAMESPACE,
+    ),
+    Served::new(
+        "PersistenceSetRetentionPolicy",
+        cap::STORAGE_PERSIST,
+        false,
+        PRIVATE_NAMESPACE,
+    ),
     Served::new("DataPublish", cap::DATA_PUBLISH, false, PRIVATE_NAMESPACE),
     Served::new("DataGet", cap::DATA_PUBLISH, false, PRIVATE_NAMESPACE),
     Served::new("DataList", cap::DATA_PUBLISH, true, PRIVATE_NAMESPACE),
@@ -346,6 +390,9 @@ pub const COMPUTER_SERVED: &[Served] = observations::COMPUTER_SERVED;
 /// The `GamePresence` service methods this build serves, for `DescribeApi`.
 pub const PRESENCE_SERVED: &[Served] = observations::PRESENCE_SERVED;
 
+/// The `GamePerformance` service methods this build serves, for `DescribeApi`.
+pub const PERFORMANCE_SERVED: &[Served] = performance::SERVED;
+
 /// A served method's `DescribeApi` facts.
 pub struct Served {
     pub method: &'static str,
@@ -404,11 +451,14 @@ pub struct ResourceApi {
     data: Arc<DataBroker>,
     shared_authorizer: Arc<dyn Authorizer>,
     data_cursors: Arc<Mutex<HashMap<String, DataCursorEntry>>>,
+    performance_batch_times: Arc<Mutex<HashMap<String, Instant>>>,
+    performance_cursors: Arc<Mutex<HashMap<String, performance::CursorEntry>>>,
 }
 
 struct DataCursorEntry {
     session_id: String,
     cursor: QueryCursor,
+    scope_hash: Option<[u8; 32]>,
     expires_at: Instant,
 }
 
@@ -460,6 +510,8 @@ impl ResourceApi {
             data: Arc::new(DataBroker::new()),
             shared_authorizer: Arc::new(DenySharedData),
             data_cursors: Arc::default(),
+            performance_batch_times: Arc::default(),
+            performance_cursors: Arc::default(),
         }
     }
 
@@ -520,6 +572,15 @@ impl ResourceApi {
         token: &str,
         session_id: &str,
     ) -> Result<Option<QueryCursor>, Status> {
+        self.take_scoped_data_cursor(token, session_id, None)
+    }
+
+    fn take_scoped_data_cursor(
+        &self,
+        token: &str,
+        session_id: &str,
+        scope_hash: Option<[u8; 32]>,
+    ) -> Result<Option<QueryCursor>, Status> {
         if token.is_empty() {
             return Ok(None);
         }
@@ -539,10 +600,24 @@ impl ResourceApi {
         if entry.session_id != session_id {
             return Err(Status::invalid_argument("invalid data cursor"));
         }
+        if entry.scope_hash != scope_hash {
+            return Err(Status::invalid_argument(
+                "data cursor belongs to another query",
+            ));
+        }
         Ok(Some(entry.cursor.clone()))
     }
 
     fn issue_data_cursor(&self, session_id: &str, cursor: QueryCursor) -> Result<String, Status> {
+        self.issue_scoped_data_cursor(session_id, cursor, None)
+    }
+
+    fn issue_scoped_data_cursor(
+        &self,
+        session_id: &str,
+        cursor: QueryCursor,
+        scope_hash: Option<[u8; 32]>,
+    ) -> Result<String, Status> {
         let mut cursors = self
             .data_cursors
             .lock()
@@ -568,6 +643,7 @@ impl ResourceApi {
             DataCursorEntry {
                 session_id: session_id.to_owned(),
                 cursor,
+                scope_hash,
                 expires_at: Instant::now() + DATA_CURSOR_TTL,
             },
         );
@@ -605,12 +681,6 @@ fn no_common_data(selector: Option<&CommonDataSelector>) -> Result<(), Status> {
         }
         _ => Ok(()),
     }
-}
-
-fn not_served(method: &str) -> Status {
-    Status::unimplemented(format!(
-        "ResourceHost.{method} is not available in this GameNode build"
-    ))
 }
 
 fn stale_cursor() -> Status {
@@ -769,31 +839,6 @@ fn data_broker_status(error: BrokerError) -> Status {
             Status::permission_denied(error.to_string())
         }
     }
-}
-
-/// Answers async_trait's expanded signature directly, so the not-yet-served methods can be
-/// listed instead of written out one by one.
-macro_rules! not_served {
-    ($($method:ident($request:ty) -> $reply:ty;)*) => {
-        $(
-            fn $method<'life0, 'async_trait>(
-                &'life0 self,
-                _request: Request<$request>,
-            ) -> Pin<
-                Box<
-                    dyn std::future::Future<Output = Result<Response<$reply>, Status>>
-                        + Send
-                        + 'async_trait,
-                >,
-            >
-            where
-                'life0: 'async_trait,
-                Self: 'async_trait,
-            {
-                Box::pin(async move { Err(not_served(stringify!($method))) })
-            }
-        )*
-    };
 }
 
 #[tonic::async_trait]
@@ -1810,14 +1855,47 @@ impl resource_host_server::ResourceHost for ResourceApi {
     ) -> Result<Response<MutationReply>, Status> {
         self.clear_presence(request).await
     }
-    not_served! {
-        game_performance_publish_samples(PerformanceSamplesRequest) -> ReportMutationReply;
-        game_performance_end_series(PerformanceEndSeriesRequest) -> MutationReply;
-        persistence_get_usage(PersistenceUsageRequest) -> PersistenceUsageReply;
-        persistence_list_entries(PersistenceListRequest) -> PersistenceListReply;
-        persistence_delete_entries(PersistenceDeleteRequest) -> MutationReply;
-        persistence_clear(PersistenceClearRequest) -> MutationReply;
-        persistence_set_retention_policy(RetentionPolicyRequest) -> MutationReply;
+    async fn game_performance_publish_samples(
+        &self,
+        request: Request<PerformanceSamplesRequest>,
+    ) -> Result<Response<ReportMutationReply>, Status> {
+        self.publish_performance_samples(request).await
+    }
+    async fn game_performance_end_series(
+        &self,
+        request: Request<PerformanceEndSeriesRequest>,
+    ) -> Result<Response<MutationReply>, Status> {
+        self.end_performance_series(request).await
+    }
+    async fn persistence_get_usage(
+        &self,
+        request: Request<PersistenceUsageRequest>,
+    ) -> Result<Response<PersistenceUsageReply>, Status> {
+        self.persistence_usage(request).await
+    }
+    async fn persistence_list_entries(
+        &self,
+        request: Request<PersistenceListRequest>,
+    ) -> Result<Response<PersistenceListReply>, Status> {
+        self.persistence_list(request).await
+    }
+    async fn persistence_delete_entries(
+        &self,
+        request: Request<PersistenceDeleteRequest>,
+    ) -> Result<Response<MutationReply>, Status> {
+        self.persistence_delete(request).await
+    }
+    async fn persistence_clear(
+        &self,
+        request: Request<PersistenceClearRequest>,
+    ) -> Result<Response<MutationReply>, Status> {
+        self.persistence_clear_entries(request).await
+    }
+    async fn persistence_set_retention_policy(
+        &self,
+        request: Request<RetentionPolicyRequest>,
+    ) -> Result<Response<MutationReply>, Status> {
+        self.persistence_set_policy(request).await
     }
 }
 

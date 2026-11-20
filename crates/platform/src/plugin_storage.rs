@@ -29,7 +29,7 @@ pub const ENTRY_OVERHEAD_BYTES: u64 = 64;
 /// The longest an entry may live before it expires (30 days).
 pub const MAX_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
 
-const SCHEMA_VERSION: i64 = 10;
+const SCHEMA_VERSION: i64 = 11;
 const STORE_FILE: &str = "storage.sqlite3";
 /// Longest directory name derived from an identity before it is replaced by a digest.
 const MAX_COMPONENT_BYTES: usize = 120;
@@ -93,6 +93,21 @@ pub struct Stored {
     pub revision: u64,
     /// Unix seconds, `None` when the entry does not expire.
     pub expires_at: Option<i64>,
+}
+
+/// Logical metadata for one durable private key; never includes value bytes or a filesystem path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PersistenceEntry {
+    pub key: String,
+    pub size_bytes: u64,
+    pub last_used_at: i64,
+}
+
+/// User-approved retention limits for a logical storage category.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RetentionPolicy {
+    pub max_age_seconds: u64,
+    pub max_bytes: u64,
 }
 
 /// The result of a write that did not fail.
@@ -261,6 +276,31 @@ impl DurableStore {
         if version < 10 {
             conn.execute_batch("BEGIN IMMEDIATE; ALTER TABLE intent_approvals ADD COLUMN plan_fingerprint TEXT NOT NULL DEFAULT ''; PRAGMA user_version = 10; COMMIT;")?;
         }
+        if version < 11 {
+            // A store whose version was set back for an upgrade test already has the column.
+            let has_last_used_at = conn
+                .prepare("PRAGMA table_info(entries)")?
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<Vec<_>, _>>()?
+                .iter()
+                .any(|name| name == "last_used_at");
+            let add_column = if has_last_used_at {
+                ""
+            } else {
+                "ALTER TABLE entries ADD COLUMN last_used_at INTEGER NOT NULL DEFAULT 0;"
+            };
+            conn.execute_batch(&format!(
+                "BEGIN IMMEDIATE;
+                 {add_column}
+                 CREATE TABLE IF NOT EXISTS retention_policies (
+                     category TEXT PRIMARY KEY,
+                     max_age_seconds INTEGER NOT NULL CHECK (max_age_seconds >= 0),
+                     max_bytes INTEGER NOT NULL CHECK (max_bytes >= 0)
+                 ) STRICT;
+                 PRAGMA user_version = 11;
+                 COMMIT;"
+            ))?;
+        }
         Ok(Self { conn })
     }
 
@@ -290,7 +330,130 @@ impl DurableStore {
                 },
             )
             .optional()?;
-        Ok(found.filter(|stored| stored.expires_at.is_none_or(|at| at > now)))
+        let found = found.filter(|stored| stored.expires_at.is_none_or(|at| at > now));
+        if found.is_some() {
+            self.conn.execute(
+                "UPDATE entries SET last_used_at = ?2 WHERE key = ?1",
+                params![key, now],
+            )?;
+        }
+        Ok(found)
+    }
+
+    /// Lists persistent logical entries in key order without loading their values.
+    pub fn persistence_entries(
+        &self,
+        now: i64,
+    ) -> Result<Vec<PersistenceEntry>, PluginStorageError> {
+        let mut statement = self.conn.prepare(
+            "SELECT key, length(value), last_used_at FROM entries
+             WHERE expires_at IS NULL OR expires_at > ?1 ORDER BY key",
+        )?;
+        let rows = statement.query_map([now], |row| {
+            Ok(PersistenceEntry {
+                key: row.get(0)?,
+                size_bytes: row.get::<_, i64>(1)? as u64,
+                last_used_at: row.get(2)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// The retained limits for one logical category.
+    pub fn retention_policy(
+        &self,
+        category: &str,
+    ) -> Result<Option<RetentionPolicy>, PluginStorageError> {
+        self.conn
+            .query_row(
+                "SELECT max_age_seconds, max_bytes FROM retention_policies WHERE category = ?1",
+                [category],
+                |row| {
+                    Ok(RetentionPolicy {
+                        max_age_seconds: row.get::<_, i64>(0)? as u64,
+                        max_bytes: row.get::<_, i64>(1)? as u64,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    /// Updates one logical category's retention limits and immediately removes entries that
+    /// exceed the newly selected age/size bounds. `revision` is the namespace high-water mark.
+    pub fn set_retention_policy(
+        &mut self,
+        category: &str,
+        policy: RetentionPolicy,
+        now: i64,
+        revision: u64,
+    ) -> Result<u64, PluginStorageError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
+            "INSERT INTO retention_policies (category, max_age_seconds, max_bytes)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(category) DO UPDATE SET
+                 max_age_seconds = excluded.max_age_seconds,
+                 max_bytes = excluded.max_bytes",
+            params![
+                category,
+                policy.max_age_seconds as i64,
+                policy.max_bytes as i64
+            ],
+        )?;
+        let reclaimed = prune_to_policy(&tx, category, policy, now, None)?;
+        tx.execute(
+            "UPDATE meta SET revision = MAX(revision, ?1) WHERE id = 1",
+            [revision as i64],
+        )?;
+        tx.commit()?;
+        Ok(reclaimed)
+    }
+
+    /// Deletes selected logical keys in one transaction and advances the namespace revision.
+    pub fn delete_persistence_entries(
+        &mut self,
+        keys: &[String],
+        now: i64,
+        revision: u64,
+    ) -> Result<u64, PluginStorageError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut reclaimed = 0_u64;
+        for key in keys {
+            let size: Option<i64> = tx
+                .query_row(
+                    "SELECT length(value) FROM entries WHERE key = ?1
+                     AND (expires_at IS NULL OR expires_at > ?2)",
+                    params![key, now],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(size) = size {
+                reclaimed = reclaimed.saturating_add(charge(key, size as usize));
+                tx.execute("DELETE FROM entries WHERE key = ?1", [key])?;
+            }
+        }
+        tx.execute(
+            "UPDATE meta SET revision = MAX(revision, ?1) WHERE id = 1",
+            [revision as i64],
+        )?;
+        tx.commit()?;
+        Ok(reclaimed)
+    }
+
+    /// Approximate database page allocation without disclosing its path.
+    pub fn physical_bytes(&self) -> Result<u64, PluginStorageError> {
+        let page_count: i64 = self
+            .conn
+            .query_row("PRAGMA page_count", [], |row| row.get(0))?;
+        let page_size: i64 = self
+            .conn
+            .query_row("PRAGMA page_size", [], |row| row.get(0))?;
+        Ok(page_count.max(0) as u64 * page_size.max(0) as u64)
     }
 
     /// The logical bytes held at `now`, expired entries not counted.
@@ -317,18 +480,33 @@ impl DurableStore {
             "DELETE FROM entries WHERE expires_at IS NOT NULL AND expires_at <= ?1",
             [now],
         )?;
+        let policy = tx
+            .query_row(
+                "SELECT max_age_seconds, max_bytes FROM retention_policies WHERE category = 'private'",
+                [],
+                |row| {
+                    Ok(RetentionPolicy {
+                        max_age_seconds: row.get::<_, i64>(0)? as u64,
+                        max_bytes: row.get::<_, i64>(1)? as u64,
+                    })
+                },
+            )
+            .optional()?
+            .unwrap_or_default();
+        prune_to_policy(&tx, "private", policy, now, Some(key))?;
         let others = usage_of(&tx, now, Some(key))?;
         let current = usage_of(&tx, now, None)?;
         if others.saturating_add(charge(key, value.len())) > quota {
             return Ok(PutResult::OverQuota { usage: current });
         }
         tx.execute(
-            "INSERT INTO entries (key, value, revision, expires_at) VALUES (?1, ?2, ?3, ?4)
+            "INSERT INTO entries (key, value, revision, expires_at, last_used_at) VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(key) DO UPDATE SET
                  value = excluded.value,
                  revision = excluded.revision,
-                 expires_at = excluded.expires_at",
-            params![key, value, revision as i64, expires_at],
+                 expires_at = excluded.expires_at,
+                 last_used_at = excluded.last_used_at",
+            params![key, value, revision as i64, expires_at, now],
         )?;
         tx.execute(
             "UPDATE meta SET revision = MAX(revision, ?1) WHERE id = 1",
@@ -356,6 +534,59 @@ impl DurableStore {
         tx.commit()?;
         Ok(revision.map(|revision| revision as u64))
     }
+}
+
+fn prune_to_policy(
+    tx: &rusqlite::Transaction<'_>,
+    category: &str,
+    policy: RetentionPolicy,
+    now: i64,
+    keep_key: Option<&str>,
+) -> Result<u64, PluginStorageError> {
+    if category != "private" {
+        return Ok(0);
+    }
+    let mut reclaimed = 0_u64;
+    if policy.max_age_seconds > 0 {
+        let cutoff = now.saturating_sub(policy.max_age_seconds.min(i64::MAX as u64) as i64);
+        let mut statement = tx.prepare(
+            "SELECT key, length(value) FROM entries WHERE last_used_at <= ?1
+             AND (?2 IS NULL OR key != ?2)",
+        )?;
+        let old = statement
+            .query_map(params![cutoff, keep_key], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as usize))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+        for (key, size) in old {
+            tx.execute("DELETE FROM entries WHERE key = ?1", [&key])?;
+            reclaimed = reclaimed.saturating_add(charge(&key, size));
+        }
+    }
+    if policy.max_bytes > 0 {
+        let mut usage = usage_of(tx, now, None)?;
+        while usage > policy.max_bytes {
+            let oldest = tx
+                .query_row(
+                    "SELECT key, length(value) FROM entries
+                     WHERE (?1 IS NULL OR key != ?1)
+                       AND (expires_at IS NULL OR expires_at > ?2)
+                     ORDER BY last_used_at ASC, key ASC LIMIT 1",
+                    params![keep_key, now],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as usize)),
+                )
+                .optional()?;
+            let Some((key, size)) = oldest else {
+                break;
+            };
+            let bytes = charge(&key, size);
+            tx.execute("DELETE FROM entries WHERE key = ?1", [&key])?;
+            usage = usage.saturating_sub(bytes);
+            reclaimed = reclaimed.saturating_add(bytes);
+        }
+    }
+    Ok(reclaimed)
 }
 
 /// The file operations a root approval allows.

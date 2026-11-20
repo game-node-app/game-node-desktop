@@ -100,6 +100,17 @@ pub struct PublicationReceipt {
     pub duplicate: bool,
 }
 
+/// Snapshot of one record returned only to host code for mutation of its authenticated owner
+/// resource. RPC readers must use the projected query APIs below.
+#[derive(Clone, Debug)]
+pub struct OwnedRecord {
+    pub fields: Map<String, Value>,
+    pub revision: u64,
+    pub sequence: u64,
+    pub source_observation_id: String,
+    pub observed_at: i64,
+}
+
 /// Provenance is kept outside the plugin field map and only extended by the host.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Provenance {
@@ -443,6 +454,39 @@ impl DataBroker {
         self.publish_inner(publication, now, true)
     }
 
+    /// Returns the owner's current record for one host-scoped resource. This is for a host
+    /// service that atomically replaces a typed series; it is not a plugin-facing read path.
+    pub fn owner_resource(
+        &self,
+        owner: &PluginIdentity,
+        dataset_id: &str,
+        resource_id: &str,
+        now: i64,
+    ) -> Option<OwnedRecord> {
+        let mut state = self.lock();
+        prune_expired_locked(&mut state, now);
+        state
+            .rows
+            .iter()
+            .find(|record| {
+                &record.owner == owner
+                    && record.dataset_id == dataset_id
+                    && record.resource_id == resource_id
+            })
+            .map(|record| OwnedRecord {
+                fields: record.fields.clone(),
+                revision: record.revision,
+                sequence: record.sequence,
+                source_observation_id: record.source_observation_id.clone(),
+                observed_at: record.observed_at,
+            })
+    }
+
+    /// Current broker revision, used to fence a host-owned composite cursor across pages.
+    pub fn revision(&self) -> u64 {
+        self.lock().revision
+    }
+
     fn publish_inner(
         &self,
         publication: Publication,
@@ -622,9 +666,34 @@ impl DataBroker {
         self.query(request, authorizer, now)
     }
 
+    /// Exact host-owned resource lookup through the same authorization/projection path as a
+    /// general query. Resource IDs are opaque to the broker and are distinct from record IDs.
+    pub fn query_data_resource(
+        &self,
+        request: QueryRequest,
+        resource_id: &str,
+        authorizer: &dyn Authorizer,
+        now: i64,
+    ) -> Result<QueryResult, BrokerError> {
+        if resource_id.trim().is_empty() || resource_id.len() > MAX_RESOURCE_ID_BYTES {
+            return Err(BrokerError::InvalidPublication);
+        }
+        self.query_inner(request, Some(resource_id), authorizer, now)
+    }
+
     fn query(
         &self,
         request: QueryRequest,
+        authorizer: &dyn Authorizer,
+        now: i64,
+    ) -> Result<QueryResult, BrokerError> {
+        self.query_inner(request, None, authorizer, now)
+    }
+
+    fn query_inner(
+        &self,
+        request: QueryRequest,
+        resource_id: Option<&str>,
         authorizer: &dyn Authorizer,
         now: i64,
     ) -> Result<QueryResult, BrokerError> {
@@ -666,6 +735,9 @@ impl DataBroker {
                             .record_id
                             .as_ref()
                             .is_none_or(|record_id| &record.record_id == record_id)
+                        && resource_id.is_none_or(|resource_id| {
+                            record.resource_id == resource_id || record.record_id == resource_id
+                        })
                         && request
                             .category
                             .is_none_or(|category| record.category == Some(category))

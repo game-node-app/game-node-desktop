@@ -19,6 +19,29 @@ The host MUST keep published datasets private by default and persist common-cate
 
 ## ADDED Requirements
 
+### Requirement: Game performance batches and history are bounded and explicitly attributed
+The host MUST accept bounded FPS/CPU/RAM batches from the authenticated producer and bind series to the selected game/installation and host computer/session. Samples MUST identify source, units, windows and FPS/CPU/memory semantics. Preserve gaps, reject invalid sequences/values, enforce quotas with explicit backpressure, retain only for the producer session, and query retained samples under current sharing authorization without interpolation or prediction.
+
+#### Scenario: A plugin reports a measured series for its selected game
+- **WHEN** a plugin with `game.performance.publish` submits valid FPS, CPU and RAM samples matching its host-selected game/installation
+- **THEN** the host stores the bounded series with its source, units, sampling semantics, runtime context, host identity, provenance and sequence coverage
+
+#### Scenario: Missing or out-of-order samples arrive
+- **WHEN** sequence values contain a gap or a batch duplicates/regresses a previously accepted sequence
+- **THEN** the host reports retained coverage and dropped counts for the gap and rejects the duplicate/regressed batch without fabricating zero values
+
+#### Scenario: A batch exceeds a rate or retention bound
+- **WHEN** a producer exceeds the batch interval or a batch/series would exceed its byte/sample quota
+- **THEN** the host returns an explicit backpressure outcome with retry and dropped-sample information and preserves the previously accepted series
+
+#### Scenario: A consumer queries a shared performance series
+- **WHEN** a consumer has `game.performance.read` and explicitly selects the common performance-history category or an authorized record
+- **THEN** List/Get/Watch/QuerySeries/Aggregate return only records allowed by the current sharing policy, with units, source and coverage; omitted selectors leave foreign common records private
+
+#### Scenario: Aggregate uses only available observations
+- **WHEN** a consumer requests average, min, max or a percentile over an authorized time interval
+- **THEN** the host computes from retained samples and reports units, count, provenance and gaps without interpolation or prediction
+
 ### Requirement: Typed resource extensions remain bounded and optional
 The host MUST validate extension envelopes as a bounded set and resolve schemas from integrity-verified package assets bound to the authenticated plugin and publisher. Extensions MUST NOT replace typed authority fields. Unknown optional schemas MUST leave the typed base usable; only schema-validated fields may be projected under current policy.
 

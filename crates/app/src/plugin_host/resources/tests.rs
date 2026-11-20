@@ -35,6 +35,8 @@ mod locations;
 mod network;
 mod notifications;
 mod observations;
+mod performance;
+mod persistence;
 mod ports;
 mod runtimes;
 mod saves;
@@ -86,6 +88,8 @@ struct Fixture {
     snapshots: Arc<crate::plugin_host::fingerprints::Snapshots>,
     /// Shared observations inserted by source fixtures for cross-plugin read tests.
     data_broker: Arc<crate::plugin_host::shared_data::DataBroker>,
+    /// Host-owned cross-plugin consent store used by producer/consumer fixtures.
+    shared_policies: Arc<crate::plugin_host::sharing_policy::SharedSharingPolicies>,
     /// The time the notification rate limit sees; tests move it.
     notice_clock: Arc<std::sync::atomic::AtomicU64>,
     notices: Arc<notifications::Collected>,
@@ -168,6 +172,7 @@ impl Fixture {
             data_broker: data_broker.clone(),
             ..Default::default()
         };
+        let shared_policies = root.shared_policies.clone();
         root.set_state_layout(crate::plugin_host::profile::PluginStateLayout::new(
             &plugin_data,
         ));
@@ -274,6 +279,7 @@ impl Fixture {
             notice_clock,
             notices,
             data_broker,
+            shared_policies,
             clock,
             plugin_data,
             endpoint,

@@ -452,6 +452,7 @@ impl ResourceApi {
                 report_id: original.resource_id,
                 revision: original.revision,
                 outcome: original.outcome,
+                ..Default::default()
             }));
         }
         let fresh = self
@@ -505,6 +506,7 @@ impl ResourceApi {
             report_id: receipt.record_id,
             revision: receipt.revision,
             outcome: outcome as i32,
+            ..Default::default()
         }))
     }
 

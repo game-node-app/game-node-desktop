@@ -368,6 +368,16 @@ impl HostClient {
             .max_encoding_message_size(MAX_MESSAGE_BYTES)
     }
 
+    /// The raw client of the `GamePerformance` service (retained FPS/CPU/RAM observations).
+    /// Calls require the session's resource context and the corresponding read permission.
+    pub fn game_performance_client(
+        &self,
+    ) -> proto::game_performance_client::GamePerformanceClient<Channel> {
+        proto::game_performance_client::GamePerformanceClient::new(self.channel.clone())
+            .max_decoding_message_size(MAX_MESSAGE_BYTES)
+            .max_encoding_message_size(MAX_MESSAGE_BYTES)
+    }
+
     /// Typed convenience calls for the library resources (library reads, display names,
     /// favorites, catalog matching and covers), bound to this session's resource context. `None`
     /// when the session negotiated a minor before API 1.6, like [`resource_context`](Self::resource_context).

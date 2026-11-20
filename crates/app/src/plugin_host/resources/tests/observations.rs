@@ -551,3 +551,141 @@ async fn presence_is_removed_when_the_publishing_session_closes() {
         .into_inner();
     assert!(listed.records.is_empty());
 }
+
+#[tokio::test]
+async fn computer_and_presence_reports_flow_between_plugins_with_separate_reviews() {
+    use crate::plugin_host::sharing_policy::{SharingClass, SourceRecipientPolicy};
+
+    let fixture = Fixture::new(&[cap::COMPUTER_HARDWARE_PUBLISH, cap::GAME_PRESENCE_PUBLISH]).await;
+    let consumer = super::data::consumer_session_with_grants(
+        &fixture,
+        &[cap::COMPUTER_HARDWARE_READ, cap::GAME_PRESENCE_READ],
+    )
+    .await;
+    let consumer_context = consumer.host.resource_context().unwrap().clone();
+    let source = super::data::authenticated_identity(&fixture, &fixture.context());
+    let recipient = super::data::authenticated_identity(&fixture, &consumer_context);
+    for (dataset, field) in [
+        (
+            "computer.hardware.observations.v1",
+            "observations.cpu.logical_cores",
+        ),
+        ("game.presence.v1", "details.state"),
+    ] {
+        fixture
+            .shared_policies
+            .set_source_recipient_policy(
+                SourceRecipientPolicy::new(
+                    source.clone(),
+                    recipient.clone(),
+                    SharingClass::Sensitive,
+                    dataset.into(),
+                    [field.into()],
+                    true,
+                    false,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+    }
+
+    let observed_at = crate::plugin_host::resources::unix_now().unwrap();
+    let hardware = fixture
+        .client()
+        .computer_publish_hardware(HardwareReportRequest {
+            mutation: Some(fixture.mutation("producer-hardware", 0)),
+            schema_id: "org.example.hardware.v1".into(),
+            schema_version: 1,
+            observations: Some(Struct {
+                fields: BTreeMap::from([(
+                    "cpu".into(),
+                    object([
+                        ("logical_cores".into(), value_number(8.0)),
+                        ("model".into(), value_string("Fixture CPU")),
+                    ]),
+                )]),
+            }),
+            observed_at,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    fixture
+        .client()
+        .game_presence_publish(PresencePublishRequest {
+            mutation: Some(fixture.mutation("producer-presence", 0)),
+            game_id: "42".into(),
+            session_id: "session-a".into(),
+            details: Some(Struct {
+                fields: BTreeMap::from([
+                    ("state".into(), value_string("playing")),
+                    ("activity".into(), value_string("private activity")),
+                ]),
+            }),
+            ttl_seconds: 60,
+        })
+        .await
+        .unwrap();
+
+    let mut computer = consumer.host.computer_client();
+    let listed = computer
+        .list(ComputerListRequest {
+            page: Some(PageRequest {
+                context: Some(consumer_context.clone()),
+                page_size: 10,
+                ..Default::default()
+            }),
+            computer_context_id: "active-host".into(),
+            projection_id: "hardware.v1".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(listed.reports.len(), 1);
+    assert_eq!(listed.reports[0].record_id, hardware.report_id);
+    let fields = &listed.reports[0]
+        .typed_observations
+        .as_ref()
+        .unwrap()
+        .fields;
+    let cpu = fields["cpu"].kind.as_ref().unwrap();
+    let Kind::StructValue(cpu) = cpu else {
+        panic!("projected CPU observations should remain structured");
+    };
+    assert!(cpu.fields.contains_key("logical_cores"));
+    assert!(!cpu.fields.contains_key("model"));
+
+    let mut presence = consumer.host.game_presence_client();
+    let listed = presence
+        .list(PresenceListRequest {
+            page: Some(PageRequest {
+                context: Some(consumer_context),
+                page_size: 10,
+                ..Default::default()
+            }),
+            game_id: "42".into(),
+            session_id: "session-a".into(),
+            projection_id: "presence.v1".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(listed.records.len(), 1);
+    assert!(
+        listed.records[0]
+            .approved_details
+            .as_ref()
+            .unwrap()
+            .fields
+            .contains_key("state")
+    );
+    assert!(
+        !listed.records[0]
+            .approved_details
+            .as_ref()
+            .unwrap()
+            .fields
+            .contains_key("activity")
+    );
+}

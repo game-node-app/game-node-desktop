@@ -1162,6 +1162,7 @@ export const en = {
   "plugins.updates.updateComplete": "Update complete. Active version: {version}",
   "plugins.updates.failed": "Could not check or review this update.",
   "plugins.playtime.title": "Plugin playtime accounting",
+  "plugins.import.playtimeDisclosure": "Playtime behavior declared by this signed package:",
   "plugins.playtime.description": "Signed package declarations describe what each plugin can identify. Disabling accounting preserves history and does not change discovery or launch permissions.",
   "plugins.playtime.loadFailed": "Could not load plugin playtime declarations.",
   "plugins.playtime.empty": "No active trusted third-party plugins declare playtime support.",

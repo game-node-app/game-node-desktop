@@ -1164,6 +1164,7 @@ export const ptBR: TranslationCatalog = {
   "plugins.updates.updateComplete": "Atualização concluída. Versão ativa: {version}",
   "plugins.updates.failed": "Não foi possível verificar ou revisar esta atualização.",
   "plugins.playtime.title": "Contabilização de tempo de jogo por plugin",
+  "plugins.import.playtimeDisclosure": "Comportamento de contabilização declarado por este pacote assinado:",
   "plugins.playtime.description": "As declarações assinadas do pacote descrevem o que cada plugin consegue identificar. Desativar a contabilização preserva o histórico e não altera permissões de descoberta ou lançamento.",
   "plugins.playtime.loadFailed": "Não foi possível carregar as declarações de tempo de jogo dos plugins.",
   "plugins.playtime.empty": "Nenhum plugin de terceiros confiável e ativo declara suporte a tempo de jogo.",

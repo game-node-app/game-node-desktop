@@ -1722,6 +1722,7 @@ export interface PluginImportReview {
     reason: string;
   }>;
   nativeAccess: string[];
+  playtime: PlaytimeCapabilities;
   compatibility: 'compatible' | 'incompatible' | 'unknown';
   compatibilityReason?: string;
   compatibilityDetails?: PluginCompatibilityDetails;

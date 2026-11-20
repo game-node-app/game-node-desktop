@@ -346,6 +346,17 @@ fn playtime_accounting_preference_is_persistent_and_profile_scoped() {
     profiles.set_state_layout(layout.clone());
     profiles.update(Some("first-account"), true);
 
+    let first_profile = profiles.current().unwrap();
+    layout
+        .open_activation(&first_profile)
+        .unwrap()
+        .set_enabled("org.example.reader", true)
+        .unwrap();
+
+    let first_profile = profiles.current().unwrap();
+    let mut activation = layout.open_activation(&first_profile).unwrap();
+    activation.set_enabled("org.example.reader", true).unwrap();
+
     assert!(
         profiles
             .is_playtime_accounting_enabled("org.example.reader")
@@ -356,6 +367,36 @@ fn playtime_accounting_preference_is_persistent_and_profile_scoped() {
         .unwrap();
     assert!(
         !profiles
+            .is_playtime_accounting_enabled("org.example.reader")
+            .unwrap()
+    );
+    assert!(
+        layout
+            .open_activation(&first_profile)
+            .unwrap()
+            .is_enabled("org.example.reader")
+    );
+
+    let restarted = PluginProfiles::default();
+    restarted.set_state_layout(layout.clone());
+    restarted.update(Some("first-account"), true);
+    assert!(
+        !restarted
+            .is_playtime_accounting_enabled("org.example.reader")
+            .unwrap()
+    );
+    assert!(
+        layout
+            .open_activation(&first_profile)
+            .unwrap()
+            .is_enabled("org.example.reader")
+    );
+
+    let restarted = PluginProfiles::default();
+    restarted.set_state_layout(layout.clone());
+    restarted.update(Some("first-account"), true);
+    assert!(
+        !restarted
             .is_playtime_accounting_enabled("org.example.reader")
             .unwrap()
     );

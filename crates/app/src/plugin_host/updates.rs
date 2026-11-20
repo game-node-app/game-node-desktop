@@ -270,6 +270,8 @@ pub struct PluginImportReview {
     pub permission_ids: Vec<String>,
     pub requested_permissions: Vec<ImportPermissionReview>,
     pub native_access: Vec<String>,
+    /// Signed playtime behavior shown before the package is installed.
+    pub playtime: PlaytimeCapabilities,
     pub compatibility: String,
     pub compatibility_reason: Option<String>,
     pub compatibility_details: super::managed_packages::PackageCompatibilityReview,
@@ -542,6 +544,7 @@ impl PluginUpdateService {
                 })
                 .collect(),
             native_access: manifest.native_access.clone(),
+            playtime: manifest.playtime,
             compatibility,
             compatibility_reason,
             compatibility_details,
@@ -2172,6 +2175,39 @@ pub(super) mod tests {
         assert!(read_inert_license(temp.path(), "licenses/large").is_err());
     }
 
+    #[tokio::test]
+    async fn import_review_returns_playtime_capabilities_from_the_signed_manifest() {
+        let base = tempfile::tempdir().unwrap();
+        let paths = gamenode_platform::paths::DataPaths::at(base.path().join("app"));
+        let service = import_service(&paths);
+        let key = ring::signature::Ed25519KeyPair::from_seed_unchecked(&[43; 32]).unwrap();
+        let package = base.path().join("playtime-disclosure");
+        signed_package_with_playtime(
+            &package,
+            "1.0.0",
+            &key,
+            serde_json::json!({
+                "identifies_gameplay": true,
+                "identifies_pauses": false,
+                "without_pause_detection": "application_open"
+            }),
+        );
+
+        let review = service
+            .import_review(archive_package(&package))
+            .await
+            .unwrap();
+        assert_eq!(
+            review.playtime,
+            PlaytimeCapabilities {
+                identifies_gameplay: true,
+                identifies_pauses: false,
+                without_pause_detection:
+                    super::super::package::PlaytimeAccountingMode::ApplicationOpen,
+            }
+        );
+    }
+
     fn signed_package(root: &Path, version: &str, key: &ring::signature::Ed25519KeyPair) {
         signed_package_with_permissions(
             root,
@@ -2190,11 +2226,39 @@ pub(super) mod tests {
         key: &ring::signature::Ed25519KeyPair,
         permissions: Vec<serde_json::Value>,
     ) {
+        signed_package_with_permissions_and_playtime(root, version, key, permissions, None);
+    }
+
+    fn signed_package_with_playtime(
+        root: &Path,
+        version: &str,
+        key: &ring::signature::Ed25519KeyPair,
+        playtime: serde_json::Value,
+    ) {
+        signed_package_with_permissions_and_playtime(
+            root,
+            version,
+            key,
+            vec![serde_json::json!({
+                "id": "storage.persist", "required": false, "scope": "own-provider",
+                "reason": "Store plugin preferences"
+            })],
+            Some(playtime),
+        );
+    }
+
+    fn signed_package_with_permissions_and_playtime(
+        root: &Path,
+        version: &str,
+        key: &ring::signature::Ed25519KeyPair,
+        permissions: Vec<serde_json::Value>,
+        playtime: Option<serde_json::Value>,
+    ) {
         fs::create_dir_all(root.join("bin")).unwrap();
         fs::create_dir_all(root.join("licenses")).unwrap();
         fs::write(root.join("bin/plugin"), b"fixture executable").unwrap();
         fs::write(root.join("licenses/LICENSE"), b"fixture license").unwrap();
-        let manifest = serde_json::to_vec(&serde_json::json!({
+        let mut manifest_value = serde_json::json!({
             "schema": 1,
             "id": "org.example.update",
             "kind": "provider",
@@ -2209,7 +2273,11 @@ pub(super) mod tests {
                 "public_key": base64::engine::general_purpose::STANDARD.encode(key.public_key().as_ref())
             },
             "license": {"expression": "MIT", "files": ["licenses/LICENSE"]}
-        })).unwrap();
+        });
+        if let Some(playtime) = playtime {
+            manifest_value["playtime"] = playtime;
+        }
+        let manifest = serde_json::to_vec(&manifest_value).unwrap();
         fs::write(root.join("plugin.json"), &manifest).unwrap();
         let files = [
             ("plugin.json", manifest.as_slice()),

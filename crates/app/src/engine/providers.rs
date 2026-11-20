@@ -728,13 +728,7 @@ impl Engine {
                 "installation belongs to another game",
             );
         }
-        if state.playtime.tracker.running().contains(&entry.key) {
-            return runtime_result(
-                correlation_id,
-                RuntimeSessionOutcome::Duplicate,
-                "process evidence already measures this installation",
-            );
-        }
+        let process_evidence_running = state.playtime.tracker.running().contains(&entry.key);
         let source = state.library.provider(&entry.provider).map_or_else(
             || entry.provider.clone(),
             |provider| provider.source().to_owned(),
@@ -743,12 +737,25 @@ impl Engine {
             .library
             .provider(&entry.provider)
             .is_some_and(|provider| provider.manifest().playtime.is_some());
-        if state.playtime.source.uses_counter(has_counter) {
-            return runtime_result(
-                correlation_id,
-                RuntimeSessionOutcome::RejectedUnavailable,
-                "selected playtime source is the provider counter",
-            );
+        match runtime_report_source_conflict(
+            process_evidence_running,
+            state.playtime.source.uses_counter(has_counter),
+        ) {
+            Some(RuntimeReportSourceConflict::ProcessEvidence) => {
+                return runtime_result(
+                    correlation_id,
+                    RuntimeSessionOutcome::Duplicate,
+                    "process evidence already measures this installation",
+                );
+            }
+            Some(RuntimeReportSourceConflict::ProviderCounter) => {
+                return runtime_result(
+                    correlation_id,
+                    RuntimeSessionOutcome::RejectedUnavailable,
+                    "selected playtime source is the provider counter",
+                );
+            }
+            None => {}
         }
         let transition = match RuntimeSessionTransition::try_from(report.transition) {
             Ok(RuntimeSessionTransition::Identified) => {
@@ -1403,6 +1410,25 @@ fn runtime_result(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RuntimeReportSourceConflict {
+    ProcessEvidence,
+    ProviderCounter,
+}
+
+fn runtime_report_source_conflict(
+    process_evidence_running: bool,
+    provider_counter_selected: bool,
+) -> Option<RuntimeReportSourceConflict> {
+    if process_evidence_running {
+        Some(RuntimeReportSourceConflict::ProcessEvidence)
+    } else if provider_counter_selected {
+        Some(RuntimeReportSourceConflict::ProviderCounter)
+    } else {
+        None
+    }
+}
+
 fn runtime_track_effects(
     effects: Vec<gamenode_core::tracker::runtime_sessions::Effect>,
 ) -> Vec<gamenode_core::tracker::Effect> {
@@ -1426,6 +1452,24 @@ fn runtime_track_effects(
             },
         })
         .collect()
+}
+
+#[cfg(test)]
+mod runtime_report_source_tests {
+    use super::{RuntimeReportSourceConflict, runtime_report_source_conflict};
+
+    #[test]
+    fn plugin_playtime_is_not_double_counted_with_host_process_or_provider_counter_evidence() {
+        assert_eq!(
+            runtime_report_source_conflict(true, false),
+            Some(RuntimeReportSourceConflict::ProcessEvidence)
+        );
+        assert_eq!(
+            runtime_report_source_conflict(false, true),
+            Some(RuntimeReportSourceConflict::ProviderCounter)
+        );
+        assert_eq!(runtime_report_source_conflict(false, false), None);
+    }
 }
 
 struct EngineRuntimeSessionHandler(std::sync::Weak<Shared>);

@@ -206,6 +206,65 @@ async fn internal_records_sessions_and_source_switch_preserves_histories() {
     );
     h.engine.shutdown();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn disabling_plugin_playtime_preserves_measured_history_and_activation() {
+    use crate::plugin_host::profile::{PluginProfiles, PluginStateLayout};
+    use gamenode_core::playtime::Session;
+    use std::sync::Arc;
+
+    let h = ready_with_source(PlaytimeSource::Internal).await;
+    let state_dir = tempfile::tempdir().unwrap();
+    let profiles = Arc::new(PluginProfiles::default());
+    let layout = PluginStateLayout::new(state_dir.path().join("plugins"));
+    profiles.set_state_layout(layout.clone());
+    h.engine.set_plugin_profiles(profiles.clone());
+
+    let profile = profiles.current().unwrap();
+    layout
+        .open_activation(&profile)
+        .unwrap()
+        .set_enabled("org.example.emulator", true)
+        .unwrap();
+    let existing = Session {
+        id: "previous-runtime-session".into(),
+        account_id: "u1".into(),
+        entry_key: "steam:620".into(),
+        game_id: Some(7),
+        source: "runtime:org.example.emulator".into(),
+        platform_id: 1,
+        started_at: 100,
+        checkpoint_at: 200,
+        ended_at: None,
+    };
+    let store = h.engine.shared.ports.playtime.clone();
+    store.open_session(&existing).unwrap();
+    store
+        .close_session("u1", &existing.id, 200, Some(7))
+        .unwrap();
+    let history_before = store.sessions("u1").unwrap();
+    assert_eq!(history_before.len(), 1);
+    assert_eq!(history_before[0].ended_at, Some(200));
+
+    h.engine
+        .set_plugin_playtime_accounting("org.example.emulator".into(), false)
+        .await
+        .unwrap();
+
+    assert!(
+        !profiles
+            .is_playtime_accounting_enabled("org.example.emulator")
+            .unwrap()
+    );
+    assert!(
+        layout
+            .open_activation(&profile)
+            .unwrap()
+            .is_enabled("org.example.emulator")
+    );
+    assert_eq!(store.sessions("u1").unwrap(), history_before);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn quit_flushes_a_closed_session_and_signout_preserves_its_account() {
     for signout in [false, true] {

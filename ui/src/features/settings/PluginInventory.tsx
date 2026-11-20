@@ -564,6 +564,15 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
               </ul>
             ) : <p>—</p>}
           </div>
+          <section className={settingsRowDescription} aria-label={t('plugins.playtime.title')}>
+            <p>{t('plugins.import.playtimeDisclosure')}</p>
+            <p>{t('plugins.playtime.gameplayDetection')}: {importReview.playtime.identifiesGameplay ? t('plugins.playtime.yes') : t('plugins.playtime.no')}</p>
+            <p>{t('plugins.playtime.pauseDetection')}: {importReview.playtime.identifiesPauses ? t('plugins.playtime.yes') : t('plugins.playtime.no')}</p>
+            <p>{t('plugins.playtime.modeLabel')}: {t(`plugins.playtime.mode.${importReview.playtime.withoutPauseDetection}`)}</p>
+            {importReview.playtime.identifiesGameplay && !importReview.playtime.identifiesPauses && importReview.playtime.withoutPauseDetection === 'application_open' && (
+              <p className="mt-1" role="note">{t('plugins.playtime.applicationOpenWarning')}</p>
+            )}
+          </section>
           <p className={settingsRowDescription}>{t('plugins.nativeAccess')}: {importReview.nativeAccess.join(', ') || '—'}</p>
           {importReview.nativeAccess.length > 0 && <label className="mt-compact flex items-start gap-compact text-sm">
             <input type="checkbox" checked={nativeCodeConsent} disabled={busy} onChange={(event) => setNativeCodeConsent(event.currentTarget.checked)} />

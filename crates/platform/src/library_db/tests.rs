@@ -2381,6 +2381,7 @@ fn runtime_resources_and_content_bindings_keep_identity_and_survive_runtime_remo
             RuntimeArgumentTemplate::Literal("--fullscreen".into()),
             RuntimeArgumentTemplate::ContentPath,
         ],
+        extensions: Default::default(),
         revision: 1,
         observed_at: 100,
     };
@@ -2402,12 +2403,64 @@ fn runtime_resources_and_content_bindings_keep_identity_and_survive_runtime_remo
     let mut updated_runtime = runtime_a.clone();
     updated_runtime.revision = 2;
     updated_runtime.version = "1.1".into();
+    updated_runtime.extensions.insert(
+        "org.example.runtime".into(),
+        b"opaque-versioned-extension-payload".to_vec(),
+    );
     assert_eq!(
         store
             .save_runtime_resource(plugin, &updated_runtime)
             .unwrap(),
         RuntimeMutation::Applied { revision: 2 }
     );
+    drop(store);
+    let reopened = SqliteSettingsStore::open(&path).unwrap();
+    let store = reopened.library_store();
+    assert_eq!(
+        store
+            .runtime_resource(plugin, "runtime-a")
+            .unwrap()
+            .unwrap()
+            .extensions["org.example.runtime"],
+        b"opaque-versioned-extension-payload"
+    );
+    assert_eq!(
+        store.save_runtime_resource(plugin, &runtime_a).unwrap(),
+        RuntimeMutation::Conflict { current: 2 },
+        "a concurrent stale writer cannot replace the reopened revision"
+    );
+    let race_store_a = reopened.library_store();
+    let race_store_b = reopened.library_store();
+    let gate = std::sync::Barrier::new(2);
+    let (left, right) = std::thread::scope(|scope| {
+        let left_gate = &gate;
+        let right_gate = &gate;
+        let mut left = runtime_b.clone();
+        left.revision = 2;
+        left.version = "writer-a".into();
+        let mut right = runtime_b.clone();
+        right.revision = 2;
+        right.version = "writer-b".into();
+        let a = scope.spawn(move || {
+            left_gate.wait();
+            race_store_a.save_runtime_resource(plugin, &left).unwrap()
+        });
+        let b = scope.spawn(move || {
+            right_gate.wait();
+            race_store_b.save_runtime_resource(plugin, &right).unwrap()
+        });
+        (a.join().unwrap(), b.join().unwrap())
+    });
+    assert!(matches!(
+        (left, right),
+        (
+            RuntimeMutation::Applied { revision: 2 },
+            RuntimeMutation::Conflict { current: 2 }
+        ) | (
+            RuntimeMutation::Conflict { current: 2 },
+            RuntimeMutation::Applied { revision: 2 }
+        )
+    ));
     assert_eq!(
         store
             .runtime_resource("plugin-b/profile-1", "runtime-a")
@@ -2415,7 +2468,7 @@ fn runtime_resources_and_content_bindings_keep_identity_and_survive_runtime_remo
         None,
         "runtime records are scoped to their registering plugin"
     );
-    assert_eq!(store.runtime_catalog_revision(plugin).unwrap(), 3);
+    assert_eq!(store.runtime_catalog_revision(plugin).unwrap(), 4);
 
     let binding = |game_id, content_id: &str, runtime_id: &str, path: &str| RuntimeContentBinding {
         game_id,
@@ -2456,7 +2509,7 @@ fn runtime_resources_and_content_bindings_keep_identity_and_survive_runtime_remo
             .unwrap(),
         RuntimeMutation::Applied { revision: 2 }
     );
-    assert_eq!(store.runtime_catalog_revision(plugin).unwrap(), 3);
+    assert_eq!(store.runtime_catalog_revision(plugin).unwrap(), 4);
 
     assert_eq!(
         store
@@ -2520,7 +2573,7 @@ fn runtime_resources_and_content_bindings_keep_identity_and_survive_runtime_remo
             .collect::<Vec<_>>(),
         ["runtime-b"]
     );
-    assert_eq!(store.runtime_catalog_revision(plugin).unwrap(), 4);
+    assert_eq!(store.runtime_catalog_revision(plugin).unwrap(), 5);
 
     let games: i64 = db
         .conn()

@@ -1,5 +1,5 @@
 //! Convenience calls for the library resources of API 1.6: library reads, display names,
-//! favorites, catalog matching and covers.
+//! favorites, catalog matching, covers and shared data.
 //!
 //! Each method builds exactly the request a hand-written raw `ResourceHost` call would and
 //! returns the host's answer unchanged, so the two are interchangeable; a service test in the
@@ -21,6 +21,18 @@
 //!   applies, using the new revision. The host does not remember conflicts, so the key may be
 //!   reused with the new revision.
 //! * [`Outcome::AlreadyApplied`] means the entry already had that value; nothing was written.
+//!
+//! # Shared data
+//!
+//! [`Resources::data_publish`] fills only `mutation`; the caller supplies the dataset, payload and
+//! observation fields, including `durability`. `SESSION_ONLY` keeps the record for the producing
+//! session, while `PERSISTENT` writes it to the host's public pool so consumers can read it after
+//! this session ends. The helper never chooses the mode and never retries: the host still enforces
+//! `data.publish` (plus `storage.persist` for `PERSISTENT`), and a missing grant is
+//! `PERMISSION_DENIED`, not a session-only downgrade. [`Resources::data_get`],
+//! [`Resources::data_list`] and [`Resources::data_watch`] read with the same session context; an
+//! optional `CommonDataSelector` requests another plugin's reviewed projection, which the host
+//! checks independently of the request.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -1139,6 +1151,102 @@ impl Resources {
             .await?
             .into_inner()
             .try_into()
+    }
+
+    // ---- Shared data (`data.publish`; `storage.persist` for `PERSISTENT`) ----
+
+    /// Publishes one shared-data record. The caller fills the request's dataset, payload and
+    /// observation fields and leaves `mutation` empty; this helper overwrites it with `key`,
+    /// `expected_revision` and this session's context. Publication is append-only, so
+    /// `expected_revision` must be `0`. `request.durability` selects the mode: `SESSION_ONLY`
+    /// needs `data.publish`, and `PERSISTENT` needs `storage.persist` as well, which the host
+    /// enforces with an explicit `PERMISSION_DENIED` rather than a session-only downgrade. The
+    /// reply reports the mode and expiry actually stored.
+    pub async fn data_publish(
+        &self,
+        key: &str,
+        expected_revision: u64,
+        request: DataPublishRequest,
+    ) -> Result<DataMutationReply, Status> {
+        let request = DataPublishRequest {
+            mutation: Some(self.mutation(key, expected_revision)),
+            ..request
+        };
+        self.client
+            .clone()
+            .data_publish(timed(request))
+            .await
+            .map(tonic::Response::into_inner)
+    }
+
+    /// One shared-data record by its host-assigned id. A durable record stays readable while its
+    /// producer is offline. `selector` explicitly requests another plugin's common record; without
+    /// it the host returns only records visible to this plugin. A hidden or missing record is
+    /// `NOT_FOUND`.
+    pub async fn data_get(
+        &self,
+        dataset_id: &str,
+        record_id: &str,
+        selector: Option<CommonDataSelector>,
+    ) -> Result<DataRecord, Status> {
+        let reply = self
+            .client
+            .clone()
+            .data_get(timed(DataGetRequest {
+                context: Some(self.context.clone()),
+                dataset_id: dataset_id.to_owned(),
+                record_id: record_id.to_owned(),
+                common_data_categories: selector,
+            }))
+            .await?
+            .into_inner();
+        reply
+            .record
+            .ok_or_else(|| Status::internal("the host sent no data record"))
+    }
+
+    /// One page of a dataset at the host's snapshot revision. `filter` must stay empty in this
+    /// build. `page_size` 0 means the host's default. Pass the reply's `next_cursor` back
+    /// unchanged to continue; the cursor is bound to this session and query and expires.
+    pub async fn data_list(
+        &self,
+        dataset_id: &str,
+        filter: &str,
+        selector: Option<CommonDataSelector>,
+        page_size: u32,
+    ) -> Result<DataListReply, Status> {
+        self.client
+            .clone()
+            .data_list(timed(DataListRequest {
+                page: Some(self.page(page_size, "")),
+                dataset_id: dataset_id.to_owned(),
+                filter: filter.to_owned(),
+                common_data_categories: selector,
+            }))
+            .await
+            .map(tonic::Response::into_inner)
+    }
+
+    /// Shared-data changes after `after_revision` (0: from now on), as the host's own event
+    /// stream. Resume from a list reply's `revision`; a position the host no longer accepts is
+    /// `FAILED_PRECONDITION`, so list again and watch from that revision. A revoked projection or
+    /// an overflowing queue ends the stream the same way.
+    pub async fn data_watch(
+        &self,
+        dataset_id: &str,
+        after_revision: u64,
+        selector: Option<CommonDataSelector>,
+    ) -> Result<Streaming<DataEvent>, Status> {
+        self.client
+            .clone()
+            .data_watch(DataWatchRequest {
+                context: Some(self.context.clone()),
+                dataset_id: dataset_id.to_owned(),
+                after_revision,
+                common_data_categories: selector,
+            })
+            .await
+            .map(tonic::Response::into_inner)
     }
 }
 

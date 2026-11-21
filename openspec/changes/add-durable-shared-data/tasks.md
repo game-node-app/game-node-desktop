@@ -54,3 +54,4 @@
 - Archive this change after the review and native acceptance requirements are satisfied.
 - Synchronize the modified main specs during archive.
 - Reconcile the related `third-party-plugin-data-and-persistence` tasks 1.22/1.24/1.25 with this change's publication/retention decisions.
+  - Done (2026-11-21, integration `967b39d`): 1.24 and 1.25 are marked complete with this change's evidence; 1.22 was narrowed to the combined-flow scenarios that remain beyond the durable catalog fixture. The reconciliation note is in that change's `tasks.md`.

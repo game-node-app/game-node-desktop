@@ -655,6 +655,9 @@ impl UninstallFixture {
             shared_pool: Arc::new(crate::plugin_host::shared_pool::DurableSharedPool::new(
                 &data_dir,
             )),
+            storage: Arc::new(crate::plugin_host::storage::PluginStorage::new(
+                dir.path().join("plugin-data"),
+            )),
             ..Default::default()
         };
         let state = PluginStateLayout::new(dir.path().join("state"));
@@ -713,13 +716,15 @@ impl UninstallFixture {
             self.state.clone(),
         )
         .unwrap();
-        ThirdPartyPluginLifecycle::new(
+        let lifecycle = ThirdPartyPluginLifecycle::new(
             self.root.providers.clone(),
             processes,
             self.state.clone(),
             self.registry.clone(),
             ManagedPackageLifecycle::new(self.registry.clone()),
-        )
+        );
+        lifecycle.set_private_storage(self.root.storage.clone());
+        lifecycle
     }
 
     fn reinstall(&self, version: &str) {
@@ -748,6 +753,62 @@ impl UninstallFixture {
         self.registry
             .install_verified(self.plugin_id, version, &source, true)
             .unwrap();
+    }
+
+    fn profile_id(&self) -> String {
+        self.root
+            .providers
+            .profiles()
+            .require()
+            .unwrap()
+            .profile_id()
+            .to_owned()
+    }
+
+    fn private_root(&self) -> PathBuf {
+        self.dir.path().join("plugin-data")
+    }
+
+    fn private_dir(&self, plugin_id: &str, profile_id: &str) -> PathBuf {
+        gamenode_platform::plugin_storage::namespace_dir(
+            &self.private_root(),
+            &self.fingerprint,
+            plugin_id,
+            profile_id,
+        )
+    }
+
+    fn write_private_at(&self, plugin_id: &str, profile_id: &str, key: &str, value: &[u8]) {
+        let mut store = gamenode_platform::plugin_storage::DurableStore::open(
+            &self.private_dir(plugin_id, profile_id),
+        )
+        .unwrap();
+        store
+            .put(
+                key,
+                value,
+                1,
+                None,
+                100,
+                gamenode_platform::plugin_storage::QUOTA_BYTES,
+            )
+            .unwrap();
+    }
+
+    fn write_private(&self, plugin_id: &str, key: &str, value: &[u8]) {
+        self.write_private_at(plugin_id, &self.profile_id(), key, value);
+    }
+
+    fn read_private_at(&self, plugin_id: &str, profile_id: &str, key: &str) -> Option<Vec<u8>> {
+        let store = gamenode_platform::plugin_storage::DurableStore::open_existing(
+            &self.private_dir(plugin_id, profile_id),
+        )
+        .unwrap()?;
+        store.get(key, 100).unwrap().map(|stored| stored.value)
+    }
+
+    fn read_private(&self, plugin_id: &str, key: &str) -> Option<Vec<u8>> {
+        self.read_private_at(plugin_id, &self.profile_id(), key)
     }
 
     async fn publish(&self, resource: &str, title: &str) -> String {
@@ -1004,4 +1065,176 @@ async fn uninstall_delete_removes_only_the_selected_plugins_durable_records() {
         .unwrap()
         .unwrap();
     assert_eq!(other.records, 1, "another owner is untouched");
+}
+
+#[tokio::test]
+async fn uninstall_keep_archives_private_entries_and_needs_a_reviewed_reuse() {
+    use crate::plugin_host::retention::DataRetention;
+
+    let fixture = UninstallFixture::new("org.example.producer", "producer");
+    fixture.write_private(fixture.plugin_id, "kept", b"private value");
+    fixture.write_private_at(fixture.plugin_id, "account-two", "kept", b"other profile");
+    fixture.write_private("org.example.other", "kept", b"other plugin");
+    let save = fixture.dir.path().join("saves/slot-1.sav");
+    std::fs::create_dir_all(save.parent().unwrap()).unwrap();
+    std::fs::write(&save, b"game save").unwrap();
+    let backup = fixture.dir.path().join("backups/slot-1.zip");
+    std::fs::create_dir_all(backup.parent().unwrap()).unwrap();
+    std::fs::write(&backup, b"backup archive").unwrap();
+
+    let lifecycle = fixture.lifecycle();
+    let outcome = lifecycle
+        .remove_with_retention(fixture.plugin_id.to_owned(), DataRetention::Keep)
+        .await
+        .unwrap();
+    assert_eq!(outcome.data_retention, "kept");
+    assert_eq!(outcome.private_archived_records, 1);
+    assert_eq!(outcome.private_removed_records, 0);
+    assert!(fixture.read_private(fixture.plugin_id, "kept").is_none());
+    assert_eq!(
+        fixture.read_private("org.example.other", "kept").as_deref(),
+        Some(&b"other plugin"[..])
+    );
+    assert_eq!(
+        std::fs::read(
+            fixture
+                .private_dir(fixture.plugin_id, "account-two")
+                .join("storage.sqlite3")
+        )
+        .is_ok(),
+        true,
+        "another profile is untouched"
+    );
+
+    // A reinstall shares the owner namespace but cannot read or replace the archived value.
+    fixture.reinstall("1.0.1");
+    let dir = fixture.private_dir(fixture.plugin_id, &fixture.profile_id());
+    let mut store = gamenode_platform::plugin_storage::DurableStore::open(&dir).unwrap();
+    assert_eq!(store.archived_usage().unwrap().records, 1);
+    assert!(matches!(
+        store.put(
+            "kept",
+            b"replacement",
+            2,
+            None,
+            100,
+            gamenode_platform::plugin_storage::QUOTA_BYTES
+        ),
+        Err(gamenode_platform::plugin_storage::PluginStorageError::Archived)
+    ));
+    drop(store);
+
+    let profile_id = fixture
+        .root
+        .providers
+        .profiles()
+        .require()
+        .unwrap()
+        .profile_id()
+        .to_owned();
+    let unconfirmed = lifecycle
+        .reuse_archived_private_data(fixture.plugin_id.to_owned(), &profile_id, false)
+        .await
+        .unwrap_err();
+    assert_eq!(unconfirmed.code(), tonic::Code::FailedPrecondition);
+    let wrong_profile = lifecycle
+        .reuse_archived_private_data(fixture.plugin_id.to_owned(), "another-profile", true)
+        .await
+        .unwrap_err();
+    assert_eq!(wrong_profile.code(), tonic::Code::FailedPrecondition);
+    assert!(fixture.read_private(fixture.plugin_id, "kept").is_none());
+    let reused = lifecycle
+        .reuse_archived_private_data(fixture.plugin_id.to_owned(), &profile_id, true)
+        .await
+        .unwrap();
+    assert_eq!(reused.restored_records, 1);
+    assert_eq!(
+        fixture.read_private(fixture.plugin_id, "kept").as_deref(),
+        Some(&b"private value"[..])
+    );
+
+    assert_eq!(std::fs::read(&save).unwrap(), b"game save");
+    assert_eq!(std::fs::read(&backup).unwrap(), b"backup archive");
+}
+
+#[tokio::test]
+async fn uninstall_delete_removes_only_the_selected_private_namespace() {
+    use crate::plugin_host::retention::DataRetention;
+
+    let fixture = UninstallFixture::new("org.example.producer", "producer");
+    fixture.write_private(fixture.plugin_id, "kept", b"private value");
+    fixture.write_private_at(fixture.plugin_id, "account-two", "kept", b"other profile");
+    fixture.write_private("org.example.other", "kept", b"other plugin");
+    let other_owner = OwnerScope::new([9; 32], 1).unwrap();
+    fixture
+        .root
+        .shared_pool
+        .persist(crate::plugin_host::shared_pool::DurableWrite {
+            owner: other_owner,
+            dataset_id: "org.example.catalog".to_owned(),
+            schema_id: "org.example.catalog.v1".to_owned(),
+            schema_version: 1,
+            fields_json: r#"{"title":"Other owner"}"#.to_owned(),
+            opaque_payload: Vec::new(),
+            resource_id: Some("disc-other".to_owned()),
+            observed_at: 1_700_000_000,
+            sequence: 1,
+            source_observation_id: "observation-other".to_owned(),
+            expires_at: None,
+            now: 1_700_000_000,
+            provenance: gamenode_platform::plugin_shared_data::RecordProvenance {
+                source_plugin_id: "org.example.other".to_owned(),
+                source_publisher_fingerprint: "cd".repeat(32),
+                source_profile_id: "account-one".to_owned(),
+                declared_developer: "Other".to_owned(),
+                origin: "registry".to_owned(),
+                package_version: "1.0.0".to_owned(),
+                package_digest: vec![8; 32],
+            },
+        })
+        .await
+        .unwrap();
+    let save = fixture.dir.path().join("saves/slot-1.sav");
+    std::fs::create_dir_all(save.parent().unwrap()).unwrap();
+    std::fs::write(&save, b"game save").unwrap();
+
+    let lifecycle = fixture.lifecycle();
+    let outcome = lifecycle
+        .remove_with_retention(fixture.plugin_id.to_owned(), DataRetention::Delete)
+        .await
+        .unwrap();
+    assert_eq!(outcome.data_retention, "deleted");
+    assert_eq!(outcome.private_removed_records, 1);
+    assert_eq!(
+        outcome.private_reclaimed_bytes,
+        gamenode_platform::plugin_storage::charge("kept", 13)
+    );
+    assert!(
+        !fixture
+            .private_dir(fixture.plugin_id, &fixture.profile_id())
+            .exists()
+    );
+    assert!(
+        fixture
+            .private_dir(fixture.plugin_id, "account-two")
+            .exists(),
+        "another profile is untouched"
+    );
+    assert_eq!(
+        fixture.read_private("org.example.other", "kept").as_deref(),
+        Some(&b"other plugin"[..])
+    );
+    assert_eq!(std::fs::read(&save).unwrap(), b"game save");
+    assert_eq!(
+        fixture
+            .root
+            .shared_pool
+            .usage(other_owner, 1_700_000_100)
+            .await
+            .unwrap()
+            .unwrap()
+            .records,
+        1,
+        "another owner's durable pool row is untouched"
+    );
 }

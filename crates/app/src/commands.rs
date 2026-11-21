@@ -1060,6 +1060,7 @@ fn plugin_durable_usage_for(
         oldest_updated_at: None,
         archived_records: 0,
         archived_logical_bytes: 0,
+        protected_records: 0,
         physical_bytes_estimate: 0,
     });
     PluginDurableUsage {
@@ -1318,6 +1319,48 @@ pub async fn plugin_durable_reuse(
 ) -> Result<crate::plugin_host::runtime::DurableRetentionOutcome, String> {
     lifecycle
         .reuse_archived_durable_data(plugin_id, &expected_profile_id, confirmed)
+        .await
+        .map_err(|error| error.message().to_owned())
+}
+
+/// Restores a reinstall's archived private persistence entries after a separate host review. The
+/// user must confirm; an unconfirmed call changes nothing. Another profile or plugin is untouched.
+#[tauri::command]
+pub async fn plugin_private_reuse(
+    lifecycle: tauri::State<'_, Arc<crate::plugin_host::runtime::ThirdPartyPluginLifecycle>>,
+    plugin_id: String,
+    expected_profile_id: String,
+    confirmed: bool,
+) -> Result<crate::plugin_host::retention::PrivateReuseOutcome, String> {
+    lifecycle
+        .reuse_archived_private_data(plugin_id, &expected_profile_id, confirmed)
+        .await
+        .map_err(|error| error.message().to_owned())
+}
+
+/// Enumerates host-wide storage cleanup candidates for the active profile. This is host
+/// administration: it is a Tauri command only, never a plugin RPC.
+#[tauri::command]
+pub async fn plugin_storage_cleanup_review(
+    lifecycle: tauri::State<'_, Arc<crate::plugin_host::runtime::ThirdPartyPluginLifecycle>>,
+) -> Result<crate::plugin_host::cleanup::StorageCleanupReview, String> {
+    lifecycle
+        .storage_cleanup_review()
+        .await
+        .map_err(|error| error.message().to_owned())
+}
+
+/// Applies one confirmed, single-use cleanup review. Only the selected owner candidates are
+/// pruned; an unconfirmed or stale call changes nothing and needs a new review.
+#[tauri::command]
+pub async fn plugin_storage_cleanup_apply(
+    lifecycle: tauri::State<'_, Arc<crate::plugin_host::runtime::ThirdPartyPluginLifecycle>>,
+    token: String,
+    candidate_ids: Vec<String>,
+    confirmed: bool,
+) -> Result<crate::plugin_host::cleanup::StorageCleanupReport, String> {
+    lifecycle
+        .storage_cleanup_apply(token, candidate_ids, confirmed)
         .await
         .map_err(|error| error.message().to_owned())
 }

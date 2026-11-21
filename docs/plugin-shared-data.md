@@ -90,23 +90,29 @@ host-only; a plugin cannot mark its own rows or name another owner.
 
 ### Uninstall, kept records and reviewed reuse
 
-Uninstall offers one keep-or-delete choice for a producer's durable records:
+Uninstall offers one keep-or-delete choice for a producer's durable records and
+its private persistence entries:
 
-- **Keep** archives every row under the original owner. The rows stay on disk
-  and keep their host-assigned provenance, but ordinary reads, lists, watches,
-  usage and automatic pruning skip them. A reinstalled package that shares the
-  owner identity cannot replace an archived resource record and cannot read the
-  old rows. A separate host review (`plugin_durable_reuse`, confirmed by the
-  user) restores them; only then do the consumer's normal grants apply again.
-- **Delete** removes only that producer's rows and reports the bytes actually
-  reclaimed. Another owner's durable rows, the private `plugin-data` stores,
-  grants and library history are untouched.
+- **Keep** archives every durable row under the original owner and every live
+  private entry in the plugin/profile namespace. Both stay on disk with their
+  host-assigned provenance and revisions, but ordinary reads, lists, watches,
+  usage, quota and automatic pruning skip them. A reinstalled package that
+  shares the owner identity cannot replace an archived record and cannot read
+  the old rows. Separate host reviews (`plugin_durable_reuse` and
+  `plugin_private_reuse`, each confirmed by the user and matched to the active
+  profile) restore them; only then do normal grants and reads apply again.
+- **Delete** removes only that producer's durable rows and its
+  plugin/profile private namespace, and reports the logical bytes actually
+  reclaimed. Another owner's durable rows, another profile or plugin's private
+  store, game files, live saves and backup archives are untouched.
 
 Bundle and component uninstall use the same choice for every component package
 they actually removed. A partial removal reports the components that remain;
 retention is applied only to the components whose packages were deleted. The
 pool is host-owned and separate from private `StoragePut(PERSISTENT)` data, so
-uninstalling a producer never turns private storage into a public pool.
+uninstalling a producer never turns private storage into a public pool. The host
+also drops the cached private namespace connection, so an archived or deleted
+store cannot be read through an open handle.
 
 The fixture below proves the whole path with two plugins and real RPCs:
 `two_plugin_durable_catalog_fixture_survives_stop_restart_revocation_and_cleanup`
@@ -123,8 +129,12 @@ private cleanup or another owner's deletion never crosses a game or namespace.
 ```sh
 cargo test -p gamenode-app --lib --locked -- two_plugin_durable_catalog_fixture
 cargo test -p gamenode-app --lib --locked -- uninstall_keep_archives
+cargo test -p gamenode-app --lib --locked -- uninstall_keep_archives_private
+cargo test -p gamenode-app --lib --locked -- uninstall_delete_removes_only_the_selected_private
 cargo test -p gamenode-app --lib --locked -- reinstalling_requires_a_reviewed_reuse
+cargo test -p gamenode-app --lib --locked -- plugin_host::cleanup
 cargo test -p gamenode-platform plugin_shared_data --locked
+cargo test -p gamenode-platform plugin_storage --locked
 ```
 
 ### Storage diagnostics
@@ -242,7 +252,38 @@ overwrites, `StorageDelete` and `PersistenceClear`. Naming a protected record in
 part of the selection. Host cleanup (`PluginStorage::cleanup_persistence`) also
 reclaims only the named owner's expired and policy-exceeding records and advances
 that namespace's revision so stale cursors cannot resume across the change.
-Further host-wide cleanup and uninstall retention remain tasks 1.16–1.17.
+
+Uninstall Keep/Delete and the reviewed reuse above apply to this store too. An
+archived private entry is inert: `StorageGet`, `PersistenceListEntries`, usage,
+quota and retention skip it, and a reinstall cannot replace it
+(`FAILED_PRECONDITION`) until `plugin_private_reuse` is confirmed for the active
+profile. Delete removes only the plugin/profile namespace directory after
+closing the cached connection. Neither choice touches game files, live saves or
+backup archives.
+
+### Reviewed host-wide cleanup
+
+`plugin_storage_cleanup_review` is host administration, not a plugin RPC. It
+enumerates every non-empty durable producer and private store of the active
+profile with record/protected/archived counts, logical bytes, the oldest use,
+the namespace- or pool-wide SQLite estimate and the effective byte/age limits.
+No value, physical path or raw owner key is returned. The reply carries a
+single-use token bound to that snapshot and the active profile.
+
+`plugin_storage_cleanup_apply` requires `confirmed: true`, the exact token and
+the selected candidate ids. It re-resolves each candidate's pinned publisher
+identity and owner, so a changed plugin fails that candidate without touching
+another owner. Selected candidates are pruned through the same per-namespace
+expiry/age/byte paths as automatic retention, and their unprotected archived
+rows are reclaimed because the review showed them. User-protected rows stay.
+The report lists each candidate as `completed` or `failed`, the measured
+reclaimed bytes and the protected rows that were kept; a partial failure still
+consumes the review, so a retry needs a new one. Settings screens for this review
+belong to task 1.19.
+
+The host-wide path does not weaken automatic retention: each namespace still
+applies its own policy, and a cleanup only acts on an owner the user selected and
+confirmed.
 
 ### Other reserved routes
 

@@ -92,3 +92,33 @@ The host MUST coordinate shared-resource access with host-issued use leases for 
 #### Scenario: An emulator is active or its state is unknown
 - **WHEN** a backup/restore operation targets a resource with an active supervised lease, a matching externally observed approved runtime process, or indeterminate process state
 - **THEN** the host refuses the unsafe operation with an actionable busy/unknown result; plugin-reported inactivity cannot override the refusal
+
+### Requirement: Private persistence retention is reviewed and never crosses an owner
+The host MUST apply one keep-or-delete choice to private persistence at uninstall. Keep makes entries inert with revisions and provenance intact; Delete removes only that plugin/profile namespace. Archived entries MUST be invisible to reads, lists, usage, quota and retention, and reuse MUST need a confirmed, profile-matched host review. No choice may affect game files, saves, backups, other owners or the durable pool.
+
+#### Scenario: Keep at uninstall
+- **WHEN** the user uninstalls one plugin or bundle component and chooses Keep
+- **THEN** its private entries become invisible to reads, lists and usage and a reinstalled package needs a separate reviewed reuse before those values are readable again
+
+#### Scenario: Delete at uninstall
+- **WHEN** the user chooses Delete for one plugin or bundle component
+- **THEN** only that plugin/profile private namespace is removed and every other profile, plugin, game file, live save and backup archive is unchanged
+
+#### Scenario: Reuse is unconfirmed or for another profile
+- **WHEN** reuse of archived private entries is requested without confirmation or with a different active profile
+- **THEN** the host fails closed and changes nothing; only a confirmed, profile-matched review restores the entries
+
+### Requirement: Host-wide cleanup is reviewed and host-only
+The host MUST provide a host-only, reviewed cleanup of unused or large plugin data across producers and private stores. A review MUST list candidate owners with sizes, ages, protected and archived counts and effective limits. Deletion MUST require confirmation and a single-use profile-bound token, act only on selected owners, keep protected rows, measure reclaimed bytes and report partial failures. Plugin IPC MUST NOT reach it.
+
+#### Scenario: A candidate is selected without confirmation
+- **WHEN** a cleanup apply request omits confirmation, uses an expired or reused token, or names a candidate outside the review
+- **THEN** the host rejects the request and deletes nothing
+
+#### Scenario: One selected owner fails
+- **WHEN** one selected producer's identity changed or its cleanup fails while another candidate succeeds
+- **THEN** the report names the failed candidate and its error, reports the measured reclaimed bytes of the completed candidates, and requires a new review for a retry
+
+#### Scenario: Protected and unselected data
+- **WHEN** a reviewed cleanup prunes one owner
+- **THEN** protected records and unselected owners, stores and archived rows are unchanged, and the per-namespace automatic retention rules still apply

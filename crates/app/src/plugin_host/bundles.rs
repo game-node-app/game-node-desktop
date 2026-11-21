@@ -44,7 +44,7 @@ use gamenode_platform::{
     plugin_environment::{EmulationPolicy, PluginEnvironment},
     plugin_packages::{stage_package_archive, verify_package_directory},
     plugin_registry::{InstallSignedError, InstalledPluginVersion, PluginPackageRegistry},
-    plugin_storage::namespace_dir,
+    plugin_storage::{archive_namespace, namespace_dir},
 };
 use thiserror::Error;
 
@@ -1845,20 +1845,28 @@ pub async fn uninstall_bundle(
         };
 
     let mut applied_retention = BundleDataRetention::Keep;
-    if retention == BundleDataRetention::Delete
-        && let Some(private_data) = private_data
-    {
-        applied_retention = BundleDataRetention::Delete;
+    if let Some(private_data) = private_data {
         let root = private_data.root.to_owned();
         let publisher = record.publisher_fingerprint.clone();
         let profile = private_data.profile_id.to_owned();
         let components = removed.clone();
+        let delete = retention == BundleDataRetention::Delete;
+        if delete {
+            applied_retention = BundleDataRetention::Delete;
+        }
         let data_failures = tokio::task::spawn_blocking(move || {
             let mut problems = Vec::new();
             for component in components {
-                if let Err(error) =
+                let result = if delete {
                     remove_private_namespace(&root, &publisher, &component.plugin_id, &profile)
-                {
+                        .map(|_| ())
+                } else {
+                    // Keep now means the same as a single-plugin Keep: the entries stay on disk
+                    // with their provenance but become inert until a reviewed reuse.
+                    archive_private_namespace(&root, &publisher, &component.plugin_id, &profile)
+                        .map(|_| ())
+                };
+                if let Err(error) = result {
                     problems.push(BundleRemovalFailure {
                         plugin_id: component.plugin_id,
                         version: component.version,
@@ -1882,6 +1890,20 @@ pub async fn uninstall_bundle(
         failures,
         data_retention: applied_retention.as_str().to_owned(),
     })
+}
+
+/// Archives the private durable entries of one plugin for one account profile after a bundle
+/// Keep. Only that profile's store changes; the rows stay attributed and are inert until a
+/// reviewed reuse.
+fn archive_private_namespace(
+    root: &Path,
+    publisher_fingerprint: &str,
+    plugin_id: &str,
+    profile_id: &str,
+) -> Result<bool, String> {
+    archive_namespace(root, publisher_fingerprint, plugin_id, profile_id)
+        .map(|archived| archived.is_some_and(|outcome| outcome.records > 0))
+        .map_err(|error| format!("private data could not be archived: {error}"))
 }
 
 /// Deletes the private durable namespace of one plugin for one account profile. Only the profile
@@ -4722,6 +4744,9 @@ mod tests {
                 archived_records: u64::from(retention == DataRetention::Keep),
                 removed_records: u64::from(retention == DataRetention::Delete),
                 reclaimed_bytes: 0,
+                private_archived_records: u64::from(retention == DataRetention::Keep),
+                private_removed_records: u64::from(retention == DataRetention::Delete),
+                private_reclaimed_bytes: 0,
             };
             Box::pin(std::future::ready(Ok(outcome)))
         }
@@ -5053,7 +5078,9 @@ mod tests {
 
     #[tokio::test]
     async fn uninstalling_a_bundle_applies_one_private_data_retention_choice() {
-        use gamenode_platform::plugin_storage::{DurableStore, namespace_dir};
+        use gamenode_platform::plugin_storage::{
+            DurableStore, PluginStorageError, QUOTA_BYTES, namespace_dir,
+        };
 
         let fixture = Fixture::new();
         let provider = fixture.component(
@@ -5097,7 +5124,11 @@ mod tests {
         let data_root = fixture.dir.path().join("plugin-data");
         let profile = "fixture-profile";
         let profile_data = namespace_dir(&data_root, &publisher, "org.example.dolphin", profile);
-        DurableStore::open(&profile_data).unwrap();
+        let mut component_store = DurableStore::open(&profile_data).unwrap();
+        component_store
+            .put("kept", b"value", 1, None, 100, QUOTA_BYTES)
+            .unwrap();
+        drop(component_store);
         let private_persistence = profile_data.join("plugin-persistence.sqlite3");
         fs::write(&private_persistence, b"private persistence").unwrap();
         let other_profile = namespace_dir(
@@ -5106,7 +5137,11 @@ mod tests {
             "org.example.dolphin",
             "other-profile",
         );
-        DurableStore::open(&other_profile).unwrap();
+        let mut other_store = DurableStore::open(&other_profile).unwrap();
+        other_store
+            .put("kept", b"other", 1, None, 100, QUOTA_BYTES)
+            .unwrap();
+        drop(other_store);
         fs::write(
             other_profile.join("plugin-persistence.sqlite3"),
             b"other profile persistence",
@@ -5114,14 +5149,19 @@ mod tests {
         .unwrap();
         // Another plugin of the same publisher has its own private namespaces.
         let foreign_plugin = namespace_dir(&data_root, &publisher, "org.example.other", profile);
-        DurableStore::open(&foreign_plugin).unwrap();
+        let mut foreign_store = DurableStore::open(&foreign_plugin).unwrap();
+        foreign_store
+            .put("kept", b"foreign", 1, None, 100, QUOTA_BYTES)
+            .unwrap();
+        drop(foreign_store);
         fs::write(
             foreign_plugin.join("plugin-persistence.sqlite3"),
             b"foreign persistence",
         )
         .unwrap();
 
-        // Keep: the packages and mapping are removed, but the private namespace stays.
+        // Keep: the packages and mapping are removed, and the private entries become inert but
+        // stay attributed to the profile.
         let stopper = RecordingStopper::default();
         let kept = uninstall_bundle(
             "org.example.dolphin",
@@ -5141,6 +5181,34 @@ mod tests {
         assert_eq!(kept.removed.len(), 2);
         assert_eq!(stopper.stopped().len(), 2);
         assert!(profile_data.is_dir());
+        let kept_store = DurableStore::open_existing(&profile_data)
+            .unwrap()
+            .expect("the kept namespace remains on disk");
+        assert!(kept_store.get("kept", 100).unwrap().is_none());
+        assert_eq!(kept_store.archived_usage().unwrap().records, 1);
+        let mut kept_store = kept_store;
+        assert!(matches!(
+            kept_store.put("kept", b"new", 2, None, 100, QUOTA_BYTES),
+            Err(PluginStorageError::Archived)
+        ));
+        assert!(
+            DurableStore::open_existing(&other_profile)
+                .unwrap()
+                .unwrap()
+                .get("kept", 100)
+                .unwrap()
+                .is_some(),
+            "another profile stays readable"
+        );
+        assert!(
+            DurableStore::open_existing(&foreign_plugin)
+                .unwrap()
+                .unwrap()
+                .get("kept", 100)
+                .unwrap()
+                .is_some(),
+            "another plugin stays readable"
+        );
         assert!(
             settings
                 .bundle_store()

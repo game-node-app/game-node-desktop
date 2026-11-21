@@ -723,3 +723,126 @@ async fn host_cleanup_keeps_protected_entries_and_reclaims_only_the_owner() {
         "another owner's store is untouched"
     );
 }
+
+#[tokio::test]
+async fn archived_private_entries_are_inert_until_a_reviewed_reuse() {
+    let host = Host::new();
+    let owner = plugin();
+    let resolver = |plugin: &str| {
+        ExternalNamespaceResolver::new(
+            PluginIdentity {
+                plugin_id: plugin.into(),
+                publisher_fingerprint: "publisher-a".into(),
+                profile_id: "profile-1".into(),
+            },
+            Some("provider".into()),
+            1,
+        )
+        .unwrap()
+    };
+
+    applied(
+        host.put(&owner, "kept", b"old", Persistent, 0, 0)
+            .await
+            .unwrap(),
+    );
+    let archived = host
+        .storage
+        .archive_persistence(&resolver("org.example.plugin"), 1)
+        .await
+        .unwrap();
+    assert_eq!(archived.records, 1);
+    assert_eq!(archived.logical_bytes, durable::charge("kept", 3));
+
+    // Ordinary reads, lists and usage skip archived rows, and a reinstall cannot silently
+    // replace or infer them.
+    assert!(host.get(&owner, "kept").await.unwrap().is_none());
+    let usage = host
+        .storage
+        .private_usage(&resolver("org.example.plugin"), 1)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(usage.logical_bytes, 0);
+    assert_eq!(usage.archived_records, 1);
+    let status = host
+        .put(&owner, "kept", b"new", Persistent, 0, 0)
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+    assert!(
+        status.message().contains("reviewed reuse"),
+        "{}",
+        status.message()
+    );
+
+    // The host review is the only path that restores the value.
+    let restored = host
+        .storage
+        .reuse_archived_persistence(&resolver("org.example.plugin"), 1)
+        .await
+        .unwrap();
+    assert_eq!(restored.records, 1);
+    let found = host.get(&owner, "kept").await.unwrap().unwrap();
+    assert_eq!(found.value, b"old");
+}
+
+#[tokio::test]
+async fn deleting_a_private_namespace_touches_one_profile_and_no_game_files() {
+    let host = Host::new();
+    let owner = plugin();
+    let second_profile = caller(
+        "org.example.plugin",
+        "publisher-a",
+        "profile-2",
+        1,
+        "session-2",
+    );
+    let resolver = |profile: &str| {
+        ExternalNamespaceResolver::new(
+            PluginIdentity {
+                plugin_id: "org.example.plugin".into(),
+                publisher_fingerprint: "publisher-a".into(),
+                profile_id: profile.into(),
+            },
+            Some("provider".into()),
+            1,
+        )
+        .unwrap()
+    };
+
+    applied(
+        host.put(&owner, "kept", b"first", Persistent, 0, 0)
+            .await
+            .unwrap(),
+    );
+    applied(
+        host.put(&second_profile, "kept", b"second", Persistent, 0, 0)
+            .await
+            .unwrap(),
+    );
+    let save = host.root.parent().unwrap().join("saves/slot-1.sav");
+    std::fs::create_dir_all(save.parent().unwrap()).unwrap();
+    std::fs::write(&save, b"game save").unwrap();
+    let backup = host.root.parent().unwrap().join("backups/slot-1.zip");
+    std::fs::create_dir_all(backup.parent().unwrap()).unwrap();
+    std::fs::write(&backup, b"backup archive").unwrap();
+
+    let removed = host
+        .storage
+        .remove_persistence_namespace(&resolver("profile-1"), 1)
+        .await
+        .unwrap();
+    assert_eq!(removed.records, 1);
+    assert_eq!(removed.logical_bytes, durable::charge("kept", 5));
+    assert!(
+        durable::namespace_dir(&host.root, "publisher-a", "org.example.plugin", "profile-1")
+            .is_dir()
+            == false
+    );
+    assert_eq!(std::fs::read(&save).unwrap(), b"game save");
+    assert_eq!(std::fs::read(&backup).unwrap(), b"backup archive");
+
+    let other = host.get(&second_profile, "kept").await.unwrap().unwrap();
+    assert_eq!(other.value, b"second", "another profile is untouched");
+}

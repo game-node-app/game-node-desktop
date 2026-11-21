@@ -992,3 +992,191 @@ fn upgrading_schema_seven_preserves_values_and_keeps_backup_destinations_separat
         ["new-destination", "old-destination"]
     );
 }
+
+#[test]
+fn archived_entries_are_inert_and_need_a_reviewed_reuse() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = store(temp.path());
+    store
+        .put("kept", b"old", 1, None, 100, QUOTA_BYTES)
+        .unwrap();
+    store
+        .put("expiring", b"gone", 2, Some(180), 100, QUOTA_BYTES)
+        .unwrap();
+    store
+        .put("other", b"live", 3, None, 100, QUOTA_BYTES)
+        .unwrap();
+    assert!(store.set_user_protected("kept", true).unwrap());
+
+    let archived = store.archive_entries(4).unwrap();
+    assert_eq!(archived.records, 3);
+    assert_eq!(
+        archived.logical_bytes,
+        charge("kept", 3) + charge("expiring", 4) + charge("other", 4)
+    );
+    let usage = store.store_usage(100).unwrap();
+    assert_eq!(usage.logical_bytes, 0);
+    assert_eq!(usage.categories[0].records, 0);
+    assert_eq!(usage.archived_records, 3);
+    assert_eq!(usage.archived_logical_bytes, archived.logical_bytes);
+    assert_eq!(store.archived_usage().unwrap(), archived);
+
+    // Ordinary reads, lists, deletion and cleanup ignore archived rows.
+    for key in ["kept", "expiring", "other"] {
+        assert!(store.get(key, 100).unwrap().is_none());
+    }
+    assert!(store.persistence_entries(100).unwrap().is_empty());
+    assert_eq!(store.remove("other").unwrap(), None);
+    assert_eq!(store.cleanup(10_000).unwrap().removed_records, 0);
+    assert!(matches!(
+        store.put("kept", b"new", 4, None, 100, QUOTA_BYTES),
+        Err(PluginStorageError::Archived)
+    ));
+
+    // Retention and the quota count only live rows; a new key may still be written.
+    assert!(matches!(
+        store.put("fresh", b"value", 5, None, 100, QUOTA_BYTES),
+        Ok(PutResult::Stored { .. })
+    ));
+    store
+        .set_retention_policy(
+            "private",
+            RetentionPolicy {
+                max_age_seconds: 1,
+                max_bytes: 0,
+            },
+            10_000,
+            6,
+        )
+        .unwrap();
+    assert_eq!(store.archived_usage().unwrap().records, 3);
+
+    // The host reviewed reuse restores the unexpired rows only; the expired archived row is
+    // discarded and the protected flag survives.
+    let reused = store.reuse_archived_entries(10_000, 8).unwrap();
+    assert_eq!(reused.records, 2);
+    assert_eq!(store.store_usage(10_000).unwrap().archived_records, 0);
+    assert!(store.get("kept", 10_000).unwrap().is_some());
+    assert!(store.get("other", 10_000).unwrap().is_some());
+    assert!(store.get("expiring", 10_000).unwrap().is_none());
+    assert!(matches!(
+        store.put("kept", b"new", 7, None, 10_000, QUOTA_BYTES),
+        Err(PluginStorageError::Protected)
+    ));
+}
+
+#[test]
+fn a_version_thirteen_store_gains_host_only_archiving() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("ns");
+    fs::create_dir_all(&dir).unwrap();
+    let conn = Connection::open(dir.join(STORE_FILE)).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE meta (id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL) STRICT;
+         INSERT INTO meta (id, revision) VALUES (1, 7);
+         CREATE TABLE entries (
+             key TEXT PRIMARY KEY,
+             value BLOB NOT NULL,
+             revision INTEGER NOT NULL CHECK (revision >= 1),
+             expires_at INTEGER,
+             last_used_at INTEGER NOT NULL DEFAULT 0,
+             user_protected INTEGER NOT NULL DEFAULT 0
+         ) STRICT;
+         INSERT INTO entries (key, value, revision, expires_at, last_used_at, user_protected)
+         VALUES ('legacy', X'00', 7, NULL, 50, 0);
+         PRAGMA user_version = 13;",
+    )
+    .unwrap();
+    drop(conn);
+
+    let mut upgraded = store(&dir);
+    assert_eq!(upgraded.get("legacy", 100).unwrap().unwrap().revision, 7);
+    let outcome = upgraded.archive_entries(8).unwrap();
+    assert_eq!(outcome.records, 1);
+    assert!(upgraded.get("legacy", 100).unwrap().is_none());
+    drop(upgraded);
+
+    let reopened = store(&dir);
+    assert!(reopened.get("legacy", 100).unwrap().is_none());
+    assert_eq!(reopened.archived_usage().unwrap().records, 1);
+}
+
+#[test]
+fn namespace_helpers_archive_and_remove_only_one_profile() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let kept = namespace_dir(root, "publisher-a", "org.example", "profile-1");
+    let other = namespace_dir(root, "publisher-a", "org.example", "profile-2");
+    let mut first = store(&kept);
+    first
+        .put("key", b"value", 1, None, 100, QUOTA_BYTES)
+        .unwrap();
+    drop(first);
+    let mut second = store(&other);
+    second
+        .put("key", b"other", 1, None, 100, QUOTA_BYTES)
+        .unwrap();
+    drop(second);
+
+    assert_eq!(
+        namespace_usage(root, "publisher-a", "org.example", "profile-1", 100)
+            .unwrap()
+            .unwrap()
+            .logical_bytes,
+        charge("key", 5)
+    );
+    let archived = archive_namespace(root, "publisher-a", "org.example", "profile-1")
+        .unwrap()
+        .unwrap();
+    assert_eq!(archived.records, 1);
+    assert_eq!(
+        namespace_archived_usage(root, "publisher-a", "org.example", "profile-1")
+            .unwrap()
+            .unwrap(),
+        archived
+    );
+    assert_eq!(
+        namespace_usage(root, "publisher-a", "org.example", "profile-2", 100)
+            .unwrap()
+            .unwrap()
+            .logical_bytes,
+        charge("key", 5)
+    );
+
+    assert!(remove_namespace(root, "publisher-a", "org.example", "profile-1").unwrap());
+    assert!(!kept.exists());
+    assert!(other.exists(), "another profile is untouched");
+    assert!(!remove_namespace(root, "publisher-a", "org.example", "profile-1").unwrap());
+    assert_eq!(
+        namespace_usage(root, "publisher-a", "org.example", "profile-2", 100)
+            .unwrap()
+            .unwrap()
+            .logical_bytes,
+        charge("key", 5)
+    );
+}
+
+#[test]
+fn a_reviewed_reclaim_drops_archived_unprotected_entries_only() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = store(temp.path());
+    store
+        .put("protected", b"keep", 1, None, 100, QUOTA_BYTES)
+        .unwrap();
+    store
+        .put("plain", b"drop", 2, None, 100, QUOTA_BYTES)
+        .unwrap();
+    assert!(store.set_user_protected("protected", true).unwrap());
+    store.archive_entries(3).unwrap();
+
+    let reclaimed = store.reclaim_archived(4).unwrap();
+    assert_eq!(reclaimed.records, 1);
+    assert_eq!(reclaimed.logical_bytes, charge("plain", 4));
+    assert_eq!(store.archived_usage().unwrap().records, 1);
+    assert_eq!(store.high_water().unwrap(), 4);
+    assert!(
+        store.reuse_archived_entries(100, 5).unwrap().records == 1,
+        "the protected archived row is still restorable"
+    );
+    assert!(store.get("protected", 100).unwrap().is_some());
+}

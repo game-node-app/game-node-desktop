@@ -174,6 +174,27 @@ impl DurableSharedPool {
             .await
     }
 
+    /// Expires and prunes one producer's records under its effective limits. User-protected and
+    /// archived rows stay. `None` means this host never persisted a record.
+    pub(crate) async fn prune_owner(
+        self: &Arc<Self>,
+        owner: OwnerScope,
+        now: i64,
+    ) -> Result<Option<PruneOutcome>, Status> {
+        self.mutate_opened(move |store| store.prune(&owner, now))
+            .await
+    }
+
+    /// Reclaims one producer's archived, unprotected records in a reviewed host cleanup. `None`
+    /// means this host never persisted a record.
+    pub(crate) async fn reclaim_archived_owner(
+        self: &Arc<Self>,
+        owner: OwnerScope,
+    ) -> Result<Option<PruneOutcome>, Status> {
+        self.mutate_opened(move |store| store.reclaim_archived_owner(&owner))
+            .await
+    }
+
     /// Makes one producer's durable records inert for uninstall retention. `None` means this host
     /// never persisted a record. Another owner's rows and the private plugin stores are untouched.
     pub(crate) async fn archive_owner(

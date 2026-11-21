@@ -29,7 +29,7 @@ pub const ENTRY_OVERHEAD_BYTES: u64 = 64;
 /// The longest an entry may live before it expires (30 days).
 pub const MAX_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
 
-const SCHEMA_VERSION: i64 = 13;
+const SCHEMA_VERSION: i64 = 14;
 const STORE_FILE: &str = "storage.sqlite3";
 /// Longest directory name derived from an identity before it is replaced by a digest.
 const MAX_COMPONENT_BYTES: usize = 120;
@@ -45,6 +45,8 @@ pub enum PluginStorageError {
     NewerVersion,
     #[error("the entry is protected by the user")]
     Protected,
+    #[error("the entry is archived and needs a reviewed reuse")]
+    Archived,
 }
 
 impl From<rusqlite::Error> for PluginStorageError {
@@ -88,6 +90,89 @@ pub fn namespace_dir(root: &Path, publisher: &str, plugin: &str, profile: &str) 
         .join(component(profile))
 }
 
+/// Archives one namespace's live private entries without creating a store. `None` means the
+/// namespace never wrote anything durably. Used by bundle uninstall, which has no live
+/// [`PluginStorage`] worker at that point.
+pub fn archive_namespace(
+    root: &Path,
+    publisher: &str,
+    plugin: &str,
+    profile: &str,
+) -> Result<Option<PrivateArchiveOutcome>, PluginStorageError> {
+    let dir = namespace_dir(root, publisher, plugin, profile);
+    let Some(mut store) = DurableStore::open_existing(&dir)? else {
+        return Ok(None);
+    };
+    let revision = store.high_water()?.saturating_add(1);
+    store.archive_entries(revision).map(Some)
+}
+
+/// Reads one namespace's logical usage without creating a store. `None` means the namespace never
+/// wrote anything durably. Values and the namespace path are never returned.
+pub fn namespace_usage(
+    root: &Path,
+    publisher: &str,
+    plugin: &str,
+    profile: &str,
+    now: i64,
+) -> Result<Option<StoreUsage>, PluginStorageError> {
+    let dir = namespace_dir(root, publisher, plugin, profile);
+    match DurableStore::open_existing(&dir)? {
+        Some(store) => store.store_usage(now).map(Some),
+        None => Ok(None),
+    }
+}
+
+/// Reads the archived entries of one namespace without creating a store.
+pub fn namespace_archived_usage(
+    root: &Path,
+    publisher: &str,
+    plugin: &str,
+    profile: &str,
+) -> Result<Option<PrivateArchiveOutcome>, PluginStorageError> {
+    let dir = namespace_dir(root, publisher, plugin, profile);
+    match DurableStore::open_existing(&dir)? {
+        Some(store) => store.archived_usage().map(Some),
+        None => Ok(None),
+    }
+}
+
+/// Removes one plugin/profile private namespace directory. Only that profile directory is
+/// removed; the publisher/plugin directories and every other profile stay. A symlink or a
+/// non-directory is refused instead of followed. Returns whether there was a directory.
+pub fn remove_namespace(
+    root: &Path,
+    publisher: &str,
+    plugin: &str,
+    profile: &str,
+) -> io::Result<bool> {
+    let dir = namespace_dir(root, publisher, plugin, profile);
+    if !dir.starts_with(root) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "private data path escapes the plugin-data root",
+        ));
+    }
+    remove_namespace_at(&dir)
+}
+
+/// Removes one already-resolved private namespace directory with the same symlink refusal.
+pub fn remove_namespace_at(dir: &Path) -> io::Result<bool> {
+    let metadata = match fs::symlink_metadata(dir) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "private data is not a regular directory",
+        ));
+    }
+    fs::remove_dir_all(dir)?;
+    Ok(true)
+}
+
 /// A stored value as read back.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Stored {
@@ -128,6 +213,21 @@ pub struct StoreUsage {
     /// SQLite page allocation for the complete namespace database. SQLite metadata and free
     /// pages are shared across categories, so this is never a per-category physical figure.
     pub physical_bytes_estimate: u64,
+    /// Entries archived by uninstall Keep. They are inert and excluded from `categories`.
+    pub archived_records: u64,
+    /// Logical bytes of the archived entries, not charged against the live quota.
+    pub archived_logical_bytes: u64,
+    /// The oldest last-use time among live entries (Unix seconds), if any.
+    pub oldest_used_at: Option<i64>,
+    /// The stored retention policy of the `private` category, if the user set one.
+    pub retention: Option<RetentionPolicy>,
+}
+
+/// The result of archiving or restoring one owner's private entries.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PrivateArchiveOutcome {
+    pub records: u64,
+    pub logical_bytes: u64,
 }
 
 /// The result of a host cleanup of expired and policy-exceeding records.
@@ -387,6 +487,28 @@ impl DurableStore {
                  COMMIT;"
             ))?;
         }
+        if version < 14 {
+            // Host-only uninstall retention. An archived entry is inert: reads, lists, usage,
+            // retention and cleanup skip it, and a plugin cannot silently replace it. Only the
+            // reviewed host reuse clears the flag.
+            let has_archived = conn
+                .prepare("PRAGMA table_info(entries)")?
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<Vec<_>, _>>()?
+                .iter()
+                .any(|name| name == "archived");
+            let add_column = if has_archived {
+                ""
+            } else {
+                "ALTER TABLE entries ADD COLUMN archived INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0, 1));"
+            };
+            conn.execute_batch(&format!(
+                "BEGIN IMMEDIATE;
+                 {add_column}
+                 PRAGMA user_version = 14;
+                 COMMIT;"
+            ))?;
+        }
         Ok(Self { conn })
     }
 
@@ -400,12 +522,14 @@ impl DurableStore {
         Ok(revision as u64)
     }
 
-    /// The entry under `key`, unless it expired at `now` (Unix seconds).
+    /// The entry under `key`, unless it expired at `now` (Unix seconds). An archived entry is
+    /// invisible until a reviewed host reuse restores it.
     pub fn get(&self, key: &str, now: i64) -> Result<Option<Stored>, PluginStorageError> {
         let found = self
             .conn
             .query_row(
-                "SELECT value, revision, expires_at FROM entries WHERE key = ?1",
+                "SELECT value, revision, expires_at FROM entries
+                 WHERE key = ?1 AND archived = 0",
                 [key],
                 |row| {
                     Ok(Stored {
@@ -433,7 +557,7 @@ impl DurableStore {
     ) -> Result<Vec<PersistenceEntry>, PluginStorageError> {
         let mut statement = self.conn.prepare(
             "SELECT key, length(value), last_used_at, user_protected FROM entries
-             WHERE expires_at IS NULL OR expires_at > ?1 ORDER BY key",
+             WHERE archived = 0 AND (expires_at IS NULL OR expires_at > ?1) ORDER BY key",
         )?;
         let rows = statement.query_map([now], |row| {
             Ok(PersistenceEntry {
@@ -514,7 +638,7 @@ impl DurableStore {
         for key in keys {
             let protected: Option<i64> = tx
                 .query_row(
-                    "SELECT user_protected FROM entries WHERE key = ?1
+                    "SELECT user_protected FROM entries WHERE key = ?1 AND archived = 0
                      AND (expires_at IS NULL OR expires_at > ?2)",
                     params![key, now],
                     |row| row.get(0),
@@ -528,7 +652,7 @@ impl DurableStore {
         for key in keys {
             let size: Option<i64> = tx
                 .query_row(
-                    "SELECT length(value) FROM entries WHERE key = ?1
+                    "SELECT length(value) FROM entries WHERE key = ?1 AND archived = 0
                      AND (expires_at IS NULL OR expires_at > ?2)",
                     params![key, now],
                     |row| row.get(0),
@@ -536,7 +660,7 @@ impl DurableStore {
                 .optional()?;
             if let Some(size) = size {
                 reclaimed = reclaimed.saturating_add(charge(key, size as usize));
-                tx.execute("DELETE FROM entries WHERE key = ?1", [key])?;
+                tx.execute("DELETE FROM entries WHERE key = ?1 AND archived = 0", [key])?;
             }
         }
         tx.execute(
@@ -567,14 +691,27 @@ impl DurableStore {
     /// Per-category logical accounting plus the namespace-wide physical estimate. Values and
     /// paths never leave the store.
     pub fn store_usage(&self, now: i64) -> Result<StoreUsage, PluginStorageError> {
-        let (records, logical_bytes, protected_records): (i64, i64, i64) = self.conn.query_row(
+        let (records, logical_bytes, protected_records, oldest_used_at): (
+            i64,
+            i64,
+            i64,
+            Option<i64>,
+        ) = self.conn.query_row(
             "SELECT COUNT(*),
                         COALESCE(SUM(length(CAST(key AS BLOB)) + length(value) + ?1), 0),
-                        COALESCE(SUM(user_protected), 0)
+                        COALESCE(SUM(user_protected), 0),
+                        MIN(last_used_at)
                  FROM entries
-                 WHERE expires_at IS NULL OR expires_at > ?2",
+                 WHERE archived = 0 AND (expires_at IS NULL OR expires_at > ?2)",
             params![ENTRY_OVERHEAD_BYTES as i64, now],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        let (archived_records, archived_logical_bytes): (i64, i64) = self.conn.query_row(
+            "SELECT COUNT(*),
+                    COALESCE(SUM(length(CAST(key AS BLOB)) + length(value) + ?1), 0)
+             FROM entries WHERE archived = 1",
+            [ENTRY_OVERHEAD_BYTES as i64],
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
         let category = CategoryUsage {
             category: "private".to_owned(),
@@ -586,6 +723,10 @@ impl DurableStore {
             logical_bytes: category.logical_bytes,
             categories: vec![category],
             physical_bytes_estimate: self.physical_bytes()?,
+            archived_records: archived_records.max(0) as u64,
+            archived_logical_bytes: archived_logical_bytes.max(0) as u64,
+            oldest_used_at,
+            retention: self.retention_policy("private")?,
         })
     }
 
@@ -596,10 +737,117 @@ impl DurableStore {
         protected: bool,
     ) -> Result<bool, PluginStorageError> {
         let changed = self.conn.execute(
-            "UPDATE entries SET user_protected = ?2 WHERE key = ?1",
+            "UPDATE entries SET user_protected = ?2 WHERE key = ?1 AND archived = 0",
             params![key, i64::from(protected as u8)],
         )?;
         Ok(changed != 0)
+    }
+
+    /// Makes every live entry of this namespace inert for uninstall Keep. The rows stay on disk
+    /// with their revisions; only the host reviewed reuse restores them.
+    pub fn archive_entries(
+        &mut self,
+        revision: u64,
+    ) -> Result<PrivateArchiveOutcome, PluginStorageError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let archived = tx.execute("UPDATE entries SET archived = 1 WHERE archived = 0", [])? as u64;
+        let (_, logical_bytes): (i64, i64) = tx.query_row(
+            "SELECT COUNT(*), COALESCE(SUM(length(CAST(key AS BLOB)) + length(value) + ?1), 0)
+             FROM entries WHERE archived = 1",
+            [ENTRY_OVERHEAD_BYTES as i64],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        tx.execute(
+            "UPDATE meta SET revision = MAX(revision, ?1) WHERE id = 1",
+            [revision as i64],
+        )?;
+        tx.commit()?;
+        Ok(PrivateArchiveOutcome {
+            records: archived,
+            logical_bytes: logical_bytes.max(0) as u64,
+        })
+    }
+
+    /// Restores this owner's archived entries after an explicit host review. Expired archived
+    /// rows are discarded instead of being restored as visible-but-expired entries.
+    pub fn reuse_archived_entries(
+        &mut self,
+        now: i64,
+        revision: u64,
+    ) -> Result<PrivateArchiveOutcome, PluginStorageError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
+            "DELETE FROM entries WHERE archived = 1
+               AND expires_at IS NOT NULL AND expires_at <= ?1",
+            [now],
+        )?;
+        let restored = tx.execute("UPDATE entries SET archived = 0 WHERE archived = 1", [])? as u64;
+        let (_, logical_bytes): (i64, i64) = tx.query_row(
+            "SELECT COUNT(*), COALESCE(SUM(length(CAST(key AS BLOB)) + length(value) + ?1), 0)
+             FROM entries WHERE archived = 0
+               AND (expires_at IS NULL OR expires_at > ?2)",
+            params![ENTRY_OVERHEAD_BYTES as i64, now],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        tx.execute(
+            "UPDATE meta SET revision = MAX(revision, ?1) WHERE id = 1",
+            [revision as i64],
+        )?;
+        tx.commit()?;
+        Ok(PrivateArchiveOutcome {
+            records: restored,
+            logical_bytes: logical_bytes.max(0) as u64,
+        })
+    }
+
+    /// The archived entries of this owner, without their values or a path. Used by the host
+    /// review of retained data; a plugin RPC cannot reach it.
+    pub fn archived_usage(&self) -> Result<PrivateArchiveOutcome, PluginStorageError> {
+        let (records, logical_bytes): (i64, i64) = self.conn.query_row(
+            "SELECT COUNT(*), COALESCE(SUM(length(CAST(key AS BLOB)) + length(value) + ?1), 0)
+             FROM entries WHERE archived = 1",
+            [ENTRY_OVERHEAD_BYTES as i64],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        Ok(PrivateArchiveOutcome {
+            records: records.max(0) as u64,
+            logical_bytes: logical_bytes.max(0) as u64,
+        })
+    }
+
+    /// Reclaims this owner's archived, unprotected entries in a reviewed host cleanup. A
+    /// protected archived entry stays until the user lifts its protection. Advances the
+    /// namespace revision so cursors cannot resume across the change.
+    pub fn reclaim_archived(
+        &mut self,
+        revision: u64,
+    ) -> Result<PrivateArchiveOutcome, PluginStorageError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (records, logical_bytes): (i64, i64) = tx.query_row(
+            "SELECT COUNT(*), COALESCE(SUM(length(CAST(key AS BLOB)) + length(value) + ?1), 0)
+             FROM entries WHERE archived = 1 AND user_protected = 0",
+            [ENTRY_OVERHEAD_BYTES as i64],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        tx.execute(
+            "DELETE FROM entries WHERE archived = 1 AND user_protected = 0",
+            [],
+        )?;
+        tx.execute(
+            "UPDATE meta SET revision = MAX(revision, ?1) WHERE id = 1",
+            [revision as i64],
+        )?;
+        tx.commit()?;
+        Ok(PrivateArchiveOutcome {
+            records: records.max(0) as u64,
+            logical_bytes: logical_bytes.max(0) as u64,
+        })
     }
 
     /// Removes expired records and applies the stored retention policy while keeping every
@@ -608,11 +856,14 @@ impl DurableStore {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let before_records: i64 =
-            tx.query_row("SELECT COUNT(*) FROM entries", [], |row| row.get(0))?;
+        let before_records: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM entries WHERE archived = 0",
+            [],
+            |row| row.get(0),
+        )?;
         let before_bytes = usage_of(&tx, i64::MIN, None)?;
         tx.execute(
-            "DELETE FROM entries WHERE user_protected = 0
+            "DELETE FROM entries WHERE archived = 0 AND user_protected = 0
                AND expires_at IS NOT NULL AND expires_at <= ?1",
             [now],
         )?;
@@ -630,8 +881,11 @@ impl DurableStore {
             .optional()?
             .unwrap_or_default();
         prune_to_policy(&tx, "private", policy, now, None)?;
-        let after_records: i64 =
-            tx.query_row("SELECT COUNT(*) FROM entries", [], |row| row.get(0))?;
+        let after_records: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM entries WHERE archived = 0",
+            [],
+            |row| row.get(0),
+        )?;
         let after_bytes = usage_of(&tx, i64::MIN, None)?;
         tx.commit()?;
         Ok(CleanupOutcome {
@@ -656,10 +910,18 @@ impl DurableStore {
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute(
-            "DELETE FROM entries WHERE user_protected = 0
+            "DELETE FROM entries WHERE archived = 0 AND user_protected = 0
                AND expires_at IS NOT NULL AND expires_at <= ?1",
             [now],
         )?;
+        let archived: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM entries WHERE key = ?1 AND archived = 1)",
+            [key],
+            |row| row.get(0),
+        )?;
+        if archived {
+            return Err(PluginStorageError::Archived);
+        }
         let protected: Option<i64> = tx
             .query_row(
                 "SELECT user_protected FROM entries WHERE key = ?1",
@@ -716,7 +978,7 @@ impl DurableStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let entry: Option<(i64, i64)> = tx
             .query_row(
-                "SELECT revision, user_protected FROM entries WHERE key = ?1",
+                "SELECT revision, user_protected FROM entries WHERE key = ?1 AND archived = 0",
                 [key],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
@@ -727,7 +989,7 @@ impl DurableStore {
         if protected != 0 {
             return Err(PluginStorageError::Protected);
         }
-        tx.execute("DELETE FROM entries WHERE key = ?1", [key])?;
+        tx.execute("DELETE FROM entries WHERE key = ?1 AND archived = 0", [key])?;
         tx.commit()?;
         Ok(Some(revision as u64))
     }
@@ -747,7 +1009,7 @@ fn prune_to_policy(
     if policy.max_age_seconds > 0 {
         let cutoff = now.saturating_sub(policy.max_age_seconds.min(i64::MAX as u64) as i64);
         let mut statement = tx.prepare(
-            "SELECT key, length(value) FROM entries WHERE user_protected = 0
+            "SELECT key, length(value) FROM entries WHERE archived = 0 AND user_protected = 0
              AND last_used_at <= ?1 AND (?2 IS NULL OR key != ?2)",
         )?;
         let old = statement
@@ -757,7 +1019,10 @@ fn prune_to_policy(
             .collect::<Result<Vec<_>, _>>()?;
         drop(statement);
         for (key, size) in old {
-            tx.execute("DELETE FROM entries WHERE key = ?1", [&key])?;
+            tx.execute(
+                "DELETE FROM entries WHERE key = ?1 AND archived = 0",
+                [&key],
+            )?;
             reclaimed = reclaimed.saturating_add(charge(&key, size));
         }
     }
@@ -767,7 +1032,7 @@ fn prune_to_policy(
             let oldest = tx
                 .query_row(
                     "SELECT key, length(value) FROM entries
-                     WHERE user_protected = 0
+                     WHERE archived = 0 AND user_protected = 0
                        AND (?1 IS NULL OR key != ?1)
                        AND (expires_at IS NULL OR expires_at > ?2)
                      ORDER BY last_used_at ASC, key ASC LIMIT 1",
@@ -779,7 +1044,10 @@ fn prune_to_policy(
                 break;
             };
             let bytes = charge(&key, size);
-            tx.execute("DELETE FROM entries WHERE key = ?1", [&key])?;
+            tx.execute(
+                "DELETE FROM entries WHERE key = ?1 AND archived = 0",
+                [&key],
+            )?;
             usage = usage.saturating_sub(bytes);
             reclaimed = reclaimed.saturating_add(bytes);
         }
@@ -1294,7 +1562,8 @@ fn usage_of(conn: &Connection, now: i64, except: Option<&str>) -> Result<u64, Pl
     let total: i64 = conn.query_row(
         "SELECT COALESCE(SUM(length(CAST(key AS BLOB)) + length(value) + ?1), 0)
          FROM entries
-         WHERE (expires_at IS NULL OR expires_at > ?2) AND (?3 IS NULL OR key != ?3)",
+         WHERE archived = 0
+           AND (expires_at IS NULL OR expires_at > ?2) AND (?3 IS NULL OR key != ?3)",
         params![ENTRY_OVERHEAD_BYTES as i64, now, except],
         |row| row.get(0),
     )?;

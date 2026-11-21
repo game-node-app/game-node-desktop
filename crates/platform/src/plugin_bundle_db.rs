@@ -12,7 +12,8 @@ use gamenode_core::ports::StorageError;
 use rusqlite::{Connection, OptionalExtension, params};
 
 /// One component of an installed bundle.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BundleComponentRecord {
     /// The component's own plugin id; it remains a normal installed package.
     pub plugin_id: String,
@@ -25,7 +26,8 @@ pub struct BundleComponentRecord {
 }
 
 /// An installed bundle and every component it maps to.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BundleRecord {
     pub bundle_id: String,
     pub name: String,

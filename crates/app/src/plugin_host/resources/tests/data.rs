@@ -1293,6 +1293,27 @@ fn grant_durable_dataset(
     history: bool,
     live: bool,
 ) {
+    grant_durable_dataset_fields(
+        fixture,
+        source,
+        recipient,
+        "org.example.metrics.v1",
+        ["fps".into()],
+        history,
+        live,
+    );
+}
+
+/// A reviewed dataset-scope grant for an explicit dataset and field projection.
+fn grant_durable_dataset_fields(
+    fixture: &Fixture,
+    source: &PluginIdentity,
+    recipient: &PluginIdentity,
+    dataset_id: &str,
+    fields: impl IntoIterator<Item = String>,
+    history: bool,
+    live: bool,
+) {
     fixture
         .shared_policies
         .set_source_recipient_policy(
@@ -1300,14 +1321,195 @@ fn grant_durable_dataset(
                 source.clone(),
                 recipient.clone(),
                 SharingClass::Custom,
-                "org.example.metrics.v1".into(),
-                ["fps".into()],
+                dataset_id.to_owned(),
+                fields,
                 history,
                 live,
             )
             .unwrap(),
         )
         .unwrap();
+}
+
+fn durable_catalog_request(
+    context: &ServiceContext,
+    key: &str,
+    resource_id: &str,
+    title: &str,
+) -> DataPublishRequest {
+    DataPublishRequest {
+        mutation: Some(MutationContext {
+            context: Some(context.clone()),
+            idempotency_key: key.into(),
+            ..Default::default()
+        }),
+        dataset_id: "org.example.catalog.v1".into(),
+        schema_id: "org.example.catalog.v1".into(),
+        schema_version: 1,
+        value: Some(value(&[("title", text(title))])),
+        opaque_payload: Vec::new(),
+        durability: StorageDurability::Persistent as i32,
+        ttl_seconds: 300,
+        resource_id: resource_id.into(),
+        observed_at: 1_700_000_000,
+        sequence: 1,
+        source_observation_id: key.into(),
+    }
+}
+
+#[tokio::test]
+async fn two_plugin_durable_catalog_fixture_survives_stop_restart_revocation_and_cleanup() {
+    let fixture = Fixture::new(&[cap::DATA_PUBLISH, cap::STORAGE_PERSIST]).await;
+    let producer =
+        consumer_session_with_grants(&fixture, &[cap::DATA_PUBLISH, cap::STORAGE_PERSIST]).await;
+    let producer_context = producer.host.resource_context().unwrap().clone();
+    let producer_owner = durable_owner(&fixture, &producer_context);
+    let own_owner = durable_owner(&fixture, &fixture.context());
+    let source = authenticated_identity(&fixture, &producer_context);
+    let recipient = authenticated_identity(&fixture, &fixture.context());
+    let dataset = "org.example.catalog.v1";
+    grant_durable_dataset_fields(
+        &fixture,
+        &source,
+        &recipient,
+        dataset,
+        ["title".into()],
+        true,
+        true,
+    );
+
+    // The producer publishes a durable catalog record; the consumer also owns one row in the
+    // same dataset so cleanup can prove owner isolation.
+    let published = producer
+        .host
+        .resource_client()
+        .data_publish(durable_catalog_request(
+            &producer_context,
+            "catalog-producer",
+            "disc-1",
+            "Dolphin",
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(published.durability, StorageDurability::Persistent as i32);
+    let own = fixture
+        .client()
+        .data_publish(durable_catalog_request(
+            &fixture.context(),
+            "catalog-consumer",
+            "disc-2",
+            "Other",
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_ne!(published.record_id, own.record_id);
+    drop(producer);
+
+    // The consumer reads the producer's record after the producer session stopped.
+    let fetched = fixture
+        .client()
+        .data_get(DataGetRequest {
+            context: Some(fixture.context()),
+            dataset_id: dataset.into(),
+            record_id: published.record_id.clone(),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .record
+        .unwrap();
+    assert_eq!(fetched.value, Some(value(&[("title", text("Dolphin"))])));
+    assert_eq!(fetched.publisher_id, "org.example.consumer");
+    assert_eq!(fetched.durability, StorageDurability::Persistent as i32);
+
+    // A real host restart starts a fresh broker over the same pool file.
+    let broker = Arc::new(DataBroker::new());
+    assert_eq!(broker.revision(), 0);
+    let (mut restarted, server) = local_client(restarted_service(&fixture, broker.clone())).await;
+    let listed = restarted
+        .data_list(list_request(&fixture.context(), dataset))
+        .await
+        .unwrap()
+        .into_inner();
+    let ids: Vec<_> = listed
+        .records
+        .iter()
+        .map(|record| record.record_id.clone())
+        .collect();
+    assert!(ids.contains(&published.record_id) && ids.contains(&own.record_id));
+    assert_eq!(
+        listed.records[0].durability,
+        StorageDurability::Persistent as i32
+    );
+
+    // Revocation fences the producer's archived-free record even though the producer is offline.
+    let revision = fixture
+        .shared_policies
+        .recipient_snapshot(&recipient)
+        .unwrap()
+        .revision;
+    fixture
+        .shared_policies
+        .replace_recipient_policies(&recipient, revision, ActivationReadGrant::default(), vec![])
+        .unwrap();
+    let error = restarted
+        .data_get(DataGetRequest {
+            context: Some(fixture.context()),
+            dataset_id: dataset.into(),
+            record_id: published.record_id.clone(),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), Code::NotFound);
+    let listed = restarted
+        .data_list(list_request(&fixture.context(), dataset))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        listed
+            .records
+            .iter()
+            .map(|record| record.record_id.as_str())
+            .collect::<Vec<_>>(),
+        [own.record_id.as_str()],
+        "only the consumer's own row remains visible"
+    );
+
+    // User cleanup reclaims only the producer's owner and leaves the consumer's row intact.
+    let now = unix_seconds();
+    let deleted = fixture
+        .shared_pool
+        .delete_owner(producer_owner, now)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(deleted.removed_records, 1);
+    let store = SharedDataStore::open(&fixture.data_dir).unwrap();
+    assert!(store.get_any(&published.record_id, now).unwrap().is_none());
+    assert_eq!(
+        store
+            .list_dataset(&own_owner, dataset, now)
+            .unwrap()
+            .records
+            .len(),
+        1
+    );
+    assert_eq!(
+        fixture
+            .shared_pool
+            .usage(own_owner, now)
+            .await
+            .unwrap()
+            .unwrap()
+            .records,
+        1
+    );
+    server.abort();
 }
 
 /// A session-only publication from one producer session in the metrics dataset.

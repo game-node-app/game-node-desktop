@@ -11,6 +11,7 @@ use gamenode_plugin_sdk::{
 
 /// Propose a custom executable recipe with literal argv, a host-issued runtime handle and an
 /// explicit environment delta. The host validates and reviews the recipe before it can run.
+#[allow(clippy::too_many_arguments)] // Example mirrors the deliberate positional custom-launch API.
 pub async fn propose_runtime_recipe(
     resources: &Resources,
     game_id: &str,

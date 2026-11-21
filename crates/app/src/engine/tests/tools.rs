@@ -169,6 +169,7 @@ fn tools_harness() -> ToolsHarness {
         Settings::default(),
         LibraryMachine::new(providers, Default::default()),
         nonce,
+        Arc::new(crate::plugin_host::resource_leases::ResourceLeases::default()),
         move |s| {
             let _ = tx.send(s);
         },

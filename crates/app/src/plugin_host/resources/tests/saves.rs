@@ -1043,6 +1043,162 @@ async fn profiles_belong_to_the_account_profile_and_survive_a_restart() {
     assert_eq!(back.revision, created.revision);
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn shared_resource_declarations_are_resolved_and_require_current_consent() {
+    let fixture = Fixture::new(GRANTS).await;
+    let shared = fixture.game_dir("shared", &[("one/rom", b"one"), ("two/rom", b"two")]);
+    fixture.library_in(&[
+        ("fixture:card-a", Some(3), "Card A", &shared.join("one")),
+        ("fixture:card-b", Some(4), "Card B", &shared.join("two")),
+    ]);
+    let installation = "id-fixture:card-a";
+    let root = fixture.approve(installation, "save", &shared).await;
+    let mut new = profile("Shared card", "rt", vec![directory(&root, "", &["*.sav"])]);
+    new.installation_id = installation.into();
+    new.shared_resources = vec![SharedResourceDeclaration {
+        resource_id: "memory-card".into(),
+        approved_resource_handle: root.clone(),
+        display_name: "Memory card".into(),
+        consent: 0,
+    }];
+    let created = fixture.make("shared", new).await.unwrap();
+    let read = fixture
+        .profile(&created.profile_id)
+        .await
+        .unwrap()
+        .profile
+        .unwrap();
+    assert_eq!(read.shared_resources.len(), 1);
+    assert_eq!(read.shared_resources[0].resource_id, "memory-card");
+    assert!(!read.shared_resources[0].approved_resource_handle.is_empty());
+    assert_eq!(
+        read.shared_resources[0].consent,
+        SharedResourceConsent::Pending as i32
+    );
+
+    let publisher = "ab".repeat(32);
+    let reviews = crate::plugin_host::shared_resources::PluginSharedResources::new(
+        fixture.storage.clone(),
+        fixture.api.profiles(),
+        fixture.files.clone(),
+        fixture.feed.clone(),
+    );
+    let pending = reviews.list("fixture.plugin", &publisher).await.unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].consent, "pending");
+    assert_eq!(pending[0].affected_games.len(), 2);
+    assert!(
+        reviews
+            .prepared("fixture.plugin", &publisher, &created.profile_id)
+            .await
+            .is_err()
+    );
+
+    reviews
+        .accept(
+            "fixture.plugin",
+            &publisher,
+            &created.profile_id,
+            "memory-card",
+        )
+        .await
+        .unwrap();
+    let prepared = reviews
+        .prepared("fixture.plugin", &publisher, &created.profile_id)
+        .await
+        .unwrap();
+    assert_eq!(prepared.len(), 1);
+    assert_eq!(prepared[0].scope.len(), 2);
+    assert_eq!(
+        reviews.list("fixture.plugin", &publisher).await.unwrap()[0].consent,
+        "current"
+    );
+
+    // A display-name edit takes a profile revision but does not invalidate the reviewed scope.
+    fixture
+        .patch(
+            "rename",
+            &created.profile_id,
+            created.revision,
+            &["name"],
+            SaveProfile {
+                name: "Renamed card".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        reviews
+            .prepared("fixture.plugin", &publisher, &created.profile_id)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // A changed runtime binding needs an explicit re-declaration.
+    let runtime_changed = fixture
+        .patch(
+            "runtime",
+            &created.profile_id,
+            created.revision + 1,
+            &["runtime_id"],
+            SaveProfile {
+                runtime_id: "other-runtime".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(runtime_changed.code(), Code::FailedPrecondition);
+
+    // A newly affected game makes the old consent stale and blocks use until it is reviewed.
+    let three = fixture.game_dir("shared", &[("three/rom", b"three")]);
+    fixture.library_in(&[
+        ("fixture:card-a", Some(3), "Card A", &shared.join("one")),
+        ("fixture:card-b", Some(4), "Card B", &shared.join("two")),
+        ("fixture:card-c", Some(5), "Card C", &three.join("three")),
+    ]);
+    let stale = reviews.list("fixture.plugin", &publisher).await.unwrap();
+    assert_eq!(stale[0].consent, "stale");
+    assert!(stale[0].unavailable);
+    let refused = reviews
+        .prepared("fixture.plugin", &publisher, &created.profile_id)
+        .await
+        .unwrap_err();
+    assert!(refused.contains("changed") || refused.contains("review"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn duplicate_shared_resource_aliases_are_refused() {
+    let fixture = Fixture::new(GRANTS).await;
+    let shared = fixture.game_dir("shared", &[("one/rom", b"one")]);
+    fixture.library_in(&[("fixture:card-a", Some(3), "Card A", &shared.join("one"))]);
+    let installation = "id-fixture:card-a";
+    let root = fixture.approve(installation, "save", &shared).await;
+    let mut new = profile("Card", "rt", vec![directory(&root, "", &["*.sav"])]);
+    new.installation_id = installation.into();
+    new.shared_resources = vec![
+        SharedResourceDeclaration {
+            resource_id: "memory-card".into(),
+            approved_resource_handle: root.clone(),
+            display_name: "Memory card".into(),
+            consent: 0,
+        },
+        SharedResourceDeclaration {
+            resource_id: "memory-card".into(),
+            approved_resource_handle: root,
+            display_name: "Same alias".into(),
+            consent: 0,
+        },
+    ];
+    assert_eq!(
+        fixture.make("duplicate", new).await.unwrap_err().code(),
+        Code::InvalidArgument
+    );
+}
+
 struct Granted(Vec<ForeignGrant>);
 
 impl ProfileGrants for Granted {
@@ -1075,6 +1231,7 @@ impl Fixture {
                     naming_patterns: vec!["*.sav".into()],
                 },
             ]),
+            shared_resources: "[]".into(),
             revision: 0,
             created_at: 0,
         };

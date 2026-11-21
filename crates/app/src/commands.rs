@@ -1496,6 +1496,54 @@ pub async fn plugin_library_root_set_watching(
         .await
 }
 
+/// Lists declared shared emulator resources and the host-resolved affected games for review.
+#[tauri::command]
+pub async fn plugin_shared_resource_reviews(
+    resources: tauri::State<'_, Arc<crate::plugin_host::shared_resources::PluginSharedResources>>,
+    plugin_id: String,
+    publisher_fingerprint: String,
+) -> Result<Vec<crate::plugin_host::shared_resources::PluginSharedResourceReview>, String> {
+    resources.list(&plugin_id, &publisher_fingerprint).await
+}
+
+/// Accepts the exact current declaration and affected-game scope of one shared resource.
+#[tauri::command]
+pub async fn plugin_shared_resource_accept(
+    resources: tauri::State<'_, Arc<crate::plugin_host::shared_resources::PluginSharedResources>>,
+    plugin_id: String,
+    publisher_fingerprint: String,
+    profile_id: String,
+    resource_id: String,
+) -> Result<(), String> {
+    resources
+        .accept(
+            &plugin_id,
+            &publisher_fingerprint,
+            &profile_id,
+            &resource_id,
+        )
+        .await
+}
+
+/// Forgets a shared-resource consent; the next use asks for a fresh review.
+#[tauri::command]
+pub async fn plugin_shared_resource_revoke(
+    resources: tauri::State<'_, Arc<crate::plugin_host::shared_resources::PluginSharedResources>>,
+    plugin_id: String,
+    publisher_fingerprint: String,
+    profile_id: String,
+    resource_id: String,
+) -> Result<bool, String> {
+    resources
+        .revoke(
+            &plugin_id,
+            &publisher_fingerprint,
+            &profile_id,
+            &resource_id,
+        )
+        .await
+}
+
 /// What the user allowed one plugin to start without asking, in the active profile.
 #[tauri::command]
 pub async fn plugin_remembered_confirmations(

@@ -47,8 +47,47 @@ may be a single file, a directory set or a virtual memory card containing entrie
 Describe the selected entry separately from its backing container, sharing identity and affected
 games. Selecting one game gives no authority to overwrite the whole card. Whole-container backup,
 restore or conversion must review the complete affected-game scope and coordinate writes to the
-backing resource; shared-resource execution coordination remains task 13.2. Core need not parse
-console card layouts or infer slot semantics.
+backing resource; see [shared resource declarations](#shared-resource-declarations-and-consent).
+Core need not parse console card layouts or infer slot semantics.
+
+## Shared resource declarations and consent
+
+A save profile may declare shared emulator resources through `shared_resources`. Each declaration
+names a plugin-chosen `resource_id` alias, an approved folder handle and a display name. The host,
+not the plugin, resolves the canonical backing folder and the complete affected GameNode
+game/installation set from the standing folder approval. It rejects:
+
+* a duplicate alias within one profile;
+* two aliases for the same backing folder, or one alias for two backing folders, across the same
+  plugin's profiles;
+* nested or partially overlapping backing folders, because distinct lease keys would let one write
+  bypass the other; and
+* a declaration whose approved folder does not affect the profile's installation.
+
+A shared resource also requires the profile's approved `runtime_id`; that binding gives the host a
+runtime executable identity for external-process checks. A profile with shared resources cannot
+change its runtime binding without saving the declarations again.
+
+Consent is host-mediated and recorded separately from the plugin's profile row. It binds the
+authenticated plugin, publisher, account profile, the exact declaration (alias, approval, relative
+path, canonical backing folder and runtime binding) and a fingerprint of the host-resolved affected
+installation/game set. Display-name or other descriptive edits do not invalidate it. Changing the
+backing folder, runtime binding or affected set makes it stale and requires a fresh review; a
+plugin RPC cannot accept, widen or replace it. `GetProfile`/`ListProfiles` report the state as
+`PENDING`, `CURRENT` or `STALE` for the owner's profiles.
+
+The host settings surface exposes `plugin_shared_resource_reviews`, `plugin_shared_resource_accept`
+and `plugin_shared_resource_revoke`. The full settings screen remains to be built; the commands and
+their DTO already return the host-resolved affected games for review.
+
+Supervised runtime launches acquire a host-issued use lease for every reviewed resource attached to
+the matching game installation and runtime. The lease is held until the supervised process tree is
+confirmed exited or fenced. Backup and restore acquire one exclusive lease for the complete set
+before starting the job, recheck the approved runtime's externally observed process state, and fail
+closed when that state is unknown. GameNode's Linux process inspection currently reports
+`UNSUPPORTED`, so shared-resource backup/restore and runtime-profile backup fail closed there until
+a supported inspection adapter exists; Windows uses the existing process inventory. Plugin-reported
+game or session activity is descriptive and never establishes that a resource is idle.
 
 ## Load observations and images
 

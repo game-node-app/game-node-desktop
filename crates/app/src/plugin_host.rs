@@ -43,6 +43,7 @@ pub mod runtime;
 pub mod saves;
 pub mod services;
 pub mod shared_data;
+pub mod shared_resources;
 pub mod sharing_policy;
 pub mod storage;
 mod transport;
@@ -551,6 +552,10 @@ pub struct PluginApi {
     pub saves: Arc<saves::SaveAccess>,
     /// The content fingerprints of approved places.
     pub fingerprints: Arc<fingerprints::Snapshots>,
+    /// Host-owned coordinator shared with supervised launches and backup/restore.
+    pub leases: Arc<resource_leases::ResourceLeases>,
+    /// Platform process inspection; `None` makes external-use checks fail closed.
+    pub processes: Option<Arc<dyn gamenode_core::ports::Processes>>,
 }
 
 impl PluginApi {
@@ -829,6 +834,8 @@ impl PluginApiServer {
                 api.intents.clone(),
                 api.saves.clone(),
                 api.fingerprints.clone(),
+                api.leases.clone(),
+                api.processes.clone(),
             )
             .with_shared_data(api.data_broker.clone(), api.shared_policies.clone()),
         );
@@ -949,6 +956,8 @@ impl PluginApiServer {
                 api.intents.clone(),
                 api.saves.clone(),
                 api.fingerprints.clone(),
+                api.leases.clone(),
+                api.processes.clone(),
             )
             .with_shared_data(api.data_broker.clone(), api.shared_policies.clone()),
         );

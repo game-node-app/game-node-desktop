@@ -2348,6 +2348,8 @@ async fn shared_runtime_catalog_and_content_availability_need_no_pairwise_grant(
         fixture.intents.clone(),
         fixture.saves.clone(),
         fixture.snapshots.clone(),
+        fixture.leases.clone(),
+        fixture.processes.clone(),
     )
     .with_shared_data(Arc::new(DataBroker::new()), policies.clone());
     let (mut client, server) = serve(service).await;

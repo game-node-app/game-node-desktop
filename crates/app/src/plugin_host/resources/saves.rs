@@ -17,6 +17,7 @@ use tonic::{Request, Response, Status};
 use super::mutations::{game_id, mutation_key, reply, request_hash};
 use super::{ResourceApi, Served};
 use crate::plugin_host::files::FileAccess;
+use crate::plugin_host::library::LibraryFeed;
 use crate::plugin_host::provider::ResourceCaller;
 use crate::plugin_host::saves::{
     self as saves, Directory, ForeignGrant, MAX_DIRECTORIES, MAX_PROFILES_PER_INSTALLATION,
@@ -51,6 +52,7 @@ const PATCHABLE: &[&str] = &[
     "format_id",
     "format_version",
     "descriptive_metadata",
+    "shared_resources",
 ];
 
 fn profile_id(text: &str) -> Result<&str, Status> {
@@ -122,6 +124,7 @@ fn resolve_directories(
 fn to_proto(
     row: &SaveProfileRow,
     owner: &Owner,
+    feed: &LibraryFeed,
     handles: Option<(&FileAccess, &str, &mut Namespace<'_>)>,
 ) -> Result<SaveProfile, Status> {
     let mut directories = Vec::new();
@@ -149,6 +152,66 @@ fn to_proto(
             naming_patterns: directory.naming_patterns,
         });
     }
+    let mut shared_resources = Vec::new();
+    for resource in crate::plugin_host::shared_resources::resources_from_json(&row.shared_resources)
+    {
+        let (handle, consent) = match handles.as_mut() {
+            Some((files, session, namespace)) => {
+                let active = namespace
+                    .approval(&resource.approval_id)?
+                    .is_some_and(|approval| approval.revoked_at.is_none());
+                let record = namespace.shared_resource_consent(&row.id, &resource.resource_id)?;
+                let consent = match crate::plugin_host::shared_resources::reply_state(
+                    record.as_ref(),
+                    &resource,
+                ) {
+                    crate::plugin_host::shared_resources::ConsentState::Current => {
+                        match super::files::open_approval_inspect(
+                            files,
+                            feed,
+                            namespace,
+                            &resource.approval_id,
+                            resource.path.clone(),
+                        ) {
+                            Ok(Ok(opened)) => match crate::plugin_host::shared_resources::scope_of(
+                                feed,
+                                &opened.approval,
+                            ) {
+                                Ok(scope) => {
+                                    crate::plugin_host::shared_resources::reply_state_with_scope(
+                                        record.as_ref(),
+                                        &resource,
+                                        &scope,
+                                    )
+                                }
+                                Err(_) => crate::plugin_host::shared_resources::ConsentState::Stale,
+                            },
+                            _ => crate::plugin_host::shared_resources::ConsentState::Stale,
+                        }
+                    }
+                    state => state,
+                };
+                (
+                    if active {
+                        files.seal_handle(session, &resource.approval_id, &resource.path)
+                    } else {
+                        String::new()
+                    },
+                    consent,
+                )
+            }
+            None => (
+                String::new(),
+                crate::plugin_host::shared_resources::ConsentState::Pending,
+            ),
+        };
+        shared_resources.push(SharedResourceDeclaration {
+            resource_id: resource.resource_id,
+            approved_resource_handle: handle,
+            display_name: resource.display_name,
+            consent: consent.proto(),
+        });
+    }
     Ok(SaveProfile {
         profile_id: row.id.clone(),
         game_id: row.game_id.clone(),
@@ -161,6 +224,7 @@ fn to_proto(
         descriptive_metadata: saves::metadata_struct(&row.metadata),
         creator_plugin_id: owner.plugin_id.clone(),
         revision: row.revision,
+        shared_resources,
     })
 }
 
@@ -233,6 +297,7 @@ impl ResourceApi {
         };
         let (plugin_id, _) = Self::saves_identity(&caller)?;
         let (files, session) = (self.files.clone(), caller.session_id.clone());
+        let feed = self.library.clone();
         let (installation, game, after) = (
             request.installation_id.clone(),
             wanted_game.map(|id| id.to_string()),
@@ -263,7 +328,7 @@ impl ResourceApi {
                 };
                 let profiles = rows
                     .iter()
-                    .map(|row| to_proto(row, &owner, Some((&files, &session, namespace))))
+                    .map(|row| to_proto(row, &owner, &feed, Some((&files, &session, namespace))))
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok((profiles, next, namespace.revision()?))
             })
@@ -306,10 +371,11 @@ impl ResourceApi {
         let owner = Owner {
             plugin_id: grant.creator_plugin_id.clone(),
         };
+        let feed = self.library.clone();
         self.in_creator(grant, move |namespace| {
             namespace
                 .save_profile(&id)?
-                .map(|row| to_proto(&row, &owner, None))
+                .map(|row| to_proto(&row, &owner, &feed, None))
                 .transpose()
         })
         .await
@@ -328,6 +394,7 @@ impl ResourceApi {
         let wanted_game = game_id(&request.game_id)?.map(|id| id.to_string());
         let (plugin_id, _) = Self::saves_identity(&caller)?;
         let (files, session) = (self.files.clone(), caller.session_id.clone());
+        let feed = self.library.clone();
         let owner = Owner { plugin_id };
         let lookup = id.clone();
         let own = self
@@ -335,7 +402,7 @@ impl ResourceApi {
                 let Some(row) = namespace.save_profile(&lookup)? else {
                     return Ok(None);
                 };
-                let profile = to_proto(&row, &owner, Some((&files, &session, namespace)))?;
+                let profile = to_proto(&row, &owner, &feed, Some((&files, &session, namespace)))?;
                 Ok(Some((profile, namespace.revision()?)))
             })
             .await?;
@@ -430,6 +497,11 @@ impl ResourceApi {
             parts.push(directory.display_name.clone());
             parts.push(directory.naming_patterns.join("\u{0}"));
         }
+        for resource in &profile.shared_resources {
+            parts.push(resource.resource_id.clone());
+            parts.push(resource.approved_resource_handle.clone());
+            parts.push(resource.display_name.clone());
+        }
         let hash = request_hash(&parts.iter().map(String::as_str).collect::<Vec<_>>());
 
         let _serial = self.mutations.lock.lock().await;
@@ -439,7 +511,9 @@ impl ResourceApi {
         let context = mutation.context.clone().unwrap_or_default();
         let guard = self.guard(context, cap::GAME_SAVES_CREATE, caller.grant_revision);
         let (files, session) = (self.files.clone(), caller.session_id.clone());
+        let feed = self.library.clone();
         let directories = profile.directories.clone();
+        let shared_declarations = profile.shared_resources.clone();
         let row = SaveProfileRow {
             id: id.clone(),
             installation_id: entry.installation_id.clone(),
@@ -450,6 +524,7 @@ impl ResourceApi {
             format_version: profile.format_version,
             metadata,
             directories: String::new(),
+            shared_resources: String::new(),
             revision: 0,
             created_at: 0,
         };
@@ -475,8 +550,20 @@ impl ResourceApi {
                     &row.installation_id,
                     &directories,
                 )?;
+                let shared = crate::plugin_host::shared_resources::resolve_declarations(
+                    &files,
+                    &feed,
+                    namespace,
+                    &session,
+                    None,
+                    &row.installation_id,
+                    &row.runtime_id,
+                    &shared_declarations,
+                    &existing,
+                )?;
                 let row = SaveProfileRow {
                     directories: saves::directories_json(&resolved),
+                    shared_resources: crate::plugin_host::shared_resources::resources_json(&shared),
                     created_at: namespace.now(),
                     ..row
                 };
@@ -540,15 +627,16 @@ impl ResourceApi {
         if patch.field_mask.is_empty() {
             return Err(Status::invalid_argument("patch.field_mask is empty"));
         }
-        for path in &patch.field_mask {
+        let field_mask = patch.field_mask.clone();
+        for path in &field_mask {
             if !PATCHABLE.contains(&path.as_str()) {
                 return Err(Status::invalid_argument(format!(
                     "{path:?} cannot be updated; name, directories, runtime_id, format_id, \
-                     format_version and descriptive_metadata can"
+                     format_version, descriptive_metadata and shared_resources can"
                 )));
             }
         }
-        let touches = |field: &str| patch.field_mask.iter().any(|path| path == field);
+        let touches = move |field: &str| field_mask.iter().any(|path| path == field);
         // What the patch sets is checked now, before anything is read or locked.
         let name = touches("name")
             .then(|| saves::check_name("name", &new.name))
@@ -570,6 +658,16 @@ impl ResourceApi {
                 "a profile has 1 to {MAX_DIRECTORIES} directories"
             )));
         }
+        let shared_given = touches("shared_resources");
+        if shared_given
+            && new.shared_resources.len()
+                > crate::plugin_host::shared_resources::MAX_SHARED_RESOURCES
+        {
+            return Err(Status::invalid_argument(format!(
+                "a profile declares at most {} shared resources",
+                crate::plugin_host::shared_resources::MAX_SHARED_RESOURCES
+            )));
+        }
         let mut parts: Vec<String> = vec![
             "save-profile-update".into(),
             id.clone(),
@@ -586,6 +684,11 @@ impl ResourceApi {
             parts.push(directory.display_name.clone());
             parts.push(directory.naming_patterns.join("\u{0}"));
         }
+        for resource in &new.shared_resources {
+            parts.push(resource.resource_id.clone());
+            parts.push(resource.approved_resource_handle.clone());
+            parts.push(resource.display_name.clone());
+        }
         let hash = request_hash(&parts.iter().map(String::as_str).collect::<Vec<_>>());
 
         let _serial = self.mutations.lock.lock().await;
@@ -597,7 +700,10 @@ impl ResourceApi {
         let expected = mutation.expected_revision;
         let format_version = touches("format_version").then_some(new.format_version);
         let new_directories = new.directories.clone();
+        let new_shared = new.shared_resources.clone();
         let (files, session) = (self.files.clone(), caller.session_id.clone());
+        let feed = self.library.clone();
+        let runtime_for_shared = runtime_id.clone();
 
         // The plugin's own profile first; then, for another's, the grant for this operation.
         let lookup = id.clone();
@@ -607,16 +713,22 @@ impl ResourceApi {
             })
             .await?;
         let apply =
-            move |row: SaveProfileRow, directories: Option<Vec<Directory>>| -> SaveProfileRow {
+            move |row: SaveProfileRow,
+                  directories: Option<Vec<Directory>>,
+                  shared: Option<Vec<crate::plugin_host::shared_resources::SharedResource>>|
+                  -> SaveProfileRow {
                 SaveProfileRow {
                     name: name.unwrap_or(row.name),
-                    runtime_id: runtime_id.unwrap_or(row.runtime_id),
+                    runtime_id: runtime_id.clone().unwrap_or(row.runtime_id),
                     format_id: format_id.unwrap_or(row.format_id),
                     format_version: format_version.unwrap_or(row.format_version),
                     metadata: metadata.unwrap_or(row.metadata),
                     directories: directories
                         .map(|directories| saves::directories_json(&directories))
                         .unwrap_or(row.directories),
+                    shared_resources: shared
+                        .map(|shared| crate::plugin_host::shared_resources::resources_json(&shared))
+                        .unwrap_or(row.shared_resources),
                     ..row
                 }
             };
@@ -624,6 +736,17 @@ impl ResourceApi {
             let lookup = id.clone();
             self.in_namespace(&caller, move |namespace| {
                 let row = namespace.save_profile(&lookup)?.ok_or_else(not_found)?;
+                if touches("runtime_id")
+                    && !shared_given
+                    && !crate::plugin_host::shared_resources::resources_from_json(
+                        &row.shared_resources,
+                    )
+                    .is_empty()
+                {
+                    return Err(Status::failed_precondition(
+                        "shared resources must be declared again when the runtime binding changes",
+                    ));
+                }
                 let directories = if directories_given {
                     Some(resolve_directories(
                         &files,
@@ -635,7 +758,24 @@ impl ResourceApi {
                 } else {
                     None
                 };
-                namespace.put_save_profile(apply(row, directories), expected, &guard)
+                let shared = if shared_given {
+                    let existing = namespace.save_profiles()?;
+                    let runtime = runtime_for_shared.as_deref().unwrap_or(&row.runtime_id);
+                    Some(crate::plugin_host::shared_resources::resolve_declarations(
+                        &files,
+                        &feed,
+                        namespace,
+                        &session,
+                        Some(&row.id),
+                        &row.installation_id,
+                        runtime,
+                        &new_shared,
+                        &existing,
+                    )?)
+                } else {
+                    None
+                };
+                namespace.put_save_profile(apply(row, directories, shared), expected, &guard)
             })
             .await?
         } else {
@@ -649,10 +789,15 @@ impl ResourceApi {
                     "the directories of a profile can be changed only by the plugin that made it",
                 ));
             }
+            if shared_given {
+                return Err(Status::permission_denied(
+                    "the shared resources of a profile can be changed only by the plugin that made it",
+                ));
+            }
             let lookup = id.clone();
             self.in_creator(&grant, move |namespace| {
                 let row = namespace.save_profile(&lookup)?.ok_or_else(not_found)?;
-                namespace.put_save_profile(apply(row, None), expected, &guard)
+                namespace.put_save_profile(apply(row, None, None), expected, &guard)
             })
             .await?
         };

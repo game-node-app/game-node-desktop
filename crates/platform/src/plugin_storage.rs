@@ -29,7 +29,7 @@ pub const ENTRY_OVERHEAD_BYTES: u64 = 64;
 /// The longest an entry may live before it expires (30 days).
 pub const MAX_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
 
-const SCHEMA_VERSION: i64 = 11;
+const SCHEMA_VERSION: i64 = 12;
 const STORE_FILE: &str = "storage.sqlite3";
 /// Longest directory name derived from an identity before it is replaced by a digest.
 const MAX_COMPONENT_BYTES: usize = 120;
@@ -298,6 +298,37 @@ impl DurableStore {
                      max_bytes INTEGER NOT NULL CHECK (max_bytes >= 0)
                  ) STRICT;
                  PRAGMA user_version = 11;
+                 COMMIT;"
+            ))?;
+        }
+        if version < 12 {
+            // Shared emulator resources are declarations beside a profile's folders. Consent is
+            // stored separately so a changed declaration or scope becomes stale without losing
+            // the audit trail of what the user last reviewed.
+            let has_shared_resources = conn
+                .prepare("PRAGMA table_info(save_profiles)")?
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<Vec<_>, _>>()?
+                .iter()
+                .any(|name| name == "shared_resources");
+            let add_column = if has_shared_resources {
+                ""
+            } else {
+                "ALTER TABLE save_profiles ADD COLUMN shared_resources TEXT NOT NULL DEFAULT '[]';"
+            };
+            conn.execute_batch(&format!(
+                "BEGIN IMMEDIATE;
+                 {add_column}
+                 CREATE TABLE IF NOT EXISTS shared_resource_consents (
+                     profile_id TEXT NOT NULL,
+                     resource_id TEXT NOT NULL,
+                     declaration TEXT NOT NULL,
+                     scope TEXT NOT NULL,
+                     profile_revision INTEGER NOT NULL CHECK (profile_revision >= 0),
+                     approved_at INTEGER NOT NULL,
+                     PRIMARY KEY (profile_id, resource_id)
+                 ) STRICT;
+                 PRAGMA user_version = 12;
                  COMMIT;"
             ))?;
         }
@@ -862,6 +893,8 @@ pub struct SaveProfileRow {
     pub format_version: u32,
     pub metadata: String,
     pub directories: String,
+    /// Host-resolved shared emulator resource declarations, as JSON. The store only keeps them.
+    pub shared_resources: String,
     pub revision: u64,
     pub created_at: i64,
 }
@@ -875,7 +908,7 @@ pub enum ProfileSaved {
 }
 
 const PROFILE_COLUMNS: &str = "id, installation_id, game_id, name, runtime_id, format_id, \
-     format_version, metadata, directories, revision, created_at";
+     format_version, metadata, directories, shared_resources, revision, created_at";
 
 fn profile_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<SaveProfileRow> {
     Ok(SaveProfileRow {
@@ -888,8 +921,9 @@ fn profile_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<SaveProfileRow> {
         format_version: row.get::<_, i64>(6)? as u32,
         metadata: row.get(7)?,
         directories: row.get(8)?,
-        revision: row.get::<_, i64>(9)? as u64,
-        created_at: row.get(10)?,
+        shared_resources: row.get(9)?,
+        revision: row.get::<_, i64>(10)? as u64,
+        created_at: row.get(11)?,
     })
 }
 
@@ -904,13 +938,15 @@ impl DurableStore {
         let name_key = row.name.to_lowercase();
         let written = tx.execute(
             "INSERT INTO save_profiles (id, installation_id, game_id, name, name_key, runtime_id,
-                 format_id, format_version, metadata, directories, revision, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                 format_id, format_version, metadata, directories, shared_resources, revision,
+                 created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(id) DO UPDATE SET
                  name = excluded.name, name_key = excluded.name_key,
                  runtime_id = excluded.runtime_id, format_id = excluded.format_id,
                  format_version = excluded.format_version, metadata = excluded.metadata,
-                 directories = excluded.directories, revision = excluded.revision",
+                 directories = excluded.directories,
+                 shared_resources = excluded.shared_resources, revision = excluded.revision",
             params![
                 row.id,
                 row.installation_id,
@@ -922,6 +958,7 @@ impl DurableStore {
                 i64::from(row.format_version),
                 row.metadata,
                 row.directories,
+                row.shared_resources,
                 row.revision as i64,
                 row.created_at,
             ],
@@ -974,11 +1011,114 @@ impl DurableStore {
         let tx = self.conn.transaction()?;
         let removed = tx.execute("DELETE FROM save_profiles WHERE id = ?1", [id])?;
         tx.execute(
+            "DELETE FROM shared_resource_consents WHERE profile_id = ?1",
+            [id],
+        )?;
+        tx.execute(
             "UPDATE meta SET revision = MAX(revision, ?1) WHERE id = 1",
             [revision as i64],
         )?;
         tx.commit()?;
         Ok(removed > 0)
+    }
+}
+
+/// A persisted user decision about one declared shared resource. `declaration` and `scope` are
+/// canonical host fingerprints, never plugin-supplied text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SharedResourceConsentRow {
+    pub profile_id: String,
+    pub resource_id: String,
+    pub declaration: String,
+    pub scope: String,
+    pub profile_revision: u64,
+    pub approved_at: i64,
+}
+
+impl DurableStore {
+    /// Records or replaces the user's decision for one declaration.
+    pub fn save_shared_resource_consent(
+        &mut self,
+        row: &SharedResourceConsentRow,
+    ) -> Result<(), PluginStorageError> {
+        self.conn.execute(
+            "INSERT INTO shared_resource_consents
+                 (profile_id, resource_id, declaration, scope, profile_revision, approved_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(profile_id, resource_id) DO UPDATE SET
+                 declaration = excluded.declaration, scope = excluded.scope,
+                 profile_revision = excluded.profile_revision,
+                 approved_at = excluded.approved_at",
+            params![
+                row.profile_id,
+                row.resource_id,
+                row.declaration,
+                row.scope,
+                row.profile_revision as i64,
+                row.approved_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The decision for one declaration, if the user made one.
+    pub fn shared_resource_consent(
+        &self,
+        profile_id: &str,
+        resource_id: &str,
+    ) -> Result<Option<SharedResourceConsentRow>, PluginStorageError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT profile_id, resource_id, declaration, scope, profile_revision, approved_at
+                 FROM shared_resource_consents WHERE profile_id = ?1 AND resource_id = ?2",
+                params![profile_id, resource_id],
+                |row| {
+                    Ok(SharedResourceConsentRow {
+                        profile_id: row.get(0)?,
+                        resource_id: row.get(1)?,
+                        declaration: row.get(2)?,
+                        scope: row.get(3)?,
+                        profile_revision: row.get::<_, i64>(4)? as u64,
+                        approved_at: row.get(5)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    /// Every decision kept for a profile.
+    pub fn shared_resource_consents(
+        &self,
+        profile_id: &str,
+    ) -> Result<Vec<SharedResourceConsentRow>, PluginStorageError> {
+        let mut statement = self.conn.prepare(
+            "SELECT profile_id, resource_id, declaration, scope, profile_revision, approved_at
+             FROM shared_resource_consents WHERE profile_id = ?1 ORDER BY resource_id",
+        )?;
+        let rows = statement.query_map([profile_id], |row| {
+            Ok(SharedResourceConsentRow {
+                profile_id: row.get(0)?,
+                resource_id: row.get(1)?,
+                declaration: row.get(2)?,
+                scope: row.get(3)?,
+                profile_revision: row.get::<_, i64>(4)? as u64,
+                approved_at: row.get(5)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Forgets the decision, so the next use asks the user again.
+    pub fn revoke_shared_resource_consent(
+        &mut self,
+        profile_id: &str,
+        resource_id: &str,
+    ) -> Result<bool, PluginStorageError> {
+        Ok(self.conn.execute(
+            "DELETE FROM shared_resource_consents WHERE profile_id = ?1 AND resource_id = ?2",
+            params![profile_id, resource_id],
+        )? > 0)
     }
 }
 

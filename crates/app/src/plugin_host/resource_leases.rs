@@ -6,7 +6,6 @@
 
 #[cfg(test)]
 use super::grants::PluginIdentity;
-#[cfg(test)]
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
@@ -22,6 +21,19 @@ const MAX_LEASE_KEYS: usize = 64;
 pub struct ResourceLeaseKey([u8; 32]);
 
 impl ResourceLeaseKey {
+    /// Derives the shared lock for a host-canonicalized backing folder. Aliases, approval ids and
+    /// profile revisions deliberately do not split it: every route to the same folder must
+    /// serialize against one key.
+    pub(crate) fn from_backing_identity(backing: &[u8]) -> Option<Self> {
+        if backing.is_empty() || backing.len() > 32 * 1024 {
+            return None;
+        }
+        let mut digest = Sha256::new();
+        digest.update(b"gamenode.shared-save-resource.lease.v1\0");
+        hash_part(&mut digest, backing);
+        Some(Self(digest.finalize().into()))
+    }
+
     #[cfg(test)]
     pub(crate) fn derive(
         identity: &PluginIdentity,
@@ -38,17 +50,13 @@ impl ResourceLeaseKey {
         {
             return None;
         }
-        let mut digest = Sha256::new();
-        digest.update(b"gamenode.shared-save-resource.lease.v1\0");
         // These fields establish that the request was reviewed; they are deliberately not part
         // of the lock identity. All aliases and revisions of a backing resource must serialize.
         let _ = identity;
-        hash_part(&mut digest, approved_handle_identity);
-        Some(Self(digest.finalize().into()))
+        Self::from_backing_identity(approved_handle_identity)
     }
 }
 
-#[cfg(test)]
 fn hash_part(digest: &mut Sha256, bytes: &[u8]) {
     digest.update((bytes.len() as u64).to_be_bytes());
     digest.update(bytes);
@@ -56,7 +64,7 @@ fn hash_part(digest: &mut Sha256, bytes: &[u8]) {
 
 /// A conflict or inability to determine the resource state. Both deny the requested operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
-pub(crate) enum ResourceLeaseError {
+pub enum ResourceLeaseError {
     #[error("the shared resource is in use")]
     Busy,
     #[error("the shared resource state cannot be determined")]
@@ -64,7 +72,7 @@ pub(crate) enum ResourceLeaseError {
 }
 
 /// Marker for an RAII lease. Dropping it releases every key in its atomic set.
-pub(crate) trait ResourceLease: Send + Sync {}
+pub trait ResourceLease: Send + Sync {}
 
 /// Serializes supervised runtime use against backup and restore.
 pub(crate) trait ResourceLeaseCoordinator: Send + Sync {
@@ -75,7 +83,6 @@ pub(crate) trait ResourceLeaseCoordinator: Send + Sync {
     ) -> Result<Box<dyn ResourceLease>, ResourceLeaseError>;
 
     /// Atomically reserve all keys exclusively for backup or restore.
-    #[cfg(test)]
     fn acquire_exclusive(
         &self,
         keys: &[ResourceLeaseKey],
@@ -90,7 +97,7 @@ struct State {
 
 /// In-process coordinator shared by the launch supervisor and backup host.
 #[derive(Default)]
-pub(crate) struct ResourceLeases {
+pub struct ResourceLeases {
     state: Arc<Mutex<BTreeMap<ResourceLeaseKey, State>>>,
 }
 
@@ -172,12 +179,21 @@ impl ResourceLeaseCoordinator for ResourceLeases {
         self.reserve(keys, false)
     }
 
-    #[cfg(test)]
     fn acquire_exclusive(
         &self,
         keys: &[ResourceLeaseKey],
     ) -> Result<Box<dyn ResourceLease>, ResourceLeaseError> {
         self.reserve(keys, true)
+    }
+}
+
+impl ResourceLeases {
+    /// Production path for backup and restore jobs.
+    pub fn lease_exclusive(
+        &self,
+        keys: &[ResourceLeaseKey],
+    ) -> Result<Box<dyn ResourceLease>, ResourceLeaseError> {
+        ResourceLeaseCoordinator::acquire_exclusive(self, keys)
     }
 }
 

@@ -79,6 +79,8 @@ fn service(
         fixture.intents.clone(),
         fixture.saves.clone(),
         fixture.snapshots.clone(),
+        fixture.leases.clone(),
+        fixture.processes.clone(),
     )
     .with_shared_data(data, authorizer)
 }

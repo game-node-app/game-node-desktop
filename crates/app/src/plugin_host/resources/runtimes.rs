@@ -644,6 +644,27 @@ impl ResourceApi {
         if let Some(context) = context {
             self.authorize_commit(context, cap::FILES_READ, caller.grant_revision)?;
         }
+        let files = self.files.clone();
+        let feed = self.library.clone();
+        let installation = installation_id.to_owned();
+        let runtime_key = runtime.id.clone();
+        let lease_keys = if caller.namespace.is_some() {
+            self.in_namespace(caller, move |namespace| {
+                let mut keys = std::collections::BTreeSet::new();
+                for profile in namespace.save_profiles()?.into_iter().filter(|profile| {
+                    profile.installation_id == installation && profile.runtime_id == runtime_key
+                }) {
+                    let prepared = crate::plugin_host::shared_resources::prepare_for_use(
+                        &files, &feed, namespace, &profile,
+                    )?;
+                    keys.extend(prepared.into_iter().map(|resource| resource.lease_key));
+                }
+                Ok(keys.into_iter().collect())
+            })
+            .await?
+        } else {
+            Vec::new()
+        };
         Ok(crate::plugin_host::library::ResolvedRuntimeLaunch {
             runtime_id: runtime.id,
             version: runtime.version,
@@ -655,10 +676,34 @@ impl ResourceApi {
             binding_revision,
             arguments: runtime.launch_arguments,
             resources,
-            // This branch cannot create shared-save scopes. Data 1.8 must populate these keys
-            // from its reviewed host-owned resource bindings before enabling those scopes.
-            lease_keys: Vec::new(),
+            lease_keys,
         })
+    }
+
+    /// Resolves one approved runtime's executable identity for external-process checks.
+    pub(super) async fn resolve_runtime_executable(
+        &self,
+        caller: &ResourceCaller,
+        runtime_id: &str,
+    ) -> Result<String, Status> {
+        if !valid_id(runtime_id) {
+            return Err(Status::failed_precondition(
+                "the approved runtime binding is invalid",
+            ));
+        }
+        let owner = mutation_owner(caller);
+        let host = self
+            .library
+            .host()
+            .ok_or_else(|| Status::unavailable("runtime resources are unavailable"))?;
+        let runtime = host
+            .runtime_resource(owner, runtime_id.to_owned())
+            .await?
+            .ok_or_else(|| Status::unavailable("the approved runtime binding is unavailable"))?;
+        let resolved = self
+            .resolve_reference_path(caller, runtime.executable, None, false)
+            .await?;
+        Ok(resolved.path)
     }
 
     fn runtime_core(

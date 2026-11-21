@@ -42,6 +42,7 @@ import type {
 } from './ports';
 import type { RememberedConfirmation } from './pluginConfirmations';
 import type { PluginFolderApproval } from './pluginFolderApprovals';
+import type { PluginSharedResourceReview } from './sharedResources';
 import type { PluginConfigurationModes, PluginConfigurationStatus, PluginSettingsContext, PluginSettingsReply, PluginSettingsValue } from './pluginSettings';
 import { createDefaultSnapshot } from './types';
 
@@ -384,6 +385,32 @@ export const commands = {
   pluginLibraryRootSetWatching: (pluginId: string, publisherFingerprint: string, id: string, watching: boolean) =>
     safeInvoke<boolean>(
       'plugin_library_root_set_watching', { pluginId, publisherFingerprint, id, watching }, () => false,
+    ),
+
+  /** Declared shared emulator resources and the host-resolved games affected by each. */
+  pluginSharedResourceReviews: (pluginId: string, publisherFingerprint: string) =>
+    safeInvoke<PluginSharedResourceReview[]>(
+      'plugin_shared_resource_reviews', { pluginId, publisherFingerprint }, () => [],
+    ),
+
+  /** Accepts the exact current declaration and affected-game scope of one shared resource. */
+  pluginSharedResourceAccept: (
+    pluginId: string, publisherFingerprint: string, profileId: string, resourceId: string,
+  ) =>
+    safeInvoke<void>(
+      'plugin_shared_resource_accept',
+      { pluginId, publisherFingerprint, profileId, resourceId },
+      () => undefined,
+    ),
+
+  /** Forgets a shared-resource consent; the next use asks for a fresh review. */
+  pluginSharedResourceRevoke: (
+    pluginId: string, publisherFingerprint: string, profileId: string, resourceId: string,
+  ) =>
+    safeInvoke<boolean>(
+      'plugin_shared_resource_revoke',
+      { pluginId, publisherFingerprint, profileId, resourceId },
+      () => false,
     ),
 
   /** What the user allowed one plugin to start without asking, in the active profile. */

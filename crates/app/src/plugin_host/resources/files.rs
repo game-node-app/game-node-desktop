@@ -58,7 +58,7 @@ fn op_name(op: u8) -> &'static str {
 }
 
 /// How a refusal of the file layer reaches the plugin. None of them carries a path.
-pub(super) fn file_status(error: FileError) -> Status {
+pub(crate) fn file_status(error: FileError) -> Status {
     match error {
         FileError::Denied => Status::permission_denied("the path is outside the approved access"),
         FileError::Access => Status::permission_denied("the operating system refused access"),
@@ -74,7 +74,7 @@ pub(super) fn file_status(error: FileError) -> Status {
     }
 }
 
-pub(super) fn root_of(approval: &FileApproval) -> ApprovedRoot {
+pub(crate) fn root_of(approval: &FileApproval) -> ApprovedRoot {
     ApprovedRoot {
         path: PathBuf::from(&approval.root),
         identity: Identity {
@@ -215,10 +215,10 @@ fn declared_folders(declared: &Declared, reserved: &Reserved) -> Vec<DeclaredFol
 }
 
 /// What a handle opens, once every check passed.
-pub(super) struct Opened {
-    pub(super) approval: FileApproval,
-    pub(super) confined: Confined,
-    pub(super) path: Vec<String>,
+pub(crate) struct Opened {
+    pub(crate) approval: FileApproval,
+    pub(crate) confined: Confined,
+    pub(crate) path: Vec<String>,
 }
 
 /// Re-derives the authority of `handle` for `op`: it must belong to this session, name an
@@ -305,7 +305,7 @@ fn standing_approval(
 
 /// [`open_handle`] for an approval and a path below it that the host already holds (a save
 /// profile's folder), rather than a handle a plugin presented.
-pub(super) fn open_approval(
+pub(crate) fn open_approval(
     files: &FileAccess,
     feed: &LibraryFeed,
     namespace: &mut Namespace<'_>,
@@ -355,7 +355,7 @@ pub(super) fn open_handle_inspect(
 }
 
 /// [`open_handle_inspect`] for an approval and a path the host already holds.
-pub(super) fn open_approval_inspect(
+pub(crate) fn open_approval_inspect(
     files: &FileAccess,
     feed: &LibraryFeed,
     namespace: &mut Namespace<'_>,

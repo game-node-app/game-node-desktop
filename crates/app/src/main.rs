@@ -201,6 +201,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?);
     let processes: Arc<dyn gamenode_core::ports::Processes> =
         Arc::new(gamenode_platform::processes::HostProcesses::new());
+    // One coordinator instance is shared by supervised runtime launches and backup/restore jobs.
+    let custom_launch_leases =
+        Arc::new(gamenode_app::plugin_host::resource_leases::ResourceLeases::default());
 
     let plugin_api = gamenode_app::plugin_host::PluginApi {
         shared_policies: Arc::new(
@@ -216,6 +219,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         files: Arc::new(gamenode_app::plugin_host::files::FileAccess::new(
             gamenode_platform::plugin_files::Reserved::new(&[paths.data_dir().to_path_buf()]),
         )),
+        leases: custom_launch_leases.clone(),
+        processes: Some(processes.clone()),
         ..Default::default()
     };
     plugin_api
@@ -450,6 +455,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         initial_settings,
         library,
         Box::new(random::nonce),
+        custom_launch_leases.clone(),
         move |snapshot| {
             pub_clone.publish(snapshot);
         },
@@ -470,6 +476,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             plugin_api.files.clone(),
             plugin_api.library.clone(),
             root_approvals.clone(),
+        ),
+    );
+    let shared_resources = Arc::new(
+        gamenode_app::plugin_host::shared_resources::PluginSharedResources::new(
+            plugin_api.storage.clone(),
+            plugin_api.providers.profiles(),
+            plugin_api.files.clone(),
+            plugin_api.library.clone(),
         ),
     );
     if let Some(server) = plugin_api_server.as_ref() {
@@ -494,6 +508,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     builder = builder.manage(confirmations);
     builder = builder.manage(root_approvals);
     builder = builder.manage(folder_approvals);
+    builder = builder.manage(shared_resources);
     builder = builder.manage(plugin_approvals);
     builder = builder.manage(plugin_updates.clone());
     builder = builder.manage(logging.location().clone());
@@ -645,6 +660,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         commands::plugin_folder_revoke,
         commands::plugin_folder_change,
         commands::plugin_library_root_set_watching,
+        commands::plugin_shared_resource_reviews,
+        commands::plugin_shared_resource_accept,
+        commands::plugin_shared_resource_revoke,
         commands::plugin_remembered_confirmations,
         commands::plugin_revoke_confirmation,
         commands::provider_sign_in,

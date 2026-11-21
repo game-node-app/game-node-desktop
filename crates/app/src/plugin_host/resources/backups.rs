@@ -4,7 +4,9 @@ use super::mutations::{mutation_key, request_hash};
 use super::*;
 use crate::plugin_host::intents::{Binding, ConfirmationRequest, Operation, Verdict};
 use crate::plugin_host::jobs::{Fence, JobOwner, Outcome, work};
+use crate::plugin_host::resource_leases::ResourceLease;
 use crate::plugin_host::saves::{self, Directory};
+use crate::plugin_host::shared_resources::{self, ExternalUse, RuntimeUseCheck};
 use gamenode_core::drm_free::{self as domain, BackupAuthority, BackupOperation};
 use gamenode_platform::plugin_files::{ApprovedRoot, Budget, Confined};
 use gamenode_platform::plugin_storage::SaveProfileRow;
@@ -123,9 +125,22 @@ struct Authority {
     frozen: Frozen,
     checkpoint: Fence,
     reviewed_targets: Option<Vec<String>>,
+    /// Rechecks the approved runtime's externally observed process state before file access.
+    runtime_check: Option<RuntimeUseCheck>,
 }
 impl BackupAuthority for Authority {
     fn check(&self) -> Result<(), domain::LocalError> {
+        if let Some(check) = &self.runtime_check {
+            match check.inspect() {
+                ExternalUse::Idle => {}
+                ExternalUse::Active => return Err(domain::LocalError::Busy),
+                ExternalUse::Unknown => {
+                    return Err(domain::LocalError::Failed(
+                        "external runtime use cannot be verified".into(),
+                    ));
+                }
+            }
+        }
         (self.checkpoint)().map_err(|e| {
             if e.code() == tonic::Code::Cancelled {
                 domain::LocalError::Cancelled
@@ -322,25 +337,99 @@ impl ResourceApi {
         Ok((caller, frozen))
     }
 
+    /// Resolves the approved runtime identity and shared-resource leases for an operation that
+    /// writes or restores files. Unknown external process state fails closed.
+    async fn shared_use(
+        &self,
+        caller: &ResourceCaller,
+        frozen: &Frozen,
+    ) -> Result<(Option<Box<dyn ResourceLease>>, Option<RuntimeUseCheck>), Status> {
+        let declarations = shared_resources::resources_from_json(&frozen.profile.shared_resources);
+        if frozen.profile.runtime_id.is_empty() {
+            if !declarations.is_empty() {
+                return Err(Status::failed_precondition(
+                    "the shared resource has no approved runtime binding",
+                ));
+            }
+            return Ok((None, None));
+        }
+        let executable = self
+            .resolve_runtime_executable(caller, &frozen.profile.runtime_id)
+            .await?;
+        let check = RuntimeUseCheck {
+            executable,
+            processes: self.processes.clone(),
+        };
+        match check.inspect() {
+            ExternalUse::Idle => {}
+            ExternalUse::Active => {
+                return Err(Status::failed_precondition(
+                    "the approved runtime is running; stop it before backing up or restoring",
+                ));
+            }
+            ExternalUse::Unknown => {
+                return Err(Status::unavailable(
+                    "external runtime use cannot be verified; the operation is refused",
+                ));
+            }
+        }
+        let files = self.files.clone();
+        let feed = self.library.clone();
+        let profile = frozen.profile.clone();
+        let prepared = self
+            .in_namespace(caller, move |namespace| {
+                shared_resources::prepare_for_use(&files, &feed, namespace, &profile)
+            })
+            .await?;
+        let keys = prepared
+            .iter()
+            .map(|resource| resource.lease_key)
+            .collect::<Vec<_>>();
+        let lease = if keys.is_empty() {
+            None
+        } else {
+            Some(
+                self.leases
+                    .lease_exclusive(&keys)
+                    .map_err(|error| match error {
+                        crate::plugin_host::resource_leases::ResourceLeaseError::Busy => {
+                            Status::failed_precondition("a shared save resource is in use")
+                        }
+                        crate::plugin_host::resource_leases::ResourceLeaseError::Unknown => {
+                            Status::unavailable("shared save resource use cannot be confirmed")
+                        }
+                    })?,
+            )
+        };
+        Ok((lease, Some(check)))
+    }
+
     async fn backup_request(
         &self,
         frozen: &Frozen,
         caller: &ResourceCaller,
         operation: BackupOperation,
         destination: Option<String>,
-    ) -> Result<(Arc<dyn domain::BackupEngine>, domain::ScopedBackupRequest), Status> {
+        exclusive: bool,
+    ) -> Result<
+        (
+            Arc<dyn domain::BackupEngine>,
+            domain::ScopedBackupRequest,
+            Option<Box<dyn ResourceLease>>,
+            Option<RuntimeUseCheck>,
+        ),
+        Status,
+    > {
         let host = self.library.host().ok_or_else(unavailable)?;
         let mut context = host.backup_context(frozen.entry_key.clone()).await?;
         if !context.engine.scoped_available() {
             return Err(unavailable());
         }
-        // Runtime session/resource coordination is not available before tasks 13.2/14.2. Never
-        // assume a content exit means the shared emulator stopped.
-        if !frozen.profile.runtime_id.is_empty() {
-            return Err(Status::unavailable(
-                "runtime backup coordination is unavailable",
-            ));
-        }
+        let (lease, runtime_check) = if exclusive {
+            self.shared_use(caller, frozen).await?
+        } else {
+            (None, None)
+        };
         context.target.installation_id =
             hex(Sha256::digest(frozen.profile.installation_id.as_bytes()));
         let owner = hex(caller
@@ -386,6 +475,8 @@ impl ResourceApi {
                 destination,
                 operation,
             },
+            lease,
+            runtime_check,
         ))
     }
 
@@ -503,6 +594,7 @@ impl ResourceApi {
             frozen: frozen.clone(),
             checkpoint,
             reviewed_targets: None,
+            runtime_check: None,
         }
     }
 
@@ -531,8 +623,8 @@ impl ResourceApi {
             )
             .await?;
         no_common_data(page.common_data_categories.as_ref())?;
-        let (engine, template) = self
-            .backup_request(&frozen, &caller, BackupOperation::History, None)
+        let (engine, template, _, _) = self
+            .backup_request(&frozen, &caller, BackupOperation::History, None, false)
             .await?;
         let id = frozen.profile.id.clone();
         let mut sources = self
@@ -790,12 +882,13 @@ impl ResourceApi {
                 backup: a.backup.clone(),
             })
             .unwrap_or(BackupOperation::Backup);
-        let (engine, request) = self
+        let (engine, request, lease, runtime_check) = self
             .backup_request(
                 &frozen,
                 &caller,
                 operation,
                 archive.as_ref().map(|a| a.destination.clone()),
+                true,
             )
             .await?;
         if archive.is_some() && !self.intents.can_confirm() {
@@ -843,6 +936,8 @@ impl ResourceApi {
         let c = caller.clone();
         let cx = context.clone();
         let run = work(move |mut ctx| async move {
+            // Held until the job ends, including a restore confirmation dialog.
+            let _lease = lease;
             let _pending = pending;
             let cancelled = Arc::new(AtomicBool::new(false));
             let mut request = request;
@@ -850,8 +945,9 @@ impl ResourceApi {
             let mut reviewed_targets = None;
             let checkpoint = ctx.checkpoint();
             if let Some(archive) = archive {
-                let authority =
+                let mut authority =
                     api.backup_authority(&c, &cx, permission, &frozen, checkpoint.clone());
+                authority.runtime_check = runtime_check.clone();
                 let preview = match api
                     .execute_backup(
                         engine.clone(),
@@ -887,8 +983,9 @@ impl ResourceApi {
                     .and_then(serde_json::Value::as_object)
                     .map(|m| m.keys().cloned().collect::<Vec<_>>())
                     .unwrap_or_default();
-                let authority =
+                let mut authority =
                     api.backup_authority(&c, &cx, permission, &frozen, checkpoint.clone());
+                authority.runtime_check = runtime_check.clone();
                 let validation = tokio::task::spawn_blocking(move || {
                     authority
                         .validate_targets(&files, &registry)
@@ -953,6 +1050,7 @@ impl ResourceApi {
             }
             let mut authority = api.backup_authority(&c, &cx, permission, &frozen, checkpoint);
             authority.reviewed_targets = reviewed_targets;
+            authority.runtime_check = runtime_check;
             match api
                 .execute_backup(engine, request, authority, cancelled)
                 .await

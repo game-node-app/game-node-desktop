@@ -814,6 +814,7 @@ fn harness_with_providers(
         Settings::default(),
         LibraryMachine::new(providers, Default::default()),
         nonce,
+        Arc::new(crate::plugin_host::resource_leases::ResourceLeases::default()),
         move |s| {
             publish_count.fetch_add(1, Ordering::SeqCst);
             let _ = tx.send(s);

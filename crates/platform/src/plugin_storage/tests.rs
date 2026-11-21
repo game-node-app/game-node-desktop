@@ -197,6 +197,66 @@ fn retention_policy_prunes_by_age_and_size_without_touching_the_newest_entry() {
 }
 
 #[test]
+fn a_version_eleven_store_gains_shared_resources_and_consent() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("ns");
+    let mut current = store(&dir);
+    current
+        .save_profile(&profile("a", "inst", "Card", 1))
+        .unwrap();
+    drop(current);
+
+    let conn = Connection::open(dir.join(STORE_FILE)).unwrap();
+    conn.execute_batch(
+        "DROP TABLE shared_resource_consents;
+         ALTER TABLE save_profiles DROP COLUMN shared_resources;
+         PRAGMA user_version = 11;",
+    )
+    .unwrap();
+    drop(conn);
+
+    let mut upgraded = store(&dir);
+    assert_eq!(
+        upgraded
+            .save_profile_row("a")
+            .unwrap()
+            .unwrap()
+            .shared_resources,
+        "[]"
+    );
+    let consent = SharedResourceConsentRow {
+        profile_id: "a".into(),
+        resource_id: "memory-card".into(),
+        declaration: "declaration".into(),
+        scope: "scope".into(),
+        profile_revision: 1,
+        approved_at: 100,
+    };
+    upgraded.save_shared_resource_consent(&consent).unwrap();
+    assert_eq!(
+        upgraded
+            .shared_resource_consent("a", "memory-card")
+            .unwrap(),
+        Some(consent.clone())
+    );
+    assert!(
+        upgraded
+            .revoke_shared_resource_consent("a", "memory-card")
+            .unwrap()
+    );
+    assert_eq!(
+        upgraded
+            .shared_resource_consent("a", "memory-card")
+            .unwrap(),
+        None
+    );
+    // Removing the profile also removes its remaining decisions.
+    upgraded.save_shared_resource_consent(&consent).unwrap();
+    upgraded.delete_save_profile("a", 2).unwrap();
+    assert!(upgraded.shared_resource_consents("a").unwrap().is_empty());
+}
+
+#[test]
 fn deleting_persistence_entries_is_selected_and_advances_the_revision() {
     let temp = tempfile::tempdir().unwrap();
     let mut store = store(temp.path());
@@ -677,6 +737,7 @@ fn profile(id: &str, installation: &str, name: &str, revision: u64) -> SaveProfi
         format_version: 0,
         metadata: "{}".into(),
         directories: "[]".into(),
+        shared_resources: "[]".into(),
         revision,
         created_at: 100,
     }

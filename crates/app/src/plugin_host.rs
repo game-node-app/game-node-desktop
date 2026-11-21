@@ -40,6 +40,7 @@ pub mod provider;
 pub mod publisher_trust;
 pub mod resource_leases;
 pub mod resources;
+pub mod retention;
 pub mod runtime;
 pub mod saves;
 pub mod services;
@@ -566,6 +567,7 @@ impl PluginApi {
     /// Connects the account-bound permission store to the host's resource adapters.
     pub fn set_state_layout(&self, layout: profile::PluginStateLayout) {
         self.providers.set_state_layout(layout.clone());
+        self.providers.set_shared_pool(self.shared_pool.clone());
         self.network
             .set_scopes(Arc::new(network::PersistedOriginScopes {
                 profiles: self.providers.profiles(),

@@ -188,6 +188,80 @@ fn runtime(handle: String) -> RuntimeSpec {
     }
 }
 
+impl Fixture {
+    /// A fixture with one approved installation folder holding `emulator`, registered as the
+    /// caller's runtime. The returned path is the installation folder.
+    pub(super) async fn approved_runtime(
+        grants: &[&'static str],
+    ) -> (Self, RuntimeRecord, std::path::PathBuf) {
+        let fixture = Self::new(grants).await;
+        let dir = fixture.game_dir(
+            "runtime",
+            &[("emulator", b"binary"), ("content.rom", b"rom")],
+        );
+        fixture.library_in(&[("fixture:1", Some(3), "Emulated", &dir)]);
+        let root = fixture.approve("id-fixture:1", "installation", &dir).await;
+        let executable = fixture.child(&root, "emulator").await;
+        fixture.with_host();
+        let runtime = fixture.runtime_record(executable).await;
+        (fixture, runtime, dir)
+    }
+
+    /// Registers an already approved executable handle as this plugin's runtime.
+    async fn runtime_record(&self, executable_handle: String) -> RuntimeRecord {
+        self.host
+            .resources()
+            .unwrap()
+            .runtime_register(
+                RuntimeSpec {
+                    name: "Runtime".into(),
+                    version: "1.0".into(),
+                    executable_handle,
+                    supported_formats: vec!["rom".into()],
+                    platform: "linux".into(),
+                    argument_template: vec![SdkArgument::Literal("--safe".into())],
+                    extensions: HashMap::new(),
+                },
+                0,
+                "register-runtime",
+            )
+            .await
+            .unwrap()
+            .runtime
+            .unwrap()
+    }
+
+    /// Points a runtime at another approved executable and returns the revised record.
+    pub(super) async fn update_runtime_executable(
+        &self,
+        runtime: &RuntimeRecord,
+        executable_handle: String,
+    ) -> RuntimeRecord {
+        self.host
+            .resources()
+            .unwrap()
+            .runtime_update(
+                &runtime.id,
+                RuntimeSpec {
+                    name: runtime.name.clone(),
+                    version: runtime.version.clone(),
+                    executable_handle,
+                    supported_formats: runtime.supported_formats.clone(),
+                    platform: runtime.platform.clone(),
+                    argument_template: vec![SdkArgument::Literal("--safe".into())],
+                    extensions: HashMap::new(),
+                },
+                ["executable_handle"],
+                runtime.revision,
+                "update-runtime",
+            )
+            .await
+            .unwrap()
+            .runtime
+            .unwrap()
+    }
+}
+
 #[tokio::test]
 async fn runtime_namespace_patches_are_owner_checked_revisioned_and_preserve_old_client_data() {
     let fixture = Fixture::new(&[

@@ -805,6 +805,210 @@ async fn a_removed_save_is_missing_while_its_approved_storage_remains_available(
     assert!(!saves.join("states/s1.sav").exists());
 }
 
+const RUNTIME: &[&str] = &[
+    cap::GAME_STORAGE_INSPECT,
+    cap::GAME_SAVES_INSPECT,
+    cap::GAME_RUNTIME_CREATE,
+    cap::GAME_RUNTIME_READ,
+    cap::GAME_RUNTIME_UPDATE,
+    cap::FILES_READ,
+];
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_runtime_executable_is_inspected_without_exposing_its_path() {
+    let (fixture, runtime, dir) = Fixture::approved_runtime(RUNTIME).await;
+    set_time(&dir.join("emulator"), 1_700_000_123, 500_000_000);
+    let handle = runtime.executable_handle;
+    assert!(!handle.contains('/') && !handle.contains(dir.to_str().unwrap()));
+
+    let size = fixture.size(&handle, 0).await.unwrap();
+    assert_eq!(
+        (
+            size.logical_bytes,
+            size.file_count,
+            size.directory_count,
+            size.complete
+        ),
+        (6, 1, 0, true),
+        "the runtime executable is a single approved file"
+    );
+    assert_eq!(size.availability, InspectionAvailability::Available as i32);
+
+    let access = fixture.access(&handle, &[]).await.unwrap();
+    let entry = access.entries.first().unwrap();
+    assert_eq!(access.entries.len(), 1);
+    assert_eq!(entry.entry_handle, handle);
+    assert_eq!(entry.read_only_state, "writable");
+    assert!(entry.effective_access.starts_with("read=allowed"));
+    assert_eq!(
+        access.availability,
+        InspectionAvailability::Available as i32
+    );
+
+    let modified = fixture.modified(&handle, 0).await.unwrap();
+    let stamp = modified.entries.first().unwrap();
+    assert_eq!(modified.entries.len(), 1);
+    assert_eq!(stamp.modified_at, 1_700_000_123);
+    assert_eq!(stamp.precision, "subsecond");
+    assert!(!stamp.entry_handle.is_empty() && stamp.entry_handle != handle);
+    assert_eq!(modified.aggregate_latest_at, Some(1_700_000_123));
+    assert_eq!(
+        fixture
+            .size(&stamp.entry_handle, 0)
+            .await
+            .unwrap()
+            .logical_bytes,
+        6
+    );
+
+    // No answer carries the folder or file path: only opaque handles and observations.
+    for reply in [
+        format!("{size:?}"),
+        format!("{access:?}"),
+        format!("{modified:?}"),
+    ] {
+        assert!(!reply.contains(dir.to_str().unwrap()), "{reply}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_runtime_revision_mints_a_new_handle_without_redirecting_the_old_one() {
+    let (fixture, runtime, dir) = Fixture::approved_runtime(RUNTIME).await;
+    std::fs::write(dir.join("other-emulator"), b"other executable").unwrap();
+    let root = fixture
+        .request_access("id-fixture:1", &["read"], &["installation"])
+        .await
+        .unwrap()
+        .handles
+        .remove(0)
+        .handle;
+    let other = fixture.child(&root, "other-emulator").await;
+    let updated = fixture.update_runtime_executable(&runtime, other).await;
+
+    assert_eq!(updated.revision, runtime.revision + 1);
+    assert_ne!(updated.executable_handle, runtime.executable_handle);
+    // A revision points the new handle at the new file, and leaves the old handle where it was.
+    assert_eq!(
+        fixture
+            .size(&updated.executable_handle, 0)
+            .await
+            .unwrap()
+            .logical_bytes,
+        16
+    );
+    assert_eq!(
+        fixture
+            .size(&runtime.executable_handle, 0)
+            .await
+            .unwrap()
+            .logical_bytes,
+        6
+    );
+    assert!(!updated.executable_handle.contains(dir.to_str().unwrap()));
+    assert!(!format!("{updated:?}").contains(dir.to_str().unwrap()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_runtime_handle_is_fenced_by_its_session_approval_and_scope() {
+    let (fixture, runtime, dir) = Fixture::approved_runtime(RUNTIME).await;
+    let handle = runtime.executable_handle;
+    let caller = fixture.caller();
+    let approval_id = fixture
+        .storage
+        .run_for_host(
+            caller.namespace.as_ref().unwrap(),
+            caller.profile_epoch,
+            |namespace| {
+                Ok(namespace
+                    .approval_for(INSTALLATION, "installation")?
+                    .unwrap()
+                    .id)
+            },
+        )
+        .await
+        .unwrap();
+
+    // A handle sealed for another session is not this session's, even with the same approval.
+    let foreign =
+        fixture
+            .files
+            .seal_handle("another-session", &approval_id, &["emulator".to_owned()]);
+    // A well-formed handle still cannot name a path outside its approval.
+    let escape = fixture.files.seal_handle(
+        &caller.session_id,
+        &approval_id,
+        &["..".to_owned(), "outside".to_owned()],
+    );
+    for denied in [
+        fixture.size("forged", 0).await.unwrap_err(),
+        fixture.size(&foreign, 0).await.unwrap_err(),
+        fixture.access(&foreign, &[]).await.unwrap_err(),
+        fixture.modified(&foreign, 0).await.unwrap_err(),
+    ] {
+        assert_eq!(denied.code(), Code::NotFound);
+        assert!(!denied.message().contains(dir.to_str().unwrap()));
+    }
+    assert_eq!(
+        fixture.size(&escape, 0).await.unwrap_err().code(),
+        Code::PermissionDenied
+    );
+
+    // A game now installed in the same folder was never part of the confirmed scope.
+    fixture.library_in(&[
+        ("fixture:1", Some(3), "Emulated", &dir),
+        ("fixture:2", Some(4), "Also here", &dir),
+    ]);
+    for denied in [
+        fixture.size(&handle, 0).await.unwrap_err(),
+        fixture.access(&handle, &[]).await.unwrap_err(),
+        fixture.modified(&handle, 0).await.unwrap_err(),
+    ] {
+        assert_eq!(denied.code(), Code::FailedPrecondition);
+    }
+
+    // Revoking the approval takes the place with it, as it does for a save folder.
+    fixture
+        .storage
+        .run_for_host(
+            caller.namespace.as_ref().unwrap(),
+            caller.profile_epoch,
+            move |namespace| namespace.revoke_approval(&approval_id),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        fixture.size(&handle, 0).await.unwrap_err().code(),
+        Code::NotFound
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_runtime_handle_needs_installation_inspection_not_file_read() {
+    let (fixture, runtime, _) = Fixture::approved_runtime(RUNTIME).await;
+    let handle = runtime.executable_handle;
+    assert_eq!(fixture.size(&handle, 0).await.unwrap().file_count, 1);
+
+    fixture
+        .api
+        .revoke_session_permission("fixture", cap::FILES_READ)
+        .await;
+    assert_eq!(fixture.size(&handle, 0).await.unwrap().file_count, 1);
+    assert_eq!(fixture.access(&handle, &[]).await.unwrap().entries.len(), 1);
+    assert_eq!(fixture.modified(&handle, 0).await.unwrap().entries.len(), 1);
+
+    fixture
+        .api
+        .revoke_session_permission("fixture", cap::GAME_STORAGE_INSPECT)
+        .await;
+    for denied in [
+        fixture.size(&handle, 0).await.unwrap_err(),
+        fixture.access(&handle, &[]).await.unwrap_err(),
+        fixture.modified(&handle, 0).await.unwrap_err(),
+    ] {
+        assert_eq!(denied.code(), Code::PermissionDenied);
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn unavailable_storage_never_creates_a_source_folder_or_erases_its_profile() {
     let (fixture, saves) = Fixture::emulator(INSPECT).await;

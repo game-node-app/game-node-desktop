@@ -637,6 +637,167 @@ async fn hashing_needs_no_file_permission_and_changes_nothing() {
     );
 }
 
+const RUNTIME_INSPECT: &[&str] = &[
+    cap::GAME_STORAGE_INSPECT,
+    cap::GAME_SAVES_INSPECT,
+    cap::GAME_RUNTIME_CREATE,
+    cap::GAME_RUNTIME_READ,
+    cap::FILES_READ,
+];
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_runtime_executable_is_fingerprinted_freshly_and_compared_without_its_path() {
+    let (fixture, runtime, dir) = Fixture::approved_runtime(RUNTIME_INSPECT).await;
+    let executable = dir.join("emulator");
+    set_time(&executable, 1_600_000_000);
+    let handle = runtime.executable_handle;
+    assert!(!handle.contains('/') && !handle.contains(dir.to_str().unwrap()));
+
+    let first = fixture.take("a", &handle).await;
+    assert_eq!(first.consistency, "best_effort");
+    assert_eq!(
+        first.digest,
+        tree_digest(&[Record {
+            label: "emulator".into(),
+            approval_id: String::new(),
+            path: vec![],
+            directory: false,
+            size: 6,
+            digest: Some(sha(b"binary")),
+            unreadable: false,
+            unstable: false,
+        }])
+        .to_vec()
+    );
+    // The job is the existing one; the same key answers with the stored snapshot.
+    assert!(!first.job_id.is_empty());
+    let replay = fixture.fingerprint("a", &handle, 0).await.unwrap();
+    assert_eq!(
+        (replay.snapshot_id.as_str(), replay.digest),
+        (first.snapshot_id.as_str(), first.digest.clone())
+    );
+    assert!(!format!("{first:?}").contains(dir.to_str().unwrap()));
+
+    // The bytes change while size and modification time stay the same.
+    std::fs::write(&executable, b"BINARY").unwrap();
+    set_time(&executable, 1_600_000_000);
+    let second = fixture.take("b", &handle).await;
+    assert_ne!(first.digest, second.digest);
+    let changed = fixture
+        .diff(&first.snapshot_id, &second.snapshot_id, 0, "")
+        .await
+        .unwrap();
+    assert_eq!(changed.status, "changed");
+    let change = changed.changes.first().unwrap();
+    assert_eq!(changed.changes.len(), 1);
+    assert_eq!(
+        (
+            change.change_kind.as_str(),
+            change.relative_path.as_str(),
+            change.previous_size_bytes,
+            change.current_size_bytes
+        ),
+        ("modified", "emulator", 6, 6)
+    );
+    assert!(!change.entry_handle.is_empty() && !change.entry_handle.contains('/'));
+    assert!(!format!("{changed:?}").contains(dir.to_str().unwrap()));
+    // The entry handle is good for another fingerprint of the same runtime file.
+    assert!(fixture.take("c", &change.entry_handle).await.complete);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_runtime_fingerprint_is_fenced_by_its_session_approval_and_scope() {
+    let (fixture, runtime, dir) = Fixture::approved_runtime(RUNTIME_INSPECT).await;
+    let handle = runtime.executable_handle;
+    let caller = fixture.caller();
+    let approval_id = fixture
+        .storage
+        .run_for_host(
+            caller.namespace.as_ref().unwrap(),
+            caller.profile_epoch,
+            |namespace| {
+                Ok(namespace
+                    .approval_for(INSTALLATION, "installation")?
+                    .unwrap()
+                    .id)
+            },
+        )
+        .await
+        .unwrap();
+
+    // Forged and foreign-session handles are the same answer.
+    let foreign =
+        fixture
+            .files
+            .seal_handle("another-session", &approval_id, &["emulator".to_owned()]);
+    for denied in [
+        fixture.fingerprint("f", "forged", 0).await.unwrap_err(),
+        fixture.fingerprint("g", &foreign, 0).await.unwrap_err(),
+    ] {
+        assert_eq!(denied.code(), Code::NotFound);
+        assert!(!denied.message().contains(dir.to_str().unwrap()));
+    }
+
+    // A new game in the same folder changes the confirmed scope.
+    fixture.library_in(&[
+        ("fixture:1", Some(3), "Emulated", &dir),
+        ("fixture:2", Some(4), "Also here", &dir),
+    ]);
+    assert_eq!(
+        fixture
+            .fingerprint("h", &handle, 0)
+            .await
+            .unwrap_err()
+            .code(),
+        Code::FailedPrecondition
+    );
+
+    // The approval going away fences the place.
+    fixture
+        .storage
+        .run_for_host(
+            caller.namespace.as_ref().unwrap(),
+            caller.profile_epoch,
+            move |namespace| namespace.revoke_approval(&approval_id),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        fixture
+            .fingerprint("i", &handle, 0)
+            .await
+            .unwrap_err()
+            .code(),
+        Code::NotFound
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_runtime_fingerprint_needs_inspection_not_file_read() {
+    let (fixture, runtime, _) = Fixture::approved_runtime(RUNTIME_INSPECT).await;
+    let handle = runtime.executable_handle;
+    assert!(fixture.take("a", &handle).await.complete);
+
+    fixture
+        .api
+        .revoke_session_permission("fixture", cap::FILES_READ)
+        .await;
+    assert!(fixture.take("b", &handle).await.complete);
+
+    fixture
+        .api
+        .revoke_session_permission("fixture", cap::GAME_STORAGE_INSPECT)
+        .await;
+    assert_eq!(
+        fixture
+            .fingerprint("c", &handle, 0)
+            .await
+            .unwrap_err()
+            .code(),
+        Code::PermissionDenied
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn describe_api_lists_the_fingerprint_methods() {
     let (fixture, _) = Fixture::emulator(INSPECT).await;

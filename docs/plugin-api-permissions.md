@@ -1133,7 +1133,8 @@ stops polling, and session/grant/approval revocation ends the stream. These are 
 observations, not a record of every transient mount change.
 
 - **What a place is.** A handle the plugin already holds for a folder the user approved ([Files](#files)),
-  or for a file or directory below it; or the id of one of the plugin's own [save profiles](#save-profiles),
+  or for a file or directory below it — including the `executable_handle` of a runtime it registered
+  (`Runtimes.Register`/`Runtimes.Get`); or the id of one of the plugin's own [save profiles](#save-profiles),
   which stands for the union of its folders narrowed by their naming rules. A forged, edited, revoked
   or another session's handle, and another plugin's profile id, are `NOT_FOUND`.
 - **Permissions.** `game.storage.inspect` for a folder approved as `installation`, `game.saves.inspect`
@@ -1178,9 +1179,12 @@ observations, not a record of every transient mount change.
   type-checked, never run on Windows.**
 - **A profile's lost folder** (its approval revoked or changed) is reported as `MISSING` in
   `GetAccess`, as a partial total in `GetSize`, and is left out of `GetLastModified`.
-- **Not covered.** Runtime resources are catalog records, not inspectable places: runtime
-  availability is projected through Library reads, and an approved installation, save or prefix
-  folder and a save profile are the currently supported inspection places.
+- **Runtime executables.** `Runtimes.Register` and `Runtimes.Get` answer with an `executable_handle`
+  for the approved file that holds the runtime; that handle is inspected like any other approved
+  file. The runtime catalog record itself is not an inspection place and does not add a path to a
+  request. A runtime registered from an `installation` or `library` approval needs
+  `game.storage.inspect`; one registered from a `prefix` approval needs `game.saves.inspect`,
+  following the kind of the approval behind its handle.
 
 ### Consistency, availability and interpretation
 
@@ -1220,7 +1224,9 @@ folder on the underlying mount point, including while waiting for storage to ret
 Profile configuration and inspection are independent of the backup engine. The third-party
 profile-based backup routes retain the engine/platform restrictions documented above;
 configuring or inspecting a profile does not establish Linux backup support.
-Runtime inspection waits for runtime resources. Linux fixtures
+Runtime executables are inspected through their approved-file handles: a registered runtime's
+`executable_handle` carries the approval and relative file, not a path, and the runtime catalog
+record itself is not a place. Linux fixtures
 exercise the local-socket API; Windows metadata/access code has been cross-checked, with native
 Windows access, disconnect/reconnect and real-device acceptance still pending. No fixture result
 should be presented as native Windows acceptance.
@@ -1237,7 +1243,10 @@ missing-file fixture keeps its volume available, the unavailable-storage fixture
 approved identity and removes the source path without creating a replacement, and the existing
 profile/inspection fixtures cover permission denial, incomplete totals and preservation across
 absence. These deterministic fixtures model unavailable storage; they do not perform a native
-unmount or certify physical disk detection.
+unmount or certify physical disk detection. A registered runtime's `executable_handle` is covered
+in the same module and in `tests/fingerprints.rs`: it reports size/access/date, fingerprints
+freshly, compares a same-size/same-time content change, and is refused after a session, grant,
+approval or affected-game scope change without returning a path.
 
 ### Fingerprints
 

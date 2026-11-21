@@ -477,6 +477,7 @@ As duas primeiras linhas foram decididas com o usuário; o resto é detalhe de e
 | A varredura é síncrona, limitada (10.000 entradas por padrão, 100.000 no máximo; 5 s; 100 e 1.000 entradas listadas para datas) e para quando o RPC é abandonado. Corte, pasta ilegível ou profundidade acima de 64 dão `complete=false`. `UNMOUNTED` e `DISCONNECTED` ficam para a 13.5: até lá um disco ausente aparece como `MISSING`. | 13.3, 13.5. |
 | `Entry` da camada de arquivos ganhou a fração de segundo e o atributo somente leitura; `precision` é `subsecond` ou `whole_second` e descreve só o que foi observado. Uma data que o sistema não deu é omitida, nunca 1970. | 13.3. |
 | Abrir uma pasta sem permissão de entrada passou a ser `Access` (antes `RootChanged`), para o sistema dizer `INACCESSIBLE` e não `MISSING`. | 13.3. |
+| **Um runtime registrado devolve `executable_handle` como handle de arquivo aprovado**: a referência durável guarda só a aprovação e o caminho relativo, e cada resposta sela um handle novo para a sessão. `GetSize`, `GetAccess` e `GetLastModified` o inspecionam como qualquer arquivo aprovado, sem projeção nova; `game.storage.inspect` vale para aprovação de instalação ou biblioteca e `game.saves.inspect` para prefixo. Sessão, aprovação, jogos afetados, volume e concessão são revalidados, e nenhuma resposta leva caminho. | 13.3, 14.x. |
 
 ## U. Decisões adotadas na implementação da tarefa 13.4 (2026-11-14)
 
@@ -490,7 +491,7 @@ A primeira linha foi decidida com o usuário; o resto é detalhe de engenharia.
 | Campos aditivos no protocolo: `LocationChange.relative_path = 5` (sem ele um item removido não teria identidade) e `LocationFingerprintReply.observed_start_at = 9` / `observed_end_at = 10` (o design manda o resultado trazer o início e o fim observados). Bindings Go regenerados. | 13.4, 2.2. |
 | Snapshots só em memória (8 por plugin, 1 hora), do próprio plugin; um perfil em outra revisão é outro lugar (`incomparable`); `expected_revision` diferente de 0 e fora da revisão do snapshot é `FAILED_PRECONDITION`. Um fingerprint por plugin e dois no total rodam ao mesmo tempo (`RESOURCE_EXHAUSTED`). Limites sem medir. | 13.4. |
 | A leitura roda sem segurar a trava do namespace do plugin (as pastas são abertas sob a trava e a trava é solta), para uma varredura longa não bloquear as outras chamadas do plugin. Cancelar o job para a varredura e a leitura no próximo arquivo ou bloco e não guarda nada. | 13.4. |
-| `require_fresh` não muda nada: toda chamada relê o conteúdo e não há cache. Um fingerprint de handle de runtime espera os recursos de runtime (14.x). | 13.4, 14.x. |
+| `require_fresh` não muda nada: toda chamada relê o conteúdo e não há cache. Um handle de runtime é um handle de arquivo aprovado e usa o mesmo job; sessão, aprovação, escopo de jogos afetados, volume e concessão são revalidados antes da leitura, e um teste cobre o conteúdo alterado com o mesmo tamanho e a mesma data. | 13.4, 14.x. |
 
 ## V. Decisão sobre runtime de extensões e tarefa 10.2 (2026-11-16)
 

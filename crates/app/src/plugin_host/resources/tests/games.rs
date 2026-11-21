@@ -3326,3 +3326,163 @@ async fn reviewed_shared_resource_use_is_held_by_a_spawned_runtime_tree() {
     );
     assert_eq!(std::fs::read(card.join("keep.sav")).unwrap(), b"card");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sdk_client_reviews_custom_launch_and_never_executes_a_declined_or_ungranted_request() {
+    use gamenode_plugin_sdk::{CustomLaunchRecipe, idempotency_key};
+
+    let (fixture, host, dialog) = Fixture::game(
+        &[cap::GAME_LAUNCH, cap::GAME_CUSTOM_LAUNCH],
+        Some(answering(&[APPROVE, DECLINE])),
+    )
+    .await;
+    let dialog = dialog.unwrap();
+    host.launch_target.store(1, Ordering::SeqCst);
+    let revision = fixture.revision().await;
+    let resources = fixture
+        .host
+        .resources()
+        .expect("an API 1.6 session exposes the typed client");
+    let actions = fixture
+        .host
+        .actions()
+        .expect("an API 1.6 session exposes the typed client");
+
+    // Proposing stores the reviewable recipe; it does not ask the user or start anything.
+    let recipe = CustomLaunchRecipe {
+        game_id: "3".into(),
+        installation_id: INSTALLATION.into(),
+        expected_revision: revision,
+        uri: "steam://rungameid/3".into(),
+        argv: vec!["--literal value".into(), "$(not-a-shell)".into()],
+        environment_set: [("FIXTURE_MODE".into(), "reviewed".into())].into(),
+        environment_unset: vec!["FIXTURE_LEGACY_MODE".into()],
+        ..CustomLaunchRecipe::default()
+    };
+    let proposed = resources
+        .propose_custom_launch(&recipe, "", &idempotency_key())
+        .await
+        .unwrap();
+    assert!(!proposed.recipe_id.is_empty());
+    assert_eq!(proposed.recipe_revision, 1);
+    assert!(proposed.job_id.is_empty());
+    assert_eq!(proposed.state, JobState::Unspecified as i32);
+    assert!(proposed.refusal_code.is_empty());
+    assert_eq!(dialog.shown.lock().unwrap().len(), 0);
+    {
+        let stored = host.custom_launch_recipes.lock().unwrap();
+        assert_eq!(stored.len(), 1);
+        let stored = stored.values().next().unwrap();
+        assert_eq!(stored.arguments, recipe.argv);
+        assert_eq!(stored.uri, recipe.uri);
+        assert_eq!(
+            stored
+                .environment_set
+                .get("FIXTURE_MODE")
+                .map(String::as_str),
+            Some("reviewed")
+        );
+        assert_eq!(
+            stored
+                .environment_unset
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["FIXTURE_LEGACY_MODE"]
+        );
+    }
+
+    // Requesting execution opens the common launch review; approving it runs the exact recipe.
+    let requested = resources
+        .request_custom_launch(
+            "3",
+            INSTALLATION,
+            revision,
+            &proposed.recipe_id,
+            proposed.recipe_revision,
+            "",
+            &idempotency_key(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(requested.state, JobState::Queued as i32);
+    assert_eq!(requested.message, "awaiting confirmation");
+    let approved = super::action_recipes::wait_for_job(&actions, &requested.job_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        (approved.state, approved.result_code.as_str()),
+        (JobState::Succeeded, "opened")
+    );
+    assert_eq!(dialog.shown.lock().unwrap().len(), 1);
+    let review = dialog.shown.lock().unwrap()[0]
+        .launch_plan
+        .as_ref()
+        .expect("custom launches use the shared launch review")
+        .clone();
+    assert_eq!(review.source_id, "fixture");
+    assert_eq!(review.target, "steam://rungameid/3");
+    assert_eq!(review.arguments, recipe.argv);
+    assert_eq!(
+        review
+            .environment_set
+            .get("FIXTURE_MODE")
+            .map(String::as_str),
+        Some("reviewed")
+    );
+    assert_eq!(review.environment_unset, ["FIXTURE_LEGACY_MODE"]);
+    assert!(review.differences.contains(&"custom-arguments".into()));
+    assert_eq!(host.custom_launch_dispatches.lock().unwrap().len(), 1);
+
+    // Declining the next review fails the job and dispatches nothing.
+    let declined = resources
+        .request_custom_launch(
+            "3",
+            INSTALLATION,
+            revision,
+            &proposed.recipe_id,
+            proposed.recipe_revision,
+            "",
+            &idempotency_key(),
+        )
+        .await
+        .unwrap();
+    let refused = super::action_recipes::wait_for_job(&actions, &declined.job_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        (refused.state, refused.result_code.as_str()),
+        (JobState::Failed, "declined")
+    );
+    assert_eq!(dialog.shown.lock().unwrap().len(), 2);
+    assert_eq!(host.custom_launch_dispatches.lock().unwrap().len(), 1);
+    assert!(host.opened.lock().unwrap().is_empty());
+
+    // Revoking the grant denies proposal and execution; the SDK never falls back to standard
+    // launch, so no process starts.
+    fixture
+        .api
+        .revoke_session_permission("fixture", cap::GAME_CUSTOM_LAUNCH)
+        .await;
+    let denied = resources
+        .propose_custom_launch(&recipe, "", &idempotency_key())
+        .await
+        .expect_err("a proposal without the grant must be denied");
+    assert_eq!(denied.code(), Code::PermissionDenied);
+    let denied = resources
+        .request_custom_launch(
+            "3",
+            INSTALLATION,
+            revision,
+            &proposed.recipe_id,
+            proposed.recipe_revision,
+            "",
+            &idempotency_key(),
+        )
+        .await
+        .expect_err("execution without the grant must be denied");
+    assert_eq!(denied.code(), Code::PermissionDenied);
+    assert_eq!(dialog.shown.lock().unwrap().len(), 2);
+    assert_eq!(host.custom_launch_dispatches.lock().unwrap().len(), 1);
+    assert!(host.opened.lock().unwrap().is_empty());
+}

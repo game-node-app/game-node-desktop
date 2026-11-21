@@ -60,6 +60,8 @@ pub enum BundleError {
     InvalidComponent,
     #[error("bundle component identity does not match the bundle manifest")]
     ComponentMismatch,
+    #[error("verified bundle components could not be written to the private staging directory")]
+    Staging,
 }
 
 /// A verified bundle: the signed manifest plus the identity of every component package.
@@ -246,7 +248,39 @@ pub fn verify_bundle_archive(path: &Path) -> Result<VerifiedBundle, BundleError>
         return Err(BundleError::ArchiveLimit);
     }
     let file = std::fs::File::open(path).map_err(|_| BundleError::InvalidArchive)?;
-    verify_bundle_reader(std::io::BufReader::new(file))
+    verify_bundle_reader(std::io::BufReader::new(file)).map(|verified| verified.0)
+}
+
+/// Verify a bundle archive and stage every component archive it declares below `staging_dir`.
+///
+/// `staging_dir` must already exist and be private to the import; this function only creates the
+/// `components/` subdirectory and the exact files the verified manifest lists. Nothing is
+/// extracted recursively and no package content is read as code. The verified identity is
+/// returned so the caller can run the ordinary package validator on every staged component.
+pub fn stage_bundle_archive(
+    archive_path: &Path,
+    staging_dir: &Path,
+) -> Result<VerifiedBundle, BundleError> {
+    let metadata =
+        std::fs::symlink_metadata(archive_path).map_err(|_| BundleError::InvalidArchive)?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.len() > MAX_BUNDLE_ARCHIVE_BYTES
+    {
+        return Err(BundleError::ArchiveLimit);
+    }
+    if !staging_dir.is_dir() {
+        return Err(BundleError::Staging);
+    }
+    let file = std::fs::File::open(archive_path).map_err(|_| BundleError::InvalidArchive)?;
+    let (bundle, components) = verify_bundle_reader(std::io::BufReader::new(file))?;
+    for (relative, bytes) in components {
+        let destination = staging_dir.join(&relative);
+        let parent = destination.parent().ok_or(BundleError::Staging)?;
+        std::fs::create_dir_all(parent).map_err(|_| BundleError::Staging)?;
+        std::fs::write(&destination, &bytes).map_err(|_| BundleError::Staging)?;
+    }
+    Ok(bundle)
 }
 
 /// Verify a bundle held in memory; used by fixtures and import staging.
@@ -254,7 +288,7 @@ pub fn verify_bundle_bytes(bytes: &[u8]) -> Result<VerifiedBundle, BundleError> 
     if bytes.len() as u64 > MAX_BUNDLE_ARCHIVE_BYTES {
         return Err(BundleError::ArchiveLimit);
     }
-    verify_bundle_reader(Cursor::new(bytes))
+    verify_bundle_reader(Cursor::new(bytes)).map(|verified| verified.0)
 }
 
 fn read_bounded<R: Read>(mut reader: R, limit: usize) -> Result<Vec<u8>, BundleError> {
@@ -286,7 +320,9 @@ fn valid_outer_name(name: &str) -> bool {
         || valid_component_path(name)
 }
 
-fn verify_bundle_reader<R: Read + Seek>(reader: R) -> Result<VerifiedBundle, BundleError> {
+fn verify_bundle_reader<R: Read + Seek>(
+    reader: R,
+) -> Result<(VerifiedBundle, BTreeMap<String, Vec<u8>>), BundleError> {
     let mut archive = ZipArchive::new(reader).map_err(|_| BundleError::InvalidArchive)?;
     if archive.len() > MAX_BUNDLE_COMPONENTS + 3 {
         return Err(BundleError::ArchiveLimit);
@@ -321,7 +357,9 @@ fn verify_bundle_reader<R: Read + Seek>(reader: R) -> Result<VerifiedBundle, Bun
         files.insert(name, data);
     }
 
-    let raw_manifest = files.remove(BUNDLE_MANIFEST_NAME).ok_or(BundleError::InvalidManifest)?;
+    let raw_manifest = files
+        .remove(BUNDLE_MANIFEST_NAME)
+        .ok_or(BundleError::InvalidManifest)?;
     let signature = files
         .remove("signature.ed25519")
         .ok_or(BundleError::InvalidKeyOrSignature)?;
@@ -330,6 +368,7 @@ fn verify_bundle_reader<R: Read + Seek>(reader: R) -> Result<VerifiedBundle, Bun
     verify_bundle_signature(&publisher_key, &raw_manifest, &signature)?;
 
     let mut components = Vec::with_capacity(manifest.components.len());
+    let mut component_files = BTreeMap::new();
     for component in &manifest.components {
         let bytes = files
             .remove(&component.path)
@@ -348,15 +387,19 @@ fn verify_bundle_reader<R: Read + Seek>(reader: R) -> Result<VerifiedBundle, Bun
             version: identity.version,
             sha256: component.sha256.clone(),
         });
+        component_files.insert(component.path.clone(), bytes);
     }
     files.remove(DEVELOPMENT_KEY);
     if !files.is_empty() {
         return Err(BundleError::InvalidArchive);
     }
-    Ok(VerifiedBundle {
-        manifest,
-        components,
-    })
+    Ok((
+        VerifiedBundle {
+            manifest,
+            components,
+        },
+        component_files,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -378,7 +421,10 @@ struct ComponentIdentity {
     version: String,
 }
 
-fn verify_component(bytes: &[u8], publisher_key: &[u8; 32]) -> Result<ComponentIdentity, BundleError> {
+fn verify_component(
+    bytes: &[u8],
+    publisher_key: &[u8; 32],
+) -> Result<ComponentIdentity, BundleError> {
     let mut archive =
         ZipArchive::new(Cursor::new(bytes)).map_err(|_| BundleError::InvalidComponent)?;
     if archive.len() > MAX_ENTRIES {
@@ -428,8 +474,7 @@ fn verify_component(bytes: &[u8], publisher_key: &[u8; 32]) -> Result<ComponentI
     let signature = signature.ok_or(BundleError::InvalidComponent)?;
     verify_integrity_signature(publisher_key, &integrity, &signature)
         .map_err(|_| BundleError::InvalidComponent)?;
-    let manifest =
-        parse_integrity_json(&integrity).map_err(|_| BundleError::InvalidComponent)?;
+    let manifest = parse_integrity_json(&integrity).map_err(|_| BundleError::InvalidComponent)?;
     verify_payload_hashes(&manifest.files.0, &payload)
         .map_err(|_| BundleError::InvalidComponent)?;
     let plugin = payload
@@ -663,8 +708,8 @@ mod tests {
             .iter()
             .map(|(path, bytes)| (path.clone(), format!("{:x}", Sha256::digest(bytes))))
             .collect::<BTreeMap<_, _>>();
-        let integrity = serde_json::to_vec(&serde_json::json!({ "schema": 1, "files": hashes }))
-            .unwrap();
+        let integrity =
+            serde_json::to_vec(&serde_json::json!({ "schema": 1, "files": hashes })).unwrap();
         let mut signed = crate::plugin_packages::SIGNATURE_DOMAIN_PREFIX.to_vec();
         signed.extend_from_slice(&integrity);
         let signature = key.sign(&signed).as_ref().to_vec();
@@ -773,6 +818,33 @@ mod tests {
     }
 
     #[test]
+    fn staging_writes_only_the_declared_component_archives() {
+        let key = Ed25519KeyPair::from_seed_unchecked(&[28; 32]).unwrap();
+        let components = sample_components(&key);
+        let bytes = bundle_archive(&key, &components, true);
+        let base = tempfile::tempdir().unwrap();
+        let archive = base.path().join("fixture.gnbundle");
+        std::fs::write(&archive, &bytes).unwrap();
+        let staging = base.path().join("staging");
+        std::fs::create_dir(&staging).unwrap();
+
+        let verified = stage_bundle_archive(&archive, &staging).unwrap();
+        assert_eq!(verified, verify_bundle_bytes(&bytes).unwrap());
+        let provider = std::fs::read(staging.join("components/provider.gnplugin")).unwrap();
+        assert_eq!(provider, components[0].3);
+        let launch = std::fs::read(staging.join("components/launch.gnplugin")).unwrap();
+        assert_eq!(launch, components[1].3);
+        assert!(!staging.join("bundle.json").exists());
+        assert!(!staging.join("signature.ed25519").exists());
+
+        let missing = base.path().join("missing");
+        assert_eq!(
+            stage_bundle_archive(&archive, &missing),
+            Err(BundleError::Staging)
+        );
+    }
+
+    #[test]
     fn tampered_and_missing_components_are_rejected() {
         let key = Ed25519KeyPair::from_seed_unchecked(&[22; 32]).unwrap();
         let components = sample_components(&key);
@@ -789,7 +861,9 @@ mod tests {
                 if name == "components/provider.gnplugin" {
                     data.extend_from_slice(b"tampered");
                 }
-                writer.start_file(name, SimpleFileOptions::default()).unwrap();
+                writer
+                    .start_file(name, SimpleFileOptions::default())
+                    .unwrap();
                 writer.write_all(&data).unwrap();
             }
             writer.finish().unwrap().into_inner()
@@ -810,7 +884,9 @@ mod tests {
                 }
                 let mut data = Vec::new();
                 entry.read_to_end(&mut data).unwrap();
-                writer.start_file(name, SimpleFileOptions::default()).unwrap();
+                writer
+                    .start_file(name, SimpleFileOptions::default())
+                    .unwrap();
                 writer.write_all(&data).unwrap();
             }
             writer.finish().unwrap().into_inner()
@@ -863,10 +939,14 @@ mod tests {
                 let name = entry.name().to_owned();
                 let mut data = Vec::new();
                 entry.read_to_end(&mut data).unwrap();
-                writer.start_file(name, SimpleFileOptions::default()).unwrap();
+                writer
+                    .start_file(name, SimpleFileOptions::default())
+                    .unwrap();
                 writer.write_all(&data).unwrap();
             }
-            writer.start_file(extra, SimpleFileOptions::default()).unwrap();
+            writer
+                .start_file(extra, SimpleFileOptions::default())
+                .unwrap();
             writer.write_all(b"not allowed").unwrap();
             let bytes = writer.finish().unwrap().into_inner();
             assert_eq!(

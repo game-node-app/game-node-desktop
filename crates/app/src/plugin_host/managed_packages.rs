@@ -149,34 +149,7 @@ impl ManagedPackageLifecycle {
         publisher_key: [u8; 32],
         emulation_policy: EmulationPolicy,
     ) -> Result<PackageCandidateReport, PackageLifecycleError> {
-        let environment = gamenode_platform::plugin_environment::detect()
-            .await
-            .map_err(PackageLifecycleError::Environment)?;
-        let package_root = package_root.as_ref().to_owned();
-        let evaluation_environment = environment.clone();
-        let (manifest, targets, extension_schemas) = tokio::task::spawn_blocking(move || {
-            let integrity = verify_package_directory(&package_root, &publisher_key)
-                .map_err(|error| PackageLifecycleError::InvalidPackage(error.to_string()))?;
-            let manifest_bytes = read_signed_manifest(&package_root, &integrity)?;
-            let manifest = Manifest::parse_json(&manifest_bytes)
-                .map_err(|error| PackageLifecycleError::InvalidPackage(error.to_string()))?
-                .manifest()
-                .clone();
-            let extension_schemas =
-                validate_manifest_payload(&package_root, &integrity, &manifest)?;
-            let targets =
-                assess_manifest_targets(&manifest_bytes, &evaluation_environment, emulation_policy)
-                    .map_err(|error| PackageLifecycleError::InvalidPackage(error.to_string()))?;
-            Ok::<_, PackageLifecycleError>((manifest, targets, extension_schemas))
-        })
-        .await
-        .map_err(|_| PackageLifecycleError::WorkerFailed)??;
-        Ok(PackageCandidateReport {
-            manifest,
-            environment,
-            targets,
-            extension_schemas,
-        })
+        inspect_staged_package(package_root, publisher_key, emulation_policy).await
     }
 
     /// Install a compatible candidate. An incompatible update is rejected before the registry
@@ -267,6 +240,43 @@ impl ManagedPackageLifecycle {
         .await
         .map_err(|_| PackageLifecycleError::WorkerFailed)?
     }
+}
+
+/// Verify and assess one staged package directory without needing a registry. Bundle inspection
+/// and standalone import share this entry point so neither can drift from the other. All file
+/// reads and JSON processing run on blocking workers; environment detection has its own worker.
+pub(super) async fn inspect_staged_package(
+    package_root: impl AsRef<Path>,
+    publisher_key: [u8; 32],
+    emulation_policy: EmulationPolicy,
+) -> Result<PackageCandidateReport, PackageLifecycleError> {
+    let environment = gamenode_platform::plugin_environment::detect()
+        .await
+        .map_err(PackageLifecycleError::Environment)?;
+    let package_root = package_root.as_ref().to_owned();
+    let evaluation_environment = environment.clone();
+    let (manifest, targets, extension_schemas) = tokio::task::spawn_blocking(move || {
+        let integrity = verify_package_directory(&package_root, &publisher_key)
+            .map_err(|error| PackageLifecycleError::InvalidPackage(error.to_string()))?;
+        let manifest_bytes = read_signed_manifest(&package_root, &integrity)?;
+        let manifest = Manifest::parse_json(&manifest_bytes)
+            .map_err(|error| PackageLifecycleError::InvalidPackage(error.to_string()))?
+            .manifest()
+            .clone();
+        let extension_schemas = validate_manifest_payload(&package_root, &integrity, &manifest)?;
+        let targets =
+            assess_manifest_targets(&manifest_bytes, &evaluation_environment, emulation_policy)
+                .map_err(|error| PackageLifecycleError::InvalidPackage(error.to_string()))?;
+        Ok::<_, PackageLifecycleError>((manifest, targets, extension_schemas))
+    })
+    .await
+    .map_err(|_| PackageLifecycleError::WorkerFailed)??;
+    Ok(PackageCandidateReport {
+        manifest,
+        environment,
+        targets,
+        extension_schemas,
+    })
 }
 
 fn read_signed_manifest(

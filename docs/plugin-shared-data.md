@@ -111,8 +111,14 @@ uninstalling a producer never turns private storage into a public pool.
 The fixture below proves the whole path with two plugins and real RPCs:
 `two_plugin_durable_catalog_fixture_survives_stop_restart_revocation_and_cleanup`
 in `crates/app/src/plugin_host/resources/tests/data.rs` publishes a durable
-catalog record, stops the producer, reads it from the consumer, restarts the
-broker and pool, revokes the grant and reclaims only the producer's owner.
+catalog record from a game-bound extension producer, reads it from the consumer
+after the producer stops, restarts the broker and pool, revokes the grant and
+reclaims only the producer's owner. The same flow also refuses a performance
+write for a game the host did not select, includes one game's history only when
+the consumer explicitly selects the granted category, keeps both the category
+and the exact custom dataset grant separate, archives the producer's rows for an
+uninstall keep, restores them through the reviewed reuse step, and shows that a
+private cleanup or another owner's deletion never crosses a game or namespace.
 
 ```sh
 cargo test -p gamenode-app --lib --locked -- two_plugin_durable_catalog_fixture

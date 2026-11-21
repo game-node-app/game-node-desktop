@@ -467,6 +467,72 @@ pub(super) fn authenticated_identity(
     ResourceApi::data_identity(&caller).unwrap()
 }
 
+/// A second third-party plugin opened as a game-bound extension session. It publishes
+/// per-game data under the host-selected target, like a bundled provider's runtime adapter.
+pub(super) async fn producer_session_with_grants(
+    fixture: &Fixture,
+    grants: &[&'static str],
+    target: TargetGameContext,
+) -> Session {
+    let mut capabilities = vec![cap::CONTEXT];
+    capabilities.extend_from_slice(grants);
+    let registration_id =
+        crate::plugin_host::provider::extension_registration_id("org.example.producer");
+    fixture
+        .api
+        .register(Registration {
+            provider_id: registration_id.clone(),
+            plugin_id: "org.example.producer".into(),
+            kind: crate::plugin_host::provider::RegistrationKind::Extension,
+            declared_developer: "Example developer".into(),
+            package_digest: vec![8; 32],
+            origin: RegistrationOrigin::ThirdParty {
+                publisher_fingerprint: "cd".repeat(32),
+            },
+            capabilities: capabilities.iter().map(|cap| (*cap).into()).collect(),
+            shared_catalog: false,
+            playtime: Default::default(),
+            services: Arc::new(NoServices),
+        })
+        .unwrap();
+    let launch = fixture
+        .api
+        .begin_extension_launch(
+            &registration_id,
+            fixture.api.profiles().epoch(),
+            target.clone(),
+        )
+        .unwrap();
+    let credential = (0..launch.credential.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&launch.credential[i..i + 2], 16).unwrap())
+        .collect();
+    let session = Session::open_with_options(
+        Launch {
+            endpoint: fixture.endpoint.clone(),
+            credential,
+            operation_id: "producer-launch".into(),
+        },
+        "org.example.producer",
+        "",
+        "1.0",
+        &capabilities,
+        SessionOptions {
+            min_api_major: 1,
+            min_api_minor: cap::THIRD_PARTY_API_MINOR,
+            max_api_major: 1,
+            max_api_minor: gamenode_plugin_protocol::API_MINOR,
+            session_kind: SessionKind::Extension,
+            target_game: Some(target),
+            ..SessionOptions::default()
+        },
+    )
+    .await
+    .unwrap();
+    launch.ready.await.unwrap();
+    session
+}
+
 fn list_request(context: &ServiceContext, dataset_id: &str) -> DataListRequest {
     DataListRequest {
         page: Some(PageRequest {
@@ -1017,6 +1083,17 @@ fn durable_owner(fixture: &Fixture, context: &ServiceContext) -> OwnerScope {
     OwnerScope::new(*namespace.storage_owner().key(), caller.profile_epoch).unwrap()
 }
 
+/// The opaque storage key of one authenticated session's durable owner, for pool-level fixtures
+/// that stand in for a host domain adapter writing beside the plugin's own publications.
+fn durable_owner_key(fixture: &Fixture, context: &ServiceContext) -> [u8; 32] {
+    let caller = fixture
+        .api
+        .authorize_resource_session(Some(context))
+        .unwrap();
+    let namespace = caller.namespace.as_ref().expect("third-party namespace");
+    *namespace.storage_owner().key()
+}
+
 fn unix_seconds() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1359,27 +1436,58 @@ fn durable_catalog_request(
 
 #[tokio::test]
 async fn two_plugin_durable_catalog_fixture_survives_stop_restart_revocation_and_cleanup() {
-    let fixture = Fixture::new(&[cap::DATA_PUBLISH, cap::STORAGE_PERSIST]).await;
-    let producer =
-        consumer_session_with_grants(&fixture, &[cap::DATA_PUBLISH, cap::STORAGE_PERSIST]).await;
+    const CATALOG: &str = "org.example.catalog.v1";
+    const HISTORY: &str = "game.performance.history.v1";
+    const CATEGORY: CommonDataCategory = CommonDataCategory::GamePerformanceHistory;
+
+    // The consumer is the ordinary third-party plugin and the producer is a game-bound extension
+    // session, exactly like a bundled runtime adapter. Its performance writes are checked against
+    // the host-selected game, and every grant below still applies to the API only: a native plugin
+    // process keeps the OS access of the user's identity (docs/plugin-api-permissions.md, "This
+    // audit describes API enforcement"; docs/plugin-development.md, "Host capabilities and native
+    // access are different"). No assertion here claims to observe the other process.
+    let fixture = Fixture::new(&[
+        cap::DATA_PUBLISH,
+        cap::STORAGE_PERSIST,
+        cap::STORAGE_READ,
+        cap::GAME_PERFORMANCE_READ,
+    ])
+    .await;
+    let target = TargetGameContext {
+        game_id: "5".into(),
+        installation_id: "steam:five".into(),
+        profile_id: String::new(),
+        revision: "library-rev-1".into(),
+    };
+    let producer = producer_session_with_grants(
+        &fixture,
+        &[
+            cap::GAME_LAUNCH,
+            cap::DATA_PUBLISH,
+            cap::STORAGE_PERSIST,
+            cap::STORAGE_WRITE,
+            cap::GAME_PERFORMANCE_PUBLISH,
+        ],
+        target,
+    )
+    .await;
     let producer_context = producer.host.resource_context().unwrap().clone();
     let producer_owner = durable_owner(&fixture, &producer_context);
+    let producer_key = durable_owner_key(&fixture, &producer_context);
     let own_owner = durable_owner(&fixture, &fixture.context());
     let source = authenticated_identity(&fixture, &producer_context);
     let recipient = authenticated_identity(&fixture, &fixture.context());
-    let dataset = "org.example.catalog.v1";
-    grant_durable_dataset_fields(
-        &fixture,
-        &source,
-        &recipient,
-        dataset,
-        ["title".into()],
-        true,
-        true,
+    assert_eq!(
+        producer_context
+            .target_game
+            .as_ref()
+            .map(|target| target.game_id.as_str()),
+        Some("5"),
+        "the producer session is bound to the selected game"
     );
 
-    // The producer publishes a durable catalog record; the consumer also owns one row in the
-    // same dataset so cleanup can prove owner isolation.
+    // The producer publishes one durable catalog record and a private value; the consumer also
+    // owns one row in the same catalog dataset so cleanup can prove owner isolation.
     let published = producer
         .host
         .resource_client()
@@ -1393,6 +1501,23 @@ async fn two_plugin_durable_catalog_fixture_survives_stop_restart_revocation_and
         .unwrap()
         .into_inner();
     assert_eq!(published.durability, StorageDurability::Persistent as i32);
+    producer
+        .host
+        .resource_client()
+        .storage_put(StoragePutRequest {
+            mutation: Some(MutationContext {
+                context: Some(producer_context.clone()),
+                idempotency_key: "producer-private".into(),
+                expected_revision: 0,
+                ..Default::default()
+            }),
+            key: "catalog-notes".into(),
+            value: b"producer-only".to_vec(),
+            durability: StorageDurability::Persistent as i32,
+            ttl_seconds: 0,
+        })
+        .await
+        .unwrap();
     let own = fixture
         .client()
         .data_publish(durable_catalog_request(
@@ -1405,14 +1530,250 @@ async fn two_plugin_durable_catalog_fixture_survives_stop_restart_revocation_and
         .unwrap()
         .into_inner();
     assert_ne!(published.record_id, own.record_id);
-    drop(producer);
 
-    // The consumer reads the producer's record after the producer session stopped.
+    // No producer adapter feeds a common category into this build's broker, so the durable
+    // history row is written at the pool boundary where a host domain adapter would write it.
+    let history = write_pool_row(
+        &fixture,
+        producer_key,
+        &source,
+        HISTORY,
+        PoolRowClass::Common(CATEGORY),
+        "performance-series",
+        r#"{"fps":59,"game_id":"5"}"#,
+    );
+
+    let category_selector = CommonDataSelector {
+        categories: vec![CATEGORY as i32],
+        selected_record_ids: Vec::new(),
+    };
+    let history_list = |selector: Option<CommonDataSelector>| {
+        let mut request = list_request(&fixture.context(), HISTORY);
+        request.common_data_categories = selector;
+        request
+    };
+    let performance_list =
+        |game_id: &str, selector: Option<CommonDataSelector>| PerformanceListRequest {
+            page: Some(PageRequest {
+                context: Some(fixture.context()),
+                page_size: 10,
+                common_data_categories: selector,
+                ..Default::default()
+            }),
+            game_id: game_id.into(),
+            computer_context_id: "active-host".into(),
+            projection_id: "performance.v1".into(),
+        };
+    let mut performance = fixture.host.game_performance_client();
+    let record_ids = |reply: DataListReply| {
+        reply
+            .records
+            .into_iter()
+            .map(|record| record.record_id)
+            .collect::<Vec<_>>()
+    };
+
+    // Private-only defaults: no grants yet, so only the consumer's own row is disclosed. An
+    // explicit selector without a matching grant is denied (empty) rather than narrowed.
+    assert_eq!(
+        record_ids(
+            fixture
+                .client()
+                .data_list(list_request(&fixture.context(), CATALOG))
+                .await
+                .unwrap()
+                .into_inner()
+        ),
+        vec![own.record_id.clone()]
+    );
+    assert!(
+        fixture
+            .client()
+            .data_list(history_list(Some(category_selector.clone())))
+            .await
+            .unwrap()
+            .into_inner()
+            .records
+            .is_empty()
+    );
+    // The same logical key in another plugin's namespace is not addressable.
+    let hidden = fixture
+        .client()
+        .storage_get(StorageGetRequest {
+            context: Some(fixture.context()),
+            key: "catalog-notes".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(!hidden.found);
+
+    // Review the common category and the exact custom dataset pair separately.
+    fixture
+        .shared_policies
+        .set_activation_grants(
+            &recipient,
+            ActivationReadGrant::new([CATEGORY], std::iter::empty::<String>()).unwrap(),
+        )
+        .unwrap();
+    grant_durable_dataset_fields(
+        &fixture,
+        &source,
+        &recipient,
+        CATALOG,
+        ["title".into()],
+        true,
+        true,
+    );
+
+    // The durable common row is included only when its category is selected, and a query for
+    // another dataset does not widen to it.
+    assert!(
+        fixture
+            .client()
+            .data_list(history_list(None))
+            .await
+            .unwrap()
+            .into_inner()
+            .records
+            .is_empty()
+    );
+    assert_eq!(
+        record_ids(
+            fixture
+                .client()
+                .data_list(history_list(Some(category_selector.clone())))
+                .await
+                .unwrap()
+                .into_inner()
+        ),
+        vec![history.clone()]
+    );
+    let mut other_dataset = list_request(&fixture.context(), "org.example.metrics.v1");
+    other_dataset.common_data_categories = Some(category_selector.clone());
+    assert!(
+        fixture
+            .client()
+            .data_list(other_dataset)
+            .await
+            .unwrap()
+            .into_inner()
+            .records
+            .is_empty(),
+        "the category grant stays scoped to the queried dataset"
+    );
+
+    // The reviewed dataset projection returns both rows, with only the granted field of the
+    // producer's record.
+    let listed = fixture
+        .client()
+        .data_list(list_request(&fixture.context(), CATALOG))
+        .await
+        .unwrap()
+        .into_inner();
+    let ids: Vec<_> = listed
+        .records
+        .iter()
+        .map(|record| record.record_id.clone())
+        .collect();
+    assert!(ids.contains(&published.record_id) && ids.contains(&own.record_id));
+    let projected = listed
+        .records
+        .iter()
+        .find(|record| record.record_id == published.record_id)
+        .unwrap();
+    assert_eq!(projected.value, Some(value(&[("title", text("Dolphin"))])));
+
+    let now_ms = unix_now().unwrap() * 1000;
+    let reported = producer
+        .host
+        .resource_client()
+        .game_performance_publish_samples(super::performance::request_for(
+            &producer_context,
+            "performance-producer",
+            0,
+            vec![super::performance::sample(1, now_ms - 100, 59.0)],
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(reported.accepted_samples, 1);
+
+    // The write belongs to the host-selected game: another game is refused, not relabelled.
+    let mut wrong_game = super::performance::request_for(
+        &producer_context,
+        "performance-wrong-game",
+        0,
+        vec![super::performance::sample(1, now_ms, 60.0)],
+    );
+    wrong_game.game_id = "6".into();
+    let denied = producer
+        .host
+        .resource_client()
+        .game_performance_publish_samples(wrong_game)
+        .await
+        .unwrap_err();
+    assert_eq!(denied.code(), Code::PermissionDenied);
+
+    // A grant makes records eligible; it never triggers or includes a query by itself.
+    assert!(
+        performance
+            .list(performance_list("5", None))
+            .await
+            .unwrap()
+            .into_inner()
+            .series
+            .is_empty()
+    );
+    let included = performance
+        .list(performance_list("5", Some(category_selector.clone())))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(included.series.len(), 1);
+    assert_eq!(included.series[0].series_id, reported.report_id);
+    assert_eq!(included.series[0].installation_id, "steam:five");
+    assert_eq!(included.series[0].samples.len(), 1);
+    assert!(
+        performance
+            .list(performance_list("6", Some(category_selector.clone())))
+            .await
+            .unwrap()
+            .into_inner()
+            .series
+            .is_empty(),
+        "no series leaks to another game"
+    );
+    assert_eq!(
+        performance
+            .list(performance_list("", Some(category_selector.clone())))
+            .await
+            .unwrap()
+            .into_inner()
+            .series
+            .len(),
+        1,
+        "even an unscoped query only returns the granted game"
+    );
+
+    drop(producer);
+    // Session-retained history ends with the producer session; durable rows survive.
+    assert!(
+        performance
+            .list(performance_list("5", Some(category_selector.clone())))
+            .await
+            .unwrap()
+            .into_inner()
+            .series
+            .is_empty()
+    );
+
+    // The consumer reads the producer's durable records after the producer session stopped.
     let fetched = fixture
         .client()
         .data_get(DataGetRequest {
             context: Some(fixture.context()),
-            dataset_id: dataset.into(),
+            dataset_id: CATALOG.into(),
             record_id: published.record_id.clone(),
             ..Default::default()
         })
@@ -1422,7 +1783,7 @@ async fn two_plugin_durable_catalog_fixture_survives_stop_restart_revocation_and
         .record
         .unwrap();
     assert_eq!(fetched.value, Some(value(&[("title", text("Dolphin"))])));
-    assert_eq!(fetched.publisher_id, "org.example.consumer");
+    assert_eq!(fetched.publisher_id, "org.example.producer");
     assert_eq!(fetched.durability, StorageDurability::Persistent as i32);
 
     // A real host restart starts a fresh broker over the same pool file.
@@ -1430,7 +1791,7 @@ async fn two_plugin_durable_catalog_fixture_survives_stop_restart_revocation_and
     assert_eq!(broker.revision(), 0);
     let (mut restarted, server) = local_client(restarted_service(&fixture, broker.clone())).await;
     let listed = restarted
-        .data_list(list_request(&fixture.context(), dataset))
+        .data_list(list_request(&fixture.context(), CATALOG))
         .await
         .unwrap()
         .into_inner();
@@ -1444,61 +1805,233 @@ async fn two_plugin_durable_catalog_fixture_survives_stop_restart_revocation_and
         listed.records[0].durability,
         StorageDurability::Persistent as i32
     );
+    assert_eq!(
+        record_ids(
+            restarted
+                .data_list(history_list(Some(category_selector.clone())))
+                .await
+                .unwrap()
+                .into_inner()
+        ),
+        vec![history.clone()]
+    );
 
-    // Revocation fences the producer's archived-free record even though the producer is offline.
-    let revision = fixture
+    // Uninstall with Keep archives the producer's two durable rows (the same primitive the
+    // lifecycle applies before removing the package). Archived rows are inert for every ordinary
+    // read, including the standing category grant.
+    let now = unix_seconds();
+    let archived = fixture
+        .shared_pool
+        .archive_owner(producer_owner, now)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(archived.records, 2);
+    assert_eq!(
+        record_ids(
+            fixture
+                .client()
+                .data_list(list_request(&fixture.context(), CATALOG))
+                .await
+                .unwrap()
+                .into_inner()
+        ),
+        vec![own.record_id.clone()]
+    );
+    assert!(
+        fixture
+            .client()
+            .data_list(history_list(Some(category_selector.clone())))
+            .await
+            .unwrap()
+            .into_inner()
+            .records
+            .is_empty(),
+        "an archived common row is not readable even under the current category grant"
+    );
+    let mut archived_get = DataGetRequest {
+        context: Some(fixture.context()),
+        dataset_id: HISTORY.into(),
+        record_id: history.clone(),
+        ..Default::default()
+    };
+    archived_get.common_data_categories = Some(category_selector.clone());
+    assert_eq!(
+        fixture
+            .client()
+            .data_get(archived_get)
+            .await
+            .unwrap_err()
+            .code(),
+        Code::NotFound
+    );
+
+    // The separate host review restores them; the same category grant reads them again without a
+    // new per-record review.
+    let reused = fixture
+        .shared_pool
+        .reuse_archived_owner(producer_owner, now)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(reused.records, 2);
+    assert_eq!(
+        record_ids(
+            fixture
+                .client()
+                .data_list(history_list(Some(category_selector.clone())))
+                .await
+                .unwrap()
+                .into_inner()
+        ),
+        vec![history.clone()]
+    );
+    assert_eq!(
+        record_ids(
+            fixture
+                .client()
+                .data_list(list_request(&fixture.context(), CATALOG))
+                .await
+                .unwrap()
+                .into_inner()
+        )
+        .len(),
+        2
+    );
+
+    // Revoking the custom dataset grant fences that row while the independently granted common
+    // category remains available.
+    let snapshot = fixture
         .shared_policies
         .recipient_snapshot(&recipient)
-        .unwrap()
-        .revision;
+        .unwrap();
     fixture
         .shared_policies
-        .replace_recipient_policies(&recipient, revision, ActivationReadGrant::default(), vec![])
+        .replace_recipient_policies(
+            &recipient,
+            snapshot.revision,
+            ActivationReadGrant::new(snapshot.categories, snapshot.selected_record_ids).unwrap(),
+            vec![],
+        )
         .unwrap();
-    let error = restarted
+    let error = fixture
+        .client()
         .data_get(DataGetRequest {
             context: Some(fixture.context()),
-            dataset_id: dataset.into(),
+            dataset_id: CATALOG.into(),
             record_id: published.record_id.clone(),
             ..Default::default()
         })
         .await
         .unwrap_err();
     assert_eq!(error.code(), Code::NotFound);
-    let listed = restarted
-        .data_list(list_request(&fixture.context(), dataset))
+    assert_eq!(
+        record_ids(
+            fixture
+                .client()
+                .data_list(list_request(&fixture.context(), CATALOG))
+                .await
+                .unwrap()
+                .into_inner()
+        ),
+        vec![own.record_id.clone()],
+        "only the consumer's own row remains visible"
+    );
+    assert_eq!(
+        record_ids(
+            fixture
+                .client()
+                .data_list(history_list(Some(category_selector.clone())))
+                .await
+                .unwrap()
+                .into_inner()
+        ),
+        vec![history.clone()],
+        "revoking a custom pair does not touch the common category grant"
+    );
+
+    // Private cleanup is namespace-scoped: clearing the consumer's own persistence changes no
+    // public-pool row. A host-wide cleanup across owners stays a reviewed host command (task
+    // 1.17); no plugin RPC accepts an owner or another plugin's namespace.
+    let cleared = fixture
+        .client()
+        .persistence_clear(PersistenceClearRequest {
+            mutation: Some(MutationContext {
+                context: Some(fixture.context()),
+                idempotency_key: "clear-private".into(),
+                expected_revision: 0,
+                ..Default::default()
+            }),
+            category: "private".into(),
+        })
         .await
         .unwrap()
         .into_inner();
+    assert_eq!(cleared.outcome, MutationOutcome::AlreadyApplied as i32);
     assert_eq!(
-        listed
-            .records
-            .iter()
-            .map(|record| record.record_id.as_str())
-            .collect::<Vec<_>>(),
-        [own.record_id.as_str()],
-        "only the consumer's own row remains visible"
+        fixture
+            .shared_pool
+            .usage(producer_owner, now)
+            .await
+            .unwrap()
+            .unwrap()
+            .records,
+        2,
+        "a private cleanup never reaches another owner's public rows"
     );
-
-    // User cleanup reclaims only the producer's owner and leaves the consumer's row intact.
-    let now = unix_seconds();
+    let hidden = fixture
+        .client()
+        .storage_get(StorageGetRequest {
+            context: Some(fixture.context()),
+            key: "catalog-notes".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(
+        !hidden.found,
+        "private namespaces never follow a pool cleanup"
+    );
+    // Own cleanup reclaims exactly one owner. The consumer's deletion leaves the producer's rows
+    // and private namespace alone; only the producer's own deletion removes them.
+    let deleted = fixture
+        .shared_pool
+        .delete_owner(own_owner, now)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(deleted.removed_records, 1);
+    assert_eq!(
+        fixture
+            .shared_pool
+            .usage(producer_owner, now)
+            .await
+            .unwrap()
+            .unwrap()
+            .records,
+        2
+    );
+    assert_eq!(
+        record_ids(
+            fixture
+                .client()
+                .data_list(history_list(Some(category_selector.clone())))
+                .await
+                .unwrap()
+                .into_inner()
+        ),
+        vec![history.clone()]
+    );
     let deleted = fixture
         .shared_pool
         .delete_owner(producer_owner, now)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(deleted.removed_records, 1);
+    assert_eq!(deleted.removed_records, 2);
     let store = SharedDataStore::open(&fixture.data_dir).unwrap();
     assert!(store.get_any(&published.record_id, now).unwrap().is_none());
-    assert_eq!(
-        store
-            .list_dataset(&own_owner, dataset, now)
-            .unwrap()
-            .records
-            .len(),
-        1
-    );
+    assert!(store.get_any(&history, now).unwrap().is_none());
     assert_eq!(
         fixture
             .shared_pool
@@ -1507,11 +2040,21 @@ async fn two_plugin_durable_catalog_fixture_survives_stop_restart_revocation_and
             .unwrap()
             .unwrap()
             .records,
-        1
+        0
     );
+    assert_eq!(
+        fixture
+            .shared_pool
+            .delete_owner(producer_owner, now)
+            .await
+            .unwrap()
+            .unwrap()
+            .removed_records,
+        0
+    );
+
     server.abort();
 }
-
 /// A session-only publication from one producer session in the metrics dataset.
 fn session_request(
     context: &ServiceContext,
@@ -2357,18 +2900,28 @@ async fn a_profile_change_fences_durable_reads_and_watch_with_the_producer_stopp
     assert_eq!(error.code(), Code::NotFound);
 }
 
+/// The sharing class of one host-written pool row. A common row always names its category.
+#[derive(Clone, Copy)]
+enum PoolRowClass {
+    Custom,
+    Common(CommonDataCategory),
+}
+
 /// Writes one host-resolved durable row straight into the pool, standing in for a producer whose
 /// session is gone or a host domain adapter that feeds Common records into the public pool.
 fn write_pool_row(
     fixture: &Fixture,
     owner_key: [u8; 32],
     source: &PluginIdentity,
-    class: SharingClass,
-    category: Option<CommonDataCategory>,
+    dataset_id: &str,
+    class: PoolRowClass,
     resource_id: &str,
     fields_json: &str,
 ) -> String {
-    const DATASET: &str = "org.example.metrics.v1";
+    let (class, category) = match class {
+        PoolRowClass::Custom => (SharingClass::Custom, None),
+        PoolRowClass::Common(category) => (SharingClass::Common, Some(category)),
+    };
     let caller = fixture
         .api
         .authorize_resource_session(Some(&fixture.context()))
@@ -2389,10 +2942,10 @@ fn write_pool_row(
         .write(
             owner,
             RecordWrite {
-                dataset_id: DATASET,
+                dataset_id,
                 category: category.map(|category| category as i32),
                 class: class.as_name(),
-                schema_id: DATASET,
+                schema_id: dataset_id,
                 schema_version: 1,
                 fields_json,
                 opaque_payload: &[],
@@ -2542,8 +3095,8 @@ async fn durable_common_rows_honour_selected_record_grants_through_the_merged_pa
         &fixture,
         [0x21; 32],
         &source,
-        SharingClass::Common,
-        Some(category),
+        "org.example.metrics.v1",
+        PoolRowClass::Common(category),
         "runtime-granted",
         r#"{"fps":60,"title":"catalog"}"#,
     );
@@ -2551,8 +3104,8 @@ async fn durable_common_rows_honour_selected_record_grants_through_the_merged_pa
         &fixture,
         [0x21; 32],
         &source,
-        SharingClass::Common,
-        Some(category),
+        "org.example.metrics.v1",
+        PoolRowClass::Common(category),
         "runtime-other",
         r#"{"fps":61,"title":"other"}"#,
     );
@@ -2643,8 +3196,8 @@ async fn another_owners_durable_record_stays_private_through_the_merged_path() {
             publisher_fingerprint: "ef".repeat(32),
             profile_id: recipient.profile_id.clone(),
         },
-        SharingClass::Custom,
-        None,
+        "org.example.metrics.v1",
+        PoolRowClass::Custom,
         "runtime-foreign",
         r#"{"fps":99,"title":"foreign"}"#,
     );

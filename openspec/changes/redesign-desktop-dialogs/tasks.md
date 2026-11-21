@@ -308,11 +308,11 @@ Rules for every group:
 - [x] 11.1 Run `cargo test --locked -p gamenode-core -p gamenode-api -p gamenode-platform -p gamenode-app`,
   `cargo test --locked -p gamenode-plugin-protocol -p gamenode-plugin-steam`, `pnpm --dir ui test --run`
   and `pnpm --dir ui exec tsc --noEmit`, and verify they all pass.
-- [ ] 11.2 With `VITE_UI_MOCK=1 pnpm --dir ui dev`, open each of the 14 surfaces and compare it with
+- [x] 11.2 With `VITE_UI_MOCK=1 pnpm --dir ui dev`, open each of the 14 surfaces and compare it with
   `design-reference/screens/D01…D14`. Check spacing, type, colors, icons and copy in en and pt-BR. Verify by
   recording each surface as checked in the PR description, with any intentional deviation listed in
   `design.md` (five statuses, sync checklist row, remove default, no developer reason).
-- [ ] 11.3 Check keyboard-only flows across the dialogs (Tab order, Escape, arrow keys in radio groups and
+- [x] 11.3 Check keyboard-only flows across the dialogs (Tab order, Escape, arrow keys in radio groups and
   listboxes, and focus returning to the opener) in the mock. Verify by noting the result in the PR
   description.
 - [x] 11.4 Update `docs/development.md` (new mock interactions) and `docs/drm-free-games.md` (custom cover,
@@ -321,6 +321,41 @@ Rules for every group:
 - [ ] 11.5 **Windows handoff — Lamarck (GameNode Core).** Native Windows acceptance via `scripts/install-windows-wsl.sh`: the cover image picker and
   re-encode, browser reopen during sign-in, Open in Steam, and backup retention with Ludusavi. Verify by
   recording the results in `docs/windows-verification.md`.
+
+### 11.2 completion note — visual check (mock)
+
+Checked with `VITE_UI_MOCK=1 pnpm --dir ui dev` at 1440×900 in English and pt-BR (`&locale=pt-BR`),
+against `design-reference/screens/D01…D14` and the matching `raw/*.txt` measurements. Every surface
+was opened from its documented mock fixture and compared for spacing, type, colors, icons and copy.
+
+| Surface | Fixture | Result |
+|---|---|---|
+| D01 Match | `?library=variants` › Neon Courier 2088 › Review… | Matching. No developer-mismatch reason, by design (`design.md` › Intentional deviations). |
+| D02 Add | `?library=variants` › Aster Vale › Add to GameNode | Matching. Five status cards by design. The pt-BR `Em andamento` label wrapped instead of clipping after the fix; re-checked. |
+| D03 Batch progress | `?library=variants` › three games › Add to GameNode | Matching in the running and finished states, including Hide and the summary. |
+| D04 Achievements | `?library=variants` › Aster Vale › See all | Matching: summary, counted segments, sort menu, 65px rows, rare label, footer. |
+| D05 Save protection | `?library=variants` › Brasa › Local save protection | Matching. Support and backup-job pills are intentional deviations (`design.md`). |
+| D06 Game tools | `?library=variants` › Infinite Coast › Game tools | Matching. License, source, refresh and anti-cheat evidence are intentional deviations (`design.md`). |
+| D07 Game settings | `?library=variants` › Brasa › Edit… | Matching: 108×144 cover actions, paths pair, collapsed Advanced disclosure, footer. |
+| D08 Discovered games | `?discoveries=1` › Review | Matching: mixed header checkbox, covers, compact select, three pills, rediscovery footer. |
+| D09 Remove game | `?library=variants` › Brasa › Remove from library… | Matching; "Remove and don't import again" is preselected by design. |
+| D10 Discard changes | Settings › Backups › toggle protection › Escape | Matching: warning tone, listed change, focus on Keep editing. |
+| D11 Claim conflict | `?claim=1` | Matching: link tone, two entry cards, chevron, three actions. |
+| D12 Sync explanation | `?sync=first` | Matching; the checklist row follows `design.md` (no status/collections row) and keeps the tray note. |
+| D13 Sign-in pending | `?scenario=signed-out&signin=pending` › provider | Matching: accent tone, waiting row, Open again and Cancel sign-in. |
+| D14 Signed-out | `?scenario=signed-out` | Matching: 5×5 cover mural at the raw positions, wordmark, three providers, security note, version label; no "Use without account". |
+
+### 11.3 completion note — keyboard-only flows (mock)
+
+Exercised in the same mock build after the D01 and D02 fixes; every dialog was reached from the
+keyboard only where it opens from a control.
+
+- **Tab order** — D01 search → option → footer actions; D02 close → status radiogroup → New collection → collections → footer; D03 Hide → close; D04 segments → sort → Open in Steam; D05 switch → save folder → Change → Keep → space used → Restore → disclosure → footer; D06 source → channel → version → proxy → refresh → target → candidates → checkboxes → actions; D07 cover → fields → Advanced textareas → footer; D08 header checkbox → row checkboxes → row selects → footer; D09–D13 stay inside the confirmation; D14 providers then window controls.
+- **Escape** — closes D01–D08, D10–D12; cancels D09, D13 (and D03 hides without abandoning the run, which finished with its notification).
+- **Arrow keys** — D01 listbox moves the selection and the preview (Enter confirms; fixed: an incoming snapshot no longer pulls focus back to the search field); D02, D09 and D06 candidate radios move and select; D04 filter segments and sort menu (Enter, ArrowDown, Enter) work; D06 channel segments change the version; D05 Keep and D08 target selects open and choose with the keyboard; D08 header checkbox cycles mixed/checked/unchecked.
+- **Focus return** — D01 Review…, D02 Add to GameNode, D04 See all, D05 Local save protection, D06 Game tools, D07 Edit…, D08 Review, D09 Remove from library…, D10 settings switch, D13 provider button. D11/D12 open from a fixture, so they fall back to the document as expected.
+- No gaps left.
+
 
 ## Workflow follow-up
 

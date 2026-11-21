@@ -10,6 +10,7 @@ use crate::plugin_host::{
         SourceRecipientPolicy,
     },
 };
+use gamenode_platform::plugin_shared_data::{OwnerScope, SharedDataStore};
 use gamenode_plugin_protocol::{
     capability as cap,
     prost_types::{self, Value, value::Kind},
@@ -81,6 +82,7 @@ fn service(
         fixture.snapshots.clone(),
     )
     .with_shared_data(data, authorizer)
+    .with_shared_pool(fixture.shared_pool.clone())
 }
 
 async fn local_client(service: ResourceApi) -> (ResourceHostClient<Channel>, JoinHandle<()>) {
@@ -654,7 +656,8 @@ async fn persisted_custom_policy_filters_authenticated_public_exchange_and_revok
     let mut durable = publish(5, 60.0);
     durable.durability = StorageDurability::Persistent as i32;
     let error = producer_rpc.data_publish(durable).await.unwrap_err();
-    assert_eq!(error.code(), Code::FailedPrecondition);
+    assert_eq!(error.code(), Code::PermissionDenied);
+    assert!(error.message().contains("storage.persist"));
     let error = consumer_rpc
         .storage_put(StoragePutRequest {
             mutation: Some(MutationContext {
@@ -991,4 +994,226 @@ async fn persisted_common_policy_requires_explicit_selectors_on_public_reads() {
     let ids: Vec<_> = selected.records.into_iter().map(|r| r.record_id).collect();
     assert_eq!(ids, [first.record_id, second.record_id]);
     server.abort();
+}
+
+fn durable_owner(fixture: &Fixture, context: &ServiceContext) -> OwnerScope {
+    let caller = fixture
+        .api
+        .authorize_resource_session(Some(context))
+        .unwrap();
+    let namespace = caller.namespace.as_ref().expect("third-party namespace");
+    OwnerScope::new(*namespace.storage_owner().key(), caller.profile_epoch).unwrap()
+}
+
+fn unix_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+}
+
+fn durable_request(
+    context: &ServiceContext,
+    key: &str,
+    resource_id: &str,
+    fps: f64,
+) -> DataPublishRequest {
+    DataPublishRequest {
+        mutation: Some(MutationContext {
+            context: Some(context.clone()),
+            idempotency_key: key.into(),
+            ..Default::default()
+        }),
+        dataset_id: "org.example.metrics.v1".into(),
+        schema_id: "org.example.metrics.v1".into(),
+        schema_version: 1,
+        value: Some(value(&[("fps", number(fps))])),
+        opaque_payload: Vec::new(),
+        durability: StorageDurability::Persistent as i32,
+        ttl_seconds: 300,
+        resource_id: resource_id.into(),
+        observed_at: 1_700_000_000,
+        sequence: 1,
+        source_observation_id: key.into(),
+    }
+}
+
+#[tokio::test]
+async fn durable_publish_without_storage_persist_fails_without_session_fallback() {
+    let fixture = Fixture::new(&[cap::DATA_PUBLISH]).await;
+    let mut request = data_publish(&fixture, "durable-denied", value(&[("fps", number(60.0))]));
+    request.durability = StorageDurability::Persistent as i32;
+
+    let error = fixture.client().data_publish(request).await.unwrap_err();
+    assert_eq!(error.code(), Code::PermissionDenied);
+    assert!(
+        error.message().contains("storage.persist"),
+        "unexpected message: {}",
+        error.message()
+    );
+
+    // Nothing was retained for the session and no pool file was created.
+    let listed = fixture
+        .client()
+        .data_list(list_request(&fixture.context(), "org.example.metrics.v1"))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(listed.records.is_empty());
+    assert!(
+        SharedDataStore::open_existing(&fixture.data_dir)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn session_only_publish_is_never_persisted() {
+    let fixture = Fixture::new(&[cap::DATA_PUBLISH, cap::STORAGE_PERSIST]).await;
+    let published = fixture
+        .client()
+        .data_publish(data_publish(
+            &fixture,
+            "session-only",
+            value(&[("fps", number(60.0))]),
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        published.durability,
+        StorageDurability::SessionOnly as i32,
+        "the reply reports the mode actually used"
+    );
+
+    let listed = fixture
+        .client()
+        .data_list(list_request(&fixture.context(), "org.example.metrics.v1"))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(listed.records.len(), 1, "the session copy is readable");
+    assert!(
+        SharedDataStore::open_existing(&fixture.data_dir)
+            .unwrap()
+            .is_none(),
+        "session-only data never reaches the durable pool"
+    );
+}
+
+#[tokio::test]
+async fn durable_publish_survives_producer_disconnect() {
+    let fixture = Fixture::new(&[cap::DATA_PUBLISH]).await;
+    let producer =
+        consumer_session_with_grants(&fixture, &[cap::DATA_PUBLISH, cap::STORAGE_PERSIST]).await;
+    let context = producer.host.resource_context().unwrap().clone();
+    let owner = durable_owner(&fixture, &context);
+
+    let published = producer
+        .host
+        .resource_client()
+        .data_publish(durable_request(
+            &context,
+            "durable-survives",
+            "runtime-primary",
+            60.0,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(published.durability, StorageDurability::Persistent as i32);
+    assert!(!published.record_id.is_empty());
+    assert!(published.expires_at > 0);
+
+    drop(producer);
+
+    // Reopen the pool as a restarted host would and read the producer's record directly.
+    let store = SharedDataStore::open(&fixture.data_dir).unwrap();
+    let records = store
+        .list_dataset(&owner, "org.example.metrics.v1", unix_seconds())
+        .unwrap()
+        .records;
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].record_id, published.record_id);
+    assert_eq!(records[0].revision, published.revision);
+    assert_eq!(records[0].expires_at, Some(published.expires_at));
+    assert_eq!(
+        records[0].provenance.source_plugin_id,
+        "org.example.consumer"
+    );
+    assert_eq!(
+        records[0].provenance.source_publisher_fingerprint,
+        "cd".repeat(32)
+    );
+}
+
+#[tokio::test]
+async fn durable_resource_replacement_is_owner_scoped() {
+    let fixture = Fixture::new(&[cap::DATA_PUBLISH, cap::STORAGE_PERSIST]).await;
+    let other =
+        consumer_session_with_grants(&fixture, &[cap::DATA_PUBLISH, cap::STORAGE_PERSIST]).await;
+    let other_context = other.host.resource_context().unwrap().clone();
+    let own_owner = durable_owner(&fixture, &fixture.context());
+    let other_owner = durable_owner(&fixture, &other_context);
+
+    let first = fixture
+        .client()
+        .data_publish(durable_request(
+            &fixture.context(),
+            "durable-first",
+            "runtime-primary",
+            60.0,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    let foreign = other
+        .host
+        .resource_client()
+        .data_publish(durable_request(
+            &other_context,
+            "durable-foreign",
+            "runtime-primary",
+            1.0,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_ne!(first.record_id, foreign.record_id);
+
+    let replaced = fixture
+        .client()
+        .data_publish(durable_request(
+            &fixture.context(),
+            "durable-replacement",
+            "runtime-primary",
+            75.0,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(replaced.record_id, first.record_id);
+    assert!(replaced.revision > first.revision);
+
+    let store = SharedDataStore::open(&fixture.data_dir).unwrap();
+    let now = unix_seconds();
+    let own = store
+        .list_dataset(&own_owner, "org.example.metrics.v1", now)
+        .unwrap()
+        .records;
+    assert_eq!(own.len(), 1, "replacement is in place");
+    assert_eq!(own[0].record_id, first.record_id);
+    assert_eq!(own[0].revision, replaced.revision);
+    let fields: serde_json::Value = serde_json::from_str(&own[0].fields_json).unwrap();
+    assert_eq!(fields["fps"], 75.0);
+
+    let foreign_records = store
+        .list_dataset(&other_owner, "org.example.metrics.v1", now)
+        .unwrap()
+        .records;
+    assert_eq!(foreign_records.len(), 1, "the other producer is untouched");
+    assert_eq!(foreign_records[0].record_id, foreign.record_id);
+    assert_eq!(foreign_records[0].revision, foreign.revision);
+    let fields: serde_json::Value = serde_json::from_str(&foreign_records[0].fields_json).unwrap();
+    assert_eq!(fields["fps"], 1.0);
 }

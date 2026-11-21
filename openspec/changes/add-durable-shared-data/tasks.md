@@ -11,7 +11,8 @@
 
 ## 2. Publication path
 
-- [ ] 2.1 Accept `DataPublish(PERSISTENT)` with `data.publish` plus `storage.persist`: validate the payload/provenance exactly as session publication, persist the record and return the actual durability and expiry. Verify a missing `storage.persist` fails explicitly and no session copy is written.
+- [x] 2.1 Accept `DataPublish(PERSISTENT)` with `data.publish` plus `storage.persist`: validate the payload/provenance exactly as session publication, persist the record and return the actual durability and expiry. Verify a missing `storage.persist` fails explicitly and no session copy is written.
+  - Done in `crates/app/src/plugin_host/shared_pool.rs` (blocking worker over `SharedDataStore`, lazy open, host owner/provenance) and the `data_publish` handler; both modes share `DataBroker::validate`, and the reply carries the actual `durability`. Evidence: `cargo test -p gamenode-app --lib --locked` — 949 passed, including `durable_publish_without_storage_persist_fails_without_session_fallback` (PermissionDenied, no session row, no pool file), `session_only_publish_is_never_persisted`, `durable_publish_survives_producer_disconnect` and `durable_resource_replacement_is_owner_scoped`. Also `cargo test -p gamenode-platform plugin_shared_data --locked` (14 passed), `cargo test -p gamenode-plugin-protocol --locked` (all passed), `cargo fmt --all -- --check` and `git diff --check`.
 - [ ] 2.2 Keep `SESSION_ONLY` unchanged and never persist it. Verify session rows disappear at producer disconnect while durable rows survive.
 - [ ] 2.3 Add the additive durability field to the publish reply and data record, update the Rust/Go wire fixtures and SDK helpers, and verify old clients ignore it and new clients read the actual mode.
 

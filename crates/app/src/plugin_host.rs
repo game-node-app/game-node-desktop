@@ -43,6 +43,7 @@ pub mod runtime;
 pub mod saves;
 pub mod services;
 pub mod shared_data;
+pub mod shared_pool;
 pub mod sharing_policy;
 pub mod storage;
 mod transport;
@@ -533,6 +534,8 @@ pub struct PluginApi {
     pub shared_policies: Arc<sharing_policy::SharedSharingPolicies>,
     /// Shared published datasets; all provider sessions use the same broker.
     pub data_broker: Arc<shared_data::DataBroker>,
+    /// Host-owned durable public pool; disabled until the host supplies its data folder.
+    pub shared_pool: Arc<shared_pool::DurableSharedPool>,
     /// The library projection plugins read; the engine keeps it current.
     pub library: Arc<library::LibraryFeed>,
     /// The plugins' private key/value storage.
@@ -830,7 +833,8 @@ impl PluginApiServer {
                 api.saves.clone(),
                 api.fingerprints.clone(),
             )
-            .with_shared_data(api.data_broker.clone(), api.shared_policies.clone()),
+            .with_shared_data(api.data_broker.clone(), api.shared_policies.clone())
+            .with_shared_pool(api.shared_pool.clone()),
         );
         let service_resource_api = resource_api.clone();
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
@@ -950,7 +954,8 @@ impl PluginApiServer {
                 api.saves.clone(),
                 api.fingerprints.clone(),
             )
-            .with_shared_data(api.data_broker.clone(), api.shared_policies.clone()),
+            .with_shared_data(api.data_broker.clone(), api.shared_policies.clone())
+            .with_shared_pool(api.shared_pool.clone()),
         );
         let service_resource_api = resource_api.clone();
         let (shutdown, stopped) = oneshot::channel();

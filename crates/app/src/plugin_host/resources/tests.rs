@@ -88,6 +88,10 @@ struct Fixture {
     snapshots: Arc<crate::plugin_host::fingerprints::Snapshots>,
     /// Shared observations inserted by source fixtures for cross-plugin read tests.
     data_broker: Arc<crate::plugin_host::shared_data::DataBroker>,
+    /// The host-owned durable public pool; durable records stay in `data_dir` after restart.
+    shared_pool: Arc<crate::plugin_host::shared_pool::DurableSharedPool>,
+    /// The application data folder the pool file lives in.
+    data_dir: std::path::PathBuf,
     /// Host-owned cross-plugin consent store used by producer/consumer fixtures.
     shared_policies: Arc<crate::plugin_host::sharing_policy::SharedSharingPolicies>,
     /// The time the notification rate limit sees; tests move it.
@@ -164,12 +168,17 @@ impl Fixture {
         let notices = Arc::new(notifications::Collected::default());
         notifications.set_sink(notices.clone());
         let data_broker = Arc::new(crate::plugin_host::shared_data::DataBroker::new());
+        let data_dir = temp.path().to_path_buf();
+        let shared_pool = Arc::new(crate::plugin_host::shared_pool::DurableSharedPool::new(
+            &data_dir,
+        ));
         let root = crate::plugin_host::PluginApi {
             storage: storage.clone(),
             files: files.clone(),
             network: network.clone(),
             notifications: notifications.clone(),
             data_broker: data_broker.clone(),
+            shared_pool: shared_pool.clone(),
             ..Default::default()
         };
         let shared_policies = root.shared_policies.clone();
@@ -279,6 +288,8 @@ impl Fixture {
             notice_clock,
             notices,
             data_broker,
+            shared_pool,
+            data_dir,
             shared_policies,
             clock,
             plugin_data,

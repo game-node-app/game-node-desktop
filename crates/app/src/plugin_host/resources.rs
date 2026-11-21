@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures_util::Stream;
+use gamenode_platform::plugin_shared_data::{OwnerScope, RecordProvenance};
 use gamenode_plugin_protocol::{
     capability as cap,
     prost_types::{self, value::Kind},
@@ -60,6 +61,7 @@ use super::saves::SaveAccess;
 use super::shared_data::{
     BrokerError, DataBroker, ProjectedRecord, QueryCursor, QueryRequest, SubscriptionEnd,
 };
+use super::shared_pool::{DurableSharedPool, DurableWrite};
 use super::sharing_policy::{AccessDecision, AccessRequest, Authorizer, Delivery};
 use super::storage::PluginStorage;
 
@@ -449,6 +451,8 @@ pub struct ResourceApi {
     libraries: Arc<libraries::Libraries>,
     /// Host-owned records and policy projection boundary for domain/Data reads.
     data: Arc<DataBroker>,
+    /// The durable public pool; refuses durable publication when the host has no data folder.
+    shared_pool: Arc<DurableSharedPool>,
     shared_authorizer: Arc<dyn Authorizer>,
     data_cursors: Arc<Mutex<HashMap<String, DataCursorEntry>>>,
     performance_batch_times: Arc<Mutex<HashMap<String, Instant>>>,
@@ -545,6 +549,7 @@ impl ResourceApi {
             decoders: Arc::new(tokio::sync::Semaphore::new(artwork::DECODE_SLOTS)),
             backup_slots: Arc::new(tokio::sync::Semaphore::new(2)),
             data: Arc::new(DataBroker::new()),
+            shared_pool: Arc::new(DurableSharedPool::disabled()),
             shared_authorizer: Arc::new(DenySharedData),
             data_cursors: Arc::default(),
             performance_batch_times: Arc::default(),
@@ -562,6 +567,13 @@ impl ResourceApi {
         self.providers.set_shared_data_broker(&data);
         self.data = data;
         self.shared_authorizer = authorizer;
+        self
+    }
+
+    /// Attach the host-owned durable public pool. Production supplies the application data
+    /// folder; without one a durable publication fails instead of falling back to the session.
+    pub fn with_shared_pool(mut self, pool: Arc<DurableSharedPool>) -> Self {
+        self.shared_pool = pool;
         self
     }
 
@@ -1280,9 +1292,17 @@ impl resource_host_server::ResourceHost for ResourceApi {
         }
         let durability = StorageDurability::try_from(request.durability)
             .map_err(|_| Status::invalid_argument("unknown data durability"))?;
-        if durability != StorageDurability::SessionOnly {
-            return Err(Status::failed_precondition(
-                "published shared data is session-retained; use Persistence for durable values",
+        if durability == StorageDurability::Unspecified {
+            return Err(Status::invalid_argument(
+                "data durability must be session-only or persistent",
+            ));
+        }
+        // A durable publication needs both grants. A missing one is an explicit failure, never
+        // a session-only fallback.
+        let persistent = durability == StorageDurability::Persistent;
+        if persistent && !caller.has(cap::STORAGE_PERSIST) {
+            return Err(Status::permission_denied(
+                "durable shared-data publication requires storage.persist",
             ));
         }
         let has_opaque_payload = !request.opaque_payload.is_empty();
@@ -1359,6 +1379,7 @@ impl resource_host_server::ResourceHost for ResourceApi {
                 revision: original.revision,
                 expires_at,
                 outcome: original.outcome,
+                durability: durability as i32,
             }));
         }
         let current = self
@@ -1369,62 +1390,107 @@ impl resource_host_server::ResourceHost for ResourceApi {
                 "plugin permissions changed; retry the publication",
             ));
         }
-        let receipt = match self.data.publish(
-            super::shared_data::Publication {
-                owner,
-                dataset_id: request.dataset_id,
-                category: None,
-                class: super::sharing_policy::SharingClass::Custom,
-                schema_id: request.schema_id,
-                schema_version: request.schema_version,
-                fields,
-                opaque_payload: request.opaque_payload,
-                resource_id: request.resource_id,
-                observed_at: request.observed_at,
-                sequence: request.sequence,
-                source_observation_id: request.source_observation_id,
-                session_id: Some(caller.session_id.clone()),
-                publisher: Some(super::shared_data::PublisherMetadata {
-                    declared_developer: caller.declared_developer.clone(),
-                    origin: caller.origin.clone(),
-                    package_version: caller.package_version.clone(),
-                    package_digest: caller.package_digest.clone(),
-                }),
-                expires_at,
-            },
-            now,
-        ) {
-            Ok(receipt) => receipt,
-            Err(BrokerError::SequenceConflict(revision)) => {
-                return Ok(Response::new(DataMutationReply {
-                    revision,
-                    outcome: MutationOutcome::RevisionConflict as i32,
-                    ..Default::default()
-                }));
-            }
-            Err(error) => return Err(data_broker_status(error)),
+        let publication = super::shared_data::Publication {
+            owner,
+            dataset_id: request.dataset_id,
+            category: None,
+            class: super::sharing_policy::SharingClass::Custom,
+            schema_id: request.schema_id,
+            schema_version: request.schema_version,
+            fields,
+            opaque_payload: request.opaque_payload,
+            resource_id: request.resource_id,
+            observed_at: request.observed_at,
+            sequence: request.sequence,
+            source_observation_id: request.source_observation_id,
+            session_id: Some(caller.session_id.clone()),
+            publisher: Some(super::shared_data::PublisherMetadata {
+                declared_developer: caller.declared_developer.clone(),
+                origin: caller.origin.clone(),
+                package_version: caller.package_version.clone(),
+                package_digest: caller.package_digest.clone(),
+            }),
+            expires_at,
         };
-        let expiry = expires_at.unwrap_or_default();
-        let generic_reply = mutations::reply(
-            &receipt.record_id,
-            receipt.revision,
-            if receipt.duplicate {
-                MutationOutcome::AlreadyApplied
-            } else {
-                MutationOutcome::Applied
-            },
-        );
+        // Both modes accept the same payload, provenance and expiry.
+        DataBroker::validate(&publication, now).map_err(data_broker_status)?;
+
+        let (record_id, revision, duplicate, expiry) = if persistent {
+            let namespace = caller.namespace.as_ref().ok_or_else(|| {
+                Status::permission_denied(
+                    "shared plugin data is available only to authenticated third-party plugins",
+                )
+            })?;
+            let scope = OwnerScope::new(*namespace.storage_owner().key(), caller.profile_epoch)
+                .map_err(|_| Status::failed_precondition("resource context is stale"))?;
+            let provenance = RecordProvenance {
+                source_plugin_id: publication.owner.plugin_id.clone(),
+                source_publisher_fingerprint: publication.owner.publisher_fingerprint.clone(),
+                source_profile_id: publication.owner.profile_id.clone(),
+                declared_developer: caller.declared_developer.clone(),
+                origin: caller.origin.clone(),
+                package_version: caller.package_version.clone(),
+                package_digest: caller.package_digest.clone(),
+            };
+            let receipt = self
+                .shared_pool
+                .persist(DurableWrite {
+                    owner: scope,
+                    dataset_id: publication.dataset_id.clone(),
+                    schema_id: publication.schema_id.clone(),
+                    schema_version: publication.schema_version,
+                    fields_json: payload_json,
+                    opaque_payload: publication.opaque_payload.clone(),
+                    resource_id: (!publication.resource_id.is_empty())
+                        .then(|| publication.resource_id.clone()),
+                    observed_at: publication.observed_at,
+                    sequence: publication.sequence,
+                    source_observation_id: publication.source_observation_id.clone(),
+                    expires_at,
+                    now,
+                    provenance,
+                })
+                .await?;
+            (
+                receipt.record_id,
+                receipt.revision,
+                false,
+                receipt.expires_at.unwrap_or_default(),
+            )
+        } else {
+            let receipt = match self.data.publish(publication, now) {
+                Ok(receipt) => receipt,
+                Err(BrokerError::SequenceConflict(revision)) => {
+                    return Ok(Response::new(DataMutationReply {
+                        revision,
+                        outcome: MutationOutcome::RevisionConflict as i32,
+                        durability: durability as i32,
+                        ..Default::default()
+                    }));
+                }
+                Err(error) => return Err(data_broker_status(error)),
+            };
+            (
+                receipt.record_id,
+                receipt.revision,
+                receipt.duplicate,
+                expires_at.unwrap_or_default(),
+            )
+        };
+        let outcome = if duplicate {
+            MutationOutcome::AlreadyApplied
+        } else {
+            MutationOutcome::Applied
+        };
+        let generic_reply = mutations::reply(&record_id, revision, outcome);
         self.mutations
             .remember_with(&caller, &session_key, hash, &generic_reply, expiry);
         Ok(Response::new(DataMutationReply {
-            record_id: receipt.record_id,
-            revision: receipt.revision,
+            record_id,
+            revision,
             expires_at: expiry,
-            outcome: if receipt.duplicate {
-                MutationOutcome::AlreadyApplied as i32
-            } else {
-                MutationOutcome::Applied as i32
-            },
+            outcome: outcome as i32,
+            durability: durability as i32,
         }))
     }
 

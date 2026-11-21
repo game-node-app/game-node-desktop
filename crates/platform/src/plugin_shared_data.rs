@@ -730,7 +730,10 @@ fn validate_write(write: &RecordWrite<'_>) -> Result<(), SharedDataError> {
     validate_text(write.dataset_id, MAX_IDENTIFIER_BYTES)?;
     validate_text(write.schema_id, MAX_IDENTIFIER_BYTES)?;
     validate_text(write.class, MAX_CLASS_BYTES)?;
-    validate_text(write.source_observation_id, MAX_IDENTIFIER_BYTES)?;
+    // A producer observation id is optional without a sequence, matching the session broker.
+    if !write.source_observation_id.is_empty() {
+        validate_text(write.source_observation_id, MAX_IDENTIFIER_BYTES)?;
+    }
     if let Some(resource_id) = write.resource_id {
         validate_text(resource_id, MAX_IDENTIFIER_BYTES)?;
     }

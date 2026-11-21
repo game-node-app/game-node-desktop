@@ -122,6 +122,7 @@ async fn control_plane_requires_the_session_credential_and_streams_grant_revisio
         providers: h.api.clone(),
         shared_policies: Default::default(),
         data_broker: Default::default(),
+        shared_pool: Default::default(),
         library: Default::default(),
         storage: Default::default(),
         files: Default::default(),

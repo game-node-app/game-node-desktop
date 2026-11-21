@@ -486,6 +486,13 @@ impl DataBroker {
         self.lock().revision
     }
 
+    /// Validates a publication exactly as a stored session publication, without storing it.
+    /// Durable publications use this so a record accepted by either mode follows the same
+    /// payload, provenance and expiry rules.
+    pub fn validate(publication: &Publication, now: i64) -> Result<(), BrokerError> {
+        validate_publication(publication, now)
+    }
+
     fn publish_inner(
         &self,
         publication: Publication,

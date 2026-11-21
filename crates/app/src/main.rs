@@ -211,6 +211,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         storage: Arc::new(gamenode_app::plugin_host::storage::PluginStorage::new(
             paths.plugin_data_dir(),
         )),
+        shared_pool: Arc::new(
+            gamenode_app::plugin_host::shared_pool::DurableSharedPool::new(paths.data_dir()),
+        ),
         // Nothing under the application data folder is reachable through file handles. The
         // folder-approval dialog is connected with the settings UI (`FileAccess::set_approver`).
         files: Arc::new(gamenode_app::plugin_host::files::FileAccess::new(

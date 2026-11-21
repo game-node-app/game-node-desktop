@@ -253,27 +253,52 @@ pub(super) async fn inspect_staged_package(
     let environment = gamenode_platform::plugin_environment::detect()
         .await
         .map_err(PackageLifecycleError::Environment)?;
+    inspect_staged_package_in(package_root, publisher_key, emulation_policy, environment).await
+}
+
+/// The same verification with an execution environment the caller already detected. A bundle
+/// install evaluates every component on one worker and must not re-detect the environment for
+/// each one; the result is otherwise identical to [`inspect_staged_package`].
+pub(super) async fn inspect_staged_package_in(
+    package_root: impl AsRef<Path>,
+    publisher_key: [u8; 32],
+    emulation_policy: EmulationPolicy,
+    environment: PluginEnvironment,
+) -> Result<PackageCandidateReport, PackageLifecycleError> {
     let package_root = package_root.as_ref().to_owned();
-    let evaluation_environment = environment.clone();
-    let (manifest, targets, extension_schemas) = tokio::task::spawn_blocking(move || {
-        let integrity = verify_package_directory(&package_root, &publisher_key)
-            .map_err(|error| PackageLifecycleError::InvalidPackage(error.to_string()))?;
-        let manifest_bytes = read_signed_manifest(&package_root, &integrity)?;
-        let manifest = Manifest::parse_json(&manifest_bytes)
-            .map_err(|error| PackageLifecycleError::InvalidPackage(error.to_string()))?
-            .manifest()
-            .clone();
-        let extension_schemas = validate_manifest_payload(&package_root, &integrity, &manifest)?;
-        let targets =
-            assess_manifest_targets(&manifest_bytes, &evaluation_environment, emulation_policy)
-                .map_err(|error| PackageLifecycleError::InvalidPackage(error.to_string()))?;
-        Ok::<_, PackageLifecycleError>((manifest, targets, extension_schemas))
+    tokio::task::spawn_blocking(move || {
+        inspect_staged_package_blocking(
+            &package_root,
+            publisher_key,
+            emulation_policy,
+            &environment,
+        )
     })
     .await
-    .map_err(|_| PackageLifecycleError::WorkerFailed)??;
+    .map_err(|_| PackageLifecycleError::WorkerFailed)?
+}
+
+/// The blocking body shared by every staged inspection path. Callers own the environment and
+/// must already be on a worker thread.
+pub(super) fn inspect_staged_package_blocking(
+    package_root: &Path,
+    publisher_key: [u8; 32],
+    emulation_policy: EmulationPolicy,
+    environment: &PluginEnvironment,
+) -> Result<PackageCandidateReport, PackageLifecycleError> {
+    let integrity = verify_package_directory(package_root, &publisher_key)
+        .map_err(|error| PackageLifecycleError::InvalidPackage(error.to_string()))?;
+    let manifest_bytes = read_signed_manifest(package_root, &integrity)?;
+    let manifest = Manifest::parse_json(&manifest_bytes)
+        .map_err(|error| PackageLifecycleError::InvalidPackage(error.to_string()))?
+        .manifest()
+        .clone();
+    let extension_schemas = validate_manifest_payload(package_root, &integrity, &manifest)?;
+    let targets = assess_manifest_targets(&manifest_bytes, environment, emulation_policy)
+        .map_err(|error| PackageLifecycleError::InvalidPackage(error.to_string()))?;
     Ok(PackageCandidateReport {
         manifest,
-        environment,
+        environment: environment.clone(),
         targets,
         extension_schemas,
     })

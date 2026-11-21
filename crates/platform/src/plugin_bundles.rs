@@ -68,6 +68,8 @@ pub enum BundleError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerifiedBundle {
     pub manifest: BundleManifest,
+    /// Lowercase SHA-256 of the exact signed `bundle.json` bytes stored in the archive.
+    pub manifest_sha256: String,
     pub components: Vec<VerifiedBundleComponent>,
 }
 
@@ -366,6 +368,7 @@ fn verify_bundle_reader<R: Read + Seek>(
     let manifest = parse_bundle_manifest(&raw_manifest)?;
     let publisher_key = manifest.publisher_key()?;
     verify_bundle_signature(&publisher_key, &raw_manifest, &signature)?;
+    let manifest_sha256 = format!("{:x}", Sha256::digest(&raw_manifest));
 
     let mut components = Vec::with_capacity(manifest.components.len());
     let mut component_files = BTreeMap::new();
@@ -396,6 +399,7 @@ fn verify_bundle_reader<R: Read + Seek>(
     Ok((
         VerifiedBundle {
             manifest,
+            manifest_sha256,
             components,
         },
         component_files,

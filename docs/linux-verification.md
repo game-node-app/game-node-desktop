@@ -57,9 +57,9 @@ No item below is marked as executed by this change's automated checks.
   systemd user units).
 - [ ] Sync preferences persist across restarts and remain keyboard accessible.
 
-The process adapter's Linux unit test asserts `Unsupported` for listing and
-watching. This tests the adapter contract; it does not replace the native
-window-close and integration checks above.
+The process adapter's Linux unit tests cover `/proc` listing, real parent identity,
+reused-PID refusal and confirmed exit watching. Native playtime, window-close and
+integration acceptance above still require a native Linux run.
 
 ## Issue #2: experimental tar launcher
 

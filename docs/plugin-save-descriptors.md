@@ -77,16 +77,16 @@ plugin RPC cannot accept, widen or replace it. `GetProfile`/`ListProfiles` repor
 `PENDING`, `CURRENT` or `STALE` for the owner's profiles.
 
 The host settings surface exposes `plugin_shared_resource_reviews`, `plugin_shared_resource_accept`
-and `plugin_shared_resource_revoke`. The full settings screen remains to be built; the commands and
-their DTO already return the host-resolved affected games for review.
+and `plugin_shared_resource_revoke`. The plugin settings screen lists each declared resource with
+its host-resolved affected games and offers approve or revoke; it never receives a filesystem path.
 
 Supervised runtime launches acquire a host-issued use lease for every reviewed resource attached to
 the matching game installation and runtime. The lease is held until the supervised process tree is
 confirmed exited or fenced. Backup and restore acquire one exclusive lease for the complete set
 before starting the job, recheck the approved runtime's externally observed process state, and fail
-closed when that state is unknown. GameNode's Linux process inspection currently reports
-`UNSUPPORTED`, so shared-resource backup/restore and runtime-profile backup fail closed there until
-a supported inspection adapter exists; Windows uses the existing process inventory. Plugin-reported
+closed when that state is unknown. Linux inspection reads `/proc` and compares the runtime's
+executable identity, with a deleted or replaced image still attributed to its approved pathname;
+unreadable process state fails closed. Windows uses the existing process inventory. Plugin-reported
 game or session activity is descriptive and never establishes that a resource is idle.
 
 ## Load observations and images

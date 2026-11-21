@@ -375,8 +375,11 @@ impl Engine {
         settings: Settings,
         library: LibraryMachine,
         nonce: NonceSource,
+        custom_launch_leases: Arc<crate::plugin_host::resource_leases::ResourceLeases>,
         publish: impl Fn(Snapshot) + Send + Sync + 'static,
     ) -> Self {
+        #[cfg(not(any(target_os = "linux", windows)))]
+        let _ = custom_launch_leases;
         #[cfg(test)]
         let test_runtime = Arc::new(tests::provider_runtime::Runtime::new(&ports));
         let mut library = library;
@@ -445,9 +448,7 @@ impl Engine {
             custom_launch_supervisor:
                 crate::plugin_host::launch_supervisor::LaunchSupervisor::start_monitor().ok(),
             #[cfg(any(target_os = "linux", windows))]
-            custom_launch_leases: Arc::new(
-                crate::plugin_host::resource_leases::ResourceLeases::default(),
-            ),
+            custom_launch_leases,
             library_feed: Mutex::new(None),
             provider_checks: Mutex::new(std::collections::HashMap::new()),
             catalog_syncs: Mutex::new(std::collections::HashMap::new()),

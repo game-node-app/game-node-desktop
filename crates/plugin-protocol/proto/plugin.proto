@@ -670,8 +670,30 @@ message SaveProfile {
   google.protobuf.Struct descriptive_metadata = 9;
   string creator_plugin_id = 10;
   uint64 revision = 11;
+  // Host-resolved shared emulator resources this profile uses. The caller proposes the alias and
+  // an approved folder handle; the host binds the backing identity, affected games and consent.
+  repeated SharedResourceDeclaration shared_resources = 12;
 }
 message SaveDirectory { string approved_resource_handle = 1; string display_name = 2; repeated string naming_patterns = 3; }
+// The host accepts a declaration only as a proposal. Consent is granted through host settings,
+// never by a plugin RPC, and the host revalidates the exact scope before every use.
+message SharedResourceDeclaration {
+  // Plugin-chosen alias, 1 to 128 bytes. All profiles that share one backing resource must use
+  // the same alias.
+  string resource_id = 1;
+  // Opaque host-issued handle for the approved backing folder. Empty in a reply when the caller
+  // no longer has a standing approval or is reading another plugin's profile.
+  string approved_resource_handle = 2;
+  string display_name = 3;
+  // Host-computed; absent from create/update requests.
+  SharedResourceConsent consent = 4;
+}
+enum SharedResourceConsent {
+  SHARED_RESOURCE_CONSENT_UNSPECIFIED = 0;
+  SHARED_RESOURCE_CONSENT_PENDING = 1;
+  SHARED_RESOURCE_CONSENT_CURRENT = 2;
+  SHARED_RESOURCE_CONSENT_STALE = 3;
+}
 message SaveProfileListReply { repeated SaveProfile profiles = 1; string next_cursor = 2; uint64 revision = 3; }
 message SaveProfileReply { SaveProfile profile = 1; uint64 revision = 2; }
 message SaveProfileMutationReply { string profile_id = 1; uint64 revision = 2; MutationOutcome outcome = 3; }

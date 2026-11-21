@@ -1,6 +1,7 @@
-//! Platform process inspection. Linux tracking is intentionally unavailable in the MVP.
+//! Platform process inspection. Windows keeps OS handles; Linux reads `/proc`; other targets
+//! report the port as unavailable.
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 mod unsupported {
     use gamenode_core::ports::{ProcessError, ProcessInfo, Processes};
     #[derive(Default)]
@@ -41,8 +42,13 @@ mod unsupported {
         }
     }
 }
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub use unsupported::HostProcesses;
+
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+pub use linux::HostProcesses;
 
 #[cfg(windows)]
 mod windows;

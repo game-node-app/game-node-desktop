@@ -128,6 +128,8 @@ async fn control_plane_requires_the_session_credential_and_streams_grant_revisio
         network: Default::default(),
         notifications: Default::default(),
         jobs: Default::default(),
+        leases: Default::default(),
+        processes: None,
         intents: Default::default(),
         saves: Default::default(),
         fingerprints: Default::default(),

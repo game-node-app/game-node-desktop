@@ -174,6 +174,18 @@ CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target-$(basename "$PWD
   cargo test --locked -p gamenode-app custom_launch_without_its_own_grant
 ```
 
+Supervised Linux launch fixtures, including the reviewed shared-resource launch, spawn the host
+binary in its internal helper mode. They skip when `GAMENODE_TEST_HELPER_BINARY` is unset; point it
+at a built binary to exercise them:
+
+```sh
+CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target-$(basename "$PWD") \
+  cargo build --locked -p gamenode-app --bin gamenode --no-default-features
+GAMENODE_TEST_HELPER_BINARY=/data/DADOS_LINUX/geral/area_troca_rust/target-$(basename "$PWD")/debug/gamenode \
+CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target-$(basename "$PWD") \
+  cargo test --locked -p gamenode-app --lib reviewed_shared_resource_use
+```
+
 ## Full workspace and release checks (both platforms)
 
 These broader checks are appropriate for workspace integration, release

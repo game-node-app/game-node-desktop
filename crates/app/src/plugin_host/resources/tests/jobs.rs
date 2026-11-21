@@ -28,6 +28,8 @@ impl Fixture {
             self.intents.clone(),
             self.saves.clone(),
             self.snapshots.clone(),
+            self.leases.clone(),
+            self.processes.clone(),
         )
     }
 

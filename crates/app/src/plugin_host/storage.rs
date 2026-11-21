@@ -653,6 +653,46 @@ impl Namespace<'_> {
         self.inner.counter = revision;
         Ok(ProfileWrite::Applied { revision })
     }
+
+    /// The persisted user decision for one shared-resource declaration, if any.
+    pub fn shared_resource_consent(
+        &mut self,
+        profile_id: &str,
+        resource_id: &str,
+    ) -> Result<Option<durable::SharedResourceConsentRow>, Status> {
+        match self.durable(false)? {
+            Some(store) => store
+                .shared_resource_consent(profile_id, resource_id)
+                .map_err(unavailable),
+            None => Ok(None),
+        }
+    }
+
+    /// Records the user's exact decision. The caller has already re-resolved the declaration and
+    /// its current affected set on this namespace worker.
+    pub fn put_shared_resource_consent(
+        &mut self,
+        row: &durable::SharedResourceConsentRow,
+    ) -> Result<(), Status> {
+        let store = self
+            .durable(true)?
+            .ok_or_else(|| Status::unavailable("plugin storage is unavailable"))?;
+        store.save_shared_resource_consent(row).map_err(unavailable)
+    }
+
+    /// Forgets the decision so the next use requires a fresh review.
+    pub fn revoke_shared_resource_consent(
+        &mut self,
+        profile_id: &str,
+        resource_id: &str,
+    ) -> Result<bool, Status> {
+        let Some(store) = self.durable(false)? else {
+            return Ok(false);
+        };
+        store
+            .revoke_shared_resource_consent(profile_id, resource_id)
+            .map_err(unavailable)
+    }
 }
 
 /// File-root approvals live beside the key/value data in the same per-namespace store.

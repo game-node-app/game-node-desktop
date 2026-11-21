@@ -775,6 +775,8 @@ async fn the_real_client_refuses_local_and_private_destinations_before_connectin
         fixture.intents.clone(),
         Arc::default(),
         Arc::default(),
+        Arc::default(),
+        None,
     );
     let scopes = Arc::new(Origins::default());
     *scopes.approved.lock().unwrap() = origins;

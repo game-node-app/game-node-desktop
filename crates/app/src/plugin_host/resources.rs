@@ -26,7 +26,7 @@ mod artwork;
 mod backups;
 mod custom_launch;
 mod diagnostics;
-mod files;
+pub(crate) mod files;
 mod games;
 mod jobs;
 mod libraries;
@@ -453,6 +453,11 @@ pub struct ResourceApi {
     data_cursors: Arc<Mutex<HashMap<String, DataCursorEntry>>>,
     performance_batch_times: Arc<Mutex<HashMap<String, Instant>>>,
     performance_cursors: Arc<Mutex<HashMap<String, performance::CursorEntry>>>,
+    /// Host-owned coordinator shared with supervised launches, when connected by the application.
+    leases: Arc<crate::plugin_host::resource_leases::ResourceLeases>,
+    /// Platform process inspection; absent in tests or unsupported builds, where checks fail
+    /// closed.
+    processes: Option<Arc<dyn gamenode_core::ports::Processes>>,
 }
 
 struct DataCursorEntry {
@@ -526,6 +531,8 @@ impl ResourceApi {
         intents: Arc<Intents>,
         saves: Arc<SaveAccess>,
         snapshots: Arc<fingerprints::Snapshots>,
+        leases: Arc<crate::plugin_host::resource_leases::ResourceLeases>,
+        processes: Option<Arc<dyn gamenode_core::ports::Processes>>,
     ) -> Self {
         Self {
             providers,
@@ -549,6 +556,8 @@ impl ResourceApi {
             data_cursors: Arc::default(),
             performance_batch_times: Arc::default(),
             performance_cursors: Arc::default(),
+            leases,
+            processes,
         }
     }
 

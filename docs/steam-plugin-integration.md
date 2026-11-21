@@ -24,7 +24,7 @@ Evidence columns are intentionally empty until run against the integrated candid
 | Owned and Family catalog | Full uninstalled/unplayed/free library, independent category results, retries, account switch and sign-out | Pending | Pending |
 | Library and GUI | Stable `steam:<appid>`, installed/owned/Family facts, matches, favorites, covers, filters, selection and cached banners | Pending | Pending |
 | Play and Install | Existing Steam URI actions, missing-handler result and cached declarations | Pending | Pending |
-| Store and Internal playtime | Counter conversion/latest local account; Windows process tracking, attribution, triggers and deduplication | Linux tracking remains unavailable as in mainline | Pending |
+| Store and Internal playtime | Counter conversion/latest local account; Windows process tracking, attribution, triggers and deduplication | Linux `/proc` tracking adapter implemented; native acceptance pending | Pending |
 | Runtime and lifecycle | Missing plugin, crash/restart, scoped permissions, stale results, responsiveness and shutdown cleanup | Pending | Pending |
 | PC ports regression | Mainline catalog, overlay, guided/install flow, migration 0008, provenance, cancellation/recovery, launch environment and gameplay roles | UI/mock and applicable Core/platform checks pending; installation is Windows-only | Pending native installation and lifecycle acceptance |
 | Other mainline features | GameNode auth, manual games, settings, backup/game tools, tray/lifecycle | Pending applicable flows | Pending applicable flows |

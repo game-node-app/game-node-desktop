@@ -648,7 +648,7 @@ async fn changing_a_snapshot_after_its_preview_cannot_add_unreviewed_restore_tar
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn runtime_profiles_remain_explicitly_unavailable_without_shared_runtime_coordination() {
+async fn runtime_profiles_fail_closed_without_external_process_inspection() {
     let mut r = Ready::new().await;
     r.profile =
         r.f.patch(

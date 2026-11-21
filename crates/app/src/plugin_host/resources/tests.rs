@@ -86,6 +86,10 @@ struct Fixture {
     saves: Arc<crate::plugin_host::saves::SaveAccess>,
     /// The fingerprints of approved places.
     snapshots: Arc<crate::plugin_host::fingerprints::Snapshots>,
+    /// Host-owned lease coordinator shared by launches and backup jobs.
+    leases: Arc<crate::plugin_host::resource_leases::ResourceLeases>,
+    /// Platform process inspection used by external runtime-use checks.
+    processes: Option<Arc<dyn gamenode_core::ports::Processes>>,
     /// Shared observations inserted by source fixtures for cross-plugin read tests.
     data_broker: Arc<crate::plugin_host::shared_data::DataBroker>,
     /// Host-owned cross-plugin consent store used by producer/consumer fixtures.
@@ -180,6 +184,8 @@ impl Fixture {
         let intents = root.intents.clone();
         let saves = root.saves.clone();
         let snapshots = root.fingerprints.clone();
+        let leases = root.leases.clone();
+        let processes = root.processes.clone();
         let api = root.providers.clone();
         let feed = root.library.clone();
         api.profiles().update(Some("a"), true);
@@ -276,6 +282,8 @@ impl Fixture {
             intents,
             saves,
             snapshots,
+            leases,
+            processes,
             notice_clock,
             notices,
             data_broker,
@@ -668,6 +676,8 @@ async fn a_session_may_hold_only_a_bounded_number_of_watches() {
         fixture.intents.clone(),
         fixture.saves.clone(),
         fixture.snapshots.clone(),
+        fixture.leases.clone(),
+        fixture.processes.clone(),
     );
     let request = || {
         Request::new(LibraryWatchRequest {

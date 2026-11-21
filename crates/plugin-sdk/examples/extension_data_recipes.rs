@@ -2,8 +2,9 @@
 //!
 //! The typed runtime fields remain authoritative. Extension values are bounded annotations; an
 //! older client should patch only the namespace it understands and carry every other namespace
-//! forward unchanged. The Data service is served by the desktop host; these examples construct
-//! local wire values only. Runtime update remains unserved.
+//! forward unchanged. Both the Data service and the owner-only `RuntimesUpdate` namespace patch are
+//! served by the desktop host; the host, not the client, assigns the next revision and validates
+//! any packaged schema before committing.
 #![allow(dead_code)]
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -19,8 +20,8 @@ use gamenode_plugin_sdk::{
     },
 };
 
-const KNOWN_NAMESPACE: &str = "org.example.runtime";
-const FUTURE_NAMESPACE: &str = "org.vendor.future-runtime";
+pub const KNOWN_NAMESPACE: &str = "org.example.runtime";
+pub const FUTURE_NAMESPACE: &str = "org.vendor.future-runtime";
 const RUNTIME_V1_SCHEMA: &[u8] = br#"{"type":"object","properties":{"display_family":{"type":"string"}},"additionalProperties":false}"#;
 const FUTURE_RUNTIME_V9_SCHEMA: &[u8] =
     br#"{"type":"object","properties":{"new_hint":{"type":"string"}},"additionalProperties":true}"#;
@@ -76,6 +77,7 @@ pub fn hybrid_runtime() -> RuntimeRecord {
         version: "2.4.1".into(),
         executable_handle: "opaque-runtime-handle".into(),
         supported_formats: vec!["rom.example".into()],
+        platform: std::env::consts::OS.into(),
         extensions: [
             (
                 KNOWN_NAMESPACE.into(),
@@ -101,12 +103,11 @@ pub fn hybrid_runtime() -> RuntimeRecord {
     }
 }
 
-/// Build a revision-checked patch for only the namespace this client understands. The protocol
-/// helper preserves the unknown namespace and host-owned fields. This is a local contract helper;
-/// the desktop RuntimeUpdate RPC is not served yet, so do not send it to the host.
-pub fn patch_known_runtime_namespace(current: &RuntimeRecord) -> Result<RuntimeRecord, WireError> {
-    let patch = ExtensionPatch {
-        expected_revision: current.revision,
+/// The revision-checked patch used by [`patch_known_runtime_namespace`]. Only the described
+/// namespace and typed fields change; every other namespace is retained by the host.
+pub fn known_namespace_patch(current_revision: u64) -> ExtensionPatch {
+    ExtensionPatch {
+        expected_revision: current_revision,
         typed_field_mask: vec!["name".into()],
         namespaces: vec![ExtensionNamespacePatch {
             namespace: KNOWN_NAMESPACE.into(),
@@ -116,7 +117,13 @@ pub fn patch_known_runtime_namespace(current: &RuntimeRecord) -> Result<RuntimeR
                 object([(String::from("display_family"), string("handheld"))]),
             ))),
         }],
-    };
+    }
+}
+
+/// Build a revision-checked patch for only the namespace this client understands. The protocol
+/// helper preserves the unknown namespace and host-owned fields, matching `RuntimesUpdate`.
+pub fn patch_known_runtime_namespace(current: &RuntimeRecord) -> Result<RuntimeRecord, WireError> {
+    let patch = known_namespace_patch(current.revision);
     let proposed = RuntimeRecord {
         name: "Example Runtime (handheld)".into(),
         ..current.clone()
@@ -133,6 +140,76 @@ pub fn project_display_family(record: &RuntimeRecord) -> Result<Struct, WireErro
         .and_then(|extension| extension.data.as_ref())
         .ok_or(WireError)?;
     extensions::project_struct_paths(value, &BTreeSet::from(["display_family".into()]))
+}
+
+/// The signed descriptor for the namespace this client understands. The host resolves this from
+/// the active package; an example builds it locally to show the shape.
+pub fn known_descriptor() -> proto::ExtensionSchemaDescriptor {
+    proto::ExtensionSchemaDescriptor {
+        namespace: KNOWN_NAMESPACE.into(),
+        schema_id: "org.example.runtime.v1".into(),
+        schema_version: 1,
+        schema_digest: RUNTIME_V1_DIGEST.to_vec(),
+        schema_json: RUNTIME_V1_SCHEMA.to_vec(),
+        fields: vec![proto::ExtensionSchemaField {
+            path: "display_family".into(),
+            classification: proto::ExtensionFieldClassification::Public as i32,
+        }],
+        optional: true,
+    }
+}
+
+/// Projects only the declared and granted fields of a known namespace. A shared catalog read
+/// passes the recipient's current field grant; this helper performs structure, not authority.
+pub fn project_known_namespace(
+    record: &RuntimeRecord,
+    granted: &BTreeSet<String>,
+) -> Result<ExtensionPayload, WireError> {
+    let payload = record.extensions.get(KNOWN_NAMESPACE).ok_or(WireError)?;
+    extensions::project_payload_fields(payload, &known_descriptor(), granted)
+}
+
+/// A descriptor for a future schema version this client does not know. `schema_version` and
+/// `schema_digest` are part of the identity: a v9 payload never validates against v1, and an
+/// unsupported namespace is kept as an opaque envelope instead of being projected or rewritten.
+pub fn future_descriptor() -> proto::ExtensionSchemaDescriptor {
+    proto::ExtensionSchemaDescriptor {
+        namespace: FUTURE_NAMESPACE.into(),
+        schema_id: "org.vendor.future-runtime.v9".into(),
+        schema_version: 9,
+        schema_digest: FUTURE_RUNTIME_V9_DIGEST.to_vec(),
+        schema_json: FUTURE_RUNTIME_V9_SCHEMA.to_vec(),
+        fields: vec![proto::ExtensionSchemaField {
+            path: "new_hint".into(),
+            classification: proto::ExtensionFieldClassification::Public as i32,
+        }],
+        optional: true,
+    }
+}
+
+/// The explicit unsupported outcome: reading a future namespace with an older descriptor fails
+/// schema validation. The caller must choose to carry the opacity forward, not interpret it.
+pub fn reject_future_namespace(record: &RuntimeRecord) -> Result<(), WireError> {
+    let payload = record.extensions.get(FUTURE_NAMESPACE).ok_or(WireError)?;
+    extensions::validate_payload_for_schema(payload, &known_descriptor())
+}
+
+/// Keeps only the custom fields a consumer was granted. A `Struct` field carries data only; the
+/// host's projection drops every ungranted key before the record leaves the broker.
+pub fn project_custom_dataset(
+    value: &Struct,
+    granted: &BTreeSet<String>,
+) -> Result<Struct, WireError> {
+    extensions::project_struct_paths(value, granted)
+}
+
+/// The custom envelope uses a versioned dataset identity. A future `schema_version` is accepted
+/// as an opaque label for custom records: Core does not interpret those fields, and a consumer
+/// still sees only the fields its review grants.
+pub fn custom_dataset_wire_shape_with_version(schema_version: u32) -> proto::DataPublishRequest {
+    let mut request = custom_dataset_wire_shape();
+    request.schema_version = schema_version;
+    request
 }
 
 /// The custom Data envelope carries a versioned Struct. This constructs a request only; send it

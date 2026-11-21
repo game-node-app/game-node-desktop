@@ -345,6 +345,56 @@ For common records, put the approved category in
 its matching grant. Without either selector, the common-data path returns
 only the caller's own records.
 
+## Runnable producer and consumer examples
+
+Two example clients exercise this contract end to end, and both read the same checked-in fixture
+([`data_exchange_fixtures.json`](../crates/plugin-protocol/contracts/data_exchange_fixtures.json)),
+so identities, units and expected outcomes cannot drift apart:
+
+- **Rust** — [`examples/data_exchange_recipes.rs`](../crates/plugin-sdk/examples/data_exchange_recipes.rs)
+  and [`examples/extension_data_recipes.rs`](../crates/plugin-sdk/examples/extension_data_recipes.rs)
+  are compiled with the SDK and run against the desktop's real fixture host by
+  `crates/app/src/plugin_host/resources/tests/sdk_data_exchange.rs` and `sdk_extension_data.rs`.
+- **Go** — [`examples/go/data_exchange.go`](../examples/go/data_exchange.go) and
+  [`extension_data.go`](../examples/go/extension_data.go) use the generated clients. Their tests
+  run a local gRPC fixture host and a message-level parity check against the same contract.
+
+```sh
+cargo test -p gamenode-app --lib -- plugin_host::resources::tests::sdk_data_exchange
+cargo test -p gamenode-app --lib -- plugin_host::resources::tests::sdk_extension_data
+cargo test -p gamenode-plugin-sdk --examples
+(cd examples/go && GOPROXY=off go test -count=1 ./...)
+```
+
+The scenarios cover performance history (publish, explicit selector, aggregate, revocation,
+end-series cleanup), approved save/location inspection, save-profile ownership, one shared runtime
+with several content identities, and hybrid/custom/opaque envelopes. They start no FPS, SMART or
+hardware collector, open no Core dashboard, and no reply names the approved folder path; volume metadata is scoped and opaque.
+
+### Which values Core interprets
+
+| Value in a request or reply | Who decides it | Example behavior |
+| --- | --- | --- |
+| Selected game, installation and `active-host` computer context | Host, from the authenticated session | A batch for another game is refused; the consumer sees the same host-bound context |
+| Sample units, interval, sequence, FPS method/statistic/quality, CPU scope/normalization, memory kind | Producer supplies; host validates and retains | `frames/second`, `percent`, `bytes`; a gap stays a gap |
+| `source`, `tool_name`, `tool_version`, runtime and recipe IDs | Producer claim, descriptive only | Recorded as provenance; they do not prove a collector ran |
+| `series_id`/`record_id` | Host-assigned owner token and current broker record | Category-scoped consent follows a replaced series |
+| Approved folder handle and volume token | Host, from the user's approval | Inspection returns an opaque token; `mount_point`/`relative_path` never name the folder |
+| Save-profile ownership and directories | Host, authenticated plugin/publisher/profile | A common selector is `UNIMPLEMENTED`; another plugin's profile is `NOT_FOUND` |
+| Shared runtime provenance and extensions | Host | Executable handle is empty; the known namespace is validated, an unknown namespace stays a bounded opaque envelope |
+| Custom dataset/schema identity and fields | Host enforces identity/limits; Core never interprets field meaning | Only reviewed fields, or the whole `opaque_payload`, reach a consumer |
+| Extension `schema_id`, `schema_version`, `schema_digest` | Compared against signed package assets when a descriptor exists | A v9 payload is not validated as v1; without a descriptor the envelope is preserved, not projected as typed data |
+
+Two common-data outcomes differ deliberately: a performance-history selector without a current grant
+returns an empty list (history is absent, not an error), while a runtime-catalog selector without its
+grant returns `PERMISSION_DENIED`. Save-profile routes answer `UNIMPLEMENTED` for any common selector
+and stay owner-only. All three flows are asserted by both examples.
+
+Shared extension namespaces are carried to another plugin as bounded opaque envelopes: the host
+re-validates their structure and budget, but Core interprets no field inside a namespace the
+recipient has no descriptor for. A consumer must not treat those values as identity, permission or
+execution authority.
+
 ## Non-shareable information
 
 Exclude credentials, tokens, session identifiers, private plugin storage, raw

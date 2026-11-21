@@ -42,6 +42,8 @@ mod runtimes;
 mod saves;
 mod sdk;
 mod sdk_actions;
+mod sdk_data_exchange;
+mod sdk_extension_data;
 mod sdk_utilities;
 mod storage;
 mod tools;

@@ -6,6 +6,7 @@ package main
 
 import (
 	"crypto/sha256"
+	"errors"
 
 	"example.com/gamenode/plugin-example/proto"
 	goproto "google.golang.org/protobuf/proto"
@@ -119,6 +120,34 @@ func OpaqueDatasetWireShape() *proto.DataPublishRequest {
 		ObservedAt: 1800000000, Sequence: 1,
 		SourceObservationId: "game-notes-binary-observation-1",
 	}
+}
+
+// CustomDatasetWireShapeWithVersion labels a custom publication with another schema version. Core
+// treats a custom field structure as data: the version is retained for the owner and consumers
+// still receive only the fields their review grants.
+func CustomDatasetWireShapeWithVersion(schemaVersion uint32) (*proto.DataPublishRequest, error) {
+	request, err := CustomDatasetWireShape()
+	if err != nil {
+		return nil, err
+	}
+	request.SchemaVersion = schemaVersion
+	return request, nil
+}
+
+// ErrUnsupportedSchema is the explicit outcome of interpreting a namespace whose schema identity
+// this client does not know. The caller must carry the bounded envelope opaquely instead.
+var ErrUnsupportedSchema = errors.New("unsupported extension schema identity")
+
+// ValidateKnownSchema accepts only the schema identity this client declares. A future version or
+// another namespace is not silently reinterpreted as the known one.
+func ValidateKnownSchema(payload *proto.ExtensionPayload) error {
+	if payload.GetSchemaId() != "org.example.runtime.v1" ||
+		payload.GetSchemaVersion() != 1 ||
+		len(payload.GetSchemaDigest()) != sha256.Size ||
+		payload.GetData() == nil {
+		return ErrUnsupportedSchema
+	}
+	return nil
 }
 
 // OpaqueBytesWireShape demonstrates private Storage bytes, which remain separate from shared data.

@@ -45,7 +45,7 @@ GO_BINDINGS = (
     (
         REPO_ROOT / "examples/go/proto",
         "example.com/gamenode/plugin-example/proto",
-        ("plugin.pb.go",),
+        ("plugin.pb.go", "plugin_grpc.pb.go"),
     ),
 )
 

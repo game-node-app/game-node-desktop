@@ -994,9 +994,11 @@ fn data_record(record: &ProjectedRecord) -> DataRecord {
         expires_at: record.expires_at().unwrap_or_default(),
         sequence: record.sequence(),
         source_observation_id: record.source_observation_id().to_owned(),
-        // Every record projected today is retired with its producer session; durable rows are
-        // merged by the durable-read work and carry their stored mode.
-        durability: StorageDurability::SessionOnly as i32,
+        durability: if record.is_durable() {
+            StorageDurability::Persistent as i32
+        } else {
+            StorageDurability::SessionOnly as i32
+        },
     }
 }
 
@@ -1444,7 +1446,7 @@ impl resource_host_server::ResourceHost for ResourceApi {
                 package_version: caller.package_version.clone(),
                 package_digest: caller.package_digest.clone(),
             };
-            let receipt = self
+            let record = self
                 .shared_pool
                 .persist(DurableWrite {
                     owner: scope,
@@ -1463,12 +1465,15 @@ impl resource_host_server::ResourceHost for ResourceApi {
                     provenance,
                 })
                 .await?;
-            (
-                receipt.record_id,
-                receipt.revision,
-                false,
-                receipt.expires_at.unwrap_or_default(),
-            )
+            let (record_id, revision, expiry) = (
+                record.record_id.clone(),
+                record.revision,
+                record.expires_at.unwrap_or_default(),
+            );
+            // The pool is the source of truth; the broker only advances its revision and tells
+            // current watchers, so a list revision hands off to a watch across both sources.
+            self.data.note_durable(record, now);
+            (record_id, revision, false, expiry)
         } else {
             let receipt = match self.data.publish(publication, now) {
                 Ok(receipt) => receipt,
@@ -1523,9 +1528,16 @@ impl resource_host_server::ResourceHost for ResourceApi {
             .providers
             .authorize_resource_session(request.context.as_ref())?;
         let identity = Self::data_identity(&caller)?;
+        // The producer may be offline: a durable record is read from the pool, while a session
+        // record still comes from the broker. Both pass the same grant and projection checks.
+        let now = unix_now()?;
+        let durable = self
+            .shared_pool
+            .get_any(request.record_id.clone(), now)
+            .await?;
         let result = self
             .data
-            .query_data(
+            .query_data_with_durable(
                 QueryRequest {
                     caller: identity,
                     dataset_id: request.dataset_id,
@@ -1536,8 +1548,9 @@ impl resource_host_server::ResourceHost for ResourceApi {
                     page_size: 1,
                     cursor: None,
                 },
+                durable.into_iter().collect(),
                 self.shared_authorizer.as_ref(),
-                unix_now()?,
+                now,
             )
             .map_err(data_broker_status)?;
         let record = result
@@ -1583,9 +1596,16 @@ impl resource_host_server::ResourceHost for ResourceApi {
             0 => DEFAULT_PAGE_SIZE,
             size => size.min(MAX_PAGE_SIZE),
         };
+        let now = unix_now()?;
+        // One page spans both sources, in the same receipt order, whether or not the producer is
+        // still connected.
+        let durable = self
+            .shared_pool
+            .list_dataset_any(request.dataset_id.clone(), now)
+            .await?;
         let result = self
             .data
-            .query_data(
+            .query_data_with_durable(
                 QueryRequest {
                     caller: identity,
                     dataset_id: request.dataset_id,
@@ -1596,8 +1616,9 @@ impl resource_host_server::ResourceHost for ResourceApi {
                     page_size,
                     cursor,
                 },
+                durable,
                 self.shared_authorizer.as_ref(),
-                unix_now()?,
+                now,
             )
             .map_err(data_broker_status)?;
         let next_cursor = match result.next_cursor {

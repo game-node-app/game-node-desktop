@@ -1,0 +1,118 @@
+{
+  "api": "1.6",
+  "note": "Shared producer/consumer fixture for the Go and Rust examples. The host interprets the selected game, installation, computer context, units and sequence; source/tool names are descriptive. No value is a filesystem path or a collector claim.",
+  "performance": {
+    "series_id": "series-primary",
+    "game_id": "5",
+    "installation_id": "id-steam:1",
+    "computer_context_id": "active-host",
+    "projection_id": "performance.v1",
+    "runtime_id": "runtime:example",
+    "runtime_recipe_revision": "recipe-2",
+    "sample_interval_ms": 100,
+    "units": {
+      "fps": "frames/second",
+      "cpu": "percent",
+      "memory": "bytes"
+    },
+    "cpu_scope": "process",
+    "cpu_normalization": "whole_machine_percent",
+    "memory_kind": "working_set_bytes",
+    "samples": [
+      {
+        "sequence": 1,
+        "observed_at": 1760000000000,
+        "fps": 59.0,
+        "cpu_percent": 34.5,
+        "memory_bytes": 536870912
+      },
+      {
+        "sequence": 2,
+        "observed_at": 1760000000100,
+        "fps": 61.0,
+        "cpu_percent": 34.5,
+        "memory_bytes": 536870912
+      }
+    ],
+    "average_fps": 60.0,
+    "metric_units": {
+      "fps": "frames/second",
+      "cpu_percent": "percent",
+      "memory_bytes": "bytes"
+    },
+    "selector": "GAME_PERFORMANCE_HISTORY",
+    "private_default": "no records without an explicit selector",
+    "revoked": "empty result after revocation"
+  },
+  "locations": {
+    "installation_id": "id-fixture:1",
+    "dimensions": ["availability", "volume", "capacity"],
+    "files": {
+      "GC/USA/card.gci": 4,
+      "states/s1.sav": 5
+    },
+    "size": {
+      "logical_bytes": 9,
+      "file_count": 2,
+      "directory_count": 3
+    },
+    "path_fields": ["mount_point", "relative_path"]
+  },
+  "save_profiles": {
+    "installation_id": "id-fixture:1",
+    "runtime_id": "org.example.emulator",
+    "format_id": "gci",
+    "format_version": 2,
+    "name": "Example memory card",
+    "directories": [
+      {
+        "display_name": "Memory card",
+        "naming_patterns": ["GC/**/*.gci"]
+      }
+    ],
+    "selector": "SAVE_PROFILES",
+    "shared_selector_outcome": "UNIMPLEMENTED"
+  },
+  "runtime_catalog": {
+    "runtime_id": "runtime:example-snes",
+    "runtime_name": "Example SNES",
+    "runtime_version": "2.0",
+    "platform": "linux",
+    "supported_formats": ["snes-rom"],
+    "game_id": "5",
+    "installation_id": "id-steam:1",
+    "content_kind": "snes-rom",
+    "content_ids": ["rom:zelda", "rom:metroid"],
+    "selector": "RUNTIME_CATALOG",
+    "availability_selector": "CONTENT_AVAILABILITY",
+    "revoked": "PERMISSION_DENIED",
+    "executable_handle_in_shared_projection": ""
+  },
+  "extension": {
+    "known_namespace": "org.example.runtime",
+    "known_schema_id": "org.example.runtime.v1",
+    "known_schema_version": 1,
+    "known_field": "display_family",
+    "known_value": "desktop",
+    "future_namespace": "org.vendor.future-runtime",
+    "future_schema_id": "org.vendor.future-runtime.v9",
+    "future_schema_version": 9,
+    "future_field": "new_hint",
+    "future_value": "preserve without parsing",
+    "custom_dataset_id": "org.example.game-notes",
+    "custom_schema_id": "org.example.game-notes.v2",
+    "custom_schema_version": 2,
+    "custom_fields": {
+      "game_key": "game:example",
+      "note": "remember controller layout"
+    },
+    "opaque_dataset_id": "org.example.game-notes.binary",
+    "opaque_schema_id": "org.example.game-notes.binary.v1",
+    "opaque_schema_version": 1,
+    "opaque_bytes": [0, 1, 2, 255],
+    "opaque_grant_field": "opaque_payload",
+    "unsupported_schema_version": 10,
+    "unsupported_outcome": "INVALID_ARGUMENT",
+    "projection_paths": ["game_key"]
+  }
+}

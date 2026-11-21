@@ -17,7 +17,7 @@ const INSTALLATION: &str = "id-fixture:1";
 /// The user's side of the dialog: answers in order (declining by default), optionally held until
 /// the test lets it go, remembering what it was shown.
 #[derive(Default)]
-struct Dialog {
+pub(super) struct Dialog {
     answers: StdMutex<VecDeque<Answer>>,
     shown: StdMutex<Vec<ConfirmationRequest>>,
     held: Option<Arc<Notify>>,
@@ -37,7 +37,7 @@ impl Prompter for Dialog {
     }
 }
 
-const APPROVE: Answer = Answer {
+pub(super) const APPROVE: Answer = Answer {
     approved: true,
     remember: false,
 };
@@ -126,7 +126,7 @@ impl Fixture {
         (fixture, host, dialog)
     }
 
-    async fn extension_game(
+    pub(super) async fn extension_game(
         grants: &[&'static str],
         target: TargetGameContext,
         dialog: Option<Dialog>,
@@ -143,6 +143,17 @@ impl Fixture {
             fixture.intents.set_prompter(dialog.clone());
         }
         (fixture, host, dialog)
+    }
+
+    /// An extension fixture whose launch action the user has approved, for flows that need the
+    /// host-issued target context outside the launch tests themselves.
+    pub(super) async fn approved_extension_game(
+        grants: &[&'static str],
+        target: TargetGameContext,
+    ) -> (Self, Arc<FakeHost>) {
+        let (fixture, host, _) =
+            Self::extension_game(grants, target, Some(answering(&[APPROVE]))).await;
+        (fixture, host)
     }
 
     /// The revision of the fixture's own entry, as the host holds it.
@@ -333,7 +344,7 @@ fn held(answers: &[Answer]) -> (Dialog, Arc<Notify>) {
     )
 }
 
-fn answering(answers: &[Answer]) -> Dialog {
+pub(super) fn answering(answers: &[Answer]) -> Dialog {
     Dialog {
         answers: StdMutex::new(answers.iter().copied().collect()),
         ..Dialog::default()

@@ -439,11 +439,17 @@ fn install_component(
     }
     .map_err(|error| {
         // A failure after the immutable version was published (for example during entrypoint
-        // preparation) must not leak a package this call created.
-        if !already_published {
-            let _ = registry.remove_version(&plugin_id, &component.version);
+        // preparation) must not leak a package this call created, and a cleanup failure must be
+        // reported rather than left for a later install to discover.
+        let mut text = error.to_string();
+        if !already_published
+            && let Err(cleanup) = registry.remove_version(&plugin_id, &component.version)
+        {
+            text.push_str(&format!(
+                "; cleanup of the published version failed: {cleanup}"
+            ));
         }
-        failed(error.to_string())
+        failed(text)
     })?;
     Ok(PendingComponent {
         installed,

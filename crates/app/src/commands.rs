@@ -1016,6 +1016,15 @@ pub async fn plugin_durable_usage(
     ))
 }
 
+/// Rejects a host deletion that the user did not confirm in the settings surface.
+fn durable_delete_confirmation(confirmed: bool) -> Result<(), String> {
+    if confirmed {
+        Ok(())
+    } else {
+        Err("deleting retained shared data requires confirmation".into())
+    }
+}
+
 /// Deletes only this producer's retained durable records and reports the bytes actually
 /// reclaimed. It never uninstalls the plugin and never touches another owner or private storage.
 #[tauri::command]
@@ -1026,9 +1035,7 @@ pub async fn plugin_durable_delete(
     expected_profile_id: String,
     confirmed: bool,
 ) -> Result<PluginDurableDeletion, String> {
-    if !confirmed {
-        return Err("deleting retained shared data requires confirmation".into());
-    }
+    durable_delete_confirmation(confirmed)?;
     let owner = lifecycle
         .durable_owner(plugin_id.clone(), &expected_profile_id)
         .await
@@ -2926,6 +2933,15 @@ mod tests {
             .unwrap();
         }
         assert_eq!(*called.lock().unwrap(), ["steam", "epic"]);
+    }
+
+    #[test]
+    fn durable_deletion_requires_explicit_confirmation() {
+        assert!(durable_delete_confirmation(true).is_ok());
+        assert_eq!(
+            durable_delete_confirmation(false).unwrap_err(),
+            "deleting retained shared data requires confirmation"
+        );
     }
 
     #[test]

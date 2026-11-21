@@ -82,6 +82,11 @@ pub struct UpdateRelease {
     pub package_url: String,
     pub package_size: u64,
     pub package_sha256: String,
+    /// Present when this release is a signed bundle rather than a single package: the lowercase
+    /// SHA-256 of the exact signed `bundle.json` bytes. A bundle release and a standalone release
+    /// are never interchangeable, so the review can reject a mixed update before downloading it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle_sha256: Option<String>,
 }
 
 /// Persists each publisher's highest accepted sequence under the app data directory.
@@ -323,6 +328,12 @@ fn validate_release(release: &UpdateRelease) -> Result<(), UpdateError> {
             .targets
             .iter()
             .any(|target| target.is_empty() || target.len() > 128)
+        || release.bundle_sha256.as_deref().is_some_and(|digest| {
+            digest.len() != 64
+                || !digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
         || semver::Version::parse(&release.version).is_err()
         || semver::VersionReq::parse(&release.api_range).is_err()
     {
@@ -396,6 +407,7 @@ mod tests {
                 package_url: "https://updates.example/plugin.zip".into(),
                 package_size: 10,
                 package_sha256: "a".repeat(64),
+                bundle_sha256: None,
             }],
         };
         let raw = serde_json::to_vec(&index).unwrap();
@@ -457,11 +469,41 @@ mod tests {
             package_url: "http://example.com/a".into(),
             package_size: 10,
             package_sha256: "a".repeat(64),
+            bundle_sha256: None,
         };
         assert_eq!(validate_release(&release), Err(UpdateError::InvalidIndex));
         release.package_url = "https://example.com/a".into();
         release.package_size = MAX_PACKAGE_BYTES + 1;
         assert_eq!(validate_release(&release), Err(UpdateError::InvalidIndex));
+    }
+
+    #[test]
+    fn a_release_without_a_bundle_hash_stays_a_standalone_package_release() {
+        let mut release = UpdateRelease {
+            version: "1.0.0".into(),
+            targets: vec!["linux-x64".into()],
+            api_range: "^1".into(),
+            package_url: "https://example.com/a".into(),
+            package_size: 10,
+            package_sha256: "a".repeat(64),
+            bundle_sha256: None,
+        };
+        assert_eq!(validate_release(&release), Ok(()));
+        release.bundle_sha256 = Some("b".repeat(64));
+        assert_eq!(validate_release(&release), Ok(()));
+        for invalid in [
+            "b".repeat(63),
+            "B".repeat(64),
+            "g".repeat(64),
+            String::new(),
+        ] {
+            release.bundle_sha256 = Some(invalid.clone());
+            assert_eq!(
+                validate_release(&release),
+                Err(UpdateError::InvalidIndex),
+                "bundle hash {invalid:?} is not a lowercase SHA-256"
+            );
+        }
     }
 
     #[test]

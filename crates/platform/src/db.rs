@@ -16,7 +16,7 @@ pub struct Migration {
 }
 
 /// The latest supported schema version.
-pub const CURRENT_SCHEMA_VERSION: u32 = 25;
+pub const CURRENT_SCHEMA_VERSION: u32 = 26;
 
 /// Every migration this build knows. Append new ones; never edit or reorder released ones.
 pub const MIGRATIONS: &[Migration] = &[
@@ -144,6 +144,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 25,
         name: "plugin_bundles",
         sql: include_str!("../migrations/0025_plugin_bundles.sql"),
+    },
+    Migration {
+        version: 26,
+        name: "plugin_bundle_history",
+        sql: include_str!("../migrations/0026_plugin_bundle_history.sql"),
     },
 ];
 
@@ -847,6 +852,11 @@ mod tests {
                 "plugin_bundles",
                 "f5c58f3128a9561e4c129565be57b5f40fba7269108bc66dfad03efd7541c22c",
             ),
+            (
+                26,
+                "plugin_bundle_history",
+                "55793358d3b21538e3ea73bf7389138900d1bc56253ab6844285dd61351f0ddd",
+            ),
         ];
         assert_eq!(MIGRATIONS.len(), expected.len());
         for (migration, (version, name, digest)) in MIGRATIONS.iter().zip(expected) {
@@ -942,7 +952,7 @@ mod tests {
         let conn = store.conn();
         assert_eq!(
             versions(&conn).last(),
-            Some(&(25, "plugin_bundles".to_owned()))
+            Some(&(26, "plugin_bundle_history".to_owned()))
         );
         let payload: String = conn
             .query_row(
@@ -985,7 +995,7 @@ mod tests {
         let conn = store.conn();
         assert_eq!(
             versions(&conn).last(),
-            Some(&(25, "plugin_bundles".to_owned()))
+            Some(&(26, "plugin_bundle_history".to_owned()))
         );
         let kind: String = conn
             .query_row(
@@ -1082,7 +1092,7 @@ mod tests {
         let store = SqliteSettingsStore::open(&path).unwrap();
         assert_eq!(
             versions(&store.conn()).last(),
-            Some(&(25, "plugin_bundles".to_owned()))
+            Some(&(26, "plugin_bundle_history".to_owned()))
         );
         assert_eq!(store.load().unwrap().preferences, AppPreferences::default());
 
@@ -2308,10 +2318,10 @@ mod tests {
 
         let store = SqliteSettingsStore::open(&path).unwrap();
         let conn = store.conn();
-        assert_eq!(CURRENT_SCHEMA_VERSION, 25);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 26);
         assert_eq!(
             versions(&conn).last(),
-            Some(&(25, "plugin_bundles".to_owned()))
+            Some(&(26, "plugin_bundle_history".to_owned()))
         );
         let steam: (String, String, i64, i64, i64) = conn
             .query_row(
@@ -2411,10 +2421,10 @@ mod tests {
 
         let reopened = SqliteSettingsStore::open(&path).unwrap();
         let conn = reopened.conn();
-        assert_eq!(CURRENT_SCHEMA_VERSION, 25);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 26);
         assert_eq!(
             versions(&conn).last(),
-            Some(&(25, "plugin_bundles".to_owned()))
+            Some(&(26, "plugin_bundle_history".to_owned()))
         );
         assert_eq!(
             conn.query_row(
@@ -2589,10 +2599,10 @@ mod tests {
 
         let store = SqliteSettingsStore::open(&path).unwrap();
         let conn = store.conn();
-        assert_eq!(CURRENT_SCHEMA_VERSION, 25);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 26);
         assert_eq!(
             versions(&conn).last(),
-            Some(&(25, "plugin_bundles".to_owned()))
+            Some(&(26, "plugin_bundle_history".to_owned()))
         );
 
         // Every table that existed at schema 9 keeps its row.
@@ -2823,10 +2833,10 @@ mod tests {
 
         let store = SqliteSettingsStore::open(&path).unwrap();
         let conn = store.conn();
-        assert_eq!(CURRENT_SCHEMA_VERSION, 25);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 26);
         assert_eq!(
             versions(&conn).last(),
-            Some(&(25, "plugin_bundles".to_owned()))
+            Some(&(26, "plugin_bundle_history".to_owned()))
         );
         let (name, rarity): (String, Option<i64>) = conn
             .query_row(
@@ -2880,12 +2890,17 @@ mod tests {
 
         let store = SqliteSettingsStore::open(&path).unwrap();
         let conn = store.conn();
-        assert_eq!(CURRENT_SCHEMA_VERSION, 25);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 26);
         assert_eq!(
             versions(&conn).last(),
-            Some(&(25, "plugin_bundles".to_owned()))
+            Some(&(26, "plugin_bundle_history".to_owned()))
         );
-        for table in ["plugin_bundles", "plugin_bundle_components"] {
+        for table in [
+            "plugin_bundles",
+            "plugin_bundle_components",
+            "plugin_bundle_history",
+            "plugin_bundle_history_components",
+        ] {
             let (rows, strict): (i64, i64) = conn
                 .query_row(
                     &format!("SELECT COUNT(*), (SELECT strict FROM pragma_table_list WHERE name = '{table}') FROM {table}"),
@@ -2982,6 +2997,8 @@ mod tests {
                 "playtime_sessions",
                 "playtime_totals",
                 "plugin_bundle_components",
+                "plugin_bundle_history",
+                "plugin_bundle_history_components",
                 "plugin_bundles",
                 "plugin_custom_launch_recipes",
                 "plugin_runtime_catalog_state",

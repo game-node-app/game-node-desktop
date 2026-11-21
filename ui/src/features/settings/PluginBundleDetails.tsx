@@ -1,9 +1,12 @@
 import React, { useMemo, useState } from 'react';
-import { useQueries, useQueryClient } from '@tanstack/react-query';
+import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   commands,
+  type AvailableBundleRollback,
+  type AvailableBundleUpdate,
   type BundleComponentPermissionSubmission,
   type BundleUninstallOutcome,
+  type BundleUpdateReview,
   type PluginBundleComponent,
   type PluginInfo,
   type PluginPermissionSnapshot,
@@ -75,6 +78,34 @@ export const PluginBundleDetails: React.FC<PluginBundleDetailsProps> = ({
   const [saveError, setSaveError] = useState(false);
   const [componentErrors, setComponentErrors] = useState<Record<string, string>>({});
   const [saved, setSaved] = useState(false);
+  const [bundleUpdateReview, setBundleUpdateReview] = useState<BundleUpdateReview | null>(null);
+  const [bundleUpdateOperation, setBundleUpdateOperation] = useState<
+    'check' | 'review' | 'approve' | 'rollbackReview' | 'rollbackApprove' | null
+  >(null);
+  const [bundleUpdateError, setBundleUpdateError] = useState<string | null>(null);
+  const [bundleUpdateResult, setBundleUpdateResult] = useState<{
+    version: string;
+    rollback: boolean;
+  } | null>(null);
+  const [rollbackConfirmed, setRollbackConfirmed] = useState(false);
+
+  const bundleId = bundle.bundleId ?? '';
+  const { data: availableBundleUpdates = [], refetch: refetchBundleUpdates } = useQuery<
+    AvailableBundleUpdate[]
+  >({
+    queryKey: ['plugin-bundle-updates', bundleId],
+    queryFn: commands.pluginBundleUpdateAvailable,
+    enabled: profileId !== null && bundleId.length > 0,
+  });
+  const { data: availableBundleRollbacks = [], refetch: refetchBundleRollbacks } = useQuery<
+    AvailableBundleRollback[]
+  >({
+    queryKey: ['plugin-bundle-rollbacks', bundleId],
+    queryFn: commands.pluginBundleRollbackAvailable,
+    enabled: profileId !== null && bundleId.length > 0,
+  });
+  const bundleUpdate = availableBundleUpdates.find((update) => update.bundleId === bundleId);
+  const bundleRollback = availableBundleRollbacks.find((rollback) => rollback.bundleId === bundleId);
 
   const snapshotQueries = useQueries({
     queries: components.map((component) => ({
@@ -167,6 +198,94 @@ export const PluginBundleDetails: React.FC<PluginBundleDetailsProps> = ({
   const hasPermissions = snapshotQueries.some(
     (query) => (query.data?.requestedPermissions.length ?? 0) > 0,
   );
+
+  const refreshBundleState = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: pluginQueryKeys.inventory }),
+      refetchBundleUpdates(),
+      refetchBundleRollbacks(),
+    ]);
+  };
+
+  const checkBundleUpdates = async () => {
+    setBundleUpdateOperation('check');
+    setBundleUpdateError(null);
+    setBundleUpdateResult(null);
+    try {
+      await commands.pluginBundleUpdateCheck();
+      await refreshBundleState();
+    } catch {
+      setBundleUpdateError('plugins.bundle.updateError.check');
+      await refreshBundleState();
+    } finally {
+      setBundleUpdateOperation(null);
+    }
+  };
+
+  const reviewBundleUpdate = async (version: string, rollback: boolean) => {
+    setBundleUpdateOperation(rollback ? 'rollbackReview' : 'review');
+    setBundleUpdateError(null);
+    setBundleUpdateResult(null);
+    setRollbackConfirmed(false);
+    try {
+      setBundleUpdateReview(
+        rollback
+          ? await commands.pluginBundleRollbackReview(bundleId, version)
+          : await commands.pluginBundleUpdateReview(bundleId, version),
+      );
+    } catch {
+      setBundleUpdateError('plugins.bundle.updateError.review');
+      await refreshBundleState();
+    } finally {
+      setBundleUpdateOperation(null);
+    }
+  };
+
+  const approveBundleUpdate = async () => {
+    if (!bundleUpdateReview) return;
+    setBundleUpdateOperation('approve');
+    setBundleUpdateError(null);
+    setBundleUpdateResult(null);
+    try {
+      const outcome = await commands.pluginBundleUpdateApprove(
+        bundleUpdateReview.bundleId,
+        bundleUpdateReview.candidateVersion,
+      );
+      setBundleUpdateReview(null);
+      setBundleUpdateResult({ version: outcome.version, rollback: false });
+      await refreshBundleState();
+    } catch {
+      // A failed persistence leaves the displayed bundle and its saved controls untouched; the
+      // host state is re-read rather than showing an optimistic version.
+      setBundleUpdateError('plugins.bundle.updateError.save');
+      await refreshBundleState();
+    } finally {
+      setBundleUpdateOperation(null);
+    }
+  };
+
+  const approveBundleRollback = async () => {
+    if (!bundleUpdateReview || !rollbackConfirmed) return;
+    setBundleUpdateOperation('rollbackApprove');
+    setBundleUpdateError(null);
+    setBundleUpdateResult(null);
+    try {
+      const outcome = await commands.pluginBundleRollbackApprove(
+        bundleUpdateReview.bundleId,
+        bundleUpdateReview.candidateVersion,
+        true,
+      );
+      setBundleUpdateReview(null);
+      setRollbackConfirmed(false);
+      setBundleUpdateResult({ version: outcome.version, rollback: true });
+      await refreshBundleState();
+    } catch {
+      setBundleUpdateError('plugins.bundle.updateError.save');
+      await refreshBundleState();
+    } finally {
+      setBundleUpdateOperation(null);
+    }
+  };
 
   return (
     <article
@@ -315,6 +434,200 @@ export const PluginBundleDetails: React.FC<PluginBundleDetailsProps> = ({
       {saveError && (
         <p className="text-sm text-warning" role="alert">{t('plugins.management.failed')}</p>
       )}
+
+      <section
+        className="mt-compact flex flex-col gap-compact border-t border-border-subtle pt-compact"
+        aria-label={t('plugins.bundle.updates.title')}
+      >
+        <h4 className={settingsRowTitle}>{t('plugins.bundle.updates.title')}</h4>
+        {profileId === null ? (
+          <p className={settingsRowDescription} role="status">{t('plugins.signInRequired')}</p>
+        ) : (
+          <>
+            <button
+              type="button"
+              className="self-start rounded-sm border border-border-subtle px-sm py-1 text-sm disabled:opacity-50"
+              disabled={bundleUpdateOperation !== null}
+              onClick={() => void checkBundleUpdates()}
+            >
+              {t(bundleUpdateOperation === 'check'
+                ? 'plugins.bundle.updates.checking'
+                : 'plugins.bundle.updates.check')}
+            </button>
+
+            {bundleUpdate && bundleUpdate.versions.length > 0 && (
+              <div className="flex flex-col gap-1">
+                <p className={settingsRowTitle}>
+                  {t('plugins.bundle.updates.available', {
+                    version: bundleUpdate.installedVersion,
+                  })}
+                </p>
+                <div className="flex flex-wrap gap-1">
+                  {bundleUpdate.versions.map((version) => (
+                    <button
+                      key={version}
+                      type="button"
+                      className="rounded-sm border border-border-subtle px-sm py-1 text-sm disabled:opacity-50"
+                      disabled={bundleUpdateOperation !== null}
+                      onClick={() => void reviewBundleUpdate(version, false)}
+                    >
+                      {t('plugins.bundle.updates.reviewVersion', { version })}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {bundleRollback && bundleRollback.versions.length > 0 && (
+              <div className="flex flex-col gap-1">
+                <p className={settingsRowTitle}>
+                  {t('plugins.bundle.updates.rollbackTitle', {
+                    version: bundleRollback.activeVersion,
+                  })}
+                </p>
+                <div className="flex flex-wrap gap-1">
+                  {bundleRollback.versions.map((version) => (
+                    <button
+                      key={version}
+                      type="button"
+                      className="rounded-sm border border-border-subtle px-sm py-1 text-sm disabled:opacity-50"
+                      disabled={bundleUpdateOperation !== null}
+                      onClick={() => void reviewBundleUpdate(version, true)}
+                    >
+                      {t('plugins.bundle.updates.reviewRollback', { version })}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {bundleUpdateOperation !== null && bundleUpdateOperation !== 'check' && (
+              <p className={settingsRowDescription} role="status">
+                {t('plugins.bundle.updates.working')}
+              </p>
+            )}
+            {bundleUpdateError && (
+              <p className="text-sm text-warning" role="alert">{t(bundleUpdateError)}</p>
+            )}
+            {bundleUpdateResult && (
+              <p className={settingsRowDescription} role="status">
+                {t(
+                  bundleUpdateResult.rollback
+                    ? 'plugins.bundle.updates.rollbackComplete'
+                    : 'plugins.bundle.updates.updateComplete',
+                  { version: bundleUpdateResult.version },
+                )}
+              </p>
+            )}
+
+            {bundleUpdateReview && (
+              <article
+                className="flex flex-col gap-compact rounded-sm border border-border-subtle p-sm"
+                aria-label={t(
+                  bundleUpdateReview.isRollback
+                    ? 'plugins.bundle.updates.rollbackReviewTitle'
+                    : 'plugins.bundle.updates.reviewTitle',
+                )}
+              >
+                <p className={settingsRowTitle}>
+                  {bundleUpdateReview.name}: {bundleUpdateReview.installedVersion} →{' '}
+                  {bundleUpdateReview.candidateVersion}
+                </p>
+                <p className={`${settingsRowDescription} break-all`}>
+                  {t('plugins.bundle.updates.bundleHash')}: {bundleUpdateReview.bundleSha256}
+                </p>
+                <p className={settingsRowDescription}>
+                  {t('plugins.bundle.updates.permissionDiff')}: +{bundleUpdateReview.addedPermissions.join(', ') || '—'}
+                  {' · '}±{bundleUpdateReview.changedPermissions.join(', ') || '—'}
+                  {' · '}−{bundleUpdateReview.removedPermissions.join(', ') || '—'}
+                </p>
+                <ul className="flex flex-col gap-compact" aria-label={t('plugins.bundle.components')}>
+                  {bundleUpdateReview.components.map((component) => (
+                    <li key={component.pluginId} className="border-t border-border-subtle pt-compact">
+                      <div className="flex flex-wrap items-center gap-compact">
+                        <span className={settingsRowTitle}>{component.pluginId}</span>
+                        <span className={settingsPill}>{t(`plugins.bundle.kind.${component.kind}`)}</span>
+                        <span className={settingsPill}>
+                          {component.installedVersion} → {component.candidateVersion}
+                        </span>
+                        <span className={
+                          component.availability.status === 'available'
+                            ? settingsPillSuccess
+                            : settingsPillWarning
+                        }>
+                          {t(`plugins.bundle.availability.${component.availability.status}`)}
+                        </span>
+                      </div>
+                      {component.availability.status === 'unavailable' && (
+                        <p className={settingsRowDescription} role="status">
+                          {t(`plugins.bundle.unavailable.${component.availability.reason}`)}
+                        </p>
+                      )}
+                      <p className={settingsRowDescription}>
+                        {t('plugins.import.compatibility')}: {t(`plugins.import.${component.compatibility}`)}
+                      </p>
+                      <p className={settingsRowDescription}>
+                        {t('plugins.bundle.updates.permissionDiff')}: +{component.addedPermissions.join(', ') || '—'}
+                        {' · '}±{component.changedPermissions.join(', ') || '—'}
+                        {' · '}−{component.removedPermissions.join(', ') || '—'}
+                      </p>
+                      {component.permissionChanges.map((change) => (
+                        <p key={change.id} className={settingsRowDescription}>
+                          {change.id}: {change.installedScope} → {change.candidateScope}
+                        </p>
+                      ))}
+                    </li>
+                  ))}
+                </ul>
+                {bundleUpdateReview.isRollback && (
+                  <label className="flex items-start gap-compact text-sm">
+                    <input
+                      type="checkbox"
+                      checked={rollbackConfirmed}
+                      disabled={bundleUpdateOperation !== null}
+                      onChange={(event) => setRollbackConfirmed(event.currentTarget.checked)}
+                    />
+                    <span>{t('plugins.bundle.updates.rollbackConfirm')}</span>
+                  </label>
+                )}
+                <div className="flex flex-wrap gap-compact">
+                  <button
+                    type="button"
+                    className="rounded-sm border border-border-subtle px-sm py-1 text-sm disabled:opacity-50"
+                    disabled={bundleUpdateOperation !== null}
+                    onClick={() => {
+                      setBundleUpdateReview(null);
+                      setRollbackConfirmed(false);
+                      void commands
+                        .pluginBundleUpdateDecline(bundleUpdateReview.bundleId)
+                        .catch(() => setBundleUpdateError('plugins.bundle.updateError.review'));
+                    }}
+                  >
+                    {t('plugins.bundle.updates.decline')}
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-sm border border-brand bg-brand px-sm py-1 text-sm text-white disabled:opacity-50"
+                    disabled={
+                      bundleUpdateOperation !== null
+                      || (bundleUpdateReview.isRollback && !rollbackConfirmed)
+                    }
+                    onClick={() => void (
+                      bundleUpdateReview.isRollback ? approveBundleRollback() : approveBundleUpdate()
+                    )}
+                  >
+                    {t(
+                      bundleUpdateReview.isRollback
+                        ? 'plugins.bundle.updates.rollbackAction'
+                        : 'plugins.bundle.updates.updateAction',
+                    )}
+                  </button>
+                </div>
+              </article>
+            )}
+          </>
+        )}
+      </section>
 
       {profileId !== null && (
         <div className="mt-compact flex flex-col gap-compact border-t border-border-subtle pt-compact">

@@ -42,19 +42,21 @@ use gamenode_platform::{
     plugin_bundle_db::{BundleComponentRecord, BundleRecord, SqlitePluginBundleStore},
     plugin_bundles::{BundleError, VerifiedBundle, VerifiedBundleComponent, stage_bundle_archive},
     plugin_environment::{EmulationPolicy, PluginEnvironment},
-    plugin_packages::stage_package_archive,
+    plugin_packages::{stage_package_archive, verify_package_directory},
     plugin_registry::{InstallSignedError, InstalledPluginVersion, PluginPackageRegistry},
     plugin_storage::namespace_dir,
 };
 use thiserror::Error;
 
 use super::{
+    grants::PluginIdentity,
     managed_packages::{
         PackageCandidateReport, PackageCompatibilityReview, PackageLifecycleError,
         inspect_staged_package, inspect_staged_package_blocking, lock_publisher_identity,
     },
-    package::PluginKind,
+    package::{Manifest, PluginKind},
     process::ProviderProcesses,
+    profile::{PluginProfiles, PluginStateLayout},
     publisher_trust::key_fingerprint,
     retention::{DataRetention, DurableRetentionOutcome, DurableRetentionSink},
 };
@@ -658,6 +660,876 @@ fn rollback_install(registry: &PluginPackageRegistry, pending: &[PendingComponen
     problems
 }
 
+/// Account state needed to revalidate grants during a bundle update or rollback. Grants are per
+/// profile and per component identity, so a bundle update intersects each component's existing
+/// grants with its new manifest rather than carrying or widening them. When no profile is active
+/// there is nothing to revalidate and activation never creates a grant.
+#[derive(Clone)]
+pub struct BundleGrantContext {
+    pub layout: PluginStateLayout,
+    pub profiles: std::sync::Arc<PluginProfiles>,
+}
+
+/// One component that changed during a bundle update or rollback.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdatedBundleComponent {
+    pub plugin_id: String,
+    pub kind: String,
+    pub previous_version: String,
+    pub version: String,
+    /// Whether the component was activated on this host after the swap.
+    pub active: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BundleUpdateOutcome {
+    pub bundle_id: String,
+    pub previous_version: String,
+    pub version: String,
+    pub components: Vec<UpdatedBundleComponent>,
+}
+
+#[derive(Debug, Error)]
+pub enum BundleUpdateError {
+    #[error("bundle verification failed: {0}")]
+    Bundle(#[from] BundleError),
+    #[error("bundle update staging failed: {0}")]
+    Staging(String),
+    #[error("the bundle archive no longer matches the reviewed bundle: {0}")]
+    ChangedSinceReview(String),
+    #[error("bundle {bundle_id} is not installed")]
+    UnknownBundle { bundle_id: String },
+    #[error("the bundle mapping could not be read: {0}")]
+    Mapping(String),
+    #[error("the reviewed bundle does not match the installed bundle identity")]
+    IdentityChanged,
+    #[error("the bundle publisher changed; a bundle update cannot replace its publisher")]
+    PublisherChanged,
+    #[error(
+        "the update changes which components this bundle owns; its component set must stay the same"
+    )]
+    ComponentSetChanged,
+    #[error("bundle component {plugin_id} could not be updated: {error}")]
+    Component { plugin_id: String, error: String },
+    #[error("bundle component {plugin_id} could not be activated: {error}")]
+    Activation { plugin_id: String, error: String },
+    #[error("a component's permission grants could not be revalidated: {0}")]
+    Grants(String),
+    #[error("{cause}; rollback was incomplete: {problems}")]
+    Rollback { cause: String, problems: String },
+    #[error("execution environment detection failed: {0}")]
+    Environment(String),
+    #[error("bundle update worker failed")]
+    WorkerFailed,
+}
+
+/// A staged component of one bundle update: the new package is installed (or was already installed
+/// with the reviewed bytes) but not yet active.
+struct UpdateComponentPlan {
+    plugin_id: String,
+    kind: String,
+    previous_version: String,
+    installed: InstalledPluginVersion,
+    previous_manifest: Manifest,
+    candidate_manifest: Manifest,
+    available: bool,
+    /// False when this call reused a version that already existed, which rollback must not remove.
+    created: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BundleRollbackOutcome {
+    pub bundle_id: String,
+    pub previous_version: String,
+    pub version: String,
+    pub components: Vec<UpdatedBundleComponent>,
+}
+
+#[derive(Debug, Error)]
+pub enum BundleRollbackError {
+    #[error("bundle {bundle_id} is not installed")]
+    UnknownBundle { bundle_id: String },
+    #[error("bundle {bundle_id} has no installed version {version} to roll back to")]
+    VersionUnavailable { bundle_id: String, version: String },
+    #[error("the bundle mapping could not be read: {0}")]
+    Mapping(String),
+    #[error("bundle component {plugin_id} version {version} is no longer installed")]
+    ComponentMissing { plugin_id: String, version: String },
+    #[error("bundle component {plugin_id} could not be restored: {error}")]
+    Component { plugin_id: String, error: String },
+    #[error("a component's permission grants could not be revalidated: {0}")]
+    Grants(String),
+    #[error("{cause}; the previous active set could not be fully restored: {problems}")]
+    Restore { cause: String, problems: String },
+    #[error("bundle rollback worker failed")]
+    WorkerFailed,
+}
+
+/// Replace every component of one installed bundle with the reviewed component set, atomically.
+///
+/// The archive is staged and re-verified against `reviewed` before the registry changes, every new
+/// component package is installed but not activated, and only then does one blocking step activate
+/// the whole set, revalidate each component's grants against its new manifest and write the new
+/// mapping. If staging, installation, activation, grant revalidation or the mapping write fails,
+/// the versions this call created are removed, the previous active pointers are restored and the
+/// previous mapping remains current. A component version that is already installed is reused only
+/// when its verified files equal the reviewed package. No package code is executed.
+pub async fn apply_bundle_update(
+    archive_path: impl AsRef<Path>,
+    reviewed: BundleCandidateReport,
+    installed: BundleRecord,
+    registry: PluginPackageRegistry,
+    bundles: SqlitePluginBundleStore,
+    stopper: &dyn BundleComponentStopper,
+    grants: BundleGrantContext,
+    emulation_policy: EmulationPolicy,
+    installed_at: i64,
+) -> Result<BundleUpdateOutcome, BundleUpdateError> {
+    let archive_path = archive_path.as_ref().to_owned();
+    let environment = gamenode_platform::plugin_environment::detect()
+        .await
+        .map_err(BundleUpdateError::Environment)?;
+    let work = {
+        let archive_path = archive_path.clone();
+        let reviewed = reviewed.clone();
+        let installed = installed.clone();
+        let registry = registry.clone();
+        tokio::task::spawn_blocking(move || {
+            let work = BundleWorkDir::create()
+                .map_err(|error| BundleUpdateError::Staging(error.to_string()))?;
+            let verified = stage_bundle_archive(&archive_path, &work.path)?;
+            confirm_reviewed_bundle(&reviewed, &verified).map_err(|error| match error {
+                BundleInstallError::ChangedSinceReview(reason) => {
+                    BundleUpdateError::ChangedSinceReview(reason)
+                }
+                other => BundleUpdateError::Staging(other.to_string()),
+            })?;
+            confirm_update_identity(&reviewed, &installed, &verified)?;
+            let publisher_key = verified.manifest.publisher_key()?;
+            let _publisher = lock_publisher_identity();
+            let plans = prepare_update_components(
+                &work.path,
+                &verified,
+                &installed,
+                &publisher_key,
+                &registry,
+                emulation_policy,
+                &environment,
+            )?;
+            Ok::<_, BundleUpdateError>((work, verified, publisher_key, plans))
+        })
+        .await
+        .map_err(|_| BundleUpdateError::WorkerFailed)??
+    };
+    let (work, verified, publisher_key, plans) = work;
+
+    // Stop every component that is running at its recorded old version before the active pointer
+    // moves, so no supervised process keeps running against a package that is about to be replaced.
+    stop_components_at(&installed, &registry, stopper).await?;
+
+    let publisher_fingerprint = key_fingerprint(&publisher_key);
+    let record = BundleRecord {
+        bundle_id: verified.manifest.id.clone(),
+        name: verified.manifest.name.clone(),
+        version: verified.manifest.version.clone(),
+        publisher_fingerprint: publisher_fingerprint.clone(),
+        manifest_sha256: verified.manifest_sha256.clone(),
+        installed_at,
+        components: verified
+            .components
+            .iter()
+            .zip(&plans)
+            .map(|(component, plan)| BundleComponentRecord {
+                plugin_id: component.plugin_id.clone(),
+                kind: component.kind.clone(),
+                component_sha256: component.sha256.clone(),
+                package_version: plan.installed.version.clone(),
+            })
+            .collect(),
+    };
+    let previous_version = installed.version.clone();
+    let bundle_id = record.bundle_id.clone();
+    let version = record.version.clone();
+    let outcome = tokio::task::spawn_blocking(move || {
+        finish_update(
+            bundle_id,
+            previous_version,
+            version,
+            record,
+            plans,
+            publisher_fingerprint,
+            &registry,
+            &bundles,
+            &grants,
+            installed_at,
+        )
+    })
+    .await
+    .map_err(|_| BundleUpdateError::WorkerFailed)?;
+    drop(work);
+    outcome
+}
+
+/// Confirm the candidate is the same bundle identity and publisher as the mapping being updated,
+/// and that it keeps exactly the same component plugin ids and kinds. A bundle update is a version
+/// swap, not a new product: adding, removing or re-kinding a component is an explicit error.
+fn confirm_update_identity(
+    reviewed: &BundleCandidateReport,
+    installed: &BundleRecord,
+    verified: &VerifiedBundle,
+) -> Result<(), BundleUpdateError> {
+    if verified.manifest.id != installed.bundle_id || reviewed.bundle.id != installed.bundle_id {
+        return Err(BundleUpdateError::IdentityChanged);
+    }
+    if key_fingerprint(&verified.manifest.publisher_key()?) != installed.publisher_fingerprint {
+        return Err(BundleUpdateError::PublisherChanged);
+    }
+    let mapped = installed
+        .components
+        .iter()
+        .map(|component| (component.plugin_id.as_str(), component.kind.as_str()))
+        .collect::<std::collections::BTreeSet<_>>();
+    let candidate = verified
+        .components
+        .iter()
+        .map(|component| (component.plugin_id.as_str(), component.kind.as_str()))
+        .collect::<std::collections::BTreeSet<_>>();
+    if mapped != candidate {
+        return Err(BundleUpdateError::ComponentSetChanged);
+    }
+    Ok(())
+}
+
+fn prepare_update_components(
+    work_root: &Path,
+    verified: &VerifiedBundle,
+    installed: &BundleRecord,
+    publisher_key: &[u8; 32],
+    registry: &PluginPackageRegistry,
+    emulation_policy: EmulationPolicy,
+    environment: &PluginEnvironment,
+) -> Result<Vec<UpdateComponentPlan>, BundleUpdateError> {
+    let mut plans = Vec::with_capacity(verified.components.len());
+    let mut created: Vec<(String, String)> = Vec::new();
+    let result = (|| {
+        for (index, component) in verified.components.iter().enumerate() {
+            let previous = installed
+                .components
+                .iter()
+                .find(|mapped| mapped.plugin_id == component.plugin_id)
+                .ok_or(BundleUpdateError::ComponentSetChanged)?;
+            match prepare_update_component(
+                work_root,
+                index,
+                component,
+                &previous.package_version,
+                publisher_key,
+                registry,
+                emulation_policy,
+                environment,
+            ) {
+                Ok(plan) => {
+                    if plan.created {
+                        created.push((plan.plugin_id.clone(), plan.installed.version.clone()));
+                    }
+                    plans.push(plan);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        rollback_prepared(registry, &created);
+        return Err(error);
+    }
+    Ok(plans)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_update_component(
+    work_root: &Path,
+    index: usize,
+    component: &VerifiedBundleComponent,
+    previous_version: &str,
+    publisher_key: &[u8; 32],
+    registry: &PluginPackageRegistry,
+    emulation_policy: EmulationPolicy,
+    environment: &PluginEnvironment,
+) -> Result<UpdateComponentPlan, BundleUpdateError> {
+    let plugin_id = component.plugin_id.clone();
+    let failed = |error: String| BundleUpdateError::Component {
+        plugin_id: plugin_id.clone(),
+        error,
+    };
+    let previous_installed = registry
+        .versions(&plugin_id)
+        .map_err(|error| failed(error.to_string()))?
+        .into_iter()
+        .find(|installed| installed.version == previous_version)
+        .ok_or_else(|| {
+            failed("the previously installed component version is missing".to_owned())
+        })?;
+    let archive = work_root.join(&component.path);
+    let package_root = work_root.join("packages").join(index.to_string());
+    stage_package_archive(&archive, &package_root, publisher_key)
+        .map_err(|error| failed(error_chain(&error)))?;
+    let report = inspect_staged_package_blocking(
+        &package_root,
+        *publisher_key,
+        emulation_policy,
+        environment,
+    )
+    .map_err(|error| failed(error.to_string()))?;
+    if report.manifest.id != component.plugin_id
+        || report.manifest.version != component.version
+        || !kind_matches(report.manifest.kind, &component.kind)
+    {
+        return Err(failed(
+            "the staged component identity does not match the bundle manifest".into(),
+        ));
+    }
+    let previous = inspect_staged_package_blocking(
+        &previous_installed.package_path,
+        *publisher_key,
+        emulation_policy,
+        environment,
+    )
+    .map_err(|error| {
+        failed(format!(
+            "the installed component no longer verifies: {error}"
+        ))
+    })?;
+    if previous.manifest.id != plugin_id || previous.manifest.version != previous_version {
+        return Err(failed(
+            "the installed component identity does not match the bundle mapping".into(),
+        ));
+    }
+    let existing = registry
+        .versions(&plugin_id)
+        .map_err(|error| failed(error.to_string()))?
+        .into_iter()
+        .find(|installed| installed.version == component.version);
+    let (installed, created) = match existing {
+        Some(existing) => {
+            same_package_files(&package_root, &existing.package_path, publisher_key)
+                .map_err(failed)?;
+            (existing, false)
+        }
+        None => {
+            let entrypoint = report
+                .selected_target()
+                .ok()
+                .map(|target| target.target.entrypoint.clone());
+            let installed = match &entrypoint {
+                Some(entrypoint) => registry.install_signed_with_entrypoint(
+                    &plugin_id,
+                    &component.version,
+                    &package_root,
+                    publisher_key,
+                    entrypoint,
+                    false,
+                ),
+                None => registry.install_signed(
+                    &plugin_id,
+                    &component.version,
+                    &package_root,
+                    publisher_key,
+                    false,
+                ),
+            }
+            .map_err(|error| {
+                let mut text = error.to_string();
+                if let Err(cleanup) = registry.remove_version(&plugin_id, &component.version) {
+                    text.push_str(&format!(
+                        "; cleanup of the published version failed: {cleanup}"
+                    ));
+                }
+                failed(text)
+            })?;
+            (installed, true)
+        }
+    };
+    let available = report.selected_target().is_ok();
+    Ok(UpdateComponentPlan {
+        plugin_id: component.plugin_id.clone(),
+        kind: component.kind.clone(),
+        previous_version: previous_version.to_owned(),
+        installed,
+        previous_manifest: previous.manifest,
+        candidate_manifest: report.manifest,
+        available,
+        created,
+    })
+}
+
+fn same_package_files(left: &Path, right: &Path, publisher_key: &[u8; 32]) -> Result<(), String> {
+    let left = verify_package_directory(left, publisher_key).map_err(|error| error.to_string())?;
+    let right =
+        verify_package_directory(right, publisher_key).map_err(|error| error.to_string())?;
+    if left.files.0 != right.files.0 {
+        return Err("an installed component version differs from the reviewed package".to_owned());
+    }
+    Ok(())
+}
+
+fn rollback_prepared(registry: &PluginPackageRegistry, created: &[(String, String)]) {
+    for (plugin_id, version) in created.iter().rev() {
+        let _ = registry.remove_version(plugin_id, version);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_update(
+    bundle_id: String,
+    previous_version: String,
+    version: String,
+    record: BundleRecord,
+    plans: Vec<UpdateComponentPlan>,
+    publisher_fingerprint: String,
+    registry: &PluginPackageRegistry,
+    bundles: &SqlitePluginBundleStore,
+    grants: &BundleGrantContext,
+    installed_at: i64,
+) -> Result<BundleUpdateOutcome, BundleUpdateError> {
+    let mut previous_active = Vec::with_capacity(plans.len());
+    for plan in &plans {
+        previous_active.push(registry.active(&plan.plugin_id).map_err(|error| {
+            BundleUpdateError::Activation {
+                plugin_id: plan.plugin_id.clone(),
+                error: error.to_string(),
+            }
+        })?);
+    }
+    let result = (|| {
+        for plan in &plans {
+            if !plan.available {
+                continue;
+            }
+            registry
+                .set_active(&plan.plugin_id, &plan.installed.version)
+                .map_err(|error| BundleUpdateError::Activation {
+                    plugin_id: plan.plugin_id.clone(),
+                    error: error.to_string(),
+                })?;
+        }
+        revalidate_bundle_grants(&plans, grants, &publisher_fingerprint)?;
+        bundles
+            .update_bundle(&record, installed_at)
+            .map_err(|error| BundleUpdateError::Mapping(error.to_string()))?;
+        Ok(BundleUpdateOutcome {
+            bundle_id,
+            previous_version,
+            version,
+            components: plans
+                .iter()
+                .map(|plan| UpdatedBundleComponent {
+                    plugin_id: plan.plugin_id.clone(),
+                    kind: plan.kind.clone(),
+                    previous_version: plan.previous_version.clone(),
+                    version: plan.installed.version.clone(),
+                    active: plan.available,
+                })
+                .collect(),
+        })
+    })();
+    match result {
+        Ok(outcome) => Ok(outcome),
+        Err(error) => {
+            let problems = restore_previous_update(registry, &plans, &previous_active);
+            if problems.is_empty() {
+                Err(error)
+            } else {
+                Err(BundleUpdateError::Rollback {
+                    cause: error.to_string(),
+                    problems: problems.join("; "),
+                })
+            }
+        }
+    }
+}
+
+/// Intersect each component's stored grants with the reviewed manifest. Activation itself never
+/// grants anything; narrowing can only remove a grant whose scope disappeared or widened.
+fn revalidate_bundle_grants(
+    plans: &[UpdateComponentPlan],
+    grants: &BundleGrantContext,
+    publisher_fingerprint: &str,
+) -> Result<(), BundleUpdateError> {
+    let Some(profile) = grants.profiles.current() else {
+        return Ok(());
+    };
+    let mut store = grants
+        .layout
+        .open_grants(&profile)
+        .map_err(|error| BundleUpdateError::Grants(error.to_string()))?;
+    for plan in plans {
+        let identity = PluginIdentity {
+            plugin_id: plan.plugin_id.clone(),
+            publisher_fingerprint: publisher_fingerprint.to_owned(),
+            profile_id: profile.profile_id().to_owned(),
+        };
+        store
+            .intersect_with_selected_manifest(
+                &identity,
+                &plan.previous_manifest,
+                &plan.candidate_manifest,
+            )
+            .map_err(|error| BundleUpdateError::Grants(error.to_string()))?;
+    }
+    Ok(())
+}
+
+fn restore_previous_update(
+    registry: &PluginPackageRegistry,
+    plans: &[UpdateComponentPlan],
+    previous_active: &[Option<InstalledPluginVersion>],
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    for (plan, previous) in plans.iter().zip(previous_active).rev() {
+        if plan.created
+            && let Err(error) = registry.remove_version(&plan.plugin_id, &plan.installed.version)
+        {
+            problems.push(format!(
+                "remove {} {}: {error}",
+                plan.plugin_id, plan.installed.version
+            ));
+        }
+        if let Some(previous) = previous
+            && let Err(error) = registry.set_active(&plan.plugin_id, &previous.version)
+        {
+            problems.push(format!(
+                "reactivate {} {}: {error}",
+                plan.plugin_id, previous.version
+            ));
+        }
+    }
+    problems
+}
+
+/// Stop every component that is active at the version recorded by the bundle mapping.
+async fn stop_components_at(
+    record: &BundleRecord,
+    registry: &PluginPackageRegistry,
+    stopper: &dyn BundleComponentStopper,
+) -> Result<(), BundleUpdateError> {
+    for component in &record.components {
+        let registry = registry.clone();
+        let plugin_id = component.plugin_id.clone();
+        let version = component.package_version.clone();
+        let active = tokio::task::spawn_blocking(move || {
+            registry
+                .active(&plugin_id)
+                .map(|installed| installed.is_some_and(|active| active.version == version))
+        })
+        .await
+        .map_err(|_| BundleUpdateError::WorkerFailed)?
+        .map_err(|error| BundleUpdateError::Activation {
+            plugin_id: component.plugin_id.clone(),
+            error: error.to_string(),
+        })?;
+        if active {
+            stopper.stop_component(&component.plugin_id).await;
+        }
+    }
+    Ok(())
+}
+
+/// Restore an archived bundle version: stop the components running at the current versions,
+/// reactivate the archived versions that are still installed, revalidate each component's grants
+/// against the archived manifest (never widening them) and make the archived mapping current. A
+/// missing component version fails before anything changes; any later failure restores the
+/// previously active pointers and leaves the current mapping in place.
+pub async fn rollback_bundle_version(
+    bundle_id: impl Into<String>,
+    version: impl Into<String>,
+    registry: PluginPackageRegistry,
+    bundles: SqlitePluginBundleStore,
+    stopper: &dyn BundleComponentStopper,
+    grants: BundleGrantContext,
+    emulation_policy: EmulationPolicy,
+    archived_at: i64,
+) -> Result<BundleRollbackOutcome, BundleRollbackError> {
+    let bundle_id = bundle_id.into();
+    let version = version.into();
+    let current = {
+        let store = bundles.clone();
+        let lookup = bundle_id.clone();
+        tokio::task::spawn_blocking(move || store.bundle(&lookup))
+            .await
+            .map_err(|_| BundleRollbackError::WorkerFailed)?
+            .map_err(|error| BundleRollbackError::Mapping(error.to_string()))?
+            .ok_or_else(|| BundleRollbackError::UnknownBundle {
+                bundle_id: bundle_id.clone(),
+            })?
+    };
+    let target = {
+        let store = bundles.clone();
+        let lookup = bundle_id.clone();
+        let wanted = version.clone();
+        tokio::task::spawn_blocking(move || store.previous_bundle(&lookup, &wanted))
+            .await
+            .map_err(|_| BundleRollbackError::WorkerFailed)?
+            .map_err(|error| BundleRollbackError::Mapping(error.to_string()))?
+            .ok_or_else(|| BundleRollbackError::VersionUnavailable {
+                bundle_id: bundle_id.clone(),
+                version: version.clone(),
+            })?
+    };
+    // A bundle rollback only restores the same components; a history row with a different set is
+    // corrupt and must not silently change what the bundle owns.
+    let current_ids = current
+        .components
+        .iter()
+        .map(|component| component.plugin_id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let target_ids = target
+        .components
+        .iter()
+        .map(|component| component.plugin_id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    if current_ids != target_ids {
+        return Err(BundleRollbackError::Mapping(
+            "the archived bundle version has a different component set".into(),
+        ));
+    }
+    let environment = gamenode_platform::plugin_environment::detect()
+        .await
+        .map_err(|error| BundleRollbackError::Component {
+            plugin_id: bundle_id.clone(),
+            error: error.to_string(),
+        })?;
+    stop_components_at(&current, &registry, stopper)
+        .await
+        .map_err(|error| BundleRollbackError::Component {
+            plugin_id: bundle_id.clone(),
+            error: error.to_string(),
+        })?;
+    let previous_version = current.version.clone();
+    let outcome = {
+        let current = current.clone();
+        let target = target.clone();
+        let registry = registry.clone();
+        let bundles = bundles.clone();
+        let bundle_id = bundle_id.clone();
+        let version = version.clone();
+        tokio::task::spawn_blocking(move || {
+            rollback_bundle_blocking(
+                bundle_id,
+                version,
+                previous_version,
+                current,
+                target,
+                &registry,
+                &bundles,
+                &grants,
+                &environment,
+                emulation_policy,
+                archived_at,
+            )
+        })
+        .await
+        .map_err(|_| BundleRollbackError::WorkerFailed)?
+    }?;
+    Ok(outcome)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rollback_bundle_blocking(
+    bundle_id: String,
+    version: String,
+    previous_version: String,
+    current: BundleRecord,
+    target: BundleRecord,
+    registry: &PluginPackageRegistry,
+    bundles: &SqlitePluginBundleStore,
+    grants: &BundleGrantContext,
+    environment: &PluginEnvironment,
+    emulation_policy: EmulationPolicy,
+    archived_at: i64,
+) -> Result<BundleRollbackOutcome, BundleRollbackError> {
+    let mut prepared = Vec::with_capacity(target.components.len());
+    for component in &target.components {
+        let installed = registry
+            .versions(&component.plugin_id)
+            .map_err(|error| BundleRollbackError::Component {
+                plugin_id: component.plugin_id.clone(),
+                error: error.to_string(),
+            })?
+            .into_iter()
+            .find(|installed| installed.version == component.package_version)
+            .ok_or_else(|| BundleRollbackError::ComponentMissing {
+                plugin_id: component.plugin_id.clone(),
+                version: component.package_version.clone(),
+            })?;
+        let key = package_key_of(&installed.package_path).map_err(|error| {
+            BundleRollbackError::Component {
+                plugin_id: component.plugin_id.clone(),
+                error,
+            }
+        })?;
+        let target_report = inspect_staged_package_blocking(
+            &installed.package_path,
+            key,
+            emulation_policy,
+            environment,
+        )
+        .map_err(|error| BundleRollbackError::Component {
+            plugin_id: component.plugin_id.clone(),
+            error: error.to_string(),
+        })?;
+        let current_version = current
+            .components
+            .iter()
+            .find(|mapped| mapped.plugin_id == component.plugin_id)
+            .map(|mapped| mapped.package_version.clone())
+            .ok_or_else(|| {
+                BundleRollbackError::Mapping(
+                    "the current bundle mapping is missing a component".into(),
+                )
+            })?;
+        let current_installed = registry
+            .versions(&component.plugin_id)
+            .map_err(|error| BundleRollbackError::Component {
+                plugin_id: component.plugin_id.clone(),
+                error: error.to_string(),
+            })?
+            .into_iter()
+            .find(|installed| installed.version == current_version);
+        let current_manifest = match current_installed {
+            Some(installed) => {
+                let key = package_key_of(&installed.package_path).map_err(|error| {
+                    BundleRollbackError::Component {
+                        plugin_id: component.plugin_id.clone(),
+                        error,
+                    }
+                })?;
+                inspect_staged_package_blocking(
+                    &installed.package_path,
+                    key,
+                    emulation_policy,
+                    environment,
+                )
+                .map(|report| report.manifest)
+                .map_err(|error| BundleRollbackError::Component {
+                    plugin_id: component.plugin_id.clone(),
+                    error: error.to_string(),
+                })?
+            }
+            None => target_report.manifest.clone(),
+        };
+        prepared.push((
+            component.clone(),
+            installed,
+            key,
+            target_report,
+            current_manifest,
+        ));
+    }
+
+    let mut previous_active = Vec::with_capacity(prepared.len());
+    for (component, _, _, _, _) in &prepared {
+        previous_active.push(registry.active(&component.plugin_id).map_err(|error| {
+            BundleRollbackError::Component {
+                plugin_id: component.plugin_id.clone(),
+                error: error.to_string(),
+            }
+        })?);
+    }
+    let result = (|| {
+        for (component, installed, _, target_report, _) in &prepared {
+            if target_report.selected_target().is_ok() {
+                registry
+                    .set_active(&component.plugin_id, &installed.version)
+                    .map_err(|error| BundleRollbackError::Component {
+                        plugin_id: component.plugin_id.clone(),
+                        error: error.to_string(),
+                    })?;
+            }
+        }
+        if let Some(profile) = grants.profiles.current() {
+            let mut store = grants
+                .layout
+                .open_grants(&profile)
+                .map_err(|error| BundleRollbackError::Grants(error.to_string()))?;
+            for (component, _, key, target_report, current_manifest) in &prepared {
+                let identity = PluginIdentity {
+                    plugin_id: component.plugin_id.clone(),
+                    publisher_fingerprint: key_fingerprint(key),
+                    profile_id: profile.profile_id().to_owned(),
+                };
+                store
+                    .intersect_with_selected_manifest(
+                        &identity,
+                        current_manifest,
+                        &target_report.manifest,
+                    )
+                    .map_err(|error| BundleRollbackError::Grants(error.to_string()))?;
+            }
+        }
+        bundles
+            .restore_bundle_version(&bundle_id, &version, archived_at)
+            .map_err(|error| BundleRollbackError::Mapping(error.to_string()))?
+            .ok_or_else(|| BundleRollbackError::VersionUnavailable {
+                bundle_id: bundle_id.clone(),
+                version: version.clone(),
+            })?;
+        Ok(BundleRollbackOutcome {
+            bundle_id: bundle_id.clone(),
+            previous_version: previous_version.clone(),
+            version: version.clone(),
+            components: prepared
+                .iter()
+                .map(
+                    |(component, installed, _, target_report, _)| UpdatedBundleComponent {
+                        plugin_id: component.plugin_id.clone(),
+                        kind: component.kind.clone(),
+                        previous_version: current
+                            .components
+                            .iter()
+                            .find(|mapped| mapped.plugin_id == component.plugin_id)
+                            .map(|mapped| mapped.package_version.clone())
+                            .unwrap_or_default(),
+                        version: installed.version.clone(),
+                        active: target_report.selected_target().is_ok(),
+                    },
+                )
+                .collect(),
+        })
+    })();
+    match result {
+        Ok(outcome) => Ok(outcome),
+        Err(error) => {
+            let mut problems = Vec::new();
+            for ((component, _, _, _, _), previous) in prepared.iter().zip(&previous_active).rev() {
+                if let Some(previous) = previous
+                    && let Err(error) = registry.set_active(&component.plugin_id, &previous.version)
+                {
+                    problems.push(format!(
+                        "reactivate {} {}: {error}",
+                        component.plugin_id, previous.version
+                    ));
+                }
+            }
+            if problems.is_empty() {
+                Err(error)
+            } else {
+                Err(BundleRollbackError::Restore {
+                    cause: error.to_string(),
+                    problems: problems.join("; "),
+                })
+            }
+        }
+    }
+}
+
+fn package_key_of(path: &Path) -> Result<[u8; 32], String> {
+    super::updates::package_key(path)
+}
+
 /// Stops the supervised processes of one bundle component before its packages are deleted.
 ///
 /// Production uses [`ProviderProcesses`], whose termination path waits for the child with the
@@ -677,6 +1549,17 @@ impl BundleComponentStopper for ProviderProcesses {
         plugin_id: &'a str,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(self.stop_plugin(plugin_id))
+    }
+}
+
+/// Production bundle updates and rollbacks stop components through the lifecycle, which also
+/// disconnects provider sessions before the active package changes.
+impl BundleComponentStopper for super::runtime::ThirdPartyPluginLifecycle {
+    fn stop_component<'a>(
+        &'a self,
+        plugin_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(self.stop_bundle_component(plugin_id))
     }
 }
 
@@ -1161,7 +2044,7 @@ fn kind_matches(kind: PluginKind, declared: &str) -> bool {
 
 /// Only the compatibility evaluator's selection decides availability; package validation
 /// failures are already structural errors and never reach this function.
-fn availability(report: &PackageCandidateReport) -> BundleComponentAvailability {
+pub(crate) fn availability(report: &PackageCandidateReport) -> BundleComponentAvailability {
     match report.selected_target() {
         Ok(_) => BundleComponentAvailability::Available,
         // `selected_target` currently reports exactly these two causes; anything else also fails
@@ -1251,6 +2134,7 @@ mod tests {
         db::{self, SqliteSettingsStore},
         paths::DataPaths,
         plugin_registry::PluginPackageRegistry,
+        plugin_updates::UpdateRelease,
     };
     use std::{
         collections::{BTreeMap, BTreeSet},
@@ -1395,7 +2279,13 @@ mod tests {
         }
 
         fn bundle(&self, components: &[&Path]) -> PathBuf {
-            let output = self.dir.path().join("fixture.gnbundle");
+            self.bundle_version(components, "0.1.0")
+        }
+
+        /// A bundle with the same id and name at the given distribution version, so one fixture
+        /// can model an update of the same product.
+        fn bundle_version(&self, components: &[&Path], version: &str) -> PathBuf {
+            let output = self.dir.path().join(format!("fixture-{version}.gnbundle"));
             let mut args = vec!["bundle"];
             for component in components {
                 args.push("--component");
@@ -1407,7 +2297,7 @@ mod tests {
                 "--name",
                 "Dolphin GameCube and Wii",
                 "--version",
-                "0.1.0",
+                version,
                 "--output",
                 output.to_str().unwrap(),
                 "--private-key",
@@ -1726,6 +2616,90 @@ mod tests {
                 .unwrap(),
             Some(launch_active)
         );
+    }
+
+    #[tokio::test]
+    async fn an_approved_bundle_review_installs_every_component_and_consumes_its_token() {
+        let fixture = Fixture::new();
+        let provider = fixture.component(
+            "provider",
+            "provider",
+            "org.example.dolphin",
+            "0.1.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+        let launch = fixture.component(
+            "launch",
+            "extension",
+            "org.example.dolphin.launch",
+            "0.2.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+        let bundle = fixture.bundle(&[&provider, &launch]);
+        let paths = DataPaths::at(fixture.dir.path().join("app-data"));
+        let api = PluginApi::default();
+        let state = PluginStateLayout::managed(&paths);
+        api.set_state_layout(state.clone());
+        api.providers
+            .profiles()
+            .update(Some("bundle-account"), true);
+        let registry = PluginPackageRegistry::open(&paths).unwrap();
+        let service = review_service(&api, &paths, &state, &registry);
+        let settings =
+            SqliteSettingsStore::open(&fixture.dir.path().join("bundles.sqlite3")).unwrap();
+        service.set_bundle_store(settings.bundle_store());
+
+        let review = service.bundle_import_review(bundle.clone()).await.unwrap();
+        assert_eq!(review.components.len(), 2);
+        // An unconfirmed review cannot install anything.
+        let refused = service
+            .bundle_import_install(&review.token, true)
+            .await
+            .expect_err("the publisher decision comes before installation");
+        assert!(
+            refused.contains("confirm the bundle publisher fingerprint"),
+            "{refused}"
+        );
+
+        service
+            .bundle_import_confirm_publisher(&review.token, &review.bundle.publisher_fingerprint)
+            .await
+            .unwrap();
+        let outcome = service
+            .bundle_import_install(&review.token, true)
+            .await
+            .unwrap();
+        assert_eq!(outcome.bundle_id, "org.example.dolphin");
+        assert_eq!(outcome.components.len(), 2);
+        assert!(
+            outcome.components.iter().all(|component| component.active),
+            "{:?}",
+            outcome.components
+        );
+        let stored = settings
+            .bundle_store()
+            .bundle("org.example.dolphin")
+            .unwrap()
+            .expect("the approved install records the mapping");
+        assert_eq!(stored.components.len(), 2);
+        assert_eq!(
+            registry
+                .active("org.example.dolphin")
+                .unwrap()
+                .map(|installed| installed.version),
+            Some("0.1.0".to_owned())
+        );
+
+        // The approved review is single-use; a replay cannot install again.
+        let replay = service
+            .bundle_import_install(&review.token, true)
+            .await
+            .expect_err("the token is consumed by the install");
+        assert!(replay.contains("expired"), "{replay}");
     }
 
     #[tokio::test]
@@ -2445,6 +3419,20 @@ mod tests {
         service
     }
 
+    /// The same service with the application's bundle mapping, so bundle inventory, update review
+    /// and uninstall observe the rows the tests installed through the platform store.
+    fn bundle_service(
+        api: &PluginApi,
+        paths: &DataPaths,
+        state: &PluginStateLayout,
+        registry: &PluginPackageRegistry,
+        settings: &SqliteSettingsStore,
+    ) -> PluginUpdateService {
+        let service = review_service(api, paths, state, registry);
+        service.set_bundle_store(settings.bundle_store());
+        service
+    }
+
     fn decision(snapshot: &PluginPermissionSnapshot, granted: bool) -> PermissionDecision {
         let request = &snapshot.requested_permissions[0];
         PermissionDecision {
@@ -2769,6 +3757,916 @@ mod tests {
         assert_eq!(
             launch_after.effective_grants[0].state,
             PermissionState::Granted
+        );
+    }
+
+    /// A running-profile update fixture: registry, mapping store, state and grant context that all
+    /// describe the same account, exactly as application startup composes them.
+    struct UpdateFixture {
+        fixture: Fixture,
+        paths: DataPaths,
+        api: PluginApi,
+        state: PluginStateLayout,
+        registry: PluginPackageRegistry,
+        settings: SqliteSettingsStore,
+    }
+
+    impl UpdateFixture {
+        fn new() -> Self {
+            let fixture = Fixture::new();
+            let paths = DataPaths::at(fixture.dir.path().join("app-data"));
+            fs::create_dir_all(paths.data_dir()).unwrap();
+            let api = PluginApi::default();
+            let state = PluginStateLayout::prepare_managed(&paths).unwrap();
+            api.set_state_layout(state.clone());
+            api.providers
+                .profiles()
+                .update(Some("bundle-account"), true);
+            let registry = PluginPackageRegistry::open(&paths).unwrap();
+            let settings =
+                SqliteSettingsStore::open(&fixture.dir.path().join("bundles.sqlite3")).unwrap();
+            Self {
+                fixture,
+                paths,
+                api,
+                state,
+                registry,
+                settings,
+            }
+        }
+
+        fn service(&self) -> PluginUpdateService {
+            bundle_service(
+                &self.api,
+                &self.paths,
+                &self.state,
+                &self.registry,
+                &self.settings,
+            )
+        }
+
+        fn grants(&self) -> BundleGrantContext {
+            BundleGrantContext {
+                layout: self.state.clone(),
+                profiles: self.api.providers.profiles(),
+            }
+        }
+
+        fn identity(&self, plugin_id: &str, publisher_fingerprint: &str) -> PluginIdentity {
+            PluginIdentity {
+                plugin_id: plugin_id.to_owned(),
+                publisher_fingerprint: publisher_fingerprint.to_owned(),
+                profile_id: self
+                    .api
+                    .providers
+                    .profiles()
+                    .current()
+                    .expect("the fixture profile is signed in")
+                    .profile_id()
+                    .to_owned(),
+            }
+        }
+
+        fn grant(&self, identity: &PluginIdentity, scope: &str) {
+            let scope = GrantScope::Declared {
+                value: scope.to_owned(),
+            };
+            let request = PermissionRequest {
+                permission_id: gamenode_plugin_protocol::capability::NETWORK_FETCH.to_owned(),
+                required: false,
+                allowed_scopes: BTreeSet::from([scope.clone()]),
+            };
+            let decision = PermissionDecision {
+                permission_id: gamenode_plugin_protocol::capability::NETWORK_FETCH.to_owned(),
+                scope,
+                granted: true,
+            };
+            self.state
+                .open_grants(&self.api.providers.profiles().current().unwrap())
+                .unwrap()
+                .replace_grants(identity.clone(), &[request], &[decision])
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn a_bundle_update_swaps_every_component_atomically_and_keeps_unchanged_grants() {
+        let update = UpdateFixture::new();
+        let fixture = &update.fixture;
+        let provider_v1 = fixture.component_with_permissions(
+            "provider-v1",
+            "provider",
+            "org.example.dolphin",
+            "0.1.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+            vec![permission("network.fetch", "https://api.example.com")],
+        );
+        let launch_v1 = fixture.component_with_permissions(
+            "launch-v1",
+            "extension",
+            "org.example.dolphin.launch",
+            "0.2.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+            vec![permission("game.launch", "approved-game-session")],
+        );
+        let bundle_v1 = fixture.bundle(&[&provider_v1, &launch_v1]);
+        let report_v1 = inspect_bundle_candidate(&bundle_v1, EmulationPolicy::RequireNative)
+            .await
+            .unwrap();
+        let installed = install_bundle_candidate(
+            &bundle_v1,
+            report_v1.clone(),
+            update.registry.clone(),
+            update.settings.bundle_store(),
+            EmulationPolicy::RequireNative,
+            1_700_000_000,
+        )
+        .await
+        .unwrap();
+
+        // One grant exists for the provider before the update.
+        let fingerprint = report_v1.bundle.publisher_fingerprint.clone();
+        let provider_identity = update.identity("org.example.dolphin", &fingerprint);
+        update.grant(&provider_identity, "https://api.example.com");
+        let revision_before = update
+            .state
+            .open_grants(&update.api.providers.profiles().current().unwrap())
+            .unwrap()
+            .revision(&provider_identity);
+
+        // The update keeps the provider's signed permission unchanged, moves the extension's scope
+        // and adds a new provider permission that must start ungranted.
+        let provider_v2 = fixture.component_with_permissions(
+            "provider-v2",
+            "provider",
+            "org.example.dolphin",
+            "0.2.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+            vec![
+                permission("network.fetch", "https://api.example.com"),
+                permission("library.write", "own-entries"),
+            ],
+        );
+        let launch_v2 = fixture.component_with_permissions(
+            "launch-v2",
+            "extension",
+            "org.example.dolphin.launch",
+            "0.3.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+            vec![permission("game.launch", "selected-game-session")],
+        );
+        let bundle_v2 = fixture.bundle_version(&[&provider_v2, &launch_v2], "0.2.0");
+        let report_v2 = inspect_bundle_candidate(&bundle_v2, EmulationPolicy::RequireNative)
+            .await
+            .unwrap();
+        let stopper = RecordingStopper::default();
+
+        let outcome = apply_bundle_update(
+            &bundle_v2,
+            report_v2.clone(),
+            installed.bundle.clone(),
+            update.registry.clone(),
+            update.settings.bundle_store(),
+            &stopper,
+            update.grants(),
+            EmulationPolicy::RequireNative,
+            1_700_000_100,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.bundle_id, "org.example.dolphin");
+        assert_eq!(outcome.previous_version, "0.1.0");
+        assert_eq!(outcome.version, "0.2.0");
+        assert!(outcome.components.iter().all(|component| component.active));
+        assert_eq!(
+            stopper.stopped(),
+            vec!["org.example.dolphin", "org.example.dolphin.launch"]
+        );
+        assert_eq!(
+            update
+                .registry
+                .active("org.example.dolphin")
+                .unwrap()
+                .map(|installed| installed.version),
+            Some("0.2.0".to_owned())
+        );
+        assert_eq!(
+            update
+                .registry
+                .active("org.example.dolphin.launch")
+                .unwrap()
+                .map(|installed| installed.version),
+            Some("0.3.0".to_owned())
+        );
+        let stored = update
+            .settings
+            .bundle_store()
+            .bundle("org.example.dolphin")
+            .unwrap()
+            .expect("the updated mapping is current");
+        assert_eq!(stored.version, "0.2.0");
+        assert_eq!(
+            stored
+                .components
+                .iter()
+                .map(|component| component.package_version.as_str())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["0.2.0", "0.3.0"])
+        );
+        assert_eq!(
+            update
+                .settings
+                .bundle_store()
+                .previous_versions("org.example.dolphin")
+                .unwrap(),
+            vec!["0.1.0".to_owned()]
+        );
+        // The unchanged provider grant survives at the same revision; the new permission is not
+        // granted, and the extension's changed scope was narrowed away.
+        let grants = update
+            .state
+            .open_grants(&update.api.providers.profiles().current().unwrap())
+            .unwrap();
+        assert_eq!(grants.revision(&provider_identity), revision_before);
+        let effective = grants.effective_grants(&provider_identity);
+        assert_eq!(effective.len(), 1);
+        assert_eq!(
+            effective[0].permission_id,
+            gamenode_plugin_protocol::capability::NETWORK_FETCH
+        );
+        let launch_identity = update.identity("org.example.dolphin.launch", &fingerprint);
+        assert!(
+            grants.effective_grants(&launch_identity).is_empty(),
+            "a changed scope is not widened or carried over"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_bundle_update_keeps_the_previous_set_and_removes_new_versions() {
+        let update = UpdateFixture::new();
+        let fixture = &update.fixture;
+        let provider_v1 = fixture.component(
+            "provider-v1",
+            "provider",
+            "org.example.dolphin",
+            "0.1.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+        let launch_v1 = fixture.component_with_permissions(
+            "launch-v1",
+            "extension",
+            "org.example.dolphin.launch",
+            "0.2.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+            vec![permission("game.launch", "approved-game-session")],
+        );
+        let bundle_v1 = fixture.bundle(&[&provider_v1, &launch_v1]);
+        let report_v1 = inspect_bundle_candidate(&bundle_v1, EmulationPolicy::RequireNative)
+            .await
+            .unwrap();
+        install_bundle_candidate(
+            &bundle_v1,
+            report_v1,
+            update.registry.clone(),
+            update.settings.bundle_store(),
+            EmulationPolicy::RequireNative,
+            1_700_000_000,
+        )
+        .await
+        .unwrap();
+
+        let provider_v2 = fixture.component(
+            "provider-v2",
+            "provider",
+            "org.example.dolphin",
+            "0.2.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+        let launch_v2 = fixture.component(
+            "launch-v2",
+            "extension",
+            "org.example.dolphin.launch",
+            "0.3.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+        let bundle_v2 = fixture.bundle_version(&[&provider_v2, &launch_v2], "0.2.0");
+        let report_v2 = inspect_bundle_candidate(&bundle_v2, EmulationPolicy::RequireNative)
+            .await
+            .unwrap();
+        // Remove the mapping behind the reviewed record, so the mapping write fails after every
+        // new component was installed and activated.
+        let reviewed_mapping = update
+            .settings
+            .bundle_store()
+            .bundle("org.example.dolphin")
+            .unwrap()
+            .unwrap();
+        update
+            .settings
+            .bundle_store()
+            .remove_bundle("org.example.dolphin")
+            .unwrap();
+        let stopper = RecordingStopper::default();
+
+        let result = apply_bundle_update(
+            &bundle_v2,
+            report_v2,
+            reviewed_mapping,
+            update.registry.clone(),
+            update.settings.bundle_store(),
+            &stopper,
+            update.grants(),
+            EmulationPolicy::RequireNative,
+            1_700_000_100,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(BundleUpdateError::Mapping(_))),
+            "{result:?}"
+        );
+        // The previous versions are active again and the new ones this call published are gone.
+        assert_eq!(
+            update
+                .registry
+                .active("org.example.dolphin")
+                .unwrap()
+                .map(|installed| installed.version),
+            Some("0.1.0".to_owned())
+        );
+        assert_eq!(
+            update
+                .registry
+                .active("org.example.dolphin.launch")
+                .unwrap()
+                .map(|installed| installed.version),
+            Some("0.2.0".to_owned())
+        );
+        assert!(
+            update
+                .registry
+                .versions("org.example.dolphin")
+                .unwrap()
+                .iter()
+                .all(|installed| installed.version == "0.1.0")
+        );
+        assert!(
+            update
+                .registry
+                .versions("org.example.dolphin.launch")
+                .unwrap()
+                .iter()
+                .all(|installed| installed.version == "0.2.0")
+        );
+        assert_eq!(
+            update
+                .settings
+                .bundle_store()
+                .previous_versions("org.example.dolphin")
+                .unwrap(),
+            Vec::<String>::new()
+        );
+    }
+
+    #[tokio::test]
+    async fn rollback_restores_the_previous_bundle_versions_and_grants() {
+        let update = UpdateFixture::new();
+        let fixture = &update.fixture;
+        let provider_v1 = fixture.component_with_permissions(
+            "provider-v1",
+            "provider",
+            "org.example.dolphin",
+            "0.1.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+            vec![permission("network.fetch", "https://api.example.com")],
+        );
+        let launch_v1 = fixture.component_with_permissions(
+            "launch-v1",
+            "extension",
+            "org.example.dolphin.launch",
+            "0.2.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+            vec![permission("game.launch", "approved-game-session")],
+        );
+        let bundle_v1 = fixture.bundle(&[&provider_v1, &launch_v1]);
+        let report_v1 = inspect_bundle_candidate(&bundle_v1, EmulationPolicy::RequireNative)
+            .await
+            .unwrap();
+        let installed = install_bundle_candidate(
+            &bundle_v1,
+            report_v1.clone(),
+            update.registry.clone(),
+            update.settings.bundle_store(),
+            EmulationPolicy::RequireNative,
+            1_700_000_000,
+        )
+        .await
+        .unwrap();
+        let fingerprint = report_v1.bundle.publisher_fingerprint.clone();
+        let provider_identity = update.identity("org.example.dolphin", &fingerprint);
+        update.grant(&provider_identity, "https://api.example.com");
+        let revision = update
+            .state
+            .open_grants(&update.api.providers.profiles().current().unwrap())
+            .unwrap()
+            .revision(&provider_identity);
+
+        let provider_v2 = fixture.component_with_permissions(
+            "provider-v2",
+            "provider",
+            "org.example.dolphin",
+            "0.2.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+            vec![permission("network.fetch", "https://api.example.com")],
+        );
+        let launch_v2 = fixture.component(
+            "launch-v2",
+            "extension",
+            "org.example.dolphin.launch",
+            "0.3.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+        let bundle_v2 = fixture.bundle_version(&[&provider_v2, &launch_v2], "0.2.0");
+        let report_v2 = inspect_bundle_candidate(&bundle_v2, EmulationPolicy::RequireNative)
+            .await
+            .unwrap();
+        let stopper = RecordingStopper::default();
+        apply_bundle_update(
+            &bundle_v2,
+            report_v2,
+            installed.bundle.clone(),
+            update.registry.clone(),
+            update.settings.bundle_store(),
+            &stopper,
+            update.grants(),
+            EmulationPolicy::RequireNative,
+            1_700_000_100,
+        )
+        .await
+        .unwrap();
+
+        let rollback = rollback_bundle_version(
+            "org.example.dolphin",
+            "0.1.0",
+            update.registry.clone(),
+            update.settings.bundle_store(),
+            &stopper,
+            update.grants(),
+            EmulationPolicy::RequireNative,
+            1_700_000_200,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(rollback.previous_version, "0.2.0");
+        assert_eq!(rollback.version, "0.1.0");
+        assert_eq!(
+            update
+                .registry
+                .active("org.example.dolphin")
+                .unwrap()
+                .map(|installed| installed.version),
+            Some("0.1.0".to_owned())
+        );
+        assert_eq!(
+            update
+                .registry
+                .active("org.example.dolphin.launch")
+                .unwrap()
+                .map(|installed| installed.version),
+            Some("0.2.0".to_owned())
+        );
+        let stored = update
+            .settings
+            .bundle_store()
+            .bundle("org.example.dolphin")
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.version, "0.1.0");
+        assert_eq!(
+            stored
+                .components
+                .iter()
+                .map(|component| component.package_version.as_str())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["0.1.0", "0.2.0"])
+        );
+        // The unchanged grant is still there at the same revision; rollback never widens it.
+        let grants = update
+            .state
+            .open_grants(&update.api.providers.profiles().current().unwrap())
+            .unwrap();
+        assert_eq!(grants.revision(&provider_identity), revision);
+        assert_eq!(grants.effective_grants(&provider_identity).len(), 1);
+        // The replaced version is now the rollback target.
+        assert_eq!(
+            update
+                .settings
+                .bundle_store()
+                .previous_versions("org.example.dolphin")
+                .unwrap(),
+            vec!["0.2.0".to_owned()]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_changed_bundle_archive_keeps_the_previous_set_active() {
+        let update = UpdateFixture::new();
+        let fixture = &update.fixture;
+        let provider_v1 = fixture.component(
+            "provider-v1",
+            "provider",
+            "org.example.dolphin",
+            "0.1.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+        let launch_v1 = fixture.component(
+            "launch-v1",
+            "extension",
+            "org.example.dolphin.launch",
+            "0.2.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+        let bundle_v1 = fixture.bundle(&[&provider_v1, &launch_v1]);
+        let report_v1 = inspect_bundle_candidate(&bundle_v1, EmulationPolicy::RequireNative)
+            .await
+            .unwrap();
+        let installed = install_bundle_candidate(
+            &bundle_v1,
+            report_v1,
+            update.registry.clone(),
+            update.settings.bundle_store(),
+            EmulationPolicy::RequireNative,
+            1_700_000_000,
+        )
+        .await
+        .unwrap();
+        let provider_v2 = fixture.component(
+            "provider-v2",
+            "provider",
+            "org.example.dolphin",
+            "0.2.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+        let launch_v2 = fixture.component(
+            "launch-v2",
+            "extension",
+            "org.example.dolphin.launch",
+            "0.3.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+        let bundle_v2 = fixture.bundle_version(&[&provider_v2, &launch_v2], "0.2.0");
+        let report_v2 = inspect_bundle_candidate(&bundle_v2, EmulationPolicy::RequireNative)
+            .await
+            .unwrap();
+        // The reviewed archive changes on disk before approval.
+        let mut bytes = fs::read(&bundle_v2).unwrap();
+        bytes.pop();
+        fs::write(&bundle_v2, bytes).unwrap();
+
+        let stopper = RecordingStopper::default();
+        let result = apply_bundle_update(
+            &bundle_v2,
+            report_v2,
+            installed.bundle,
+            update.registry.clone(),
+            update.settings.bundle_store(),
+            &stopper,
+            update.grants(),
+            EmulationPolicy::RequireNative,
+            1_700_000_100,
+        )
+        .await;
+        assert!(result.is_err(), "{result:?}");
+        assert_eq!(
+            update
+                .registry
+                .active("org.example.dolphin")
+                .unwrap()
+                .map(|installed| installed.version),
+            Some("0.1.0".to_owned())
+        );
+        assert_eq!(
+            update
+                .registry
+                .active("org.example.dolphin.launch")
+                .unwrap()
+                .map(|installed| installed.version),
+            Some("0.2.0".to_owned())
+        );
+        assert!(
+            update
+                .registry
+                .versions("org.example.dolphin")
+                .unwrap()
+                .iter()
+                .all(|installed| installed.version == "0.1.0")
+        );
+        assert_eq!(
+            update
+                .settings
+                .bundle_store()
+                .bundle("org.example.dolphin")
+                .unwrap()
+                .map(|bundle| bundle.version),
+            Some("0.1.0".to_owned())
+        );
+    }
+
+    /// A signed update release for a real fixture bundle, bound to the bundle's manifest hash the
+    /// way the signed index carries it.
+    fn update_release(bundle: &Path, version: &str) -> UpdateRelease {
+        let verified = gamenode_platform::plugin_bundles::verify_bundle_archive(bundle).unwrap();
+        UpdateRelease {
+            version: version.to_owned(),
+            targets: vec!["linux-x86_64-gnu".to_owned()],
+            api_range: ">=1.6.0, <2.0.0".to_owned(),
+            package_url: "https://updates.example/bundle.gnbundle".to_owned(),
+            package_size: 1,
+            package_sha256: "a".repeat(64),
+            bundle_sha256: Some(verified.manifest_sha256),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_bundle_update_review_carries_the_index_hash_and_per_component_diffs() {
+        let update = UpdateFixture::new();
+        let fixture = &update.fixture;
+        let provider_v1 = fixture.component_with_permissions(
+            "provider-v1",
+            "provider",
+            "org.example.dolphin",
+            "0.1.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+            vec![permission("network.fetch", "https://api.example.com")],
+        );
+        let launch_v1 = fixture.component_with_permissions(
+            "launch-v1",
+            "extension",
+            "org.example.dolphin.launch",
+            "0.2.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+            vec![permission("game.launch", "approved-game-session")],
+        );
+        let bundle_v1 = fixture.bundle(&[&provider_v1, &launch_v1]);
+        let report_v1 = inspect_bundle_candidate(&bundle_v1, EmulationPolicy::RequireNative)
+            .await
+            .unwrap();
+        let installed = install_bundle_candidate(
+            &bundle_v1,
+            report_v1,
+            update.registry.clone(),
+            update.settings.bundle_store(),
+            EmulationPolicy::RequireNative,
+            1_700_000_000,
+        )
+        .await
+        .unwrap();
+        let service = update.service();
+
+        let provider_v2 = fixture.component_with_permissions(
+            "provider-v2",
+            "provider",
+            "org.example.dolphin",
+            "0.2.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+            vec![
+                permission("network.fetch", "https://api.example.com"),
+                permission("library.write", "own-entries"),
+            ],
+        );
+        let launch_v2 = fixture.component_with_permissions(
+            "launch-v2",
+            "extension",
+            "org.example.dolphin.launch",
+            "0.3.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+            vec![permission("game.launch", "selected-game-session")],
+        );
+        let bundle_v2 = fixture.bundle_version(&[&provider_v2, &launch_v2], "0.2.0");
+        let release = update_release(&bundle_v2, "0.2.0");
+        let (review, report) = service
+            .bundle_update_review_from_archive(&installed.bundle, &release, &bundle_v2)
+            .await
+            .unwrap();
+        assert_eq!(review.bundle_id, "org.example.dolphin");
+        assert_eq!(review.installed_version, "0.1.0");
+        assert_eq!(review.candidate_version, "0.2.0");
+        assert_eq!(
+            Some(review.bundle_sha256.clone()),
+            release.bundle_sha256.clone()
+        );
+        assert!(!review.is_downgrade);
+        assert!(review.requires_manual_approval);
+        assert_eq!(report.components.len(), 2);
+        let provider = review
+            .components
+            .iter()
+            .find(|component| component.plugin_id == "org.example.dolphin")
+            .unwrap();
+        assert_eq!(provider.installed_version, "0.1.0");
+        assert_eq!(provider.candidate_version, "0.2.0");
+        assert_eq!(provider.kind, "provider");
+        assert_eq!(provider.added_permissions, vec!["library.write".to_owned()]);
+        assert_eq!(provider.compatibility, "compatible");
+        assert_eq!(
+            provider.availability,
+            BundleComponentAvailability::Available
+        );
+        let launch = review
+            .components
+            .iter()
+            .find(|component| component.plugin_id == "org.example.dolphin.launch")
+            .unwrap();
+        assert_eq!(launch.installed_version, "0.2.0");
+        assert_eq!(launch.candidate_version, "0.3.0");
+        assert_eq!(launch.changed_permissions, vec!["game.launch".to_owned()]);
+        assert_eq!(review.added_permissions, vec!["library.write".to_owned()]);
+        assert_eq!(review.changed_permissions, vec!["game.launch".to_owned()]);
+
+        // A standalone release under a bundle review is a mixed update and is rejected before any
+        // archive is inspected or installed.
+        let mut package_release = release.clone();
+        package_release.bundle_sha256 = None;
+        let error = service
+            .bundle_update_review_from_archive(&installed.bundle, &package_release, &bundle_v2)
+            .await
+            .expect_err("a package release is not a bundle update");
+        assert!(error.contains("not a signed bundle"), "{error}");
+
+        // A release that adds a component is not the same product and is rejected.
+        let extra = fixture.component(
+            "extra",
+            "extension",
+            "org.example.dolphin.extra",
+            "0.1.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+        let bundle_v3 = fixture.bundle_version(&[&provider_v2, &launch_v2, &extra], "0.3.0");
+        let release_v3 = update_release(&bundle_v3, "0.3.0");
+        let error = service
+            .bundle_update_review_from_archive(&installed.bundle, &release_v3, &bundle_v3)
+            .await
+            .expect_err("a bundle update cannot change the component set");
+        assert!(error.contains("add, remove or re-kind"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_bundle_rollback_review_is_produced_before_the_confirmed_restore() {
+        let update = UpdateFixture::new();
+        let fixture = &update.fixture;
+        let provider_v1 = fixture.component(
+            "provider-v1",
+            "provider",
+            "org.example.dolphin",
+            "0.1.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+        let launch_v1 = fixture.component_with_permissions(
+            "launch-v1",
+            "extension",
+            "org.example.dolphin.launch",
+            "0.2.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+            vec![permission("game.launch", "approved-game-session")],
+        );
+        let bundle_v1 = fixture.bundle(&[&provider_v1, &launch_v1]);
+        let report_v1 = inspect_bundle_candidate(&bundle_v1, EmulationPolicy::RequireNative)
+            .await
+            .unwrap();
+        let installed = install_bundle_candidate(
+            &bundle_v1,
+            report_v1,
+            update.registry.clone(),
+            update.settings.bundle_store(),
+            EmulationPolicy::RequireNative,
+            1_700_000_000,
+        )
+        .await
+        .unwrap();
+        let provider_v2 = fixture.component(
+            "provider-v2",
+            "provider",
+            "org.example.dolphin",
+            "0.2.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+        let launch_v2 = fixture.component(
+            "launch-v2",
+            "extension",
+            "org.example.dolphin.launch",
+            "0.3.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+        let bundle_v2 = fixture.bundle_version(&[&provider_v2, &launch_v2], "0.2.0");
+        let report_v2 = inspect_bundle_candidate(&bundle_v2, EmulationPolicy::RequireNative)
+            .await
+            .unwrap();
+        let stopper = RecordingStopper::default();
+        apply_bundle_update(
+            &bundle_v2,
+            report_v2,
+            installed.bundle,
+            update.registry.clone(),
+            update.settings.bundle_store(),
+            &stopper,
+            update.grants(),
+            EmulationPolicy::RequireNative,
+            1_700_000_100,
+        )
+        .await
+        .unwrap();
+
+        let service = update.service();
+        let available = service.available_bundle_rollbacks().await.unwrap();
+        assert_eq!(available.len(), 1);
+        assert_eq!(available[0].active_version, "0.2.0");
+        assert_eq!(available[0].versions, vec!["0.1.0".to_owned()]);
+
+        let review = service
+            .review_bundle_rollback("org.example.dolphin", "0.1.0")
+            .await
+            .unwrap();
+        assert!(review.is_rollback);
+        assert!(review.is_downgrade);
+        assert_eq!(review.installed_version, "0.2.0");
+        assert_eq!(review.candidate_version, "0.1.0");
+        let provider = review
+            .components
+            .iter()
+            .find(|component| component.plugin_id == "org.example.dolphin")
+            .unwrap();
+        assert_eq!(provider.installed_version, "0.2.0");
+        assert_eq!(provider.candidate_version, "0.1.0");
+
+        let refused = service
+            .approve_bundle_rollback("org.example.dolphin", "0.1.0", false)
+            .await
+            .expect_err("rollback requires confirmation");
+        assert!(refused.contains("explicit user confirmation"), "{refused}");
+        // A refused confirmation does not consume the reviewed rollback.
+        let outcome = service
+            .approve_bundle_rollback("org.example.dolphin", "0.1.0", true)
+            .await
+            .unwrap();
+        assert_eq!(outcome.version, "0.1.0");
+        assert_eq!(
+            update
+                .registry
+                .active("org.example.dolphin")
+                .unwrap()
+                .map(|installed| installed.version),
+            Some("0.1.0".to_owned())
         );
     }
 

@@ -1819,6 +1819,91 @@ export interface BundleUninstallOutcome {
   dataRetention: 'kept' | 'deleted';
 }
 
+export interface BundleImportInstallOutcome {
+  bundleId: string;
+  components: Array<{
+    pluginId: string;
+    kind: 'provider' | 'extension';
+    version: string;
+    active: boolean;
+  }>;
+}
+
+export interface AvailableBundleUpdate {
+  bundleId: string;
+  name: string;
+  installedVersion: string;
+  versions: string[];
+}
+
+export interface AvailableBundleRollback {
+  bundleId: string;
+  name: string;
+  activeVersion: string;
+  versions: string[];
+}
+
+/** One component's old/new facts in a bundle update or rollback review. */
+export interface BundleComponentUpdateReview {
+  pluginId: string;
+  kind: 'provider' | 'extension';
+  installedVersion: string;
+  candidateVersion: string;
+  addedPermissions: string[];
+  removedPermissions: string[];
+  changedPermissions: string[];
+  permissionChanges: Array<{
+    id: string;
+    installedScope: string;
+    candidateScope: string;
+    installedRequired: boolean;
+    candidateRequired: boolean;
+  }>;
+  addedNativeAccess: string[];
+  removedNativeAccess: string[];
+  apiChanged: boolean;
+  installedApi: string;
+  candidateApi: string;
+  availability: PluginBundleComponentAvailability;
+  compatibility: 'compatible' | 'incompatible' | 'unknown';
+  compatibilityReason?: string;
+  compatibilityDetails?: PluginCompatibilityDetails;
+  publisherChanged: boolean;
+  isDowngrade: boolean;
+}
+
+/** The grouped review of one bundle release or rollback target. */
+export interface BundleUpdateReview {
+  bundleId: string;
+  name: string;
+  installedVersion: string;
+  candidateVersion: string;
+  bundleSha256: string;
+  publisherFingerprint: string;
+  components: BundleComponentUpdateReview[];
+  addedPermissions: string[];
+  removedPermissions: string[];
+  changedPermissions: string[];
+  requiresManualApproval: boolean;
+  isDowngrade: boolean;
+  isRollback: boolean;
+}
+
+export interface BundleUpdateOutcome {
+  bundleId: string;
+  previousVersion: string;
+  version: string;
+  components: Array<{
+    pluginId: string;
+    kind: 'provider' | 'extension';
+    previousVersion: string;
+    version: string;
+    active: boolean;
+  }>;
+}
+
+export type BundleRollbackOutcome = BundleUpdateOutcome;
+
 /** Host-owned effective permission state for the currently active account profile. */
 export interface PluginPermissionSnapshot {
   pluginId: string;

@@ -26,6 +26,7 @@ import {
   type PluginInfo,
   type PluginBundleComponent,
   type PluginBundleImportReview,
+  type BundleUpdateReview,
   type PluginUpdateReview,
   type Provider,
   type Registration,
@@ -1776,6 +1777,9 @@ export function createMockHost(options: {
   const mockBundlePublisher = `SHA256:${'ef'.repeat(32)}`;
   const mockPluginEnabled = new Map<string, boolean>();
   let mockBundleInstalled = true;
+  let mockBundleVersion = '0.2.0';
+  let mockBundleRollbackVersion: string | undefined;
+  let mockBundleUpdateReview: BundleUpdateReview | undefined;
   const folderApprovals = new Map<string, PluginFolderApproval[]>([[
     'community.example.save-sync',
     [
@@ -1857,7 +1861,7 @@ export function createMockHost(options: {
       nativeAccess: ['files', 'network', 'process'],
       bundleId: 'org.example.dolphin.bundle',
       bundleName: 'Dolphin GameCube and Wii',
-      bundleVersion: '0.2.0',
+      bundleVersion: mockBundleVersion,
       bundlePublisherFingerprint: mockBundlePublisher,
       bundleComponents: components,
     };
@@ -1917,6 +1921,47 @@ export function createMockHost(options: {
       },
     })),
   });
+  /** A grouped bundle update/rollback review fixture with per-component old/new versions. */
+  const mockBundleUpdateReviewFor = (version: string, rollback: boolean): BundleUpdateReview => {
+    const components = mockBundleComponents();
+    return {
+      bundleId: 'org.example.dolphin.bundle',
+      name: 'Dolphin GameCube and Wii',
+      installedVersion: mockBundleVersion,
+      candidateVersion: version,
+      bundleSha256: 'ab'.repeat(32),
+      publisherFingerprint: mockBundlePublisher,
+      components: components.map((component) => ({
+        pluginId: component.pluginId,
+        kind: component.pluginKind,
+        installedVersion: component.version,
+        candidateVersion: rollback ? '0.1.0' : '0.3.0',
+        addedPermissions: rollback ? [] : ['library.write'],
+        removedPermissions: [],
+        changedPermissions: [],
+        permissionChanges: [],
+        addedNativeAccess: [],
+        removedNativeAccess: [],
+        apiChanged: false,
+        installedApi: '1.6.0',
+        candidateApi: '1.6.0',
+        availability: component.status === 'installed'
+          ? { status: 'available' as const }
+          : { status: 'unavailable' as const, reason: 'noCompatibleTarget' as const },
+        compatibility: component.status === 'installed' ? 'compatible' : 'incompatible',
+        compatibilityDetails: component.compatibilityDetails ?? mockCompatibility,
+        publisherChanged: false,
+        isDowngrade: rollback,
+      })),
+      addedPermissions: rollback ? [] : ['library.write'],
+      removedPermissions: [],
+      changedPermissions: [],
+      requiresManualApproval: true,
+      isDowngrade: rollback,
+      isRollback: rollback,
+    };
+  };
+
   const snapshot = createDefaultSnapshot();
   const systemLocale = mockNormalizeLocale(options.locale ?? 'en');
   const effectiveLocale = () => mockEffectiveLocale(snapshot.preferences, systemLocale);
@@ -4371,10 +4416,100 @@ export function createMockHost(options: {
           review: { ...component.review, trust: 'trusted', publisherFingerprint: review.bundle.publisherFingerprint },
         })) };
       }
+      if (cmd === 'plugin_bundle_import_install') {
+        if (args.token !== 'mock-bundle-review') throw new Error('plugin bundle import review expired');
+        mockBundleInstalled = true;
+        return {
+          bundleId: 'org.example.dolphin.bundle',
+          components: mockBundleComponents().map((component) => ({
+            pluginId: component.pluginId,
+            kind: component.pluginKind,
+            version: component.version,
+            active: component.status === 'installed',
+          })),
+        };
+      }
       if (cmd === 'plugin_bundle_permissions_replace') {
         const submissions = (args.submissions ?? []) as Array<{ pluginId: string }>;
         return {
           components: submissions.map((submission) => ({ pluginId: submission.pluginId })),
+        };
+      }
+      if (cmd === 'plugin_bundle_update_check' || cmd === 'plugin_bundle_update_available') {
+        if (!mockBundleInstalled || mockBundleVersion !== '0.2.0') return [];
+        return [{
+          bundleId: 'org.example.dolphin.bundle',
+          name: 'Dolphin GameCube and Wii',
+          installedVersion: mockBundleVersion,
+          versions: ['0.3.0'],
+        }];
+      }
+      if (cmd === 'plugin_bundle_update_review') {
+        if (!mockBundleInstalled || mockBundleVersion !== '0.2.0' || args.version !== '0.3.0') {
+          throw new Error('release is no longer available');
+        }
+        mockBundleUpdateReview = mockBundleUpdateReviewFor('0.3.0', false);
+        return structuredClone(mockBundleUpdateReview);
+      }
+      if (cmd === 'plugin_bundle_update_approve') {
+        const review = mockBundleUpdateReview;
+        if (!review || review.isRollback || args.version !== review.candidateVersion) {
+          throw new Error('review the bundle update before approving it');
+        }
+        mockBundleUpdateReview = undefined;
+        mockBundleRollbackVersion = mockBundleVersion;
+        mockBundleVersion = review.candidateVersion;
+        return {
+          bundleId: review.bundleId,
+          previousVersion: review.installedVersion,
+          version: review.candidateVersion,
+          components: review.components.map((component) => ({
+            pluginId: component.pluginId,
+            kind: component.kind,
+            previousVersion: component.installedVersion,
+            version: component.candidateVersion,
+            active: component.availability.status === 'available',
+          })),
+        };
+      }
+      if (cmd === 'plugin_bundle_update_decline') {
+        mockBundleUpdateReview = undefined;
+        return undefined;
+      }
+      if (cmd === 'plugin_bundle_rollback_available') {
+        return mockBundleInstalled && mockBundleRollbackVersion ? [{
+          bundleId: 'org.example.dolphin.bundle',
+          name: 'Dolphin GameCube and Wii',
+          activeVersion: mockBundleVersion,
+          versions: [mockBundleRollbackVersion],
+        }] : [];
+      }
+      if (cmd === 'plugin_bundle_rollback_review') {
+        if (!mockBundleRollbackVersion || args.version !== mockBundleRollbackVersion) {
+          throw new Error('that bundle version is not available for rollback');
+        }
+        mockBundleUpdateReview = mockBundleUpdateReviewFor(mockBundleRollbackVersion, true);
+        return structuredClone(mockBundleUpdateReview);
+      }
+      if (cmd === 'plugin_bundle_rollback_approve') {
+        const review = mockBundleUpdateReview;
+        if (!review || !review.isRollback || args.confirmed !== true || args.version !== review.candidateVersion) {
+          throw new Error('rollback requires explicit user confirmation');
+        }
+        mockBundleUpdateReview = undefined;
+        mockBundleRollbackVersion = undefined;
+        mockBundleVersion = review.candidateVersion;
+        return {
+          bundleId: review.bundleId,
+          previousVersion: review.installedVersion,
+          version: review.candidateVersion,
+          components: review.components.map((component) => ({
+            pluginId: component.pluginId,
+            kind: component.kind,
+            previousVersion: component.installedVersion,
+            version: component.candidateVersion,
+            active: component.availability.status === 'available',
+          })),
         };
       }
       if (cmd === 'plugin_bundle_uninstall') {

@@ -684,11 +684,91 @@ pub async fn plugin_bundle_import_confirm_publisher(
 }
 
 #[tauri::command]
+pub async fn plugin_bundle_import_install(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    token: String,
+    native_code_consent: bool,
+) -> Result<crate::plugin_host::updates::BundleImportInstallOutcome, String> {
+    updates
+        .bundle_import_install(&token, native_code_consent)
+        .await
+}
+
+#[tauri::command]
 pub async fn plugin_bundle_permissions_replace(
     updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
     submissions: Vec<crate::plugin_host::updates::BundleComponentPermissionSubmission>,
 ) -> Result<crate::plugin_host::updates::BundlePermissionResult, String> {
     updates.apply_bundle_permissions(submissions).await
+}
+
+#[tauri::command]
+pub async fn plugin_bundle_update_check(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+) -> Result<Vec<crate::plugin_host::updates::AvailableBundleUpdate>, String> {
+    updates.check_bundle_updates().await
+}
+
+#[tauri::command]
+pub async fn plugin_bundle_update_available(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+) -> Result<Vec<crate::plugin_host::updates::AvailableBundleUpdate>, String> {
+    Ok(updates.bundle_update_available())
+}
+
+#[tauri::command]
+pub async fn plugin_bundle_update_review(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    bundle_id: String,
+    version: String,
+) -> Result<crate::plugin_host::updates::BundleUpdateReview, String> {
+    updates.review_bundle_update(&bundle_id, &version).await
+}
+
+#[tauri::command]
+pub async fn plugin_bundle_update_approve(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    bundle_id: String,
+    version: String,
+) -> Result<crate::plugin_host::bundles::BundleUpdateOutcome, String> {
+    updates.approve_bundle_update(&bundle_id, &version).await
+}
+
+#[tauri::command]
+pub async fn plugin_bundle_update_decline(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    bundle_id: String,
+) -> Result<(), String> {
+    updates.decline_bundle_update(&bundle_id).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn plugin_bundle_rollback_available(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+) -> Result<Vec<crate::plugin_host::updates::AvailableBundleRollback>, String> {
+    updates.available_bundle_rollbacks().await
+}
+
+#[tauri::command]
+pub async fn plugin_bundle_rollback_review(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    bundle_id: String,
+    version: String,
+) -> Result<crate::plugin_host::updates::BundleUpdateReview, String> {
+    updates.review_bundle_rollback(&bundle_id, &version).await
+}
+
+#[tauri::command]
+pub async fn plugin_bundle_rollback_approve(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    bundle_id: String,
+    version: String,
+    confirmed: bool,
+) -> Result<crate::plugin_host::bundles::BundleRollbackOutcome, String> {
+    updates
+        .approve_bundle_rollback(&bundle_id, &version, confirmed)
+        .await
 }
 
 #[tauri::command]

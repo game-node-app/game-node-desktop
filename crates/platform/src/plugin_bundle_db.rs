@@ -138,6 +138,156 @@ fn read(conn: &Connection, bundle_id: &str) -> Result<Option<BundleRecord>, Stor
     Ok(Some(bundle))
 }
 
+fn read_history(
+    conn: &Connection,
+    bundle_id: &str,
+    version: &str,
+) -> Result<Option<BundleRecord>, StorageError> {
+    let bundle = conn
+        .query_row(
+            "SELECT bundle_id, name, version, publisher_fingerprint, manifest_sha256, installed_at
+             FROM plugin_bundle_history WHERE bundle_id = ?1 AND version = ?2",
+            params![bundle_id, version],
+            |row| {
+                Ok(BundleRecord {
+                    bundle_id: row.get(0)?,
+                    name: row.get(1)?,
+                    version: row.get(2)?,
+                    publisher_fingerprint: row.get(3)?,
+                    manifest_sha256: row.get(4)?,
+                    installed_at: row.get(5)?,
+                    components: Vec::new(),
+                })
+            },
+        )
+        .optional()
+        .map_err(failed)?;
+    let Some(mut bundle) = bundle else {
+        return Ok(None);
+    };
+    let mut statement = conn
+        .prepare(
+            "SELECT plugin_id, kind, component_sha256, package_version
+             FROM plugin_bundle_history_components
+             WHERE bundle_id = ?1 AND version = ?2
+             ORDER BY plugin_id",
+        )
+        .map_err(failed)?;
+    let rows = statement
+        .query_map(params![bundle_id, version], |row| {
+            Ok(BundleComponentRecord {
+                plugin_id: row.get(0)?,
+                kind: row.get(1)?,
+                component_sha256: row.get(2)?,
+                package_version: row.get(3)?,
+            })
+        })
+        .map_err(failed)?;
+    bundle.components = rows.collect::<Result<Vec<_>, _>>().map_err(failed)?;
+    Ok(Some(bundle))
+}
+
+/// Copies one mapping into history, replacing an older archived copy of the same version. The
+/// current mapping is never modified here.
+fn archive_bundle(
+    conn: &Connection,
+    bundle: &BundleRecord,
+    archived_at: i64,
+) -> Result<(), StorageError> {
+    conn.execute(
+        "INSERT OR REPLACE INTO plugin_bundle_history
+            (bundle_id, version, name, publisher_fingerprint, manifest_sha256, installed_at, archived_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            bundle.bundle_id,
+            bundle.version,
+            bundle.name,
+            bundle.publisher_fingerprint,
+            bundle.manifest_sha256,
+            bundle.installed_at,
+            archived_at,
+        ],
+    )
+    .map_err(failed)?;
+    conn.execute(
+        "DELETE FROM plugin_bundle_history_components WHERE bundle_id = ?1 AND version = ?2",
+        params![bundle.bundle_id, bundle.version],
+    )
+    .map_err(failed)?;
+    let mut insert = conn
+        .prepare(
+            "INSERT INTO plugin_bundle_history_components
+                (bundle_id, version, plugin_id, kind, component_sha256, package_version)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )
+        .map_err(failed)?;
+    for component in &bundle.components {
+        insert
+            .execute(params![
+                bundle.bundle_id,
+                bundle.version,
+                component.plugin_id,
+                component.kind,
+                component.component_sha256,
+                component.package_version,
+            ])
+            .map_err(failed)?;
+    }
+    Ok(())
+}
+
+/// Replaces the current component rows of an existing bundle row. The bundle row itself is
+/// updated in place so its identity stays the primary key.
+fn replace_components(conn: &Connection, bundle: &BundleRecord) -> Result<(), StorageError> {
+    conn.execute(
+        "DELETE FROM plugin_bundle_components WHERE bundle_id = ?1",
+        [&bundle.bundle_id],
+    )
+    .map_err(failed)?;
+    let mut insert = conn
+        .prepare(
+            "INSERT INTO plugin_bundle_components
+                (bundle_id, plugin_id, kind, component_sha256, package_version)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )
+        .map_err(failed)?;
+    for component in &bundle.components {
+        insert
+            .execute(params![
+                bundle.bundle_id,
+                component.plugin_id,
+                component.kind,
+                component.component_sha256,
+                component.package_version,
+            ])
+            .map_err(failed)?;
+    }
+    Ok(())
+}
+
+fn update_bundle_row(conn: &Connection, bundle: &BundleRecord) -> Result<(), StorageError> {
+    let changed = conn
+        .execute(
+            "UPDATE plugin_bundles
+             SET name = ?2, version = ?3, publisher_fingerprint = ?4, manifest_sha256 = ?5,
+                 installed_at = ?6
+             WHERE bundle_id = ?1",
+            params![
+                bundle.bundle_id,
+                bundle.name,
+                bundle.version,
+                bundle.publisher_fingerprint,
+                bundle.manifest_sha256,
+                bundle.installed_at,
+            ],
+        )
+        .map_err(failed)?;
+    if changed != 1 {
+        return Err(invalid("the bundle mapping no longer exists"));
+    }
+    Ok(())
+}
+
 impl SqlitePluginBundleStore {
     pub(crate) fn new(conn: Arc<Mutex<Connection>>) -> Self {
         Self { conn }
@@ -188,6 +338,102 @@ impl SqlitePluginBundleStore {
             }
         }
         tx.commit().map_err(failed)
+    }
+
+    /// Replaces an installed bundle's version, manifest hash, install time and component rows in
+    /// one transaction, archiving the previous mapping first. The previous record is returned so a
+    /// caller that has just activated new component versions can restore them if a later step
+    /// fails. A missing mapping and an unchanged version both change nothing.
+    pub fn update_bundle(
+        &self,
+        bundle: &BundleRecord,
+        archived_at: i64,
+    ) -> Result<BundleRecord, StorageError> {
+        validate_bundle(bundle)?;
+        if archived_at < 0 {
+            return Err(invalid("a bundle archive time is negative"));
+        }
+        let mut conn = self.conn();
+        let tx = conn.transaction().map_err(failed)?;
+        let previous = read(&tx, &bundle.bundle_id)?
+            .ok_or_else(|| invalid("the bundle mapping no longer exists"))?;
+        if previous.version == bundle.version
+            && previous.manifest_sha256 == bundle.manifest_sha256
+            && previous.components == bundle.components
+        {
+            return Err(invalid("the bundle update does not change the mapping"));
+        }
+        archive_bundle(&tx, &previous, archived_at)?;
+        update_bundle_row(&tx, bundle)?;
+        replace_components(&tx, bundle)?;
+        tx.commit().map_err(failed)?;
+        Ok(previous)
+    }
+
+    /// Versions of this bundle that are archived and can be restored, most recently archived
+    /// first. The current version is never included.
+    pub fn previous_versions(&self, bundle_id: &str) -> Result<Vec<String>, StorageError> {
+        let conn = self.conn();
+        let mut statement = conn
+            .prepare(
+                "SELECT version FROM plugin_bundle_history
+                 WHERE bundle_id = ?1 ORDER BY archived_at DESC, version DESC",
+            )
+            .map_err(failed)?;
+        statement
+            .query_map([bundle_id], |row| row.get::<_, String>(0))
+            .map_err(failed)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(failed)
+    }
+
+    /// One archived mapping of this bundle, if it exists.
+    pub fn previous_bundle(
+        &self,
+        bundle_id: &str,
+        version: &str,
+    ) -> Result<Option<BundleRecord>, StorageError> {
+        read_history(&self.conn(), bundle_id, version)
+    }
+
+    /// Makes an archived version current again in one transaction: the current mapping is archived
+    /// and the selected history entry is removed. Returns the restored record, or `None` when that
+    /// version is not archived. Component packages, grants and activation are untouched here; the
+    /// caller re-activates the restored versions and revalidates grants.
+    pub fn restore_bundle_version(
+        &self,
+        bundle_id: &str,
+        version: &str,
+        archived_at: i64,
+    ) -> Result<Option<BundleRecord>, StorageError> {
+        if archived_at < 0 {
+            return Err(invalid("a bundle archive time is negative"));
+        }
+        let mut conn = self.conn();
+        let tx = conn.transaction().map_err(failed)?;
+        let current =
+            read(&tx, bundle_id)?.ok_or_else(|| invalid("the bundle mapping no longer exists"))?;
+        let Some(target) = read_history(&tx, bundle_id, version)? else {
+            return Ok(None);
+        };
+        if target.version == current.version {
+            return Err(invalid("the bundle already uses the requested version"));
+        }
+        archive_bundle(&tx, &current, archived_at)?;
+        tx.execute(
+            "DELETE FROM plugin_bundle_history_components WHERE bundle_id = ?1 AND version = ?2",
+            params![bundle_id, version],
+        )
+        .map_err(failed)?;
+        tx.execute(
+            "DELETE FROM plugin_bundle_history WHERE bundle_id = ?1 AND version = ?2",
+            params![bundle_id, version],
+        )
+        .map_err(failed)?;
+        update_bundle_row(&tx, &target)?;
+        replace_components(&tx, &target)?;
+        tx.commit().map_err(failed)?;
+        Ok(Some(target))
     }
 
     /// The stored bundle and its components, with components ordered by plugin id.
@@ -404,6 +650,64 @@ mod tests {
         );
         assert_eq!(
             store.bundle_for_plugin("org.example.standalone").unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn an_update_archives_the_previous_mapping_and_rollback_restores_it() {
+        let dir = TempDir::new().unwrap();
+        let store = open(&dir).bundle_store();
+        let first = bundle("org.example.dolphin");
+        store.record_bundle(&first).unwrap();
+
+        let mut second = first.clone();
+        second.version = "0.2.0".to_owned();
+        second.manifest_sha256 = "c".repeat(64);
+        second.installed_at = 900;
+        second.components = vec![
+            component("org.example.dolphin", "provider", 'd', "0.3.0"),
+            component("org.example.dolphin.launch", "extension", 'e', "0.2.0"),
+        ];
+        assert_eq!(
+            store.update_bundle(&second, 700).unwrap(),
+            first,
+            "the previous mapping is returned for rollback"
+        );
+        assert_eq!(
+            store.bundle("org.example.dolphin").unwrap(),
+            Some(second.clone())
+        );
+        assert_eq!(
+            store.previous_versions("org.example.dolphin").unwrap(),
+            vec!["0.1.0".to_owned()]
+        );
+        assert_eq!(
+            store
+                .previous_bundle("org.example.dolphin", "0.1.0")
+                .unwrap(),
+            Some(first.clone())
+        );
+
+        // An unchanged update changes nothing.
+        assert!(store.update_bundle(&second, 800).is_err());
+
+        let restored = store
+            .restore_bundle_version("org.example.dolphin", "0.1.0", 1_000)
+            .unwrap()
+            .expect("the archived version is restored");
+        assert_eq!(restored, first);
+        assert_eq!(store.bundle("org.example.dolphin").unwrap(), Some(first));
+        assert_eq!(
+            store.previous_versions("org.example.dolphin").unwrap(),
+            vec!["0.2.0".to_owned()],
+            "the replaced version becomes the rollback target"
+        );
+        // A version that is not archived restores nothing.
+        assert_eq!(
+            store
+                .restore_bundle_version("org.example.dolphin", "9.9.9", 1_000)
+                .unwrap(),
             None
         );
     }

@@ -2603,3 +2603,277 @@ async fn shared_runtime_catalog_and_content_availability_need_no_pairwise_grant(
     assert!(snapshot.source_recipient_policies.is_empty());
     server.abort();
 }
+
+/// One reviewed shared emulator resource must reach a real spawned runtime tree and hold its use
+/// lease until that tree is confirmed gone. This drives the public RPCs for runtime registration,
+/// save-profile declaration and consent, then hands the host-resolved dispatch to the same launch
+/// supervisor the desktop uses.
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn reviewed_shared_resource_use_is_held_by_a_spawned_runtime_tree() {
+    use crate::plugin_host::launch_supervisor::{LaunchSupervisor, spawn_native};
+    use crate::plugin_host::profile::PluginStateLayout;
+    use gamenode_plugin_protocol::proto::{
+        RuntimeArgumentTemplate as RuntimeArgumentProto, RuntimeRecord,
+        runtime_argument_template::Value as RuntimeArgumentValue,
+    };
+    use std::os::unix::fs::PermissionsExt;
+
+    use gamenode_core::drm_free::InstallationHost;
+
+    if std::env::var_os("GAMENODE_TEST_HELPER_BINARY").is_none() {
+        return;
+    }
+    let target = TargetGameContext {
+        game_id: "5".into(),
+        installation_id: "id-steam:1".into(),
+        profile_id: "account-a".into(),
+        revision: "1".into(),
+    };
+    let (fixture, host, _dialog) = Fixture::extension_game(
+        &[
+            cap::FILES_READ,
+            cap::GAME_CUSTOM_LAUNCH,
+            cap::GAME_RUNTIME_CREATE,
+            cap::GAME_SAVES_READ,
+            cap::GAME_SAVES_CREATE,
+        ],
+        target,
+        Some(answering(&[APPROVE_AND_REMEMBER])),
+    )
+    .await;
+    host.launch_target.store(1, Ordering::SeqCst);
+
+    let content_root = fixture.game_dir("runtime-shared", &[("card/keep.sav", b"card")]);
+    // A real executable inside the approved installation so the helper can start and fence it.
+    std::fs::copy("/bin/sh", content_root.join("emulator")).unwrap();
+    std::fs::set_permissions(
+        content_root.join("emulator"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    fixture.library_in(&[("steam:1", Some(5), "Selected Steam game", &content_root)]);
+    let revision_before = fixture.feed.revision_of("steam:1").unwrap();
+
+    fixture.user_approving(&content_root);
+    let root = fixture.root_handle("id-steam:1", &["read"]).await;
+    let runtime_executable = fixture.child(&root, "emulator").await;
+    fixture
+        .client()
+        .runtimes_register(RuntimeRegisterRequest {
+            mutation: Some(fixture.mutation("register-shared-runtime", 0)),
+            runtime: Some(RuntimeRecord {
+                id: "runtime-shared".into(),
+                name: "Shared card runtime".into(),
+                version: "1.0".into(),
+                executable_handle: runtime_executable,
+                supported_formats: vec!["snes-rom".into()],
+                platform: std::env::consts::OS.into(),
+                argument_template: vec![RuntimeArgumentProto {
+                    value: Some(RuntimeArgumentValue::Literal("-c".into())),
+                }],
+                ..Default::default()
+            }),
+        })
+        .await
+        .unwrap();
+
+    // The shared folder is a reviewed save folder inside the installation. Its approval already
+    // resolves the complete affected set, including this installation.
+    let card = content_root.join("card");
+    let card_handle = fixture.approve("id-steam:1", "save", &card).await;
+    let mut new = super::saves::profile(
+        "Shared card",
+        "runtime-shared",
+        vec![super::saves::directory(&card_handle, "", &["*.sav"])],
+    );
+    new.installation_id = "id-steam:1".into();
+    new.shared_resources = vec![gamenode_plugin_protocol::proto::SharedResourceDeclaration {
+        resource_id: "memory-card".into(),
+        approved_resource_handle: card_handle,
+        display_name: "Memory card".into(),
+        consent: 0,
+    }];
+    let created = fixture.make("shared-card-profile", new).await.unwrap();
+
+    // Before consent, the host refuses use with an explicit review requirement.
+    let reviews = crate::plugin_host::shared_resources::PluginSharedResources::new(
+        fixture.storage.clone(),
+        fixture.api.profiles(),
+        fixture.files.clone(),
+        fixture.feed.clone(),
+    );
+    let publisher = "ab".repeat(32);
+    assert!(
+        reviews
+            .prepared("fixture.plugin", &publisher, &created.profile_id)
+            .await
+            .is_err()
+    );
+    reviews
+        .accept(
+            "fixture.plugin",
+            &publisher,
+            &created.profile_id,
+            "memory-card",
+        )
+        .await
+        .unwrap();
+
+    let recipe = fixture
+        .client()
+        .games_propose_custom_launch(CustomLaunchRequest {
+            context: Some(fixture.context()),
+            game_id: "5".into(),
+            installation_id: "id-steam:1".into(),
+            expected_revision: revision_before,
+            idempotency_key: "shared-runtime-recipe".into(),
+            runtime_handle: "runtime-shared".into(),
+            argv: vec!["sleep 30 & wait".into()],
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+
+    // The user-approved plan is persisted for the host-side selection, as the desktop does.
+    let profiles = fixture.api.profiles();
+    let layout = PluginStateLayout::new(fixture.plugin_data.join("shared-resource-play-profile"));
+    profiles.set_state_layout(layout.clone());
+    let profile = profiles.current().unwrap();
+    let identity = crate::plugin_host::grants::PluginIdentity {
+        plugin_id: "fixture.plugin".into(),
+        publisher_fingerprint: publisher.clone(),
+        profile_id: profile.profile_id().to_owned(),
+    };
+    let scope = crate::plugin_host::grants::GrantScope::Declared {
+        value: "host-selected-game".into(),
+    };
+    let requests = [cap::GAME_CUSTOM_LAUNCH, cap::FILES_READ]
+        .into_iter()
+        .map(
+            |permission_id| crate::plugin_host::grants::PermissionRequest {
+                permission_id: permission_id.into(),
+                required: false,
+                allowed_scopes: [scope.clone()].into(),
+            },
+        )
+        .collect::<Vec<_>>();
+    let decisions = [cap::GAME_CUSTOM_LAUNCH, cap::FILES_READ]
+        .into_iter()
+        .map(
+            |permission_id| crate::plugin_host::grants::PermissionDecision {
+                permission_id: permission_id.into(),
+                scope: scope.clone(),
+                granted: true,
+            },
+        )
+        .collect::<Vec<_>>();
+    layout
+        .open_grants(&profile)
+        .unwrap()
+        .replace_grants(identity.clone(), &requests, &decisions)
+        .unwrap();
+    layout
+        .open_activation(&profile)
+        .unwrap()
+        .set_enabled("fixture.plugin", true)
+        .unwrap();
+    let resolver = profiles
+        .resolver("fixture.plugin", &publisher, None)
+        .unwrap();
+    let stored_recipe = host
+        .custom_launch_recipe(
+            resolver.library_recipe_owner_key(),
+            recipe.recipe_id.clone(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    host.launch_recipe_selections.lock().unwrap().insert(
+        "steam:1".into(),
+        gamenode_core::library::LaunchRecipeSelection {
+            entry_key: "steam:1".into(),
+            owner_key: resolver.library_recipe_owner_key(),
+            plugin_id: identity.plugin_id,
+            publisher_fingerprint: identity.publisher_fingerprint,
+            recipe_id: stored_recipe.recipe_id.clone(),
+            recipe_revision: stored_recipe.revision,
+            base_target_revision: stored_recipe.base_target_revision,
+            approved_plan_fingerprint: String::new(),
+        },
+    );
+
+    let api = fixture._server.resource_api();
+    assert!(api.launch_selected_recipe("steam:1".into()).await.unwrap());
+    let dispatch = host
+        .custom_launch_dispatches
+        .lock()
+        .unwrap()
+        .last()
+        .cloned()
+        .unwrap();
+    let crate::plugin_host::library::CustomLaunchDispatch::Runtime {
+        mut command,
+        lease_keys,
+        ..
+    } = dispatch
+    else {
+        panic!("the runtime recipe must dispatch a runtime launch");
+    };
+    assert_eq!(lease_keys.len(), 1, "one reviewed resource, one host lease");
+    assert_eq!(
+        lease_keys[0],
+        crate::plugin_host::resource_leases::ResourceLeaseKey::from_backing_identity(
+            std::fs::canonicalize(&card)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .as_bytes()
+        )
+        .unwrap()
+    );
+    assert!(command.executable.ends_with("emulator"));
+
+    // The fake host does not inspect the executable; the real adapter does, so bind the identity
+    // the helper will verify before it spawns anything. It also leaves the working directory to
+    // the caller, exactly as a reviewed host launch does.
+    command.file_identity = gamenode_platform::installations::LinuxInstallations
+        .inspect(&command.executable)
+        .unwrap()
+        .file_identity;
+    command.working_directory = "/".into();
+    let supervisor = LaunchSupervisor::start_monitor().unwrap();
+    let id = supervisor
+        .start_for_entry(
+            fixture.leases.as_ref(),
+            &lease_keys,
+            Some("steam:1".into()),
+            || spawn_native(&command),
+        )
+        .unwrap();
+    assert_eq!(supervisor.active_ids().unwrap(), vec![id]);
+    assert_eq!(
+        supervisor.ids_for_entry("steam:1").unwrap(),
+        vec![id],
+        "the launched tree belongs to the game entry"
+    );
+    assert!(
+        fixture.leases.lease_exclusive(&lease_keys).is_err(),
+        "an active supervised tree blocks exclusive backup or restore"
+    );
+
+    supervisor.stop(id).unwrap();
+    assert!(supervisor.active_ids().unwrap().is_empty());
+    assert!(
+        fixture.leases.lease_exclusive(&lease_keys).is_ok(),
+        "the confirmed exit releases the use lease"
+    );
+
+    // The launch never changed the game identity, its save bytes or the library revision.
+    assert_eq!(
+        fixture.feed.revision_of("steam:1").unwrap(),
+        revision_before
+    );
+    assert_eq!(std::fs::read(card.join("keep.sav")).unwrap(), b"card");
+}

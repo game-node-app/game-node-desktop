@@ -14,8 +14,8 @@ use super::grants::PluginIdentity;
 use super::shared_data::{DurableRecord, Provenance};
 use super::sharing_policy::SharingClass;
 use gamenode_platform::plugin_shared_data::{
-    OwnerScope, RecordProvenance, RecordWrite, SharedDataError, SharedDataStore, SharedRecord,
-    WriteOutcome,
+    OwnerScope, OwnerUsage, PruneOutcome, RecordProvenance, RecordWrite, SharedDataError,
+    SharedDataStore, SharedRecord, WriteOutcome,
 };
 use gamenode_plugin_protocol::proto::CommonDataCategory;
 use serde_json::Map;
@@ -152,6 +152,45 @@ impl DurableSharedPool {
         Ok(self.read(|store| store.pool_revision()).await?.unwrap_or(0))
     }
 
+    /// Logical usage and effective retention limits of one producer, read on the storage worker.
+    /// `None` means this host never persisted a record; a read never creates the pool.
+    pub(crate) async fn usage(
+        self: &Arc<Self>,
+        owner: OwnerScope,
+        now: i64,
+    ) -> Result<Option<OwnerUsage>, Status> {
+        self.read(move |store| store.usage(&owner, now)).await
+    }
+
+    /// Removes one producer's durable records and reports the bytes actually reclaimed. Another
+    /// owner's rows and the private plugin stores are untouched. `None` means this host never
+    /// persisted a record.
+    pub(crate) async fn delete_owner(
+        self: &Arc<Self>,
+        owner: OwnerScope,
+        now: i64,
+    ) -> Result<Option<PruneOutcome>, Status> {
+        let Some(dir) = self.dir.clone() else {
+            return Ok(None);
+        };
+        let mut store = self.store.clone().lock_owned().await;
+        tokio::task::spawn_blocking(move || {
+            if store.is_none() {
+                match SharedDataStore::open_existing(&dir).map_err(pool_status)? {
+                    Some(opened) => *store = Some(opened),
+                    None => return Ok(None),
+                }
+            }
+            let store = store.as_mut().expect("the pool is open");
+            store
+                .delete_owner(&owner, now)
+                .map(Some)
+                .map_err(pool_status)
+        })
+        .await
+        .map_err(|_| Status::unavailable("the durable shared-data worker is unavailable"))?
+    }
+
     /// Runs one blocking pool read on the storage worker. `None` means this host has no pool
     /// file; a read never creates one.
     async fn read<T, F>(self: &Arc<Self>, read: F) -> Result<Option<T>, Status>
@@ -264,5 +303,105 @@ fn pool_status(error: SharedDataError) -> Status {
         | SharedDataError::MigrationFailed { .. } => {
             Status::unavailable("the durable shared-data pool is unavailable")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn owner(byte: u8) -> OwnerScope {
+        OwnerScope::new([byte; 32], 1).unwrap()
+    }
+
+    fn write(plugin: &str, resource: &str, fields_json: &str) -> DurableWrite {
+        DurableWrite {
+            owner: owner(if plugin == "producer" { 1 } else { 2 }),
+            dataset_id: "org.example.catalog".to_owned(),
+            schema_id: "org.example.catalog.v1".to_owned(),
+            schema_version: 1,
+            fields_json: fields_json.to_owned(),
+            opaque_payload: Vec::new(),
+            resource_id: Some(resource.to_owned()),
+            observed_at: 100,
+            sequence: 1,
+            source_observation_id: "observation-1".to_owned(),
+            expires_at: None,
+            now: 100,
+            provenance: RecordProvenance {
+                source_plugin_id: plugin.to_owned(),
+                source_publisher_fingerprint: format!("publisher-{plugin}"),
+                source_profile_id: "profile-1".to_owned(),
+                declared_developer: "Example Developer".to_owned(),
+                origin: "registry".to_owned(),
+                package_version: "1.2.3".to_owned(),
+                package_digest: vec![7; 32],
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn usage_and_deletion_are_owner_scoped_and_never_touch_private_files() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let pool = Arc::new(DurableSharedPool::new(dir.path()));
+        let producer = owner(1);
+        let other = owner(2);
+        let producer_record = pool
+            .persist(write("producer", "disc-1", r#"{"title":"Dolphin"}"#))
+            .await
+            .unwrap();
+        let other_record = pool
+            .persist(write("other", "disc-2", r#"{"title":"Other"}"#))
+            .await
+            .unwrap();
+        assert_ne!(producer_record.record_id, other_record.record_id);
+
+        let usage = pool.usage(producer, 110).await.unwrap().unwrap();
+        assert_eq!(usage.records, 1);
+        let expected_bytes = usage.logical_bytes;
+        assert!(expected_bytes > 0);
+        let other_usage = pool.usage(other, 110).await.unwrap().unwrap();
+        assert_eq!(other_usage.records, 1);
+        let expected_other_bytes = other_usage.logical_bytes;
+
+        // Representative private stores beside the public pool must survive the user cleanup.
+        let storage_dir = dir
+            .path()
+            .join("plugin-data")
+            .join("publisher")
+            .join("plugin");
+        fs::create_dir_all(&storage_dir).unwrap();
+        let storage_file = storage_dir.join("storage.sqlite3");
+        let persistence_file = dir.path().join("plugin-persistence.sqlite3");
+        fs::write(&storage_file, b"private-storage").unwrap();
+        fs::write(&persistence_file, b"private-persistence").unwrap();
+
+        let deleted = pool.delete_owner(producer, 120).await.unwrap().unwrap();
+        assert_eq!(deleted.removed_records, 1);
+        assert_eq!(deleted.reclaimed_bytes, expected_bytes);
+        assert_eq!(pool.usage(producer, 120).await.unwrap().unwrap().records, 0);
+        let remaining = pool.usage(other, 120).await.unwrap().unwrap();
+        assert_eq!(remaining.records, 1);
+        assert_eq!(remaining.logical_bytes, expected_other_bytes);
+        assert_eq!(fs::read(&storage_file).unwrap(), b"private-storage");
+        assert_eq!(fs::read(&persistence_file).unwrap(), b"private-persistence");
+        assert_eq!(
+            pool.delete_owner(producer, 130)
+                .await
+                .unwrap()
+                .unwrap()
+                .removed_records,
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn reading_usage_of_an_absent_pool_creates_nothing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let pool = Arc::new(DurableSharedPool::new(dir.path()));
+        assert!(pool.usage(owner(1), 100).await.unwrap().is_none());
+        assert!(pool.delete_owner(owner(1), 100).await.unwrap().is_none());
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 }

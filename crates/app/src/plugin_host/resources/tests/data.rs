@@ -1104,6 +1104,61 @@ async fn session_only_publish_is_never_persisted() {
 }
 
 #[tokio::test]
+async fn session_only_publish_disappears_at_producer_disconnect_and_never_reaches_the_pool() {
+    // storage.persist is granted: only the requested durability keeps this record in memory.
+    let fixture = Fixture::new(&[cap::DATA_PUBLISH, cap::STORAGE_PERSIST]).await;
+    let published = fixture
+        .client()
+        .data_publish(data_publish(
+            &fixture,
+            "session-only-disconnect",
+            value(&[("fps", number(60.0))]),
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(published.durability, StorageDurability::SessionOnly as i32);
+
+    let listed = fixture
+        .client()
+        .data_list(list_request(&fixture.context(), "org.example.metrics.v1"))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(listed.records.len(), 1, "the session copy is readable");
+    assert_eq!(listed.records[0].record_id, published.record_id);
+    assert_eq!(
+        listed.records[0].durability,
+        StorageDurability::SessionOnly as i32
+    );
+    assert!(
+        SharedDataStore::open_existing(&fixture.data_dir)
+            .unwrap()
+            .is_none(),
+        "session-only data never reaches the durable pool"
+    );
+
+    let session_id = fixture.context().session_id;
+    fixture.api.disconnect("fixture").await;
+    // This broker is the one the fixture's ResourceApi registered with ProviderApi, so the
+    // disconnect already removed the producer's session rows and fenced their watches.
+    assert_eq!(fixture.data_broker.close_session(&session_id), 0);
+    assert!(
+        fixture
+            .data_broker
+            .sharing_catalog(unix_seconds())
+            .is_empty(),
+        "the session-only record disappears with its producer session"
+    );
+    assert!(
+        SharedDataStore::open_existing(&fixture.data_dir)
+            .unwrap()
+            .is_none(),
+        "producer disconnect never leaves a durable copy behind"
+    );
+}
+
+#[tokio::test]
 async fn durable_publish_survives_producer_disconnect() {
     let fixture = Fixture::new(&[cap::DATA_PUBLISH]).await;
     let producer =

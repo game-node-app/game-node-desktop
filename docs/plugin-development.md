@@ -317,6 +317,56 @@ A plugin that owns reference data consumers read later publishes it with `DataPu
   replace them automatically. Delete removes only your owner's rows. Never cache public reference
   data in private storage as a workaround: private bytes are not readable by consumers.
 
+### Publishing and reading shared data with the Rust SDK
+
+`HostClient::resources()` returns `Resources` bound to the session's `resource_context`. Its data
+helpers fill only the fields the host owns, so the caller writes the publication itself and leaves
+`mutation` empty; `data_publish` replaces it with the given key, `expected_revision` and the
+session context:
+
+```rust
+use gamenode_plugin_sdk::{idempotency_key, proto::*};
+
+let resources = host.resources().expect("an API 1.6 session");
+let reply = resources
+    .data_publish(
+        &idempotency_key(),
+        0, // publication is append-only, so expected_revision is always 0
+        DataPublishRequest {
+            dataset_id: "org.example.catalog.v1".into(),
+            schema_id: "org.example.catalog.v1".into(),
+            schema_version: 1,
+            value: Some(catalog_entry), // a prost_types::Struct with your schema's fields
+            durability: StorageDurability::Persistent as i32,
+            ttl_seconds: 0,
+            resource_id: "catalog-primary".into(),
+            observed_at: observed_at,
+            sequence: sequence,
+            source_observation_id: observation_id,
+            ..Default::default()
+        },
+    )
+    .await?;
+// The reply, not the request, says what was stored:
+assert_eq!(reply.durability, StorageDurability::Persistent as i32);
+
+// One page at a snapshot revision; carry `next_cursor` back to continue.
+let page = resources
+    .data_list("org.example.catalog.v1", "", None, 50)
+    .await?;
+let record = resources
+    .data_get("org.example.catalog.v1", &reply.record_id, None)
+    .await?;
+```
+
+`data_get`, `data_list` and `data_watch` take an optional `CommonDataSelector` for another
+plugin's reviewed projection; without it they read only what is visible to your plugin. Pass a
+list reply's `revision` to `data_watch`, and its `next_cursor` back unchanged to continue a list.
+The helpers add no authority and no retries: the host still enforces `data.publish`, plus
+`storage.persist` for `PERSISTENT`, and a missing grant is `PERMISSION_DENIED` rather than a
+session-only fallback. Use `SESSION_ONLY` only when you really want the record to end with the
+producing session.
+
 The focused fixture commands are in
 [Shared plugin data](plugin-shared-data.md#durable-publication-retention-and-cross-session-reads).
 The Rust SDK's `Durability` helper and the generated `StorageDurability` enum both map

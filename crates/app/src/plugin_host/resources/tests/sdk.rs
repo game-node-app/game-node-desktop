@@ -5,7 +5,8 @@
 //! the hand-written call sends.
 
 use super::*;
-use gamenode_plugin_sdk::{Outcome, Resources, Written, idempotency_key};
+use gamenode_platform::plugin_shared_data::SharedDataStore;
+use gamenode_plugin_sdk::{Outcome, Resources, Written, idempotency_key, prost_types};
 
 const OWN_AND_MORE: &[&str] = &[
     cap::LIBRARY_READ,
@@ -481,6 +482,414 @@ async fn without_a_grant_or_the_engine_the_sdk_gets_the_raw_refusals() {
         .await
         .unwrap_err();
     assert_eq!(down.code(), Code::Unavailable);
+}
+
+// ---- Shared data: SDK helpers against the same fixture host ----
+
+const DATA_GRANTS: &[&str] = &[cap::DATA_PUBLISH, cap::STORAGE_PERSIST];
+const DATASET: &str = "org.example.metrics.v1";
+
+fn data_struct(fps: f64) -> prost_types::Struct {
+    prost_types::Struct {
+        fields: [(
+            "fps".to_owned(),
+            prost_types::Value {
+                kind: Some(prost_types::value::Kind::NumberValue(fps)),
+            },
+        )]
+        .into(),
+    }
+}
+
+/// A publication the caller would write itself: every field but `mutation`.
+fn publication(key: &str, fps: f64, durability: StorageDurability) -> DataPublishRequest {
+    DataPublishRequest {
+        dataset_id: DATASET.into(),
+        schema_id: DATASET.into(),
+        schema_version: 1,
+        value: Some(data_struct(fps)),
+        durability: durability as i32,
+        ttl_seconds: 300,
+        resource_id: "runtime-primary".into(),
+        observed_at: 1_700_000_000,
+        sequence: 1,
+        source_observation_id: key.into(),
+        ..Default::default()
+    }
+}
+
+async fn next_data(stream: &mut tonic::Streaming<DataEvent>) -> DataEvent {
+    tokio::time::timeout(std::time::Duration::from_secs(5), stream.message())
+        .await
+        .expect("an event in time")
+        .expect("the stream is open")
+        .expect("an event, not the end of the stream")
+}
+
+#[tokio::test]
+async fn durable_publication_through_the_sdk_replays_identically_when_sent_raw() {
+    let fixture = Fixture::new(DATA_GRANTS).await;
+    let sdk = fixture.host.resources().unwrap();
+    let key = idempotency_key();
+
+    let published = sdk
+        .data_publish(
+            &key,
+            0,
+            publication(&key, 60.0, StorageDurability::Persistent),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        published.durability,
+        StorageDurability::Persistent as i32,
+        "the host stored the requested durable mode"
+    );
+    assert_eq!(published.outcome, MutationOutcome::Applied as i32);
+    assert!(!published.record_id.is_empty());
+    assert!(published.expires_at > 0);
+
+    // The same key replayed raw returns the original record and revision only if the SDK sent the
+    // identical request, including the session's mutation context.
+    let replay = fixture
+        .client()
+        .data_publish(DataPublishRequest {
+            mutation: Some(fixture.mutation(&key, 0)),
+            ..publication(&key, 60.0, StorageDurability::Persistent)
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(replay.record_id, published.record_id);
+    assert_eq!(replay.revision, published.revision);
+    assert_eq!(replay, published);
+}
+
+#[tokio::test]
+async fn data_reads_through_the_sdk_equal_the_raw_calls() {
+    let fixture = Fixture::new(DATA_GRANTS).await;
+    let sdk = fixture.host.resources().unwrap();
+    let key = idempotency_key();
+    let published = sdk
+        .data_publish(
+            &key,
+            0,
+            publication(&key, 60.0, StorageDurability::Persistent),
+        )
+        .await
+        .unwrap();
+
+    let record = sdk
+        .data_get(DATASET, &published.record_id, None)
+        .await
+        .unwrap();
+    let raw = fixture
+        .client()
+        .data_get(DataGetRequest {
+            context: Some(fixture.context()),
+            dataset_id: DATASET.into(),
+            record_id: published.record_id.clone(),
+            common_data_categories: None,
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .record
+        .unwrap();
+    assert_eq!(record, raw);
+    assert_eq!(record.revision, published.revision);
+    assert_eq!(record.durability, StorageDurability::Persistent as i32);
+
+    let page = sdk.data_list(DATASET, "", None, 10).await.unwrap();
+    let raw_page = fixture
+        .client()
+        .data_list(DataListRequest {
+            page: Some(PageRequest {
+                context: Some(fixture.context()),
+                cursor: String::new(),
+                page_size: 10,
+                common_data_categories: None,
+            }),
+            dataset_id: DATASET.into(),
+            filter: String::new(),
+            common_data_categories: None,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(page.records, raw_page.records);
+    assert_eq!(page.revision, raw_page.revision);
+    assert!(page.next_cursor.is_empty());
+    assert_eq!(page.records.len(), 1);
+    assert_eq!(page.records[0].record_id, published.record_id);
+
+    // An explicit selector is sent only on the request, exactly as a raw caller would.
+    let selector = CommonDataSelector::default();
+    let with_selector = sdk
+        .data_list(DATASET, "", Some(selector.clone()), 10)
+        .await
+        .unwrap();
+    let raw_selector = fixture
+        .client()
+        .data_list(DataListRequest {
+            page: Some(PageRequest {
+                context: Some(fixture.context()),
+                cursor: String::new(),
+                page_size: 10,
+                common_data_categories: None,
+            }),
+            dataset_id: DATASET.into(),
+            filter: String::new(),
+            common_data_categories: Some(selector),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(with_selector.records, raw_selector.records);
+    assert_eq!(with_selector.revision, raw_selector.revision);
+
+    let missing = sdk
+        .data_get(DATASET, "no-such-record", None)
+        .await
+        .unwrap_err();
+    let raw_missing = fixture
+        .client()
+        .data_get(DataGetRequest {
+            context: Some(fixture.context()),
+            dataset_id: DATASET.into(),
+            record_id: "no-such-record".into(),
+            common_data_categories: None,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(missing.code(), Code::NotFound);
+    assert_eq!(
+        (missing.code(), missing.message()),
+        (raw_missing.code(), raw_missing.message())
+    );
+}
+
+#[tokio::test]
+async fn data_watch_through_the_sdk_delivers_the_same_event_as_the_raw_stream() {
+    let fixture = Fixture::new(DATA_GRANTS).await;
+    let sdk = fixture.host.resources().unwrap();
+    let first_key = idempotency_key();
+    sdk.data_publish(
+        &first_key,
+        0,
+        publication(&first_key, 60.0, StorageDurability::Persistent),
+    )
+    .await
+    .unwrap();
+    let listed = sdk.data_list(DATASET, "", None, 10).await.unwrap();
+
+    let mut by_sdk = sdk
+        .data_watch(DATASET, listed.revision, None)
+        .await
+        .unwrap();
+    let mut by_hand = fixture
+        .client()
+        .data_watch(DataWatchRequest {
+            context: Some(fixture.context()),
+            dataset_id: DATASET.into(),
+            after_revision: listed.revision,
+            common_data_categories: None,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+
+    let second_key = idempotency_key();
+    let mut second_request = publication(&second_key, 75.0, StorageDurability::Persistent);
+    second_request.sequence = 2;
+    let second = sdk
+        .data_publish(&second_key, 0, second_request)
+        .await
+        .unwrap();
+
+    let (via_sdk, raw) = (next_data(&mut by_sdk).await, next_data(&mut by_hand).await);
+    assert_eq!(via_sdk, raw);
+    assert_eq!(via_sdk.event_type, "published");
+    assert_eq!(via_sdk.revision, second.revision);
+    assert_eq!(via_sdk.record.unwrap().record_id, second.record_id);
+}
+
+#[tokio::test]
+async fn durable_publish_without_storage_persist_fails_through_the_sdk_and_keeps_no_row() {
+    let fixture = Fixture::new(&[cap::DATA_PUBLISH]).await;
+    let sdk = fixture.host.resources().unwrap();
+    let key = idempotency_key();
+
+    let denied = sdk
+        .data_publish(
+            &key,
+            0,
+            publication(&key, 60.0, StorageDurability::Persistent),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(denied.code(), Code::PermissionDenied);
+    assert!(
+        denied.message().contains("storage.persist"),
+        "unexpected message: {}",
+        denied.message()
+    );
+
+    // The identical raw call is refused with the same status.
+    let raw = fixture
+        .client()
+        .data_publish(DataPublishRequest {
+            mutation: Some(fixture.mutation(&key, 0)),
+            ..publication(&key, 60.0, StorageDurability::Persistent)
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (denied.code(), denied.message()),
+        (raw.code(), raw.message())
+    );
+
+    // No session fallback and no durable row or pool file.
+    let listed = sdk.data_list(DATASET, "", None, 10).await.unwrap();
+    assert!(listed.records.is_empty());
+    let raw_listed = fixture
+        .client()
+        .data_list(DataListRequest {
+            page: Some(PageRequest {
+                context: Some(fixture.context()),
+                cursor: String::new(),
+                page_size: 10,
+                common_data_categories: None,
+            }),
+            dataset_id: DATASET.into(),
+            filter: String::new(),
+            common_data_categories: None,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(raw_listed.records.is_empty());
+    assert!(
+        SharedDataStore::open_existing(&fixture.data_dir)
+            .unwrap()
+            .is_none(),
+        "a refused durable publish must not create the pool"
+    );
+}
+
+#[tokio::test]
+async fn a_revision_conflict_is_surfaced_unchanged_through_the_sdk() {
+    let fixture = Fixture::new(&[cap::DATA_PUBLISH]).await;
+    let sdk = fixture.host.resources().unwrap();
+
+    let first_key = idempotency_key();
+    let first = sdk
+        .data_publish(
+            &first_key,
+            0,
+            publication(&first_key, 60.0, StorageDurability::SessionOnly),
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.outcome, MutationOutcome::Applied as i32);
+
+    // A different observation for the same resource and sequence is the host's own conflict
+    // answer, not an SDK error.
+    let conflicting_key = idempotency_key();
+    let mut conflicting = publication(&conflicting_key, 75.0, StorageDurability::SessionOnly);
+    conflicting.source_observation_id = "different-observation".into();
+    let conflict = sdk
+        .data_publish(&conflicting_key, 0, conflicting.clone())
+        .await
+        .unwrap();
+    assert_eq!(conflict.outcome, MutationOutcome::RevisionConflict as i32);
+    assert_eq!(conflict.revision, first.revision);
+
+    let raw_conflict = fixture
+        .client()
+        .data_publish(DataPublishRequest {
+            mutation: Some(fixture.mutation(&idempotency_key(), 0)),
+            ..conflicting
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        (raw_conflict.outcome, raw_conflict.revision),
+        (conflict.outcome, conflict.revision)
+    );
+
+    // A non-zero expected_revision stays the host's append-only refusal in both calls.
+    let refused_key = idempotency_key();
+    let refused = sdk
+        .data_publish(
+            &refused_key,
+            1,
+            publication(&refused_key, 60.0, StorageDurability::SessionOnly),
+        )
+        .await
+        .unwrap_err();
+    let raw_refused = fixture
+        .client()
+        .data_publish(DataPublishRequest {
+            mutation: Some(fixture.mutation(&refused_key, 1)),
+            ..publication(&refused_key, 60.0, StorageDurability::SessionOnly)
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code(), Code::InvalidArgument);
+    assert_eq!(
+        (refused.code(), refused.message()),
+        (raw_refused.code(), raw_refused.message())
+    );
+}
+
+#[tokio::test]
+async fn the_sdk_publishes_with_the_session_context_from_resources() {
+    let fixture = Fixture::new(DATA_GRANTS).await;
+    let sdk = fixture.host.resources().unwrap();
+    let key = idempotency_key();
+    let published = sdk
+        .data_publish(
+            &key,
+            0,
+            publication(&key, 60.0, StorageDurability::Persistent),
+        )
+        .await
+        .unwrap();
+
+    // The idempotency key is scoped to the authenticated session: the same key from another
+    // session applies separately instead of replaying, which shows which context the SDK used.
+    let other = super::data::consumer_session_with_grants(&fixture, DATA_GRANTS).await;
+    let other_context = other.host.resource_context().unwrap().clone();
+    let separate = other
+        .host
+        .resource_client()
+        .data_publish(DataPublishRequest {
+            mutation: Some(MutationContext {
+                context: Some(other_context),
+                idempotency_key: key.clone(),
+                ..Default::default()
+            }),
+            ..publication(&key, 60.0, StorageDurability::Persistent)
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(separate.outcome, MutationOutcome::Applied as i32);
+    assert_ne!(separate.record_id, published.record_id);
+
+    // Under the session's own resource context, the raw replay is the SDK's original answer.
+    let replay = fixture
+        .client()
+        .data_publish(DataPublishRequest {
+            mutation: Some(fixture.mutation(&key, 0)),
+            ..publication(&key, 60.0, StorageDurability::Persistent)
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(replay, published);
 }
 
 // ---- The published recipes, run against the same fixture host ----

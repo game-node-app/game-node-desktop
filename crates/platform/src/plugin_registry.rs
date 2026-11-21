@@ -481,6 +481,47 @@ impl PluginPackageRegistry {
         Ok(versions)
     }
 
+    /// Removes one published immutable version and, when that version is the active one, the
+    /// active pointer first so nothing keeps pointing at deleted files. Callers must stop its
+    /// supervised processes and revoke sessions before invoking this method. This is the rollback
+    /// primitive for a staged install that failed before it completed; every other version
+    /// belonging to the plugin is left untouched.
+    pub fn remove_version(&self, plugin_id: &str, version: &str) -> io::Result<()> {
+        validate_identity(plugin_id)?;
+        validate_identity(version)?;
+        let pointer = self.root.join("active").join(encode_key(plugin_id));
+        match fs::symlink_metadata(&pointer) {
+            Ok(meta) if meta.is_file() && !meta.file_type().is_symlink() => {
+                if fs::read_to_string(&pointer)? == version {
+                    self.remove_active_pointer(plugin_id)?;
+                }
+            }
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "plugin active pointer is not a regular file",
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        let versions_dir = self
+            .root
+            .join("plugins")
+            .join(encode_key(plugin_id))
+            .join("versions");
+        remove_tree_no_links(&versions_dir.join(encode_key(version)))?;
+        match fs::symlink_metadata(&versions_dir) {
+            Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => sync_dir(&versions_dir),
+            Ok(_) => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "plugin versions path is not a real directory",
+            )),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Removes the active pointer and every installed package version for one plugin. Callers
     /// must stop its supervised processes and revoke sessions before invoking this method.
     pub fn remove_plugin(&self, plugin_id: &str) -> io::Result<()> {
@@ -1154,6 +1195,55 @@ mod tests {
         assert!(registry.versions("org.example.remove").unwrap().is_empty());
         assert!(!removed.package_path.exists());
         assert_eq!(registry.active("org.example.keep").unwrap(), Some(retained));
+    }
+
+    #[test]
+    fn remove_version_drops_only_one_version_and_clears_a_matching_pointer() {
+        let temp = TempDir::new().unwrap();
+        let registry = PluginPackageRegistry::at(temp.path().join("registry")).unwrap();
+        let one = source(&temp, "one", b"one");
+        let two = source(&temp, "two", b"two");
+        let older = registry
+            .install_verified("org.example.rollback", "1.0.0", &one, true)
+            .unwrap();
+        let newer = registry
+            .install_verified("org.example.rollback", "2.0.0", &two, true)
+            .unwrap();
+        let other = registry
+            .install_verified("org.example.keep", "1.0.0", &one, true)
+            .unwrap();
+
+        // A version that is not active is removed without touching the pointer.
+        registry
+            .remove_version("org.example.rollback", "1.0.0")
+            .unwrap();
+        assert!(!older.package_path.exists());
+        assert_eq!(
+            registry.active("org.example.rollback").unwrap(),
+            Some(newer.clone())
+        );
+
+        // Removing the active version clears its pointer and keeps the other plugin intact.
+        registry
+            .remove_version("org.example.rollback", "2.0.0")
+            .unwrap();
+        assert!(!newer.package_path.exists());
+        assert!(registry.active("org.example.rollback").unwrap().is_none());
+        assert!(
+            registry
+                .versions("org.example.rollback")
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            registry.active("org.example.keep").unwrap(),
+            Some(other.clone())
+        );
+
+        // A repeated rollback is a no-op rather than an error.
+        registry
+            .remove_version("org.example.rollback", "2.0.0")
+            .unwrap();
     }
 
     #[test]

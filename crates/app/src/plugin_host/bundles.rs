@@ -1,15 +1,17 @@
-//! Per-component inspection of a verified bundle without executing package code.
+//! Per-component inspection and staged installation of a verified bundle.
 //!
 //! A bundle is only a distribution envelope. Every component is staged through the ordinary
 //! bounded package extractor and evaluated with the same signature, manifest and compatibility
 //! code a standalone import uses, so a component is never trusted merely because the bundle
-//! verified.
+//! verified. Installation re-stages the reviewed archive, verifies it again and compares every
+//! component hash with the review before the registry changes, so the reviewed bytes are the
+//! installed bytes.
 //!
 //! The two failure modes stay separate:
 //!
 //! - A structural failure (bad envelope, corrupt component archive, signature failure, invalid
 //!   manifest) rejects the whole bundle: [`inspect_bundle_candidate`] returns an error and no
-//!   component report.
+//!   component report, and [`install_bundle_candidate`] leaves no component and no mapping.
 //! - A component that is only incompatible with the current platform or API is reported as
 //!   [`BundleComponentAvailability::Unavailable`] while compatible siblings remain available.
 //!   Installed, that component is disabled; the bundle is not rejected.
@@ -20,16 +22,18 @@ use std::{
 };
 
 use gamenode_platform::{
-    plugin_bundles::{BundleError, stage_bundle_archive},
-    plugin_environment::EmulationPolicy,
+    plugin_bundle_db::{BundleComponentRecord, BundleRecord, SqlitePluginBundleStore},
+    plugin_bundles::{BundleError, VerifiedBundle, VerifiedBundleComponent, stage_bundle_archive},
+    plugin_environment::{EmulationPolicy, PluginEnvironment},
     plugin_packages::stage_package_archive,
+    plugin_registry::{InstalledPluginVersion, PluginPackageRegistry},
 };
 use thiserror::Error;
 
 use super::{
     managed_packages::{
         PackageCandidateReport, PackageCompatibilityReview, PackageLifecycleError,
-        inspect_staged_package,
+        inspect_staged_package, inspect_staged_package_blocking, lock_publisher_identity,
     },
     package::PluginKind,
     publisher_trust::key_fingerprint,
@@ -77,6 +81,8 @@ pub struct BundleComponentInspection {
     pub version: String,
     /// Package-relative path inside the bundle, e.g. `components/provider.gnplugin`.
     pub archive_path: String,
+    /// Lowercase SHA-256 of the exact component archive bytes declared by the bundle.
+    pub sha256: String,
     pub availability: BundleComponentAvailability,
     pub compatibility: PackageCompatibilityReview,
 }
@@ -112,7 +118,7 @@ pub async fn inspect_bundle_candidate(
     emulation_policy: EmulationPolicy,
 ) -> Result<BundleCandidateReport, BundleInspectionError> {
     let archive_path = archive_path.as_ref().to_owned();
-    let work = tokio::task::spawn_blocking(InspectionWorkDir::create)
+    let work = tokio::task::spawn_blocking(BundleWorkDir::create)
         .await
         .map_err(|_| BundleInspectionError::WorkerFailed)?
         .map_err(|error| BundleInspectionError::Staging(error.to_string()))?;
@@ -165,12 +171,351 @@ pub async fn inspect_bundle_candidate(
             kind: component.kind.clone(),
             version: report.manifest.version.clone(),
             archive_path: component.path.clone(),
+            sha256: component.sha256.clone(),
             availability: availability(&report),
             compatibility: report.compatibility_review(),
         });
     }
 
     Ok(BundleCandidateReport { bundle, components })
+}
+
+/// One component whose package this bundle install wrote into the registry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InstalledBundleComponent {
+    pub plugin_id: String,
+    pub kind: String,
+    pub version: String,
+    pub package_path: PathBuf,
+    /// False when the component was installed for its identity but cannot run on this host.
+    pub active: bool,
+}
+
+/// The recorded bundle mapping plus what the install did to each component package.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InstalledBundle {
+    pub bundle: BundleRecord,
+    pub components: Vec<InstalledBundleComponent>,
+}
+
+#[derive(Debug, Error)]
+pub enum BundleInstallError {
+    #[error("bundle verification failed: {0}")]
+    Bundle(#[from] BundleError),
+    #[error("bundle install staging failed: {0}")]
+    Staging(String),
+    /// The archive on disk is not the bundle the user reviewed; nothing was installed.
+    #[error("the bundle archive no longer matches the reviewed bundle: {0}")]
+    ChangedSinceReview(String),
+    /// Structural: the component could not be installed, so every component of this bundle was
+    /// rolled back.
+    #[error("bundle component {plugin_id} failed to install: {error}")]
+    Component { plugin_id: String, error: String },
+    #[error("the bundle mapping could not be recorded: {0}")]
+    Mapping(String),
+    /// A failure was reported and undoing the partial install did not fully succeed.
+    #[error("{cause}; rollback was incomplete: {problems}")]
+    Rollback { cause: String, problems: String },
+    #[error("execution environment detection failed: {0}")]
+    Environment(String),
+    #[error("bundle install worker failed")]
+    WorkerFailed,
+}
+
+/// Install every component of a reviewed bundle, then record the bundle mapping.
+///
+/// `reviewed` must be the report [`inspect_bundle_candidate`] returned for `archive_path`. The
+/// archive is verified and every component hash is compared with that report before the registry
+/// changes, so the reviewed bytes are the installed bytes; a changed archive fails without
+/// touching the registry. Each component is staged through the bounded package extractor and
+/// installed through the ordinary signed registry path. No package code is executed.
+///
+/// `installed_at` is the caller's clock (Unix seconds); the store never substitutes its own.
+/// Every step runs on one blocking worker, and a failure removes the component versions this call
+/// created (restoring any previous active version) and leaves no bundle mapping.
+pub async fn install_bundle_candidate(
+    archive_path: impl AsRef<Path>,
+    reviewed: BundleCandidateReport,
+    registry: PluginPackageRegistry,
+    bundles: SqlitePluginBundleStore,
+    emulation_policy: EmulationPolicy,
+    installed_at: i64,
+) -> Result<InstalledBundle, BundleInstallError> {
+    let archive_path = archive_path.as_ref().to_owned();
+    let environment = gamenode_platform::plugin_environment::detect()
+        .await
+        .map_err(BundleInstallError::Environment)?;
+    tokio::task::spawn_blocking(move || {
+        install_bundle_blocking(
+            archive_path,
+            &reviewed,
+            &registry,
+            &bundles,
+            emulation_policy,
+            &environment,
+            installed_at,
+        )
+    })
+    .await
+    .map_err(|_| BundleInstallError::WorkerFailed)?
+}
+
+/// A component this call published to the registry, with the state needed to undo it.
+struct PendingComponent {
+    installed: InstalledPluginVersion,
+    kind: String,
+    /// Whether the component can be activated on this host.
+    available: bool,
+    /// The version that was active before this install, if any.
+    previous_active: Option<String>,
+}
+
+fn install_bundle_blocking(
+    archive_path: PathBuf,
+    reviewed: &BundleCandidateReport,
+    registry: &PluginPackageRegistry,
+    bundles: &SqlitePluginBundleStore,
+    emulation_policy: EmulationPolicy,
+    environment: &PluginEnvironment,
+    installed_at: i64,
+) -> Result<InstalledBundle, BundleInstallError> {
+    let work =
+        BundleWorkDir::create().map_err(|error| BundleInstallError::Staging(error.to_string()))?;
+    let verified = stage_bundle_archive(&archive_path, &work.path)?;
+    confirm_reviewed_bundle(reviewed, &verified)?;
+    let publisher_key = verified.manifest.publisher_key()?;
+    let record = BundleRecord {
+        bundle_id: verified.manifest.id.clone(),
+        name: verified.manifest.name.clone(),
+        version: verified.manifest.version.clone(),
+        publisher_fingerprint: key_fingerprint(&publisher_key),
+        manifest_sha256: verified.manifest_sha256.clone(),
+        installed_at,
+        components: verified
+            .components
+            .iter()
+            .map(|component| BundleComponentRecord {
+                plugin_id: component.plugin_id.clone(),
+                kind: component.kind.clone(),
+                component_sha256: component.sha256.clone(),
+                package_version: component.version.clone(),
+            })
+            .collect(),
+    };
+
+    // Registry writes for one install are serialized against other imports and updates.
+    let _publisher = lock_publisher_identity();
+    let mut pending = Vec::with_capacity(verified.components.len());
+    let mut failure = None;
+    for (index, component) in verified.components.iter().enumerate() {
+        match install_component(
+            &work.path,
+            index,
+            component,
+            &publisher_key,
+            registry,
+            emulation_policy,
+            environment,
+        ) {
+            Ok(installed) => pending.push(installed),
+            Err(error) => {
+                failure = Some(error);
+                break;
+            }
+        }
+    }
+    // Activate only after every package is published, so a failure leaves the previous pointer
+    // untouched and the whole install can be undone without a half-active bundle.
+    if failure.is_none() {
+        for component in &pending {
+            if !component.available {
+                continue;
+            }
+            if let Err(error) =
+                registry.set_active(&component.installed.plugin_id, &component.installed.version)
+            {
+                failure = Some(BundleInstallError::Component {
+                    plugin_id: component.installed.plugin_id.clone(),
+                    error: error.to_string(),
+                });
+                break;
+            }
+        }
+    }
+    if failure.is_none()
+        && let Err(error) = bundles.record_bundle(&record)
+    {
+        failure = Some(BundleInstallError::Mapping(error.to_string()));
+    }
+    if let Some(error) = failure {
+        let problems = rollback_install(registry, &pending);
+        if !problems.is_empty() {
+            return Err(BundleInstallError::Rollback {
+                cause: error.to_string(),
+                problems: problems.join("; "),
+            });
+        }
+        return Err(error);
+    }
+    Ok(InstalledBundle {
+        bundle: record,
+        components: pending
+            .into_iter()
+            .map(|component| InstalledBundleComponent {
+                plugin_id: component.installed.plugin_id,
+                kind: component.kind,
+                version: component.installed.version,
+                package_path: component.installed.package_path,
+                active: component.available,
+            })
+            .collect(),
+    })
+}
+
+/// Stage, validate and publish one component without activating it. Activation is a separate
+/// step so a component install can never leave a newly active package behind on failure.
+fn install_component(
+    work_root: &Path,
+    index: usize,
+    component: &VerifiedBundleComponent,
+    publisher_key: &[u8; 32],
+    registry: &PluginPackageRegistry,
+    emulation_policy: EmulationPolicy,
+    environment: &PluginEnvironment,
+) -> Result<PendingComponent, BundleInstallError> {
+    let plugin_id = component.plugin_id.clone();
+    let failed = |error: String| BundleInstallError::Component {
+        plugin_id: plugin_id.clone(),
+        error,
+    };
+    let archive = work_root.join(&component.path);
+    let package_root = work_root.join("packages").join(index.to_string());
+    stage_package_archive(&archive, &package_root, publisher_key)
+        .map_err(|error| failed(error_chain(&error)))?;
+    let report = inspect_staged_package_blocking(
+        &package_root,
+        *publisher_key,
+        emulation_policy,
+        environment,
+    )
+    .map_err(|error| failed(error.to_string()))?;
+    if report.manifest.id != component.plugin_id
+        || report.manifest.version != component.version
+        || !kind_matches(report.manifest.kind, &component.kind)
+    {
+        return Err(failed(
+            "the staged component identity does not match the bundle manifest".into(),
+        ));
+    }
+    let previous_active = registry
+        .active(&plugin_id)
+        .map_err(|error| failed(error.to_string()))?
+        .map(|installed| installed.version);
+    let already_published = registry
+        .versions(&plugin_id)
+        .map_err(|error| failed(error.to_string()))?
+        .iter()
+        .any(|installed| installed.version == component.version);
+    let entrypoint = report
+        .selected_target()
+        .ok()
+        .map(|target| target.target.entrypoint.clone());
+    let installed = match &entrypoint {
+        Some(entrypoint) => registry.install_signed_with_entrypoint(
+            &plugin_id,
+            &component.version,
+            &package_root,
+            publisher_key,
+            entrypoint,
+            false,
+        ),
+        None => registry.install_signed(
+            &plugin_id,
+            &component.version,
+            &package_root,
+            publisher_key,
+            false,
+        ),
+    }
+    .map_err(|error| {
+        // A failure after the immutable version was published (for example during entrypoint
+        // preparation) must not leak a package this call created, and a cleanup failure must be
+        // reported rather than left for a later install to discover.
+        let mut text = error.to_string();
+        if !already_published
+            && let Err(cleanup) = registry.remove_version(&plugin_id, &component.version)
+        {
+            text.push_str(&format!(
+                "; cleanup of the published version failed: {cleanup}"
+            ));
+        }
+        failed(text)
+    })?;
+    Ok(PendingComponent {
+        installed,
+        kind: component.kind.clone(),
+        available: entrypoint.is_some(),
+        previous_active,
+    })
+}
+
+/// Undo the components this call published, newest first: removing a version also clears the
+/// active pointer that names it, and any version that was active before is restored afterwards.
+fn rollback_install(registry: &PluginPackageRegistry, pending: &[PendingComponent]) -> Vec<String> {
+    let mut problems = Vec::new();
+    for component in pending.iter().rev() {
+        let plugin_id = &component.installed.plugin_id;
+        let version = &component.installed.version;
+        if let Err(error) = registry.remove_version(plugin_id, version) {
+            problems.push(format!("remove {plugin_id} {version}: {error}"));
+            continue;
+        }
+        if let Some(previous) = &component.previous_active
+            && let Err(error) = registry.set_active(plugin_id, previous)
+        {
+            problems.push(format!("reactivate {plugin_id} {previous}: {error}"));
+        }
+    }
+    problems
+}
+
+/// The archive must still be the exact bundle the user reviewed. Byte-level comparison is the
+/// per-component SHA-256 the review carried; the bundle fields are compared as well so a
+/// re-signed manifest cannot slip a different identity past the review.
+fn confirm_reviewed_bundle(
+    reviewed: &BundleCandidateReport,
+    verified: &VerifiedBundle,
+) -> Result<(), BundleInstallError> {
+    let publisher_key = verified.manifest.publisher_key()?;
+    let identity_matches = reviewed.bundle.id == verified.manifest.id
+        && reviewed.bundle.name == verified.manifest.name
+        && reviewed.bundle.version == verified.manifest.version
+        && reviewed.bundle.publisher_key_id == verified.manifest.publisher.key_id
+        && reviewed.bundle.publisher_fingerprint == key_fingerprint(&publisher_key);
+    if !identity_matches {
+        return Err(BundleInstallError::ChangedSinceReview(
+            "the bundle identity differs from the review".into(),
+        ));
+    }
+    if reviewed.components.len() != verified.components.len() {
+        return Err(BundleInstallError::ChangedSinceReview(
+            "the bundle component count differs from the review".into(),
+        ));
+    }
+    for (reviewed_component, component) in reviewed.components.iter().zip(&verified.components) {
+        if reviewed_component.archive_path != component.path
+            || reviewed_component.plugin_id != component.plugin_id
+            || reviewed_component.kind != component.kind
+            || reviewed_component.version != component.version
+            || reviewed_component.sha256 != component.sha256
+        {
+            return Err(BundleInstallError::ChangedSinceReview(format!(
+                "component {} differs from the review",
+                component.plugin_id
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Flatten an error and its causes so a staging failure says why it failed.
@@ -207,13 +552,13 @@ fn availability(report: &PackageCandidateReport) -> BundleComponentAvailability 
     }
 }
 
-/// Private staging root for one inspection. It is created with owner-only permissions and
-/// removed on drop, including when a component fails validation.
-struct InspectionWorkDir {
+/// Private staging root for one bundle inspection or install. It is created with owner-only
+/// permissions and removed on drop, including when a component fails validation or installation.
+struct BundleWorkDir {
     path: PathBuf,
 }
 
-impl InspectionWorkDir {
+impl BundleWorkDir {
     fn create() -> io::Result<Self> {
         for _ in 0..8 {
             let mut nonce = [0u8; 16];
@@ -238,12 +583,12 @@ impl InspectionWorkDir {
         }
         Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
-            "could not reserve bundle inspection staging",
+            "could not reserve bundle staging",
         ))
     }
 }
 
-impl Drop for InspectionWorkDir {
+impl Drop for BundleWorkDir {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.path);
     }
@@ -265,6 +610,7 @@ mod tests {
     use super::*;
     use crate::plugin_host::{compatibility::CompatibilityState, publisher_trust};
     use base64::Engine as _;
+    use gamenode_platform::{db::SqliteSettingsStore, plugin_registry::PluginPackageRegistry};
     use std::{
         io::{Read, Write},
         path::PathBuf,
@@ -605,6 +951,276 @@ mod tests {
                     if plugin_id == "org.example.dolphin.launch"
             ),
             "{result:?}"
+        );
+    }
+
+    /// A fresh database and registry for one bundle install test.
+    fn install_target(fixture: &Fixture) -> (PluginPackageRegistry, SqliteSettingsStore) {
+        let registry = PluginPackageRegistry::at(fixture.dir.path().join("registry")).unwrap();
+        let settings =
+            SqliteSettingsStore::open(&fixture.dir.path().join("state.sqlite3")).unwrap();
+        (registry, settings)
+    }
+
+    #[tokio::test]
+    async fn a_valid_bundle_installs_every_component_and_records_the_mapping() {
+        let fixture = Fixture::new();
+        let provider = fixture.component(
+            "provider",
+            "provider",
+            "org.example.dolphin",
+            "0.1.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+        let launch = fixture.component(
+            "launch",
+            "extension",
+            "org.example.dolphin.launch",
+            "0.2.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+        let bundle = fixture.bundle(&[&provider, &launch]);
+        let report = inspect_bundle_candidate(&bundle, EmulationPolicy::RequireNative)
+            .await
+            .unwrap();
+        let (registry, settings) = install_target(&fixture);
+
+        let installed_at = 1_700_000_000;
+        let installed = install_bundle_candidate(
+            &bundle,
+            report.clone(),
+            registry.clone(),
+            settings.bundle_store(),
+            EmulationPolicy::RequireNative,
+            installed_at,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(installed.bundle.bundle_id, "org.example.dolphin");
+        assert_eq!(installed.bundle.name, "Dolphin GameCube and Wii");
+        assert_eq!(installed.bundle.version, "0.1.0");
+        assert_eq!(
+            installed.bundle.publisher_fingerprint,
+            report.bundle.publisher_fingerprint
+        );
+        assert_eq!(installed.bundle.installed_at, installed_at);
+        assert_eq!(installed.bundle.manifest_sha256.len(), 64);
+        assert_eq!(installed.bundle.components.len(), 2);
+        assert_eq!(installed.components.len(), 2);
+        assert!(
+            installed
+                .components
+                .iter()
+                .all(|component| component.active),
+            "{:?}",
+            installed.components
+        );
+
+        let key = fixture.base64_key();
+        let stored = settings
+            .bundle_store()
+            .bundle("org.example.dolphin")
+            .unwrap()
+            .expect("the mapping is stored");
+        assert_eq!(stored, installed.bundle);
+        assert_eq!(
+            settings
+                .bundle_store()
+                .bundle_for_plugin("org.example.dolphin.launch")
+                .unwrap(),
+            Some(installed.bundle.clone())
+        );
+        for inspected in &report.components {
+            let recorded = installed
+                .bundle
+                .components
+                .iter()
+                .find(|component| component.plugin_id == inspected.plugin_id)
+                .expect("every inspected component is recorded");
+            assert_eq!(recorded.component_sha256, inspected.sha256);
+            assert_eq!(recorded.package_version, inspected.version);
+        }
+
+        let provider_active = registry.active("org.example.dolphin").unwrap().unwrap();
+        assert_eq!(provider_active.version, "0.1.0");
+        assert_eq!(
+            registry
+                .verify_active_package("org.example.dolphin", &key)
+                .unwrap(),
+            Some(provider_active)
+        );
+        let launch_active = registry
+            .active("org.example.dolphin.launch")
+            .unwrap()
+            .unwrap();
+        assert_eq!(launch_active.version, "0.2.0");
+        assert_eq!(
+            registry
+                .verify_active_package("org.example.dolphin.launch", &key)
+                .unwrap(),
+            Some(launch_active)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_component_failure_rolls_back_and_keeps_the_previous_installation() {
+        let fixture = Fixture::new();
+        let provider = fixture.component(
+            "provider",
+            "provider",
+            "org.example.dolphin",
+            "0.1.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+        let launch = fixture.component(
+            "launch",
+            "extension",
+            "org.example.dolphin.launch",
+            "0.2.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+        let bundle = fixture.bundle(&[&provider, &launch]);
+        let report = inspect_bundle_candidate(&bundle, EmulationPolicy::RequireNative)
+            .await
+            .unwrap();
+        let key = fixture.base64_key();
+        let (registry, settings) = install_target(&fixture);
+
+        // Install the extension standalone first. The bundle declares the identical version, so
+        // the registry's immutable version paths reject the second component after the first one
+        // has already been published.
+        let staged = fixture.dir.path().join("standalone-launch");
+        stage_package_archive(&launch, &staged, &key).unwrap();
+        let previous = registry
+            .install_signed("org.example.dolphin.launch", "0.2.0", &staged, &key, true)
+            .unwrap();
+        assert_eq!(
+            registry.active("org.example.dolphin.launch").unwrap(),
+            Some(previous.clone())
+        );
+
+        let result = install_bundle_candidate(
+            &bundle,
+            report,
+            registry.clone(),
+            settings.bundle_store(),
+            EmulationPolicy::RequireNative,
+            1_700_000_000,
+        )
+        .await;
+        assert!(
+            matches!(
+                result,
+                Err(BundleInstallError::Component { ref plugin_id, .. })
+                    if plugin_id == "org.example.dolphin.launch"
+            ),
+            "{result:?}"
+        );
+
+        // The provider was published before the failure and is rolled back completely.
+        assert!(registry.versions("org.example.dolphin").unwrap().is_empty());
+        assert!(registry.active("org.example.dolphin").unwrap().is_none());
+        // The previous installation is untouched, active and still verifies.
+        assert_eq!(
+            registry.active("org.example.dolphin.launch").unwrap(),
+            Some(previous.clone())
+        );
+        assert_eq!(
+            registry
+                .verify_active_package("org.example.dolphin.launch", &key)
+                .unwrap(),
+            Some(previous)
+        );
+        // No bundle mapping survives the failed install.
+        let store = settings.bundle_store();
+        assert_eq!(store.bundle("org.example.dolphin").unwrap(), None);
+        assert_eq!(
+            store.bundle_for_plugin("org.example.dolphin").unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unavailable_component_is_installed_but_left_inactive() {
+        let fixture = Fixture::new();
+        let provider = fixture.component(
+            "provider",
+            "provider",
+            "org.example.dolphin",
+            "0.1.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+        let launch = fixture.component(
+            "launch",
+            "extension",
+            "org.example.dolphin.launch",
+            "0.2.0",
+            "windows",
+            "msvc",
+            "1.6.0",
+        );
+        let bundle = fixture.bundle(&[&provider, &launch]);
+        let report = inspect_bundle_candidate(&bundle, EmulationPolicy::RequireNative)
+            .await
+            .unwrap();
+        let (registry, settings) = install_target(&fixture);
+
+        let installed = install_bundle_candidate(
+            &bundle,
+            report,
+            registry.clone(),
+            settings.bundle_store(),
+            EmulationPolicy::RequireNative,
+            1_700_000_000,
+        )
+        .await
+        .unwrap();
+
+        assert!(installed.components[0].active);
+        assert!(!installed.components[1].active);
+        assert_eq!(
+            registry
+                .active("org.example.dolphin")
+                .unwrap()
+                .unwrap()
+                .version,
+            "0.1.0"
+        );
+        assert!(
+            registry
+                .active("org.example.dolphin.launch")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            registry
+                .versions("org.example.dolphin.launch")
+                .unwrap()
+                .iter()
+                .map(|installed| installed.version.as_str())
+                .collect::<Vec<_>>(),
+            vec!["0.2.0"]
+        );
+        assert_eq!(
+            settings
+                .bundle_store()
+                .bundle("org.example.dolphin")
+                .unwrap()
+                .expect("the mapping is stored")
+                .components
+                .len(),
+            2
         );
     }
 }

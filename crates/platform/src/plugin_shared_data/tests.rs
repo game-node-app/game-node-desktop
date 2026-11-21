@@ -1023,6 +1023,123 @@ fn usage_reports_count_bytes_and_effective_limits() {
 }
 
 #[test]
+fn deleting_one_owners_records_reclaims_its_bytes_and_keeps_another_owner() {
+    let dir = TempDir::new().unwrap();
+    let mut store = SharedDataStore::open(dir.path()).unwrap();
+    let deleted_owner = owner(14, 1);
+    let other_owner = owner(15, 1);
+    let producer_provenance = provenance("producer");
+    let other_provenance = provenance("other");
+
+    let first = publish(
+        &mut store,
+        deleted_owner,
+        record(
+            "org.example.catalog",
+            Some("resource-a"),
+            r#"{"v":1}"#,
+            &producer_provenance,
+            100,
+        ),
+    );
+    let second = publish(
+        &mut store,
+        deleted_owner,
+        record(
+            "org.example.catalog",
+            None,
+            r#"{"v":2}"#,
+            &producer_provenance,
+            101,
+        ),
+    );
+    let other = publish(
+        &mut store,
+        other_owner,
+        record(
+            "org.example.catalog",
+            Some("resource-b"),
+            r#"{"other":true}"#,
+            &other_provenance,
+            102,
+        ),
+    );
+    store
+        .set_retention(
+            &deleted_owner,
+            RetentionPolicy {
+                max_age_seconds: Some(60),
+                max_bytes: Some(4096),
+            },
+            103,
+        )
+        .unwrap();
+    store
+        .set_user_protected(&deleted_owner, &first.record.record_id, true, 103)
+        .unwrap();
+
+    let before = store.usage(&deleted_owner, 104).unwrap();
+    let other_before = store.usage(&other_owner, 104).unwrap();
+    assert_eq!(before.records, 2);
+    assert_eq!(
+        before.logical_bytes,
+        first.record.size_bytes + second.record.size_bytes
+    );
+
+    let deleted = store.delete_owner(&deleted_owner, 104).unwrap();
+    assert_eq!(deleted.removed_records, 2);
+    assert_eq!(deleted.reclaimed_bytes, before.logical_bytes);
+    assert_eq!(deleted.pool_revision, store.pool_revision().unwrap());
+
+    let after = store.usage(&deleted_owner, 104).unwrap();
+    assert_eq!(after.records, 0);
+    assert_eq!(after.logical_bytes, 0);
+    assert_eq!(after.max_bytes, 4096, "the retention policy stays");
+    assert_eq!(after.max_age_seconds, Some(60));
+    assert_eq!(
+        store
+            .get(&other_owner, &other.record.record_id, 104)
+            .unwrap(),
+        Some(other.record.clone())
+    );
+    let other_after = store.usage(&other_owner, 104).unwrap();
+    assert_eq!(other_after.records, other_before.records);
+    assert_eq!(other_after.logical_bytes, other_before.logical_bytes);
+    assert_eq!(other_after.max_bytes, MAX_OWNER_LOGICAL_BYTES);
+
+    let again = store.delete_owner(&deleted_owner, 105).unwrap();
+    assert_eq!(again.removed_records, 0);
+    assert_eq!(again.reclaimed_bytes, 0);
+    assert_eq!(again.pool_revision, deleted.pool_revision);
+}
+
+#[test]
+fn deleting_with_a_stale_profile_epoch_changes_nothing() {
+    let dir = TempDir::new().unwrap();
+    let mut store = SharedDataStore::open(dir.path()).unwrap();
+    let stale = owner(16, 1);
+    let current = owner(16, 2);
+    let provenance = provenance("producer");
+    publish(
+        &mut store,
+        current,
+        record(
+            "org.example.catalog",
+            Some("resource"),
+            r#"{"v":1}"#,
+            &provenance,
+            100,
+        ),
+    );
+
+    assert!(matches!(
+        store.delete_owner(&stale, 101),
+        Err(SharedDataError::StaleProfileEpoch)
+    ));
+    assert_eq!(store.usage(&current, 101).unwrap().records, 1);
+}
+
+#[test]
 fn invalid_records_are_rejected_before_anything_is_stored() {
     let dir = TempDir::new().unwrap();
     let mut store = SharedDataStore::open(dir.path()).unwrap();

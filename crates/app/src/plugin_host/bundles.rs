@@ -15,6 +15,12 @@
 //! - A component that is only incompatible with the current platform or API is reported as
 //!   [`BundleComponentAvailability::Unavailable`] while compatible siblings remain available.
 //!   Installed, that component is disabled; the bundle is not rejected.
+//!
+//! Duplicate identities are publisher-checked. An active component already installed at the
+//! reviewed version under the bundle publisher's key is adopted into the mapping without being
+//! reinstalled, and rollback never removes it. An active package that does not verify under that
+//! key, or a plugin already owned by another bundle, aborts the whole bundle as a conflict before
+//! any registry write; an existing installation is never silently overwritten.
 
 use std::{
     fs, io,
@@ -26,7 +32,7 @@ use gamenode_platform::{
     plugin_bundles::{BundleError, VerifiedBundle, VerifiedBundleComponent, stage_bundle_archive},
     plugin_environment::{EmulationPolicy, PluginEnvironment},
     plugin_packages::stage_package_archive,
-    plugin_registry::{InstalledPluginVersion, PluginPackageRegistry},
+    plugin_registry::{InstallSignedError, InstalledPluginVersion, PluginPackageRegistry},
 };
 use thiserror::Error;
 
@@ -207,6 +213,22 @@ pub enum BundleInstallError {
     /// The archive on disk is not the bundle the user reviewed; nothing was installed.
     #[error("the bundle archive no longer matches the reviewed bundle: {0}")]
     ChangedSinceReview(String),
+    /// A component's active installation exists but does not verify under the bundle publisher's
+    /// key. Adoption is publisher-checked, so the bundle is rejected before any registry write
+    /// instead of replacing the existing package.
+    #[error(
+        "plugin {plugin_id} is already installed by a different or unverifiable publisher; remove it before importing this bundle"
+    )]
+    PublisherConflict { plugin_id: String },
+    /// A component is already owned by a bundle mapping, so claiming it would silently move it
+    /// between bundles.
+    #[error(
+        "plugin {plugin_id} already belongs to bundle {bundle_id}; remove that bundle before importing this one"
+    )]
+    BundleConflict {
+        plugin_id: String,
+        bundle_id: String,
+    },
     /// Structural: the component could not be installed, so every component of this bundle was
     /// rolled back.
     #[error("bundle component {plugin_id} failed to install: {error}")]
@@ -231,8 +253,13 @@ pub enum BundleInstallError {
 /// installed through the ordinary signed registry path. No package code is executed.
 ///
 /// `installed_at` is the caller's clock (Unix seconds); the store never substitutes its own.
+/// Before anything is written, each component's active installation is verified with the bundle
+/// publisher's key: a component already active under that key and version is adopted into the
+/// mapping without being reinstalled, while an active package under another publisher — or a
+/// plugin already mapped to a bundle — is an explicit conflict and leaves the registry untouched.
 /// Every step runs on one blocking worker, and a failure removes the component versions this call
-/// created (restoring any previous active version) and leaves no bundle mapping.
+/// created (restoring any previous active version) without touching adopted components, and leaves
+/// no bundle mapping.
 pub async fn install_bundle_candidate(
     archive_path: impl AsRef<Path>,
     reviewed: BundleCandidateReport,
@@ -260,7 +287,8 @@ pub async fn install_bundle_candidate(
     .map_err(|_| BundleInstallError::WorkerFailed)?
 }
 
-/// A component this call published to the registry, with the state needed to undo it.
+/// A component this call published to the registry, or an existing installation it adopted, with
+/// the state needed to undo only what this call created.
 struct PendingComponent {
     installed: InstalledPluginVersion,
     kind: String,
@@ -268,6 +296,9 @@ struct PendingComponent {
     available: bool,
     /// The version that was active before this install, if any.
     previous_active: Option<String>,
+    /// True when the bundle claimed an existing active installation under the same publisher key.
+    /// An adopted component was not published by this call and must never be removed by rollback.
+    adopted: bool,
 }
 
 fn install_bundle_blocking(
@@ -284,6 +315,12 @@ fn install_bundle_blocking(
     let verified = stage_bundle_archive(&archive_path, &work.path)?;
     confirm_reviewed_bundle(reviewed, &verified)?;
     let publisher_key = verified.manifest.publisher_key()?;
+
+    // Registry writes for one install are serialized against other imports and updates.
+    let _publisher = lock_publisher_identity();
+    // Publisher and ownership checks happen before any component is published, so a conflict
+    // cannot leave an earlier component of the same bundle behind.
+    let adoptable = preflight_components(&verified, &publisher_key, registry, bundles)?;
     let record = BundleRecord {
         bundle_id: verified.manifest.id.clone(),
         name: verified.manifest.name.clone(),
@@ -294,20 +331,34 @@ fn install_bundle_blocking(
         components: verified
             .components
             .iter()
-            .map(|component| BundleComponentRecord {
+            .zip(&adoptable)
+            .map(|(component, adopted)| BundleComponentRecord {
                 plugin_id: component.plugin_id.clone(),
                 kind: component.kind.clone(),
                 component_sha256: component.sha256.clone(),
-                package_version: component.version.clone(),
+                package_version: adopted.as_ref().map_or_else(
+                    || component.version.clone(),
+                    |installed| installed.version.clone(),
+                ),
             })
             .collect(),
     };
 
-    // Registry writes for one install are serialized against other imports and updates.
-    let _publisher = lock_publisher_identity();
     let mut pending = Vec::with_capacity(verified.components.len());
     let mut failure = None;
     for (index, component) in verified.components.iter().enumerate() {
+        // An adopted component is already installed and active; claiming it must not reinstall,
+        // replace or (on a later failure) remove it.
+        if let Some(installed) = adoptable[index].clone() {
+            pending.push(PendingComponent {
+                installed,
+                kind: component.kind.clone(),
+                available: true,
+                previous_active: None,
+                adopted: true,
+            });
+            continue;
+        }
         match install_component(
             &work.path,
             index,
@@ -328,7 +379,7 @@ fn install_bundle_blocking(
     // untouched and the whole install can be undone without a half-active bundle.
     if failure.is_none() {
         for component in &pending {
-            if !component.available {
+            if component.adopted || !component.available {
                 continue;
             }
             if let Err(error) =
@@ -345,7 +396,7 @@ fn install_bundle_blocking(
     if failure.is_none()
         && let Err(error) = bundles.record_bundle(&record)
     {
-        failure = Some(BundleInstallError::Mapping(error.to_string()));
+        failure = Some(mapping_failure(bundles, &verified, error.to_string()));
     }
     if let Some(error) = failure {
         let problems = rollback_install(registry, &pending);
@@ -370,6 +421,73 @@ fn install_bundle_blocking(
             })
             .collect(),
     })
+}
+
+/// Decide, before any registry write, which components this install may adopt and which are
+/// conflicts.
+///
+/// A component whose active version is already installed and verifies with the bundle publisher's
+/// key is adoptable only for the exact reviewed version; the bundle claims it into its mapping
+/// instead of publishing an identical immutable version again. Any other active package that does
+/// not verify with that key is a publisher conflict, and a plugin already owned by a bundle
+/// mapping is an ownership conflict. Both abort the whole bundle with a typed error, leaving the
+/// existing installation untouched.
+fn preflight_components(
+    verified: &VerifiedBundle,
+    publisher_key: &[u8; 32],
+    registry: &PluginPackageRegistry,
+    bundles: &SqlitePluginBundleStore,
+) -> Result<Vec<Option<InstalledPluginVersion>>, BundleInstallError> {
+    let mut adoptable = Vec::with_capacity(verified.components.len());
+    for component in &verified.components {
+        let plugin_id = component.plugin_id.clone();
+        if let Some(mapped) = bundles
+            .bundle_for_plugin(&plugin_id)
+            .map_err(|error| BundleInstallError::Mapping(error.to_string()))?
+        {
+            return Err(BundleInstallError::BundleConflict {
+                plugin_id,
+                bundle_id: mapped.bundle_id,
+            });
+        }
+        match registry.verify_active_package(&plugin_id, publisher_key) {
+            Ok(Some(installed)) if installed.version == component.version => {
+                adoptable.push(Some(installed));
+            }
+            Ok(_) => adoptable.push(None),
+            // Integrity covers the publisher signature check: an active package that does not
+            // verify under this bundle's key is never replaced silently.
+            Err(InstallSignedError::Integrity(_)) => {
+                return Err(BundleInstallError::PublisherConflict { plugin_id });
+            }
+            Err(error) => {
+                return Err(BundleInstallError::Component {
+                    plugin_id,
+                    error: error.to_string(),
+                });
+            }
+        }
+    }
+    Ok(adoptable)
+}
+
+/// A rejected mapping write is normally a duplicate bundle id; when a component was mapped to
+/// another bundle after the preflight, report that ownership conflict instead of a generic store
+/// failure.
+fn mapping_failure(
+    bundles: &SqlitePluginBundleStore,
+    verified: &VerifiedBundle,
+    error: String,
+) -> BundleInstallError {
+    for component in &verified.components {
+        if let Ok(Some(mapped)) = bundles.bundle_for_plugin(&component.plugin_id) {
+            return BundleInstallError::BundleConflict {
+                plugin_id: component.plugin_id.clone(),
+                bundle_id: mapped.bundle_id,
+            };
+        }
+    }
+    BundleInstallError::Mapping(error)
 }
 
 /// Stage, validate and publish one component without activating it. Activation is a separate
@@ -456,14 +574,20 @@ fn install_component(
         kind: component.kind.clone(),
         available: entrypoint.is_some(),
         previous_active,
+        adopted: false,
     })
 }
 
 /// Undo the components this call published, newest first: removing a version also clears the
 /// active pointer that names it, and any version that was active before is restored afterwards.
+/// Adopted components were never published by this call, so they and their active pointer survive
+/// any failure.
 fn rollback_install(registry: &PluginPackageRegistry, pending: &[PendingComponent]) -> Vec<String> {
     let mut problems = Vec::new();
     for component in pending.iter().rev() {
+        if component.adopted {
+            continue;
+        }
         let plugin_id = &component.installed.plugin_id;
         let version = &component.installed.version;
         if let Err(error) = registry.remove_version(plugin_id, version) {
@@ -1079,11 +1203,23 @@ mod tests {
             "gnu",
             "1.6.0",
         );
+        // The bundle's extension version is installed standalone but inactive, while an older
+        // standalone version is active. Adoption only claims the active version, so publishing the
+        // bundle's version collides with the installed immutable version path.
         let launch = fixture.component(
             "launch",
             "extension",
             "org.example.dolphin.launch",
             "0.2.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+        let launch_previous = fixture.component(
+            "launch-previous",
+            "extension",
+            "org.example.dolphin.launch",
+            "0.1.9",
             "linux",
             "gnu",
             "1.6.0",
@@ -1095,13 +1231,21 @@ mod tests {
         let key = fixture.base64_key();
         let (registry, settings) = install_target(&fixture);
 
-        // Install the extension standalone first. The bundle declares the identical version, so
-        // the registry's immutable version paths reject the second component after the first one
-        // has already been published.
+        let staged_previous = fixture.dir.path().join("standalone-launch-previous");
+        stage_package_archive(&launch_previous, &staged_previous, &key).unwrap();
+        let previous = registry
+            .install_signed(
+                "org.example.dolphin.launch",
+                "0.1.9",
+                &staged_previous,
+                &key,
+                true,
+            )
+            .unwrap();
         let staged = fixture.dir.path().join("standalone-launch");
         stage_package_archive(&launch, &staged, &key).unwrap();
-        let previous = registry
-            .install_signed("org.example.dolphin.launch", "0.2.0", &staged, &key, true)
+        registry
+            .install_signed("org.example.dolphin.launch", "0.2.0", &staged, &key, false)
             .unwrap();
         assert_eq!(
             registry.active("org.example.dolphin.launch").unwrap(),
@@ -1129,7 +1273,16 @@ mod tests {
         // The provider was published before the failure and is rolled back completely.
         assert!(registry.versions("org.example.dolphin").unwrap().is_empty());
         assert!(registry.active("org.example.dolphin").unwrap().is_none());
-        // The previous installation is untouched, active and still verifies.
+        // Both standalone versions are untouched and the previous one is still active.
+        assert_eq!(
+            registry
+                .versions("org.example.dolphin.launch")
+                .unwrap()
+                .iter()
+                .map(|installed| installed.version.as_str())
+                .collect::<Vec<_>>(),
+            vec!["0.1.9", "0.2.0"]
+        );
         assert_eq!(
             registry.active("org.example.dolphin.launch").unwrap(),
             Some(previous.clone())
@@ -1146,6 +1299,363 @@ mod tests {
         assert_eq!(
             store.bundle_for_plugin("org.example.dolphin").unwrap(),
             None
+        );
+    }
+
+    #[tokio::test]
+    async fn a_standalone_component_with_the_same_publisher_is_adopted() {
+        let fixture = Fixture::new();
+        let provider = fixture.component(
+            "provider",
+            "provider",
+            "org.example.dolphin",
+            "0.1.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+        let launch = fixture.component(
+            "launch",
+            "extension",
+            "org.example.dolphin.launch",
+            "0.2.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+        let bundle = fixture.bundle(&[&provider, &launch]);
+        let report = inspect_bundle_candidate(&bundle, EmulationPolicy::RequireNative)
+            .await
+            .unwrap();
+        let key = fixture.base64_key();
+        let (registry, settings) = install_target(&fixture);
+
+        // The extension was imported standalone first and is the active installation.
+        let staged = fixture.dir.path().join("standalone-launch");
+        stage_package_archive(&launch, &staged, &key).unwrap();
+        let previous = registry
+            .install_signed("org.example.dolphin.launch", "0.2.0", &staged, &key, true)
+            .unwrap();
+        assert_eq!(
+            registry.active("org.example.dolphin.launch").unwrap(),
+            Some(previous.clone())
+        );
+
+        let installed = install_bundle_candidate(
+            &bundle,
+            report.clone(),
+            registry.clone(),
+            settings.bundle_store(),
+            EmulationPolicy::RequireNative,
+            1_700_000_000,
+        )
+        .await
+        .unwrap();
+        assert_eq!(installed.components.len(), 2);
+
+        // Adoption must not publish a second version or move the active pointer.
+        assert_eq!(
+            registry.versions("org.example.dolphin.launch").unwrap(),
+            vec![previous.clone()]
+        );
+        assert_eq!(
+            registry.active("org.example.dolphin.launch").unwrap(),
+            Some(previous.clone())
+        );
+        assert_eq!(
+            registry
+                .verify_active_package("org.example.dolphin.launch", &key)
+                .unwrap(),
+            Some(previous)
+        );
+
+        // The provider was newly installed and activated.
+        assert_eq!(
+            registry
+                .active("org.example.dolphin")
+                .unwrap()
+                .unwrap()
+                .version,
+            "0.1.0"
+        );
+
+        // The mapping records the existing version and the bundle's declared component hash.
+        let recorded = settings
+            .bundle_store()
+            .bundle("org.example.dolphin")
+            .unwrap()
+            .expect("the mapping is stored");
+        let launch_record = recorded
+            .components
+            .iter()
+            .find(|component| component.plugin_id == "org.example.dolphin.launch")
+            .expect("the adopted component is mapped");
+        assert_eq!(launch_record.package_version, "0.2.0");
+        assert_eq!(
+            launch_record.component_sha256,
+            component(&report, "org.example.dolphin.launch").sha256
+        );
+    }
+
+    #[tokio::test]
+    async fn a_component_from_another_publisher_aborts_before_any_write() {
+        // The standalone installation is signed by the first publisher.
+        let installed_fixture = Fixture::new();
+        let standalone_launch = installed_fixture.component(
+            "launch",
+            "extension",
+            "org.example.dolphin.launch",
+            "0.2.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+
+        // The bundle and both of its components are signed by a different publisher.
+        let bundle_fixture = Fixture::new();
+        let provider = bundle_fixture.component(
+            "provider",
+            "provider",
+            "org.example.dolphin",
+            "0.1.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+        let launch = bundle_fixture.component(
+            "launch",
+            "extension",
+            "org.example.dolphin.launch",
+            "0.2.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+        let bundle = bundle_fixture.bundle(&[&provider, &launch]);
+        let report = inspect_bundle_candidate(&bundle, EmulationPolicy::RequireNative)
+            .await
+            .unwrap();
+        let key = installed_fixture.base64_key();
+        let (registry, settings) = install_target(&installed_fixture);
+
+        let staged = installed_fixture.dir.path().join("standalone-launch");
+        stage_package_archive(&standalone_launch, &staged, &key).unwrap();
+        let previous = registry
+            .install_signed("org.example.dolphin.launch", "0.2.0", &staged, &key, true)
+            .unwrap();
+
+        let result = install_bundle_candidate(
+            &bundle,
+            report,
+            registry.clone(),
+            settings.bundle_store(),
+            EmulationPolicy::RequireNative,
+            1_700_000_000,
+        )
+        .await;
+        assert!(
+            matches!(
+                result,
+                Err(BundleInstallError::PublisherConflict { ref plugin_id })
+                    if plugin_id == "org.example.dolphin.launch"
+            ),
+            "{result:?}"
+        );
+
+        // The conflict is detected before the provider is published, and the existing
+        // installation is untouched.
+        assert!(registry.versions("org.example.dolphin").unwrap().is_empty());
+        assert!(registry.active("org.example.dolphin").unwrap().is_none());
+        assert_eq!(
+            registry.versions("org.example.dolphin.launch").unwrap(),
+            vec![previous.clone()]
+        );
+        assert_eq!(
+            registry.active("org.example.dolphin.launch").unwrap(),
+            Some(previous.clone())
+        );
+        assert_eq!(
+            registry
+                .verify_active_package("org.example.dolphin.launch", &key)
+                .unwrap(),
+            Some(previous)
+        );
+        let store = settings.bundle_store();
+        assert_eq!(store.bundle("org.example.dolphin").unwrap(), None);
+        assert_eq!(
+            store
+                .bundle_for_plugin("org.example.dolphin.launch")
+                .unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failure_after_adoption_rolls_back_only_the_created_component() {
+        let fixture = Fixture::new();
+        let provider = fixture.component(
+            "provider",
+            "provider",
+            "org.example.dolphin",
+            "0.1.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+        let launch = fixture.component(
+            "launch",
+            "extension",
+            "org.example.dolphin.launch",
+            "0.2.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+        let bundle = fixture.bundle(&[&provider, &launch]);
+        let report = inspect_bundle_candidate(&bundle, EmulationPolicy::RequireNative)
+            .await
+            .unwrap();
+        let key = fixture.base64_key();
+        let (registry, settings) = install_target(&fixture);
+
+        let staged = fixture.dir.path().join("standalone-launch");
+        stage_package_archive(&launch, &staged, &key).unwrap();
+        let previous = registry
+            .install_signed("org.example.dolphin.launch", "0.2.0", &staged, &key, true)
+            .unwrap();
+
+        // Occupy the bundle id with an unrelated mapping so the mapping write fails only after the
+        // provider was installed and the extension was adopted.
+        let store = settings.bundle_store();
+        let existing = BundleRecord {
+            bundle_id: "org.example.dolphin".to_owned(),
+            name: "Existing mapping".to_owned(),
+            version: "9.9.9".to_owned(),
+            publisher_fingerprint: "sha256:existing".to_owned(),
+            manifest_sha256: "b".repeat(64),
+            installed_at: 1,
+            components: vec![BundleComponentRecord {
+                plugin_id: "org.example.other".to_owned(),
+                kind: "provider".to_owned(),
+                component_sha256: "c".repeat(64),
+                package_version: "1.0.0".to_owned(),
+            }],
+        };
+        store.record_bundle(&existing).unwrap();
+
+        let result = install_bundle_candidate(
+            &bundle,
+            report,
+            registry.clone(),
+            settings.bundle_store(),
+            EmulationPolicy::RequireNative,
+            1_700_000_000,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(BundleInstallError::Mapping(_))),
+            "{result:?}"
+        );
+
+        // The provider this call created is rolled back.
+        assert!(registry.versions("org.example.dolphin").unwrap().is_empty());
+        assert!(registry.active("org.example.dolphin").unwrap().is_none());
+        // The adopted extension keeps its version, active pointer and verifiable payload.
+        assert_eq!(
+            registry.versions("org.example.dolphin.launch").unwrap(),
+            vec![previous.clone()]
+        );
+        assert_eq!(
+            registry.active("org.example.dolphin.launch").unwrap(),
+            Some(previous.clone())
+        );
+        assert_eq!(
+            registry
+                .verify_active_package("org.example.dolphin.launch", &key)
+                .unwrap(),
+            Some(previous)
+        );
+        // The pre-existing mapping is unchanged and the bundle did not claim any component.
+        assert_eq!(store.bundle("org.example.dolphin").unwrap(), Some(existing));
+        assert_eq!(
+            store
+                .bundle_for_plugin("org.example.dolphin.launch")
+                .unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn a_component_already_mapped_to_another_bundle_is_an_explicit_conflict() {
+        let fixture = Fixture::new();
+        let provider = fixture.component(
+            "provider",
+            "provider",
+            "org.example.dolphin",
+            "0.1.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+        let launch = fixture.component(
+            "launch",
+            "extension",
+            "org.example.dolphin.launch",
+            "0.2.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+        let bundle = fixture.bundle(&[&provider, &launch]);
+        let report = inspect_bundle_candidate(&bundle, EmulationPolicy::RequireNative)
+            .await
+            .unwrap();
+        let (registry, settings) = install_target(&fixture);
+        let store = settings.bundle_store();
+        let other = BundleRecord {
+            bundle_id: "org.example.other-bundle".to_owned(),
+            name: "Other bundle".to_owned(),
+            version: "1.0.0".to_owned(),
+            publisher_fingerprint: "sha256:other".to_owned(),
+            manifest_sha256: "d".repeat(64),
+            installed_at: 2,
+            components: vec![BundleComponentRecord {
+                plugin_id: "org.example.dolphin.launch".to_owned(),
+                kind: "extension".to_owned(),
+                component_sha256: "e".repeat(64),
+                package_version: "0.1.0".to_owned(),
+            }],
+        };
+        store.record_bundle(&other).unwrap();
+
+        let result = install_bundle_candidate(
+            &bundle,
+            report,
+            registry.clone(),
+            settings.bundle_store(),
+            EmulationPolicy::RequireNative,
+            1_700_000_000,
+        )
+        .await;
+        assert!(
+            matches!(
+                result,
+                Err(BundleInstallError::BundleConflict {
+                    ref plugin_id,
+                    ref bundle_id,
+                }) if plugin_id == "org.example.dolphin.launch"
+                    && bundle_id == "org.example.other-bundle"
+            ),
+            "{result:?}"
+        );
+
+        // Nothing is installed and the other mapping still owns its component.
+        assert!(registry.versions("org.example.dolphin").unwrap().is_empty());
+        assert!(registry.active("org.example.dolphin").unwrap().is_none());
+        assert_eq!(store.bundle("org.example.dolphin").unwrap(), None);
+        assert_eq!(
+            store.bundle("org.example.other-bundle").unwrap(),
+            Some(other)
         );
     }
 

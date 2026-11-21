@@ -1009,11 +1009,15 @@ mod tests {
                 let name = entry.name().to_owned();
                 let mut data = Vec::new();
                 entry.read_to_end(&mut data).unwrap();
-                writer.start_file(name, SimpleFileOptions::default()).unwrap();
+                writer
+                    .start_file(name, SimpleFileOptions::default())
+                    .unwrap();
                 writer.write_all(&data).unwrap();
             }
         }
-        writer.start_file("components/Extra.gnplugin", SimpleFileOptions::default()).unwrap();
+        writer
+            .start_file("components/Extra.gnplugin", SimpleFileOptions::default())
+            .unwrap();
         writer.write_all(b"extra case-colliding entry").unwrap();
         let bytes = writer.finish().unwrap().into_inner();
         assert_eq!(
@@ -1031,20 +1035,21 @@ mod tests {
                 let name = entry.name().to_owned();
                 let mut data = Vec::new();
                 entry.read_to_end(&mut data).unwrap();
-                writer.start_file(name, SimpleFileOptions::default()).unwrap();
+                writer
+                    .start_file(name, SimpleFileOptions::default())
+                    .unwrap();
                 writer.write_all(&data).unwrap();
             }
         }
         for index in 0..=(MAX_BUNDLE_COMPONENTS + 1) {
             let name = format!("components/pad-{index}.gnplugin");
-            writer.start_file(name, SimpleFileOptions::default()).unwrap();
+            writer
+                .start_file(name, SimpleFileOptions::default())
+                .unwrap();
             writer.write_all(b"padding entry").unwrap();
         }
         let bytes = writer.finish().unwrap().into_inner();
-        assert_eq!(
-            verify_bundle_bytes(&bytes),
-            Err(BundleError::ArchiveLimit)
-        );
+        assert_eq!(verify_bundle_bytes(&bytes), Err(BundleError::ArchiveLimit));
     }
 
     #[test]

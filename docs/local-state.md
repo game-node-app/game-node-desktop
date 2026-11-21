@@ -67,12 +67,18 @@ preference leaves the latest geometry in place.
 | `plugin_runtime_resources` | Plugin-owned approved runtime resources, keyed by owner and runtime id with a revision and typed JSON. Executable locations remain host-resolved and are never exposed as plugin supplied paths. |
 | `plugin_runtime_content_bindings` | Plugin-owned bindings between a GameNode game and a runtime content item for an installation, with revision checks so content moves or runtime changes invalidate the previous launch plan. |
 | `plugin_runtime_catalog_state` | Per-owner revision for the runtime resource catalog, advanced when its resources or bindings change so an existing launch approval cannot survive catalog edits. |
+| `plugin_bundles` | One installed bundle: its id, name, version, publisher fingerprint, SHA-256 of the signed `bundle.json` and the Unix time the mapping was recorded. A bundle only groups packages; it owns no payload, grant or session. |
+| `plugin_bundle_components` | The components of an installed bundle: plugin id, kind (`provider` or `extension`), component archive SHA-256 and package version. A plugin id belongs to at most one bundle; a standalone package has no row. Removing a row removes the grouping only, never the component package. |
 | `provider_scans` | Per provider, the time of the last successful scan and the last error, plus the last owned (`last_catalog_at`, `catalog_error`) and family (`last_family_at`, `family_error`) catalog sync. A failed scan or catalog phase records the error and keeps the previous facts. |
 | `store_accounts` | The last connected account of a store provider: `provider`, `account_id`, optional `account_name` and optional `last_verified_at`. It holds no cookie, token or password. |
 | `auto_matches` | The GameNode game ids the server reported for a store id, per `(category, uid)` and PC. An empty list means the server knows no game. |
 | `chosen_matches` | The explicit match per `(account_id, entry_key)`, made by the user or, through the plugin API, by the entry's own provider plugin (`source` is `user` or `plugin`; a plugin never replaces a `user` choice). A null `game_id` means "no GameNode game". Each account keeps its own choices. |
 | `favorites` | Each account's favorite GameNode games per `(account_id, game_id)`, with `is_favorite`, `pending` (a local change GameNode has not confirmed) and `updated_at`. A false, confirmed row is deleted. Favorites survive sign-out and stay hidden from other accounts. |
 | `games` | GameNode game name, release year, cover URL and cover state (`cover_file`, `cover_failed_at`) for display without the network. |
+
+Migration `0025_plugin_bundles.sql` adds the two bundle tables as additive STRICT
+tables. An upgraded database keeps every existing row, and packages installed on
+their own stay ungrouped because no bundle row exists for them.
 
 Saving a provider's scan is one transaction: it either fully applies or leaves
 the previous entries as they were. Migration `0006_store_accounts_and_catalog.sql`

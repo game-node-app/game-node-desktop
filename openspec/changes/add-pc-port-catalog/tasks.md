@@ -60,7 +60,7 @@
 
 ## 10. Integration
 
-- [ ] 10.1 Windows acceptance with `scripts/install-windows-wsl.sh`: install a release-only port, a guided port whose upstream recipe lists a file hash, and Lantern Engine from a folder and from packages. Confirm the library entries launch, playtime follows the gameplay executable, cancelling and quitting mid-install leave nothing behind, and removing an entry keeps its files. Record the results in `docs/windows-verification.md`.
+- [ ] 10.1 **Windows handoff — Lamarck (GameNode Core).** Windows acceptance with `scripts/install-windows-wsl.sh`: install a release-only port, a guided port whose upstream recipe lists a file hash, and Lantern Engine from a folder and from packages. Confirm the library entries launch, playtime follows the gameplay executable, cancelling and quitting mid-install leave nothing behind, and removing an entry keeps its files. Record the results in `docs/windows-verification.md`.
 - [ ] 10.2 Run `cargo test --locked -p gamenode-app`, `cargo xwin test --workspace --target x86_64-pc-windows-msvc --locked`, `pnpm --dir ui test --run` and `openspec validate add-pc-port-catalog --strict`, and confirm that all of them pass.
 
 ## Workflow follow-up

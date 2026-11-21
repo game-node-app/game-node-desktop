@@ -52,7 +52,8 @@
 ## 7. Integration and acceptance
 
 - [ ] 7.1 Package the Dolphin plugin (`richmont/gamenode-plugin-dolphin-emu`) provider and launch packages into one bundle; verify import, one review, one inventory row and one uninstall on Linux with the production validators.
-- [ ] 7.2 Record the Linux acceptance evidence: provider lists games, extension status is correct, uninstall removes both and data retention follows the chosen option. Cross-build the Windows bundle and record native Windows acceptance separately.
+- [ ] 7.2 Record the Linux acceptance evidence: provider lists games, extension status is correct, uninstall removes both and data retention follows the chosen option. Cross-build the Windows bundle and record the cross-build result.
+- [ ] 7.2-win **Windows handoff — Lamarck (GameNode Core).** After the 7.1/7.2 Linux evidence and the Windows bundle cross-build, import the same `.gnbundle` on native Windows, confirm provider and extension status, uninstall both components with the chosen retention, and record the outcome in `docs/windows-verification.md`.
 - [ ] 7.3 Update `docs/plugin-development.md`, the plugin example READMEs and the Dolphin repository `README`/`TASKS` with the bundle flow. Verify the documented commands and links resolve and OpenSpec strict validation passes.
 
 ## Workflow follow-up

@@ -324,7 +324,7 @@ Rules for every group:
   - catalog;
   - both locales (en and pt-BR).
   - Verify: each surface matches its reference layout, spacing, colors and copy, with mismatches fixed. Record the check in the change notes.
-- [ ] 21.3 Run native Windows acceptance via `scripts/install-windows-wsl.sh`:
+- [ ] 21.3 **Windows handoff — Lamarck (GameNode Core).** Run native Windows acceptance via `scripts/install-windows-wsl.sh`:
   - top-bar drag moves the window, and double-click toggles maximize;
   - minimize, maximize/restore and close (close keeps the app in the tray per desktop-lifecycle);
   - resize from edges and corners respects 960×600;

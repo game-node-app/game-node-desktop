@@ -1,6 +1,6 @@
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, act, waitFor } from '@testing-library/react';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { MantineProvider } from '@mantine/core';
 import { appTheme, createAppQueryClient } from '../../AppProviders';
@@ -26,13 +26,15 @@ function renderWithProviders(
   const queryClient = createAppQueryClient();
   queryClient.setQueryData(SNAPSHOT_QUERY_KEY, snapshot);
 
-  return render(
+  const result = render(
     <MantineProvider theme={appTheme} defaultColorScheme="dark">
       <QueryClientProvider client={queryClient}>
         <I18nProvider initialLocale={locale}>{ui}</I18nProvider>
       </QueryClientProvider>
     </MantineProvider>,
   );
+
+  return { ...result, queryClient };
 }
 
 describe('Dialogs Feature Tests', () => {
@@ -284,6 +286,40 @@ describe('Dialogs Feature Tests', () => {
       expect(libraryInputSpy).toHaveBeenCalledWith({
         selectMatch: { gameId: 102 },
       });
+    });
+
+    it('keeps focus on the option list when a new snapshot arrives', async () => {
+      const { queryClient } = renderWithProviders(
+        <MatchDialog />,
+        makeMatchSnapshot(),
+        'en',
+      );
+
+      // Let the dialog's opening focus settle before the option list takes focus.
+      await waitFor(() => {
+        expect(screen.getByTestId('match-search-input')).toHaveFocus();
+      });
+      const candidate = screen.getByTestId('candidate-101');
+      candidate.focus();
+      expect(document.activeElement).toBe(candidate);
+
+      // Selecting an option arrives as a fresh dialog view. That update must not
+      // pull focus back to the search field, or the next arrow key would be lost.
+      const next = makeMatchSnapshot();
+      next.library!.matchDialog!.selected =
+        next.library!.matchDialog!.candidates[0];
+      act(() => {
+        queryClient.setQueryData(SNAPSHOT_QUERY_KEY, next);
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('match-preview')).toHaveTextContent(
+          'Hades II',
+        );
+      });
+
+      expect(document.activeElement).toBe(candidate);
+      expect(screen.getByTestId('match-search-input')).not.toHaveFocus();
     });
 
     it('renders covers from the asset protocol and never from a remote result URL', () => {

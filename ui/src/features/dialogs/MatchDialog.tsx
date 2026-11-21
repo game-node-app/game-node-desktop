@@ -62,13 +62,13 @@ export const MatchDialog: React.FC = () => {
   useBatchMatchDriver(library, accountId);
 
   const dialog = library?.matchDialog;
+  const open = dialog != null;
 
   useEffect(() => {
-    if (!dialog) return;
-
-    // Focus query input when dialog opens
-    inputRef.current?.focus();
-  }, [dialog]);
+    // Focus the query field once when the dialog opens. A new snapshot (for example after
+    // selecting an option) must not pull focus back out of the option list.
+    if (open) inputRef.current?.focus();
+  }, [open]);
 
   if (!dialog) return null;
 

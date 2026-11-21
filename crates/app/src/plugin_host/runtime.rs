@@ -2379,12 +2379,12 @@ mod managed_runtime_tests {
             zip.finish().unwrap();
 
             let review = updates.import_review(archive).await.unwrap();
-            assert_eq!(review.trust, "changed");
+            assert_eq!(review.package.trust, "changed");
             let trusted = updates
-                .import_confirm_publisher(&review.token, &review.publisher_fingerprint)
+                .import_confirm_publisher(&review.token, &review.package.publisher_fingerprint)
                 .await
                 .unwrap();
-            assert_eq!(trusted.trust, "trusted");
+            assert_eq!(trusted.package.trust, "trusted");
             assert_eq!(
                 fixture
                     .lifecycle

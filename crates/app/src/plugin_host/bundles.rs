@@ -116,6 +116,23 @@ pub enum BundleInspectionError {
     WorkerFailed,
 }
 
+/// The verified per-component data that only the import review needs: the public inspection plus
+/// the ordinary staged-package report the shared review builder reads its manifest from.
+#[derive(Clone, Debug)]
+pub(crate) struct BundleReviewComponent {
+    pub inspection: BundleComponentInspection,
+    pub report: PackageCandidateReport,
+}
+
+/// A bundle staged for import review. The publisher key is the authority every component
+/// verified under, so the review pins one fingerprint for the whole bundle.
+#[derive(Clone, Debug)]
+pub(crate) struct BundleReviewCandidate {
+    pub bundle: BundleIdentity,
+    pub publisher_key: [u8; 32],
+    pub components: Vec<BundleReviewComponent>,
+}
+
 /// Verify a bundle archive, stage every component through the bounded package extractor and run
 /// the ordinary candidate inspection on each one. No package code is executed and all file I/O
 /// runs on blocking workers; the private staging directory is removed before this returns.
@@ -123,6 +140,23 @@ pub async fn inspect_bundle_candidate(
     archive_path: impl AsRef<Path>,
     emulation_policy: EmulationPolicy,
 ) -> Result<BundleCandidateReport, BundleInspectionError> {
+    let candidate = inspect_bundle_review(archive_path, emulation_policy).await?;
+    Ok(BundleCandidateReport {
+        bundle: candidate.bundle,
+        components: candidate
+            .components
+            .into_iter()
+            .map(|component| component.inspection)
+            .collect(),
+    })
+}
+
+/// The same staged, verified inspection as [`inspect_bundle_candidate`], keeping each component's
+/// package report so the import review can reuse the standalone per-package review builder.
+pub(crate) async fn inspect_bundle_review(
+    archive_path: impl AsRef<Path>,
+    emulation_policy: EmulationPolicy,
+) -> Result<BundleReviewCandidate, BundleInspectionError> {
     let archive_path = archive_path.as_ref().to_owned();
     let work = tokio::task::spawn_blocking(BundleWorkDir::create)
         .await
@@ -172,18 +206,25 @@ pub async fn inspect_bundle_candidate(
                 plugin_id: component.plugin_id.clone(),
             });
         }
-        components.push(BundleComponentInspection {
-            plugin_id: report.manifest.id.clone(),
-            kind: component.kind.clone(),
-            version: report.manifest.version.clone(),
-            archive_path: component.path.clone(),
-            sha256: component.sha256.clone(),
-            availability: availability(&report),
-            compatibility: report.compatibility_review(),
+        components.push(BundleReviewComponent {
+            inspection: BundleComponentInspection {
+                plugin_id: report.manifest.id.clone(),
+                kind: component.kind.clone(),
+                version: report.manifest.version.clone(),
+                archive_path: component.path.clone(),
+                sha256: component.sha256.clone(),
+                availability: availability(&report),
+                compatibility: report.compatibility_review(),
+            },
+            report,
         });
     }
 
-    Ok(BundleCandidateReport { bundle, components })
+    Ok(BundleReviewCandidate {
+        bundle,
+        publisher_key,
+        components,
+    })
 }
 
 /// One component whose package this bundle install wrote into the registry.
@@ -732,12 +773,27 @@ fn restrict_private(_: &Path) -> io::Result<()> {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
-    use crate::plugin_host::{compatibility::CompatibilityState, publisher_trust};
+    use crate::plugin_host::{
+        PluginApi, PluginApiServer,
+        compatibility::CompatibilityState,
+        grants::{PermissionDecision, PermissionState},
+        managed_packages::ManagedPackageLifecycle,
+        process::ProviderProcesses,
+        profile::PluginStateLayout,
+        publisher_trust,
+        runtime::{HostedProviders, PluginPermissionSnapshot, ThirdPartyPluginLifecycle},
+        updates::{BundleComponentPermissionSubmission, PluginUpdateService},
+    };
     use base64::Engine as _;
-    use gamenode_platform::{db::SqliteSettingsStore, plugin_registry::PluginPackageRegistry};
+    use gamenode_platform::{
+        db::{self, SqliteSettingsStore},
+        paths::DataPaths,
+        plugin_registry::PluginPackageRegistry,
+    };
     use std::{
         io::{Read, Write},
         path::PathBuf,
+        sync::Arc,
     };
     use zip::{ZipWriter, write::SimpleFileOptions};
 
@@ -809,6 +865,23 @@ mod tests {
             abi: &str,
             api_min: &str,
         ) -> PathBuf {
+            self.component_with_permissions(file, kind, id, version, os, abi, api_min, vec![])
+        }
+
+        /// A component that declares the given signed permission requests, so the import review
+        /// and the grouped consent flow can be exercised with real manifests.
+        #[allow(clippy::too_many_arguments)]
+        fn component_with_permissions(
+            &self,
+            file: &str,
+            kind: &str,
+            id: &str,
+            version: &str,
+            os: &str,
+            abi: &str,
+            api_min: &str,
+            permissions: Vec<serde_json::Value>,
+        ) -> PathBuf {
             let source = self.dir.path().join(format!("{file}-source"));
             fs::create_dir_all(source.join("bin")).unwrap();
             fs::create_dir_all(source.join("licenses")).unwrap();
@@ -836,6 +909,7 @@ mod tests {
             if kind == "provider" {
                 manifest["provider_id"] = serde_json::json!("dolphin-fixture");
             }
+            manifest["permissions"] = permissions.into();
             fs::write(
                 source.join("plugin.json"),
                 serde_json::to_vec(&manifest).unwrap(),
@@ -1731,6 +1805,369 @@ mod tests {
                 .components
                 .len(),
             2
+        );
+    }
+
+    fn permission(id: &str, scope: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "required": false,
+            "scope": scope,
+            "reason": "Signed fixture permission"
+        })
+    }
+
+    /// A service with an authenticated profile and the same registry and state the fixtures
+    /// install into, matching application startup before the hosted providers are composed.
+    fn review_service(
+        api: &PluginApi,
+        paths: &DataPaths,
+        state: &PluginStateLayout,
+        registry: &PluginPackageRegistry,
+    ) -> PluginUpdateService {
+        let service = PluginUpdateService::open(paths).unwrap();
+        let processes = ProviderProcesses::new_for_lifecycle(
+            api.providers.clone(),
+            paths.data_dir().join("plugins.sock"),
+            vec![],
+            state.clone(),
+        )
+        .unwrap();
+        service.set_lifecycle(Arc::new(ThirdPartyPluginLifecycle::new(
+            api.providers.clone(),
+            processes,
+            state.clone(),
+            registry.clone(),
+            ManagedPackageLifecycle::new(registry.clone()),
+        )));
+        service.set_profiles(api.providers.profiles());
+        service
+    }
+
+    fn decision(snapshot: &PluginPermissionSnapshot, granted: bool) -> PermissionDecision {
+        let request = &snapshot.requested_permissions[0];
+        PermissionDecision {
+            permission_id: request.permission_id.clone(),
+            scope: request.allowed_scopes.iter().next().unwrap().clone(),
+            granted,
+        }
+    }
+
+    fn submission(
+        snapshot: &PluginPermissionSnapshot,
+        revision: u64,
+        granted: bool,
+    ) -> BundleComponentPermissionSubmission {
+        BundleComponentPermissionSubmission {
+            plugin_id: snapshot.plugin_id.clone(),
+            expected_profile_id: snapshot.profile_id.clone(),
+            expected_publisher_fingerprint: snapshot.publisher_fingerprint.clone(),
+            expected_revision: revision,
+            decisions: vec![decision(snapshot, granted)],
+        }
+    }
+
+    #[tokio::test]
+    async fn bundle_review_groups_both_components_and_one_confirmation_pins_the_publisher() {
+        let fixture = Fixture::new();
+        let provider = fixture.component_with_permissions(
+            "provider",
+            "provider",
+            "org.example.dolphin",
+            "0.1.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+            vec![permission("storage.persist", "own-provider")],
+        );
+        let launch = fixture.component_with_permissions(
+            "launch",
+            "extension",
+            "org.example.dolphin.launch",
+            "0.2.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+            vec![permission("game.launch", "approved-game-session")],
+        );
+        let bundle = fixture.bundle(&[&provider, &launch]);
+
+        let paths = DataPaths::at(fixture.dir.path().join("app-data"));
+        let api = PluginApi::default();
+        let state = PluginStateLayout::managed(&paths);
+        api.set_state_layout(state.clone());
+        let profiles = api.providers.profiles();
+        profiles.update(Some("bundle-account"), true);
+        let registry = PluginPackageRegistry::open(&paths).unwrap();
+        let service = review_service(&api, &paths, &state, &registry);
+        let profile = profiles.require().unwrap();
+
+        // The fixture entrypoints are inert placeholder bytes, so a successful review also shows
+        // that no component code ran to produce it.
+        let review = service.bundle_import_review(bundle).await.unwrap();
+        assert_eq!(review.bundle.id, "org.example.dolphin");
+        assert_eq!(review.bundle.name, "Dolphin GameCube and Wii");
+        assert_eq!(review.bundle.version, "0.1.0");
+        assert_eq!(review.bundle.publisher_key_id, "dolphin-dev");
+        assert_eq!(
+            review.bundle.publisher_fingerprint,
+            publisher_trust::key_fingerprint(&fixture.base64_key())
+        );
+        assert_eq!(review.trust, "untrusted");
+        assert_eq!(review.pinned_fingerprint, None);
+        assert_eq!(review.license.expressions, vec!["MIT".to_owned()]);
+        assert_eq!(review.license.components.len(), 2);
+
+        assert_eq!(review.components.len(), 2);
+        let provider = review
+            .components
+            .iter()
+            .find(|component| component.review.plugin_id == "org.example.dolphin")
+            .expect("the provider is grouped by its own identity");
+        assert_eq!(provider.kind, "provider");
+        assert_eq!(
+            provider.availability,
+            BundleComponentAvailability::Available
+        );
+        assert_eq!(provider.review.version, "0.1.0");
+        assert_eq!(provider.review.publisher_key_id, "dolphin-dev");
+        assert_eq!(
+            provider.review.publisher_fingerprint,
+            review.bundle.publisher_fingerprint
+        );
+        assert_eq!(provider.review.permission_ids, vec!["storage.persist"]);
+        assert_eq!(
+            provider.review.requested_permissions[0].scope,
+            "own-provider"
+        );
+        assert_eq!(provider.review.license, "MIT");
+        assert_eq!(
+            provider.review.license_files,
+            vec!["licenses/LICENSE".to_owned()]
+        );
+        assert!(provider.review.native_access.is_empty());
+        assert_eq!(provider.review.compatibility, "compatible");
+        assert_eq!(
+            provider.review.compatibility_details.state,
+            CompatibilityState::Compatible
+        );
+        let launch = review
+            .components
+            .iter()
+            .find(|component| component.review.plugin_id == "org.example.dolphin.launch")
+            .expect("the extension is grouped by its own identity");
+        assert_eq!(launch.kind, "extension");
+        assert_eq!(launch.availability, BundleComponentAvailability::Available);
+        assert_eq!(launch.review.permission_ids, vec!["game.launch"]);
+
+        // Reviewing and confirming is not consent: no grant record exists for either component.
+        assert!(state.open_grants(&profile).unwrap().identities().is_empty());
+
+        // A mismatched confirmation pins nothing; the exact displayed fingerprint pins both
+        // components in one decision.
+        assert!(
+            service
+                .bundle_import_confirm_publisher(
+                    &review.token,
+                    &format!("SHA256:{}", "0".repeat(64))
+                )
+                .await
+                .is_err()
+        );
+        let pinned = service
+            .bundle_import_confirm_publisher(&review.token, &review.bundle.publisher_fingerprint)
+            .await
+            .unwrap();
+        assert_eq!(pinned.trust, "trusted");
+        assert_eq!(pinned.pinned_fingerprint, None);
+        assert!(
+            pinned
+                .components
+                .iter()
+                .all(|component| component.review.trust == "trusted")
+        );
+        let trust = publisher_trust::PublisherTrustStore::open(state.trust_dir()).unwrap();
+        for plugin_id in ["org.example.dolphin", "org.example.dolphin.launch"] {
+            assert_eq!(
+                trust.inspect(plugin_id, &fixture.base64_key()).unwrap(),
+                publisher_trust::KeyStatus::Trusted {
+                    fingerprint: review.bundle.publisher_fingerprint.clone()
+                }
+            );
+        }
+        assert!(state.open_grants(&profile).unwrap().identities().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn grouped_bundle_permissions_isolate_a_denial_and_a_stale_revision() {
+        let fixture = Fixture::new();
+        let provider = fixture.component_with_permissions(
+            "provider",
+            "provider",
+            "org.example.dolphin",
+            "0.1.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+            vec![permission("storage.persist", "own-provider")],
+        );
+        let launch = fixture.component_with_permissions(
+            "launch",
+            "extension",
+            "org.example.dolphin.launch",
+            "0.2.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+            vec![permission("game.launch", "approved-game-session")],
+        );
+        let bundle = fixture.bundle(&[&provider, &launch]);
+
+        let paths = DataPaths::at(fixture.dir.path().join("app-data"));
+        let api = PluginApi::default();
+        let state = PluginStateLayout::managed(&paths);
+        api.set_state_layout(state.clone());
+        let profiles = api.providers.profiles();
+        profiles.update(Some("bundle-account"), true);
+        let registry = PluginPackageRegistry::open(&paths).unwrap();
+        let service = review_service(&api, &paths, &state, &registry);
+
+        let report = inspect_bundle_candidate(&bundle, EmulationPolicy::RequireNative)
+            .await
+            .unwrap();
+        let settings =
+            SqliteSettingsStore::open(&fixture.dir.path().join("bundles.sqlite3")).unwrap();
+        install_bundle_candidate(
+            &bundle,
+            report,
+            registry.clone(),
+            settings.bundle_store(),
+            EmulationPolicy::RequireNative,
+            1_700_000_000,
+        )
+        .await
+        .unwrap();
+
+        let review = service.bundle_import_review(bundle.clone()).await.unwrap();
+        service
+            .bundle_import_confirm_publisher(&review.token, &review.bundle.publisher_fingerprint)
+            .await
+            .unwrap();
+
+        // The host registers only trusted active packages, exactly as it does at startup.
+        let store = SqliteSettingsStore::new(db::open(Path::new(":memory:")).unwrap());
+        let library: Arc<dyn gamenode_core::library::LibraryStore> =
+            Arc::new(store.library_store());
+        let endpoint = fixture.dir.path().join("plugins.sock");
+        let host = HostedProviders::bundled(
+            api.providers.clone(),
+            Arc::new(Default::default()),
+            Some(endpoint.clone()),
+            paths.clone(),
+            library,
+            None,
+        )
+        .await
+        .unwrap();
+        let _server =
+            PluginApiServer::start(&tokio::runtime::Handle::current(), &endpoint, api.clone())
+                .unwrap();
+        service.set_lifecycle(host.lifecycle());
+
+        let provider_snapshot = service
+            .permission_snapshot("org.example.dolphin".into())
+            .await
+            .unwrap();
+        let launch_snapshot = service
+            .permission_snapshot("org.example.dolphin.launch".into())
+            .await
+            .unwrap();
+        for snapshot in [&provider_snapshot, &launch_snapshot] {
+            assert_eq!(snapshot.grant_revision, 0);
+            assert!(snapshot.effective_grants.is_empty());
+            assert!(!snapshot.requested_permissions.is_empty());
+        }
+
+        // One grouped review: the provider is granted and the extension is denied. Denying one
+        // component neither grants it nor disturbs its sibling's record.
+        let first = service
+            .apply_bundle_permissions(vec![
+                submission(&provider_snapshot, provider_snapshot.grant_revision, true),
+                submission(&launch_snapshot, launch_snapshot.grant_revision, false),
+            ])
+            .await
+            .unwrap();
+        assert_eq!(first.components.len(), 2);
+        assert!(
+            first
+                .components
+                .iter()
+                .all(|component| component.error.is_none())
+        );
+        let provider_saved = first.components[0]
+            .snapshot
+            .as_ref()
+            .expect("the provider decision was saved");
+        let launch_saved = first.components[1]
+            .snapshot
+            .as_ref()
+            .expect("the denied component keeps its own record");
+        assert_eq!(
+            provider_saved.effective_grants[0].state,
+            PermissionState::Granted
+        );
+        assert_eq!(
+            launch_saved.effective_grants[0].state,
+            PermissionState::Denied
+        );
+        assert_eq!(provider_saved.grant_revision, 1);
+        assert_eq!(launch_saved.grant_revision, 1);
+
+        // A stale revision fails only the component that carries it. The sibling still saves and
+        // the stale component keeps its previous grant and revision.
+        let stale = service
+            .apply_bundle_permissions(vec![
+                submission(provider_saved, provider_saved.grant_revision - 1, false),
+                submission(launch_saved, launch_saved.grant_revision, true),
+            ])
+            .await
+            .unwrap();
+        assert!(
+            stale.components[0]
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("grants changed")),
+            "{:?}",
+            stale.components[0]
+        );
+        assert!(stale.components[0].snapshot.is_none());
+        let launch_updated = stale.components[1]
+            .snapshot
+            .as_ref()
+            .expect("the sibling decision still applies");
+        assert_eq!(
+            launch_updated.effective_grants[0].state,
+            PermissionState::Granted
+        );
+        assert_eq!(launch_updated.grant_revision, 2);
+
+        let provider_after = service
+            .permission_snapshot("org.example.dolphin".into())
+            .await
+            .unwrap();
+        assert_eq!(provider_after.grant_revision, provider_saved.grant_revision);
+        assert_eq!(
+            provider_after.effective_grants[0].state,
+            PermissionState::Granted
+        );
+        let launch_after = service
+            .permission_snapshot("org.example.dolphin.launch".into())
+            .await
+            .unwrap();
+        assert_eq!(launch_after.grant_revision, 2);
+        assert_eq!(
+            launch_after.effective_grants[0].state,
+            PermissionState::Granted
         );
     }
 }

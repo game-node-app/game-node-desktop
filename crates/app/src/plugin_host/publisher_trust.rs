@@ -200,6 +200,38 @@ impl PublisherTrustStore {
         Ok(candidate)
     }
 
+    /// Pins one key for several plugin ids in a single write. A bundle is one distribution unit
+    /// with one publisher, so one fingerprint confirmation covers every component; a failure
+    /// leaves no component pinned. Existing pins are replaced the same way `retrust_key` replaces
+    /// one, because the review already showed the change and the user confirmed the new value.
+    pub fn confirm_publishers(
+        &mut self,
+        plugin_ids: &[String],
+        public_key: &[u8],
+        confirmed_fingerprint: &str,
+    ) -> Result<String, TrustStoreError> {
+        if plugin_ids.is_empty() {
+            return Err(TrustStoreError::InvalidPluginId);
+        }
+        let candidate = fingerprint(public_key)?;
+        if !constant_time_eq(candidate.as_bytes(), confirmed_fingerprint.as_bytes()) {
+            return Err(TrustStoreError::FingerprintMismatch);
+        }
+        let mut next = self.publishers.clone();
+        for plugin_id in plugin_ids {
+            validate_plugin_id(plugin_id)?;
+            next.insert(
+                plugin_id.clone(),
+                PinnedPublisher {
+                    fingerprint: candidate.clone(),
+                },
+            );
+        }
+        self.persist(&next)?;
+        self.publishers = next;
+        Ok(candidate)
+    }
+
     /// Returns whether a candidate key is exactly the key the user approved.
     pub fn is_pinned(&self, plugin_id: &str, public_key: &[u8]) -> Result<bool, TrustStoreError> {
         Ok(matches!(

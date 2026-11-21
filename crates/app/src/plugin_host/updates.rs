@@ -7,7 +7,7 @@
 
 use super::{
     grants::PluginIdentity,
-    managed_packages::{ManagedPackageLifecycle, PackageLifecycleError},
+    managed_packages::{ManagedPackageLifecycle, PackageCandidateReport, PackageLifecycleError},
     package::{Manifest, PlaytimeCapabilities},
     profile::{PluginProfiles, PluginStateLayout},
 };
@@ -256,6 +256,16 @@ pub struct PluginUpdatePreferences {
 #[serde(rename_all = "camelCase")]
 pub struct PluginImportReview {
     pub token: String,
+    /// The same review a bundle component carries, produced by the same builder.
+    #[serde(flatten)]
+    pub package: PackageImportReview,
+}
+
+/// Everything an import review shows about one package. A standalone import adds the staging
+/// token above; a bundle component embeds this unchanged beside its kind and availability.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PackageImportReview {
     pub plugin_id: String,
     pub provider_id: Option<String>,
     pub name: String,
@@ -284,6 +294,83 @@ pub struct ImportPermissionReview {
     pub required: bool,
     pub scope: String,
     pub reason: String,
+}
+
+/// One component inside a bundle import review. The embedded review is exactly what importing the
+/// component alone would show, so no manifest, license or permission detail is parsed twice.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BundleComponentReview {
+    /// `provider` or `extension`, from the verified bundle manifest.
+    pub kind: String,
+    /// Platform/API compatibility verdict; an unavailable component stays in the review but is
+    /// not activated by the install.
+    pub availability: super::bundles::BundleComponentAvailability,
+    pub review: PackageImportReview,
+}
+
+/// One component's license declarations, attributed to the plugin that ships them.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BundleComponentLicense {
+    pub plugin_id: String,
+    pub expression: String,
+    pub files: Vec<String>,
+    pub notices: Vec<String>,
+}
+
+/// The bundle-wide license view: distinct expressions plus every component's declared files and
+/// notices, so one header can show what the whole distribution ships.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BundleLicenseSummary {
+    /// Distinct license expressions in component order.
+    pub expressions: Vec<String>,
+    pub components: Vec<BundleComponentLicense>,
+}
+
+/// The aggregated review of one bundle: one identity and publisher decision, with the ordinary
+/// per-package review embedded for every component.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BundleImportReview {
+    pub token: String,
+    pub bundle: super::bundles::BundleIdentity,
+    /// `trusted`, `changed` or `untrusted` for the bundle publisher key. Every component shares
+    /// the verified key, so this is the single publisher decision the review asks for.
+    pub trust: String,
+    /// The previously pinned fingerprint when the bundle publisher changed.
+    pub pinned_fingerprint: Option<String>,
+    pub license: BundleLicenseSummary,
+    pub components: Vec<BundleComponentReview>,
+}
+
+/// One component's permission decisions submitted from a grouped review. The expected values are
+/// the ones the review displayed; the host rechecks them before saving.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BundleComponentPermissionSubmission {
+    pub plugin_id: String,
+    pub expected_profile_id: String,
+    pub expected_publisher_fingerprint: String,
+    pub expected_revision: u64,
+    pub decisions: Vec<super::grants::PermissionDecision>,
+}
+
+/// What happened to one component of a grouped permission submission. A rejection is reported per
+/// component so a stale revision or a denied permission never hides its siblings' outcome.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BundleComponentPermissionOutcome {
+    pub plugin_id: String,
+    pub snapshot: Option<super::runtime::PluginPermissionSnapshot>,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BundlePermissionResult {
+    pub components: Vec<BundleComponentPermissionOutcome>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -317,6 +404,13 @@ struct PendingImport {
     created_at: std::time::Instant,
 }
 
+struct PendingBundleImport {
+    /// The verified bundle publisher key; the single pin this review confirms.
+    publisher_key: [u8; 32],
+    review: BundleImportReview,
+    created_at: std::time::Instant,
+}
+
 fn read_inert_license(package_path: &Path, file: &str) -> Result<String, String> {
     const MAX_LICENSE_BYTES: u64 = 256 * 1024;
     if Path::new(file)
@@ -345,6 +439,135 @@ fn read_inert_license(package_path: &Path, file: &str) -> Result<String, String>
     String::from_utf8(bytes).map_err(|_| "license file is not valid UTF-8".to_owned())
 }
 
+/// Builds the review fields for one staged, validated package. Standalone imports and bundle
+/// components both call this, so manifest, license, permission and compatibility parsing exists
+/// once and a bundle can never present different facts than the component would alone.
+fn package_import_review(
+    report: &PackageCandidateReport,
+    trust: &super::publisher_trust::PublisherTrustStore,
+    publisher_key: &[u8; 32],
+) -> Result<PackageImportReview, String> {
+    super::grants::manifest_permission_requests(&report.manifest.permissions)
+        .map_err(|error| format!("plugin declares unsupported permission scopes: {error}"))?;
+    let compatibility_details = report.compatibility_review();
+    let (compatibility, compatibility_reason) = match report.selected_target() {
+        Ok(_) => ("compatible".to_owned(), None),
+        Err(error) => (
+            if compatibility_details.state
+                == super::compatibility::CompatibilityState::Indeterminate
+            {
+                "unknown"
+            } else {
+                "incompatible"
+            }
+            .to_owned(),
+            Some(error.to_string()),
+        ),
+    };
+    let manifest = &report.manifest;
+    let (trust, publisher_fingerprint, pinned_fingerprint) = match trust
+        .inspect(&manifest.id, publisher_key)
+        .map_err(|error| format!("publisher trust status is unavailable: {error}"))?
+    {
+        super::publisher_trust::KeyStatus::Trusted { fingerprint } => {
+            ("trusted".to_owned(), fingerprint, None)
+        }
+        super::publisher_trust::KeyStatus::Untrusted {
+            presented_fingerprint,
+        } => ("untrusted".to_owned(), presented_fingerprint, None),
+        super::publisher_trust::KeyStatus::Changed {
+            pinned_fingerprint,
+            presented_fingerprint,
+        } => (
+            "changed".to_owned(),
+            presented_fingerprint,
+            Some(pinned_fingerprint),
+        ),
+    };
+    Ok(PackageImportReview {
+        plugin_id: manifest.id.clone(),
+        provider_id: manifest.provider_id.clone(),
+        name: manifest.name.clone(),
+        version: manifest.version.clone(),
+        publisher_key_id: manifest.publisher.key_id.clone(),
+        publisher_fingerprint,
+        pinned_fingerprint,
+        trust,
+        license: manifest.license.expression.clone(),
+        license_files: manifest.license.files.clone(),
+        license_notices: manifest.license.notices.clone(),
+        permission_ids: manifest
+            .permissions
+            .iter()
+            .map(|item| item.id.clone())
+            .collect(),
+        requested_permissions: manifest
+            .permissions
+            .iter()
+            .map(|item| ImportPermissionReview {
+                id: item.id.clone(),
+                required: item.required,
+                scope: item.scope.clone(),
+                reason: item.reason.clone(),
+            })
+            .collect(),
+        native_access: manifest.native_access.clone(),
+        playtime: manifest.playtime,
+        compatibility,
+        compatibility_reason,
+        compatibility_details,
+    })
+}
+
+/// The single publisher decision a bundle review asks for. Every component shares the verified
+/// bundle key, so the bundle is trusted only when each component's pin already accepts it.
+fn bundle_trust_state<'a>(
+    components: impl IntoIterator<Item = &'a PackageImportReview>,
+) -> (String, Option<String>) {
+    let mut pinned = None;
+    let mut all_trusted = true;
+    for component in components {
+        match component.trust.as_str() {
+            "trusted" => {}
+            "changed" => {
+                all_trusted = false;
+                if pinned.is_none() {
+                    pinned = component.pinned_fingerprint.clone();
+                }
+            }
+            _ => all_trusted = false,
+        }
+    }
+    if all_trusted {
+        ("trusted".to_owned(), None)
+    } else if pinned.is_some() {
+        ("changed".to_owned(), pinned)
+    } else {
+        ("untrusted".to_owned(), None)
+    }
+}
+
+fn bundle_license_summary(components: &[BundleComponentReview]) -> BundleLicenseSummary {
+    let mut expressions: Vec<String> = Vec::new();
+    let mut licenses = Vec::with_capacity(components.len());
+    for component in components {
+        let review = &component.review;
+        if !expressions.contains(&review.license) {
+            expressions.push(review.license.clone());
+        }
+        licenses.push(BundleComponentLicense {
+            plugin_id: review.plugin_id.clone(),
+            expression: review.license.clone(),
+            files: review.license_files.clone(),
+            notices: review.license_notices.clone(),
+        });
+    }
+    BundleLicenseSummary {
+        expressions,
+        components: licenses,
+    }
+}
+
 /// User-facing updater. Periodic checks only fetch and authenticate feed metadata. Package
 /// contents remain inert through staging and review; activation is a separate user command.
 #[derive(Clone)]
@@ -365,6 +588,7 @@ pub struct PluginUpdateService {
     activations: std::sync::Arc<AsyncMutex<()>>,
     pending: std::sync::Arc<AsyncMutex<HashMap<String, PendingCandidate>>>,
     imports: std::sync::Arc<AsyncMutex<HashMap<String, PendingImport>>>,
+    bundle_imports: std::sync::Arc<AsyncMutex<HashMap<String, PendingBundleImport>>>,
     lifecycle: std::sync::Arc<
         std::sync::RwLock<Option<std::sync::Arc<super::runtime::ThirdPartyPluginLifecycle>>>,
     >,
@@ -405,6 +629,7 @@ impl PluginUpdateService {
             activations: Default::default(),
             pending: Default::default(),
             imports: Default::default(),
+            bundle_imports: Default::default(),
             lifecycle: Default::default(),
         })
     }
@@ -435,7 +660,7 @@ impl PluginUpdateService {
         let staged = work.path.join("package");
         let work_path = work.path.clone();
         let staged_for_worker = staged.clone();
-        let (publisher_key, manifest) = tokio::task::spawn_blocking(move || {
+        let (publisher_key, _manifest) = tokio::task::spawn_blocking(move || {
             let metadata =
                 fs::symlink_metadata(&archive_path).map_err(|error| error.to_string())?;
             if !metadata.is_file() || metadata.file_type().is_symlink() {
@@ -464,52 +689,15 @@ impl PluginUpdateService {
             .inspect_candidate(&staged, publisher_key, EmulationPolicy::RequireNative)
             .await
             .map_err(|error| format!("staged plugin package is invalid: {error}"))?;
-        super::grants::manifest_permission_requests(&report.manifest.permissions)
-            .map_err(|error| format!("plugin declares unsupported permission scopes: {error}"))?;
-        let compatibility_details = report.compatibility_review();
-        let (compatibility, compatibility_reason) = match report.selected_target() {
-            Ok(_) => ("compatible".to_owned(), None),
-            Err(error) => (
-                if compatibility_details.state
-                    == super::compatibility::CompatibilityState::Indeterminate
-                {
-                    "unknown"
-                } else {
-                    "incompatible"
-                }
-                .to_owned(),
-                Some(error.to_string()),
-            ),
-        };
         let private_dir = self.trust_dir.clone();
-        let plugin_id = manifest.id.clone();
         let key = publisher_key;
-        let (trust, publisher_fingerprint, pinned_fingerprint) =
-            tokio::task::spawn_blocking(move || {
-                let trust = super::publisher_trust::PublisherTrustStore::open(private_dir)
-                    .map_err(|error| format!("publisher trust store is unavailable: {error}"))?;
-                match trust
-                    .inspect(&plugin_id, &key)
-                    .map_err(|error| format!("publisher trust status is unavailable: {error}"))?
-                {
-                    super::publisher_trust::KeyStatus::Trusted { fingerprint } => {
-                        Ok::<_, String>(("trusted".to_owned(), fingerprint, None))
-                    }
-                    super::publisher_trust::KeyStatus::Untrusted {
-                        presented_fingerprint,
-                    } => Ok(("untrusted".to_owned(), presented_fingerprint, None)),
-                    super::publisher_trust::KeyStatus::Changed {
-                        pinned_fingerprint,
-                        presented_fingerprint,
-                    } => Ok((
-                        "changed".to_owned(),
-                        presented_fingerprint,
-                        Some(pinned_fingerprint),
-                    )),
-                }
-            })
-            .await
-            .map_err(|_| "plugin trust worker failed".to_owned())??;
+        let package = tokio::task::spawn_blocking(move || {
+            let trust = super::publisher_trust::PublisherTrustStore::open(private_dir)
+                .map_err(|error| format!("publisher trust store is unavailable: {error}"))?;
+            package_import_review(&report, &trust, &key)
+        })
+        .await
+        .map_err(|_| "plugin trust worker failed".to_owned())??;
         let mut nonce = [0; 16];
         getrandom::fill(&mut nonce).map_err(|error| error.to_string())?;
         let token = nonce
@@ -518,37 +706,7 @@ impl PluginUpdateService {
             .collect::<String>();
         let review = PluginImportReview {
             token: token.clone(),
-            plugin_id: manifest.id.clone(),
-            provider_id: manifest.provider_id.clone(),
-            name: manifest.name.clone(),
-            version: manifest.version.clone(),
-            publisher_key_id: manifest.publisher.key_id.clone(),
-            publisher_fingerprint,
-            pinned_fingerprint,
-            trust,
-            license: manifest.license.expression.clone(),
-            license_files: manifest.license.files.clone(),
-            license_notices: manifest.license.notices.clone(),
-            permission_ids: manifest
-                .permissions
-                .iter()
-                .map(|item| item.id.clone())
-                .collect(),
-            requested_permissions: manifest
-                .permissions
-                .iter()
-                .map(|item| ImportPermissionReview {
-                    id: item.id.clone(),
-                    required: item.required,
-                    scope: item.scope.clone(),
-                    reason: item.reason.clone(),
-                })
-                .collect(),
-            native_access: manifest.native_access.clone(),
-            playtime: manifest.playtime,
-            compatibility,
-            compatibility_reason,
-            compatibility_details,
+            package,
         };
         imports.insert(
             token,
@@ -584,14 +742,14 @@ impl PluginUpdateService {
             imports.remove(token);
             return Err("plugin import review expired".into());
         }
-        if pending.review.publisher_fingerprint != confirmed_fingerprint {
+        if pending.review.package.publisher_fingerprint != confirmed_fingerprint {
             return Err("publisher fingerprint confirmation does not match".into());
         }
         let private_dir = self.trust_dir.clone();
-        let plugin_id = pending.review.plugin_id.clone();
+        let plugin_id = pending.review.package.plugin_id.clone();
         let publisher_key = pending.publisher_key;
         let fingerprint = confirmed_fingerprint.to_owned();
-        let trust_status = pending.review.trust.clone();
+        let trust_status = pending.review.package.trust.clone();
         let pinned = tokio::task::spawn_blocking(move || {
             let _publisher = super::managed_packages::lock_publisher_identity();
             let mut trust = super::publisher_trust::PublisherTrustStore::open(private_dir)
@@ -620,9 +778,9 @@ impl PluginUpdateService {
         })
         .await
         .map_err(|_| "publisher trust worker failed".to_owned())??;
-        pending.review.trust = "trusted".into();
-        pending.review.pinned_fingerprint = None;
-        pending.review.publisher_fingerprint = pinned;
+        pending.review.package.trust = "trusted".into();
+        pending.review.package.pinned_fingerprint = None;
+        pending.review.package.publisher_fingerprint = pinned;
         Ok(pending.review.clone())
     }
 
@@ -636,9 +794,15 @@ impl PluginUpdateService {
         if pending.created_at.elapsed() >= std::time::Duration::from_secs(15 * 60) {
             return Err("plugin import review expired".into());
         }
-        if !pending.review.license_files.iter().any(|path| path == file)
+        if !pending
+            .review
+            .package
+            .license_files
+            .iter()
+            .any(|path| path == file)
             && !pending
                 .review
+                .package
                 .license_notices
                 .iter()
                 .any(|path| path == file)
@@ -677,17 +841,17 @@ impl PluginUpdateService {
             imports.remove(token);
             return Err("plugin import review expired".into());
         }
-        if pending.review.compatibility != "compatible" {
+        if pending.review.package.compatibility != "compatible" {
             return Err("incompatible plugin packages cannot be imported".into());
         }
-        if pending.review.trust != "trusted" {
+        if pending.review.package.trust != "trusted" {
             return Err("confirm the publisher fingerprint before importing".into());
         }
-        if !pending.review.native_access.is_empty() && !native_code_consent {
+        if !pending.review.package.native_access.is_empty() && !native_code_consent {
             return Err("explicit native-code consent is required for this package".into());
         }
         let registry = self.registry.clone();
-        let plugin_lookup = pending.review.plugin_id.clone();
+        let plugin_lookup = pending.review.package.plugin_id.clone();
         let already_installed =
             tokio::task::spawn_blocking(move || registry.active(&plugin_lookup))
                 .await
@@ -698,7 +862,7 @@ impl PluginUpdateService {
             return Err("plugin is already installed; use its update review to replace it".into());
         }
         let private_dir = self.trust_dir.clone();
-        let package_id = pending.review.plugin_id.clone();
+        let package_id = pending.review.package.plugin_id.clone();
         let key = pending.publisher_key;
         let key_is_pinned = tokio::task::spawn_blocking(move || {
             super::publisher_trust::PublisherTrustStore::open(private_dir)
@@ -716,9 +880,203 @@ impl PluginUpdateService {
             .await
             .map_err(|error| error.to_string())?;
         let pending = imports.remove(token).expect("pending import still exists");
-        let plugin_id = pending.review.plugin_id.clone();
+        let plugin_id = pending.review.package.plugin_id.clone();
         drop(pending);
         Ok(plugin_id)
+    }
+
+    /// Stages, verifies and reviews a user-selected bundle without executing component code.
+    ///
+    /// The bundle envelope and every component are validated by the bundle verifier and the
+    /// ordinary package inspection, then each component's review is built by the same
+    /// [`package_import_review`] a standalone import uses. No permission is granted here; the
+    /// single publisher decision is [`Self::bundle_import_confirm_publisher`].
+    pub async fn bundle_import_review(
+        &self,
+        archive_path: PathBuf,
+    ) -> Result<BundleImportReview, String> {
+        const MAX_PENDING_IMPORTS: usize = 8;
+        const IMPORT_REVIEW_TTL: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+        {
+            let mut imports = self.bundle_imports.lock().await;
+            imports.retain(|_, pending| pending.created_at.elapsed() < IMPORT_REVIEW_TTL);
+            if imports.len() >= MAX_PENDING_IMPORTS {
+                return Err("too many plugin bundles are awaiting review".into());
+            }
+        }
+        let selected = archive_path.clone();
+        tokio::task::spawn_blocking(move || {
+            let metadata = fs::symlink_metadata(&selected).map_err(|error| error.to_string())?;
+            if !metadata.is_file() || metadata.file_type().is_symlink() {
+                return Err("selected plugin bundle is not a regular file".to_owned());
+            }
+            Ok::<_, String>(())
+        })
+        .await
+        .map_err(|_| "plugin bundle import staging worker failed".to_owned())??;
+        let candidate =
+            super::bundles::inspect_bundle_review(&archive_path, EmulationPolicy::RequireNative)
+                .await
+                .map_err(|error| format!("selected plugin bundle failed validation: {error}"))?;
+        let super::bundles::BundleReviewCandidate {
+            bundle,
+            publisher_key,
+            components: staged,
+        } = candidate;
+        let private_dir = self.trust_dir.clone();
+        let key = publisher_key;
+        let components = tokio::task::spawn_blocking(move || {
+            let trust = super::publisher_trust::PublisherTrustStore::open(private_dir)
+                .map_err(|error| format!("publisher trust store is unavailable: {error}"))?;
+            staged
+                .into_iter()
+                .map(|component| {
+                    let review = package_import_review(&component.report, &trust, &key)?;
+                    Ok(BundleComponentReview {
+                        kind: component.inspection.kind,
+                        availability: component.inspection.availability,
+                        review,
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()
+        })
+        .await
+        .map_err(|_| "plugin bundle trust worker failed".to_owned())??;
+        let (trust, pinned_fingerprint) =
+            bundle_trust_state(components.iter().map(|component| &component.review));
+        let license = bundle_license_summary(&components);
+        let mut nonce = [0; 16];
+        getrandom::fill(&mut nonce).map_err(|error| error.to_string())?;
+        let token = nonce
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let review = BundleImportReview {
+            token: token.clone(),
+            bundle,
+            trust,
+            pinned_fingerprint,
+            license,
+            components,
+        };
+        self.bundle_imports.lock().await.insert(
+            token,
+            PendingBundleImport {
+                publisher_key,
+                review: review.clone(),
+                created_at: std::time::Instant::now(),
+            },
+        );
+        Ok(review)
+    }
+
+    /// Pins the bundle publisher key for every component in one write after the user confirms the
+    /// exact fingerprint the review displayed. This is one publisher decision: either every
+    /// component accepts the key or none does, and no permission is granted.
+    pub async fn bundle_import_confirm_publisher(
+        &self,
+        token: &str,
+        confirmed_fingerprint: &str,
+    ) -> Result<BundleImportReview, String> {
+        self.lifecycle
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| "managed plugin runtime is unavailable".to_owned())?
+            .require_active_profile()
+            .map_err(|error| error.message().to_owned())?;
+        let mut imports = self.bundle_imports.lock().await;
+        let pending = imports
+            .get_mut(token)
+            .ok_or_else(|| "plugin bundle import review expired".to_owned())?;
+        if pending.created_at.elapsed() >= std::time::Duration::from_secs(15 * 60) {
+            imports.remove(token);
+            return Err("plugin bundle import review expired".into());
+        }
+        if pending.review.bundle.publisher_fingerprint != confirmed_fingerprint {
+            return Err("publisher fingerprint confirmation does not match".into());
+        }
+        let private_dir = self.trust_dir.clone();
+        let publisher_key = pending.publisher_key;
+        let plugin_ids = pending
+            .review
+            .components
+            .iter()
+            .map(|component| component.review.plugin_id.clone())
+            .collect::<Vec<_>>();
+        let fingerprint = confirmed_fingerprint.to_owned();
+        let pinned = tokio::task::spawn_blocking(move || {
+            let _publisher = super::managed_packages::lock_publisher_identity();
+            let mut trust = super::publisher_trust::PublisherTrustStore::open(private_dir)
+                .map_err(|error| error.to_string())?;
+            trust
+                .confirm_publishers(&plugin_ids, &publisher_key, &fingerprint)
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|_| "publisher trust worker failed".to_owned())??;
+        pending.review.trust = "trusted".into();
+        pending.review.pinned_fingerprint = None;
+        for component in &mut pending.review.components {
+            component.review.trust = "trusted".into();
+            component.review.pinned_fingerprint = None;
+            component.review.publisher_fingerprint.clone_from(&pinned);
+        }
+        Ok(pending.review.clone())
+    }
+
+    /// Applies per-component permission decisions from one grouped review through the ordinary
+    /// per-plugin grant path. Each component is independent: a rejected decision (including a
+    /// stale grant revision) is reported for that component only and its siblings are still
+    /// saved. This command itself grants nothing; every grant is an explicit component decision.
+    pub async fn apply_bundle_permissions(
+        &self,
+        submissions: Vec<BundleComponentPermissionSubmission>,
+    ) -> Result<BundlePermissionResult, String> {
+        const MAX_COMPONENTS: usize = 8;
+        if submissions.is_empty() {
+            return Err("a grouped permission review requires at least one component".into());
+        }
+        if submissions.len() > MAX_COMPONENTS {
+            return Err(
+                "a grouped permission review cannot exceed the bundle component limit".into(),
+            );
+        }
+        let mut seen = BTreeSet::new();
+        for submission in &submissions {
+            if !seen.insert(submission.plugin_id.as_str()) {
+                return Err(format!(
+                    "component {} appears more than once in one grouped review",
+                    submission.plugin_id
+                ));
+            }
+        }
+        let mut components = Vec::with_capacity(submissions.len());
+        for submission in submissions {
+            let outcome = match self
+                .replace_permissions(
+                    submission.plugin_id.clone(),
+                    submission.expected_profile_id,
+                    submission.expected_publisher_fingerprint,
+                    submission.expected_revision,
+                    submission.decisions,
+                )
+                .await
+            {
+                Ok(snapshot) => BundleComponentPermissionOutcome {
+                    plugin_id: submission.plugin_id,
+                    snapshot: Some(snapshot),
+                    error: None,
+                },
+                Err(status) => BundleComponentPermissionOutcome {
+                    plugin_id: submission.plugin_id,
+                    snapshot: None,
+                    error: Some(status.message().to_owned()),
+                },
+            };
+            components.push(outcome);
+        }
+        Ok(BundlePermissionResult { components })
     }
 
     pub async fn permission_snapshot(
@@ -2218,7 +2576,7 @@ pub(super) mod tests {
             .await
             .unwrap();
         assert_eq!(
-            review.playtime,
+            review.package.playtime,
             PlaytimeCapabilities {
                 identifies_gameplay: true,
                 identifies_pauses: false,
@@ -2702,7 +3060,7 @@ pub(super) mod tests {
             .await
             .unwrap();
         service
-            .import_confirm_publisher(&review.token, &review.publisher_fingerprint)
+            .import_confirm_publisher(&review.token, &review.package.publisher_fingerprint)
             .await
             .unwrap()
     }
@@ -2758,12 +3116,15 @@ pub(super) mod tests {
                 .import_review(archive_package(&package))
                 .await
                 .unwrap();
-            assert_eq!(review.plugin_id, plugin_id);
-            assert_eq!(review.trust, "untrusted");
-            assert_eq!(review.compatibility, "compatible");
-            assert_eq!(review.license_files, vec!["licenses/LICENSE".to_owned()]);
+            assert_eq!(review.package.plugin_id, plugin_id);
+            assert_eq!(review.package.trust, "untrusted");
+            assert_eq!(review.package.compatibility, "compatible");
             assert_eq!(
-                review.license_notices,
+                review.package.license_files,
+                vec!["licenses/LICENSE".to_owned()]
+            );
+            assert_eq!(
+                review.package.license_notices,
                 vec!["licenses/THIRD-PARTY-NOTICES.txt".to_owned()]
             );
             assert!(
@@ -2788,10 +3149,10 @@ pub(super) mod tests {
             );
 
             let pinned = service
-                .import_confirm_publisher(&review.token, &review.publisher_fingerprint)
+                .import_confirm_publisher(&review.token, &review.package.publisher_fingerprint)
                 .await
                 .unwrap();
-            assert_eq!(pinned.trust, "trusted");
+            assert_eq!(pinned.package.trust, "trusted");
             assert_eq!(
                 service.import_install(&review.token, false).await.unwrap(),
                 plugin_id

@@ -38,7 +38,9 @@ pub struct BundleRecord {
     pub components: Vec<BundleComponentRecord>,
 }
 
-/// The bundle mapping on the shared application database connection.
+/// The bundle mapping on the shared application database connection. Cloning shares that one
+/// connection, so every handle observes the same rows.
+#[derive(Clone)]
 pub struct SqlitePluginBundleStore {
     conn: Arc<Mutex<Connection>>,
 }
@@ -231,6 +233,54 @@ impl SqlitePluginBundleStore {
         tx.commit().map_err(failed)?;
         Ok(Some(bundle))
     }
+
+    /// Removes the mapping rows of the named components and, when no component row remains, the
+    /// bundle row itself. One transaction, so a partially uninstalled bundle never leaves a row
+    /// naming a package that is no longer installed. Returns the mapping that still exists.
+    ///
+    /// Component packages, grants and every other table are untouched.
+    pub fn remove_bundle_components(
+        &self,
+        bundle_id: &str,
+        plugin_ids: &[String],
+    ) -> Result<Option<BundleRecord>, StorageError> {
+        let mut conn = self.conn();
+        let tx = conn.transaction().map_err(failed)?;
+        if read(&tx, bundle_id)?.is_none() {
+            return Ok(None);
+        }
+        {
+            let mut delete = tx
+                .prepare(
+                    "DELETE FROM plugin_bundle_components WHERE bundle_id = ?1 AND plugin_id = ?2",
+                )
+                .map_err(failed)?;
+            for plugin_id in plugin_ids {
+                delete
+                    .execute(params![bundle_id, plugin_id])
+                    .map_err(failed)?;
+            }
+        }
+        let remaining: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM plugin_bundle_components WHERE bundle_id = ?1",
+                [bundle_id],
+                |row| row.get(0),
+            )
+            .map_err(failed)?;
+        let remaining_bundle = if remaining == 0 {
+            tx.execute(
+                "DELETE FROM plugin_bundles WHERE bundle_id = ?1",
+                [bundle_id],
+            )
+            .map_err(failed)?;
+            None
+        } else {
+            read(&tx, bundle_id)?
+        };
+        tx.commit().map_err(failed)?;
+        Ok(remaining_bundle)
+    }
 }
 
 #[cfg(test)]
@@ -422,6 +472,62 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM plugin_bundles", [], |row| row.get(0))
             .unwrap();
         assert_eq!(rows, 0, "a rejected record writes nothing");
+    }
+
+    #[test]
+    fn removing_component_rows_keeps_a_partial_mapping_and_drops_an_empty_one() {
+        let dir = TempDir::new().unwrap();
+        let store = open(&dir).bundle_store();
+        let recorded = bundle("org.example.dolphin");
+        store.record_bundle(&recorded).unwrap();
+
+        // One component removed: its row and only its row disappears; the bundle keeps the rest.
+        let remaining = store
+            .remove_bundle_components("org.example.dolphin", &["org.example.dolphin".to_owned()])
+            .unwrap()
+            .expect("the bundle still has a component");
+        assert_eq!(
+            remaining.components,
+            vec![component(
+                "org.example.dolphin.launch",
+                "extension",
+                'b',
+                "0.1.0"
+            )]
+        );
+        assert_eq!(
+            store.bundle_for_plugin("org.example.dolphin").unwrap(),
+            None
+        );
+        assert_eq!(
+            store
+                .bundle_for_plugin("org.example.dolphin.launch")
+                .unwrap(),
+            Some(remaining.clone())
+        );
+
+        // Removing the last component deletes the bundle row as well.
+        let remaining = store
+            .remove_bundle_components(
+                "org.example.dolphin",
+                &["org.example.dolphin.launch".to_owned()],
+            )
+            .unwrap();
+        assert_eq!(remaining, None);
+        assert_eq!(store.bundle("org.example.dolphin").unwrap(), None);
+
+        // An unknown bundle or an unknown component id writes nothing.
+        assert_eq!(
+            store
+                .remove_bundle_components("org.example.missing", &["x".to_owned()])
+                .unwrap(),
+            None
+        );
+        store.record_bundle(&recorded).unwrap();
+        let unchanged = store
+            .remove_bundle_components("org.example.dolphin", &["org.example.other".to_owned()])
+            .unwrap();
+        assert_eq!(unchanged, Some(recorded));
     }
 
     #[test]

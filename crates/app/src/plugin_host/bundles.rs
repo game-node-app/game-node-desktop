@@ -21,10 +21,21 @@
 //! reinstalled, and rollback never removes it. An active package that does not verify under that
 //! key, or a plugin already owned by another bundle, aborts the whole bundle as a conflict before
 //! any registry write; an existing installation is never silently overwritten.
+//!
+//! Removal is the exact inverse of the mapping: every component with an active package is stopped
+//! with the ordinary bounded grace, then the recorded `package_version` of each component is
+//! deleted, and finally the mapping row of every component whose package is actually gone. Other
+//! installed versions of the same plugin id, grants and library history are never touched. When one
+//! component cannot be deleted, its mapping row stays so the uninstall can be retried, while the
+//! rows of the components that were removed disappear: a partial removal never leaves a mapping
+//! that names a package which no longer exists.
 
 use std::{
-    fs, io,
+    fs,
+    future::Future,
+    io,
     path::{Path, PathBuf},
+    pin::Pin,
 };
 
 use gamenode_platform::{
@@ -42,6 +53,7 @@ use super::{
         inspect_staged_package, inspect_staged_package_blocking, lock_publisher_identity,
     },
     package::PluginKind,
+    process::ProviderProcesses,
     publisher_trust::key_fingerprint,
 };
 
@@ -603,6 +615,211 @@ fn rollback_install(registry: &PluginPackageRegistry, pending: &[PendingComponen
     problems
 }
 
+/// Stops the supervised processes of one bundle component before its packages are deleted.
+///
+/// Production uses [`ProviderProcesses`], whose termination path waits for the child with the
+/// existing bounded grace. A component that is installed but inactive or unavailable has no active
+/// package and therefore no process, so [`remove_installed_bundle`] never asks it to stop and an
+/// implementation must also treat an idle component as a successful no-op.
+pub trait BundleComponentStopper: Send + Sync {
+    fn stop_component<'a>(
+        &'a self,
+        plugin_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+}
+
+impl BundleComponentStopper for ProviderProcesses {
+    fn stop_component<'a>(
+        &'a self,
+        plugin_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(self.stop_plugin(plugin_id))
+    }
+}
+
+/// One component whose recorded package version this removal deleted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemovedBundleComponent {
+    pub plugin_id: String,
+    pub version: String,
+    /// True when the component had an active package and its supervised process was stopped first.
+    pub stopped: bool,
+}
+
+/// One component whose package could not be deleted. Its mapping row is retained, so the bundle
+/// uninstall can be retried instead of forgetting a package that is still installed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BundleRemovalFailure {
+    pub plugin_id: String,
+    pub version: String,
+    pub error: String,
+}
+
+/// A fully removed bundle: the mapping that was read and every component package it deleted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemovedBundle {
+    pub bundle: BundleRecord,
+    pub components: Vec<RemovedBundleComponent>,
+}
+
+#[derive(Debug, Error)]
+pub enum BundleRemovalError {
+    #[error("bundle {bundle_id} is not installed")]
+    UnknownBundle { bundle_id: String },
+    #[error("the bundle mapping could not be read: {0}")]
+    Mapping(String),
+    /// The component packages were removed but the mapping could not be updated. The whole
+    /// mapping was deleted as a fallback so no row keeps naming a deleted package.
+    #[error("the bundle mapping could not be updated after removal: {0}")]
+    MappingUpdate(String),
+    #[error("plugin package state is unavailable: {0}")]
+    Registry(String),
+    /// Some packages could not be deleted. The components that were removed are no longer mapped;
+    /// the failures keep their mapping row so the uninstall can be retried.
+    #[error(
+        "bundle {bundle_id} was only partly removed; the remaining components stay mapped: {problems}"
+    )]
+    PartialRemoval {
+        bundle_id: String,
+        removed: Vec<RemovedBundleComponent>,
+        failures: Vec<BundleRemovalFailure>,
+        problems: String,
+    },
+    #[error("bundle removal worker failed")]
+    WorkerFailed,
+}
+
+/// Remove one installed bundle: stop every component that is active at its recorded version, delete
+/// exactly the recorded package version of each component, then delete the removed components from
+/// the bundle mapping.
+///
+/// The removal is deliberately narrower than an uninstall. It never deletes another installed
+/// version of the same plugin id (a standalone version, or a newer one adopted by another bundle),
+/// and it never touches grants, activation, private data or library history; the caller owns the
+/// retention and session choices. Components are stopped before any package is deleted, so no
+/// process keeps running against a package that is already gone.
+///
+/// A component that cannot be removed keeps its mapping row and is reported, while the components
+/// that were removed lose theirs. A mapping therefore never names a package that does not exist; a
+/// retry removes what is left. File and database work runs on blocking workers.
+pub async fn remove_installed_bundle(
+    bundle_id: impl Into<String>,
+    registry: PluginPackageRegistry,
+    bundles: SqlitePluginBundleStore,
+    stopper: &dyn BundleComponentStopper,
+) -> Result<RemovedBundle, BundleRemovalError> {
+    let bundle_id = bundle_id.into();
+    let bundle = {
+        let store = bundles.clone();
+        let lookup = bundle_id.clone();
+        tokio::task::spawn_blocking(move || store.bundle(&lookup))
+            .await
+            .map_err(|_| BundleRemovalError::WorkerFailed)?
+            .map_err(|error| BundleRemovalError::Mapping(error.to_string()))?
+            .ok_or_else(|| BundleRemovalError::UnknownBundle {
+                bundle_id: bundle_id.clone(),
+            })?
+    };
+
+    // Which components are active at the recorded version, and therefore have a supervised process
+    // to stop. An installed-but-inactive (for example unavailable) component has nothing to stop,
+    // and neither does one whose plugin id is only active at another standalone version.
+    let mut active = Vec::with_capacity(bundle.components.len());
+    for component in &bundle.components {
+        let registry = registry.clone();
+        let plugin_id = component.plugin_id.clone();
+        let version = component.package_version.clone();
+        let installed = tokio::task::spawn_blocking(move || registry.active(&plugin_id))
+            .await
+            .map_err(|_| BundleRemovalError::WorkerFailed)?
+            .map_err(|error| BundleRemovalError::Registry(error.to_string()))?;
+        active.push(installed.is_some_and(|active| active.version == version));
+    }
+    // Stop before any package removal, so a failure below cannot leave a process running against
+    // half-removed files.
+    for (component, active) in bundle.components.iter().zip(&active) {
+        if *active {
+            stopper.stop_component(&component.plugin_id).await;
+        }
+    }
+
+    let components = bundle.components.clone();
+    let (removed, failures) = tokio::task::spawn_blocking(move || {
+        let mut removed = Vec::with_capacity(components.len());
+        let mut failures = Vec::new();
+        for (component, active) in components.into_iter().zip(active) {
+            match registry.remove_version(&component.plugin_id, &component.package_version) {
+                Ok(()) => removed.push(RemovedBundleComponent {
+                    plugin_id: component.plugin_id,
+                    version: component.package_version,
+                    stopped: active,
+                }),
+                Err(error) => failures.push(BundleRemovalFailure {
+                    plugin_id: component.plugin_id,
+                    version: component.package_version,
+                    error: error.to_string(),
+                }),
+            }
+        }
+        (removed, failures)
+    })
+    .await
+    .map_err(|_| BundleRemovalError::WorkerFailed)?;
+
+    if !removed.is_empty() {
+        let plugin_ids: Vec<String> = removed
+            .iter()
+            .map(|component| component.plugin_id.clone())
+            .collect();
+        let store = bundles.clone();
+        let lookup = bundle_id.clone();
+        let updated = tokio::task::spawn_blocking(move || {
+            store.remove_bundle_components(&lookup, &plugin_ids)
+        })
+        .await
+        .map_err(|_| BundleRemovalError::WorkerFailed)?;
+        if let Err(error) = updated {
+            // The packages are gone, so the mapping must not keep naming them. Deleting the whole
+            // mapping is the safe fallback: the failed components become ordinary standalone
+            // packages instead of a mapping that points at deleted versions.
+            let store = bundles;
+            let lookup = bundle_id.clone();
+            let fallback = tokio::task::spawn_blocking(move || store.remove_bundle(&lookup))
+                .await
+                .map_err(|_| BundleRemovalError::WorkerFailed)?;
+            return Err(BundleRemovalError::MappingUpdate(match fallback {
+                Ok(_) => format!("{error}; the whole bundle mapping was deleted instead"),
+                Err(fallback) => {
+                    format!("{error}; deleting the whole mapping also failed: {fallback}")
+                }
+            }));
+        }
+    }
+
+    if failures.is_empty() {
+        return Ok(RemovedBundle {
+            bundle,
+            components: removed,
+        });
+    }
+    let problems = failures
+        .iter()
+        .map(|failure| {
+            format!(
+                "{} {}: {}",
+                failure.plugin_id, failure.version, failure.error
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    Err(BundleRemovalError::PartialRemoval {
+        bundle_id,
+        removed,
+        failures,
+        problems,
+    })
+}
+
 /// The archive must still be the exact bundle the user reviewed. Byte-level comparison is the
 /// per-component SHA-256 the review carried; the bundle fields are compared as well so a
 /// re-signed manifest cannot slip a different identity past the review.
@@ -732,12 +949,21 @@ fn restrict_private(_: &Path) -> io::Result<()> {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
-    use crate::plugin_host::{compatibility::CompatibilityState, publisher_trust};
+    use crate::plugin_host::{
+        compatibility::CompatibilityState,
+        grants::{
+            GrantScope, PermissionDecision, PermissionGrantStore, PermissionRequest, PluginIdentity,
+        },
+        publisher_trust,
+    };
     use base64::Engine as _;
+    use gamenode_core::{library::LibraryStore as _, provider::Record};
     use gamenode_platform::{db::SqliteSettingsStore, plugin_registry::PluginPackageRegistry};
     use std::{
+        collections::{BTreeMap, BTreeSet},
         io::{Read, Write},
         path::PathBuf,
+        sync::Mutex,
     };
     use zip::{ZipWriter, write::SimpleFileOptions};
 
@@ -1731,6 +1957,309 @@ mod tests {
                 .components
                 .len(),
             2
+        );
+    }
+
+    /// Records every component it is asked to stop; the stop itself is the no-op an idle component
+    /// needs, so the test observes the removal order without starting a real process.
+    #[derive(Default)]
+    struct RecordingStopper {
+        stopped: Mutex<Vec<String>>,
+    }
+
+    impl RecordingStopper {
+        fn stopped(&self) -> Vec<String> {
+            self.stopped.lock().unwrap().clone()
+        }
+    }
+
+    impl BundleComponentStopper for RecordingStopper {
+        fn stop_component<'a>(
+            &'a self,
+            plugin_id: &'a str,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+            self.stopped.lock().unwrap().push(plugin_id.to_owned());
+            Box::pin(std::future::ready(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn removing_a_bundle_stops_the_active_component_and_deletes_only_its_versions() {
+        let fixture = Fixture::new();
+        let provider = fixture.component(
+            "provider",
+            "provider",
+            "org.example.dolphin",
+            "0.1.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+        // No Windows target matches the Linux test host, so this component is installed inactive.
+        let launch = fixture.component(
+            "launch",
+            "extension",
+            "org.example.dolphin.launch",
+            "0.2.0",
+            "windows",
+            "msvc",
+            "1.6.0",
+        );
+        // An unrelated standalone version of the same plugin id stays installed and active.
+        let standalone_launch = fixture.component(
+            "launch-standalone",
+            "extension",
+            "org.example.dolphin.launch",
+            "0.1.9",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+        let bundle = fixture.bundle(&[&provider, &launch]);
+        let report = inspect_bundle_candidate(&bundle, EmulationPolicy::RequireNative)
+            .await
+            .unwrap();
+        let key = fixture.base64_key();
+        let (registry, settings) = install_target(&fixture);
+
+        let staged = fixture.dir.path().join("standalone-launch");
+        stage_package_archive(&standalone_launch, &staged, &key).unwrap();
+        let standalone = registry
+            .install_signed("org.example.dolphin.launch", "0.1.9", &staged, &key, true)
+            .unwrap();
+
+        let installed = install_bundle_candidate(
+            &bundle,
+            report,
+            registry.clone(),
+            settings.bundle_store(),
+            EmulationPolicy::RequireNative,
+            1_700_000_000,
+        )
+        .await
+        .unwrap();
+
+        // A grant record and a library entry exist before the uninstall and must survive it.
+        let grants_dir = fixture.dir.path().join("account");
+        let identity = PluginIdentity {
+            plugin_id: "org.example.dolphin".to_owned(),
+            publisher_fingerprint: "ab".repeat(32),
+            profile_id: "fixture-profile".to_owned(),
+        };
+        let scope = GrantScope::Declared {
+            value: "https://api.example.com".to_owned(),
+        };
+        let request = PermissionRequest {
+            permission_id: gamenode_plugin_protocol::capability::NETWORK_FETCH.to_owned(),
+            required: false,
+            allowed_scopes: BTreeSet::from([scope.clone()]),
+        };
+        let decision = PermissionDecision {
+            permission_id: gamenode_plugin_protocol::capability::NETWORK_FETCH.to_owned(),
+            scope,
+            granted: true,
+        };
+        PermissionGrantStore::open(&grants_dir)
+            .unwrap()
+            .replace_grants(identity.clone(), &[request], &[decision])
+            .unwrap();
+        let grants_before = PermissionGrantStore::open(&grants_dir).unwrap();
+        assert!(!grants_before.effective_grants(&identity).is_empty());
+
+        settings
+            .library_store()
+            .save_scan(
+                "dolphin",
+                &[Record {
+                    id: "gamecube-1".to_owned(),
+                    name: Some("Wind Waker".to_owned()),
+                    install_dir: "/games/wind-waker".to_owned(),
+                    fields: BTreeMap::new(),
+                }],
+                &BTreeMap::new(),
+                1_700_000_000,
+            )
+            .unwrap();
+
+        let stopper = RecordingStopper::default();
+        let removed = remove_installed_bundle(
+            "org.example.dolphin",
+            registry.clone(),
+            settings.bundle_store(),
+            &stopper,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(removed.bundle, installed.bundle);
+        assert_eq!(removed.components.len(), 2);
+        let provider_removal = removed
+            .components
+            .iter()
+            .find(|component| component.plugin_id == "org.example.dolphin")
+            .unwrap();
+        assert_eq!(provider_removal.version, "0.1.0");
+        assert!(provider_removal.stopped);
+        let launch_removal = removed
+            .components
+            .iter()
+            .find(|component| component.plugin_id == "org.example.dolphin.launch")
+            .unwrap();
+        assert_eq!(launch_removal.version, "0.2.0");
+        // The bundle's extension version was inactive, so there was no process to stop; the active
+        // process belongs to the unrelated standalone version and is left alone.
+        assert!(!launch_removal.stopped);
+        assert_eq!(stopper.stopped(), vec!["org.example.dolphin"]);
+
+        // The mapping is gone for both components.
+        let store = settings.bundle_store();
+        assert_eq!(store.bundle("org.example.dolphin").unwrap(), None);
+        assert_eq!(
+            store.bundle_for_plugin("org.example.dolphin").unwrap(),
+            None
+        );
+        assert_eq!(
+            store
+                .bundle_for_plugin("org.example.dolphin.launch")
+                .unwrap(),
+            None
+        );
+
+        // The bundle's versions are gone; the standalone version of the same plugin id survives,
+        // is still active and still verifies.
+        assert!(registry.versions("org.example.dolphin").unwrap().is_empty());
+        assert!(registry.active("org.example.dolphin").unwrap().is_none());
+        assert_eq!(
+            registry.versions("org.example.dolphin.launch").unwrap(),
+            vec![standalone.clone()]
+        );
+        assert_eq!(
+            registry.active("org.example.dolphin.launch").unwrap(),
+            Some(standalone.clone())
+        );
+        assert_eq!(
+            registry
+                .verify_active_package("org.example.dolphin.launch", &key)
+                .unwrap(),
+            Some(standalone)
+        );
+
+        // Grants and library history are untouched.
+        let grants_after = PermissionGrantStore::open(&grants_dir).unwrap();
+        assert_eq!(
+            grants_after.effective_grants(&identity),
+            grants_before.effective_grants(&identity)
+        );
+        assert_eq!(
+            grants_after.revision(&identity),
+            grants_before.revision(&identity)
+        );
+        let library = settings.library_store().load_cache(None).unwrap();
+        assert_eq!(library.entries.len(), 1);
+        assert_eq!(library.entries[0].key, "dolphin:gamecube-1");
+        assert!(library.entries[0].installed);
+    }
+
+    #[tokio::test]
+    async fn a_partial_removal_keeps_only_the_failed_component_mapped() {
+        let fixture = Fixture::new();
+        let provider = fixture.component(
+            "provider",
+            "provider",
+            "org.example.dolphin",
+            "0.1.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+        let launch = fixture.component(
+            "launch",
+            "extension",
+            "org.example.dolphin.launch",
+            "0.2.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+        let bundle = fixture.bundle(&[&provider, &launch]);
+        let report = inspect_bundle_candidate(&bundle, EmulationPolicy::RequireNative)
+            .await
+            .unwrap();
+        let (registry, settings) = install_target(&fixture);
+        let installed = install_bundle_candidate(
+            &bundle,
+            report,
+            registry.clone(),
+            settings.bundle_store(),
+            EmulationPolicy::RequireNative,
+            1_700_000_000,
+        )
+        .await
+        .unwrap();
+
+        // Damage the extension's versions directory so its recorded version can no longer be
+        // deleted, while the provider stays removable.
+        let launch_path = installed
+            .components
+            .iter()
+            .find(|component| component.plugin_id == "org.example.dolphin.launch")
+            .unwrap()
+            .package_path
+            .clone();
+        let versions_dir = launch_path
+            .parent()
+            .and_then(Path::parent)
+            .unwrap()
+            .to_path_buf();
+        fs::remove_dir_all(&versions_dir).unwrap();
+        fs::write(&versions_dir, b"not a directory").unwrap();
+
+        let stopper = RecordingStopper::default();
+        let result = remove_installed_bundle(
+            "org.example.dolphin",
+            registry.clone(),
+            settings.bundle_store(),
+            &stopper,
+        )
+        .await;
+        let BundleRemovalError::PartialRemoval {
+            bundle_id,
+            removed,
+            failures,
+            ..
+        } = result.unwrap_err()
+        else {
+            panic!("expected a partial removal");
+        };
+        assert_eq!(bundle_id, "org.example.dolphin");
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0].plugin_id, "org.example.dolphin");
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].plugin_id, "org.example.dolphin.launch");
+        assert_eq!(failures[0].version, "0.2.0");
+
+        // The provider is deleted and no longer mapped.
+        assert!(registry.versions("org.example.dolphin").unwrap().is_empty());
+        // Only the failed component stays mapped: no row names the deleted provider.
+        let store = settings.bundle_store();
+        let remaining = store
+            .bundle("org.example.dolphin")
+            .unwrap()
+            .expect("the partial mapping is kept for a retry");
+        assert_eq!(remaining.components.len(), 1);
+        assert_eq!(
+            remaining.components[0].plugin_id,
+            "org.example.dolphin.launch"
+        );
+        assert_eq!(
+            store.bundle_for_plugin("org.example.dolphin").unwrap(),
+            None
+        );
+        assert_eq!(
+            store
+                .bundle_for_plugin("org.example.dolphin.launch")
+                .unwrap(),
+            Some(remaining)
         );
     }
 }

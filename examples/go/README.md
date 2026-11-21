@@ -9,15 +9,24 @@ The `cmd/configuration` provider is a minimal raw-gRPC client: it negotiates API
 provider commands, opens/focuses/closes a native preference window, and saves its non-secret
 preference to host-owned persistent storage.
 
-This small fixture uses the generated API protobuf messages directly, without a GameNode SDK or
-host-side dynamic RPC dispatcher. `extension_data.go` builds a hybrid typed `RuntimeRecord`, keeps
-an unknown versioned namespace unchanged during a local patch, demonstrates consumer-side field
-selection, and constructs custom dataset and opaque-byte wire shapes.
+`extension_data.go` builds a hybrid typed `RuntimeRecord`, keeps an unknown versioned namespace
+unchanged during a local patch, demonstrates consumer-side field selection, validates a known schema
+identity, and constructs custom dataset and opaque-byte wire shapes. A future schema version is a new
+identity: `ValidateKnownSchema` refuses to reinterpret it and callers must carry the bounded envelope
+opaquely.
+
+`data_exchange.go` is a runnable producer/consumer client for performance history (publish, explicit
+selector, aggregate, end-series cleanup), approved save/location inspection, save-profile ownership,
+one shared runtime with several content identities, and custom/opaque datasets. Its tests start a
+local gRPC fixture host and assert default-deny, granted and revoked outcomes without a real
+collector, a Core dashboard or a filesystem path. Both Go and Rust examples read
+`crates/plugin-protocol/contracts/data_exchange_fixtures.json`, so their identities and expected
+outcomes stay aligned.
 
 Run it with:
 
 ```sh
-go test ./...
+GOPROXY=off go test -count=1 ./...
 ```
 
 Build the plugin executable for the native host OS with `go build -o <package-entrypoint>
@@ -25,15 +34,14 @@ Build the plugin executable for the native host OS with `go build -o <package-en
 supervisor's Unix socket. See [`../plugins/README.md`](../plugins/README.md) for native dialog
 dependencies, permission grants and the concurrent-provider walkthrough.
 
-The message bindings are generated from `crates/plugin-protocol/proto/plugin.proto` with
-`protoc-gen-go`; regenerate them when the public wire contract changes. This fixture covers wire
-compatibility only. It checks the declared ResourceHost wire contract and does not claim that every
-method is served by the desktop.
+The message bindings in `proto/` are generated from `crates/plugin-protocol/proto/plugin.proto` with
+`protoc-gen-go` and `protoc-gen-go-grpc`; regenerate them when the public wire contract changes. This
+fixture covers wire compatibility only. It checks the declared ResourceHost wire contract and does
+not claim that every method is served by the desktop.
 
-compatibility and local examples only. Private `StoragePut` carries opaque bytes; those bytes are
-not cross-plugin data. `DataPublish` is served, but this fixture has no RPC client and only
-constructs its request; the runtime update/extension patch operation remains unserved. A production
-consumer must rely on host-enforced authorization and projection; a local field filter does not
-grant access. Typed identity, ownership, handles,
-revision, and observation time are interpreted by Core. Extension `Struct` values are declarative
-metadata only: Core does not infer identity, grants, executable behavior, or paths from them.
+Values interpreted by Core: typed identity, ownership, handles, revision, observation time, the
+selected game/installation and `active-host` context, schema identity when a signed descriptor
+exists, and every grant. Extension `Struct` values, custom field meanings, source/tool names and
+collector claims are declarative data only: a consumer must rely on host-enforced authorization and
+projection, and a local field filter does not grant access. Private `StoragePut` carries opaque bytes;
+those bytes are not cross-plugin data.

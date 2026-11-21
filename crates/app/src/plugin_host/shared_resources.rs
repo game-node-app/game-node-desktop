@@ -900,4 +900,40 @@ mod tests {
         };
         assert_eq!(unknown.inspect(), ExternalUse::Unknown);
     }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn external_use_sees_a_real_linux_runtime_and_returns_to_idle() {
+        use gamenode_core::drm_free::InstallationHost as _;
+        use std::process::{Command, Stdio};
+
+        // A private executable identity keeps the check independent of unrelated processes.
+        let dir = tempfile::tempdir().unwrap();
+        let executable = dir.path().join("approved-runtime");
+        std::fs::copy("/bin/sleep", &executable).unwrap();
+        let registration = gamenode_platform::installations::LinuxInstallations
+            .inspect(executable.to_str().unwrap())
+            .unwrap();
+        let check = RuntimeUseCheck {
+            executable: registration.executable.clone(),
+            processes: Some(Arc::new(gamenode_platform::processes::HostProcesses::new())),
+        };
+        assert_eq!(check.inspect(), ExternalUse::Idle, "nothing is running yet");
+
+        let mut child = Command::new(&registration.executable)
+            .arg("30")
+            .stdin(Stdio::null())
+            .spawn()
+            .unwrap();
+        assert_eq!(check.inspect(), ExternalUse::Active);
+        child.kill().unwrap();
+        child.wait().unwrap();
+        for _ in 0..100 {
+            if check.inspect() == ExternalUse::Idle {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        panic!("the real process exit was not observed");
+    }
 }

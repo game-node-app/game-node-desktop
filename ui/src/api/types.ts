@@ -1812,6 +1812,26 @@ export interface PluginSharedDataPolicyUpdate {
   sourcePolicies: SharedDataSourcePolicyDecision[];
 }
 
+/** Logical durable-pool usage of one producer. The host discloses no physical path. */
+export interface PluginDurableUsage {
+  pluginId: string;
+  profileId: string;
+  recordCount: number;
+  logicalBytes: number;
+  maxBytes: number;
+  maxAgeSeconds: number | null;
+  oldestUpdatedAt: number | null;
+}
+
+/** The outcome of deleting one producer's retained durable records. */
+export interface PluginDurableDeletion {
+  pluginId: string;
+  profileId: string;
+  removedRecords: number;
+  reclaimedBytes: number;
+  usage: PluginDurableUsage;
+}
+
 /** Host-owned configuration availability; no plugin preference values are included. */
 export interface PluginConfigurationState {
   pluginId: string;

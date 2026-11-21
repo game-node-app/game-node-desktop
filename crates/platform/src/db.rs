@@ -3154,7 +3154,7 @@ mod tests {
         assert_eq!(
             error,
             StorageError::NewerSchema {
-                found: 25,
+                found: CURRENT_SCHEMA_VERSION,
                 supported: 16
             }
         );

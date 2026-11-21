@@ -105,7 +105,9 @@ requests and present host-owned activation and permission controls, but it does 
 HTML, JavaScript, or other plugin code into the GameNode React/Tauri frontend. Plugins should keep
 their private data in their own account-scoped storage and treat its retention as separate from
 activation, grants and package removal. Removing a plugin removes its packages and account
-activation/grants; it does not implicitly erase the plugin's private data.
+activation/grants; it does not implicitly erase the plugin's private data. Uninstall offers one
+keep-or-delete choice for durable shared records: keep archives them under the original owner for
+a separate reviewed reuse, and delete removes only that owner's records.
 
 Process supervision is lifecycle management, not an OS sandbox. On Linux the host supervises a
 process group; on Windows it assigns the process to a Job Object configured to terminate processes
@@ -188,7 +190,8 @@ visible records. Selectors request data only; the host still checks each grant a
 remain excluded, and sensitive/custom datasets require separate sharing review.
 
 For the served `DataPublish`, `DataGet`, `DataList` and `DataWatch` contract, including
-session retention, field projection, snapshot-to-watch resumption and safe exclusions, see
+session retention, durable `PERSISTENT` publication, field projection, snapshot-to-watch
+resumption, retention and uninstall choices, and safe exclusions, see
 [Shared plugin data](plugin-shared-data.md).
 
 The ResourceHost method names, grouped for source/API review, are:
@@ -290,6 +293,34 @@ active account profile. The request names only a key; see "Private storage" in
 The Rust SDK has typed helpers for storage (`storage_get`, `storage_put`, `storage_delete`) and
 recipes for them; see "Utility helpers and recipes (Rust SDK)" below. Other clients use the generated
 `ResourceHost` client, as the Go example does.
+
+## Shared durable data
+
+A plugin that owns reference data consumers read later publishes it with `DataPublish` and
+`durability = PERSISTENT`. The host stores it in its public pool, not in your private storage:
+
+- Declare `data.publish` and ask the user for the separate `storage.persist` grant. Without it the
+  publish is `PERMISSION_DENIED`; do not retry it as `SESSION_ONLY` unless that is the behavior you
+  want. `SESSION_ONLY` remains correct for live observations and presence.
+- Check the reply, not the request: `DataMutationReply.durability` and `DataRecord.durability`
+  report the mode actually stored, and `expires_at` reports the expiry. `ttl_seconds` 0 means no
+  expiry, capped at 30 days; one record is at most 1 MiB.
+- Publish reference data with a stable `resource_id` to replace your own record; a publish without
+  one appends a new record. A consumer reads the record through its reviewed category or
+  selected-record grant even while you are stopped. Revocation, profile changes, expiry and user
+  retention fence reads without requiring your session.
+- Respect the owner quota and retention: 64 MiB logical bytes per owner by default, an optional
+  user age limit, and bounded oldest-first pruning. A full quota returns `RESOURCE_EXHAUSTED` and
+  changes nothing; free space or let values expire instead of assuming a silent overwrite.
+- Uninstall can keep or delete your durable rows. Keep archives them under your owner identity:
+  they are inert until the user approves the separate reuse review, so a reinstall cannot read or
+  replace them automatically. Delete removes only your owner's rows. Never cache public reference
+  data in private storage as a workaround: private bytes are not readable by consumers.
+
+The focused fixture commands are in
+[Shared plugin data](plugin-shared-data.md#durable-publication-retention-and-cross-session-reads).
+The Rust SDK's `Durability` helper and the generated `StorageDurability` enum both map
+`PERSISTENT` to the same wire value.
 
 ## File access
 

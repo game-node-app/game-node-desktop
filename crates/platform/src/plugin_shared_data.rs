@@ -16,6 +16,11 @@
 //! revision. A record without a resource id is appended with a new host-assigned record id. The
 //! pool revision is persisted in `shared_state` and shared by lists and watches; pruning or
 //! protection changes also advance it when the visible pool changed.
+//!
+//! Uninstall retention can archive every row of one owner. Archived rows stay attributed to the
+//! original owner and remain on disk, but ordinary reads, lists, usage and automatic pruning skip
+//! them. A separate host review restores them (`reuse_archived_owner`) or the host deletes them;
+//! a plugin can never archive, reuse or inspect archived records through an RPC.
 
 use std::fs;
 use std::path::Path;
@@ -26,7 +31,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 pub const FILE_NAME: &str = "plugin-shared-data.sqlite3";
 
 /// The schema version this build writes.
-pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+pub const CURRENT_SCHEMA_VERSION: u32 = 3;
 
 /// The longest dataset, schema and resource identifier.
 pub const MAX_IDENTIFIER_BYTES: usize = 256;
@@ -120,13 +125,21 @@ const MIGRATIONS: &[Migration] = &[
              CREATE INDEX shared_records_owner_protection
                  ON shared_records(owner_key, user_protected, updated_at);",
     },
+    Migration {
+        version: 3,
+        sql: "ALTER TABLE shared_records
+                 ADD COLUMN archived INTEGER NOT NULL DEFAULT 0
+                     CHECK (archived IN (0, 1));
+              CREATE INDEX shared_records_owner_archived
+                  ON shared_records(owner_key, archived, updated_at);",
+    },
 ];
 
 const RECORD_COLUMNS: &str = "record_id, dataset_id, category, class, schema_id, schema_version, \
      fields_json, opaque_payload, resource_id, observed_at, received_at, updated_at, expires_at, \
      sequence, source_observation_id, revision, pool_revision, logical_bytes, user_protected, \
      source_plugin_id, source_publisher_fingerprint, source_profile_id, declared_developer, \
-     origin, package_version, package_digest";
+     origin, package_version, package_digest, archived";
 
 /// Why the shared-data pool could not be used. Messages never contain a path.
 #[derive(Debug, thiserror::Error)]
@@ -149,6 +162,8 @@ pub enum SharedDataError {
     RecordTooLarge,
     #[error("the shared-data owner scope is stale")]
     StaleProfileEpoch,
+    #[error("archived shared data requires an explicit host reuse decision")]
+    ArchivedRecordExists,
 }
 
 /// Host-resolved ownership. The opaque key is derived by the host from the authenticated plugin,
@@ -254,6 +269,9 @@ pub struct SharedRecord {
     pub size_bytes: u64,
     /// Host-only retention protection; a plugin cannot set it.
     pub user_protected: bool,
+    /// True while the record is retained from an uninstalled producer. Ordinary reads and usage
+    /// exclude archived rows; a host review restores them or the host deletes them.
+    pub archived: bool,
     pub provenance: RecordProvenance,
 }
 
@@ -296,6 +314,14 @@ pub struct PruneOutcome {
     pub pool_revision: u64,
 }
 
+/// The result of archiving or reusing one owner's retained records.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ArchiveOutcome {
+    /// Rows whose archived flag actually changed.
+    pub records: u64,
+    pub pool_revision: u64,
+}
+
 /// User-selected limits. `None` leaves that dimension at the host default: no age limit and
 /// [`MAX_OWNER_LOGICAL_BYTES`] for size.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -305,6 +331,10 @@ pub struct RetentionPolicy {
 }
 
 /// Logical usage of one owner. `max_bytes` and `max_age_seconds` are the effective limits.
+///
+/// `records` and `logical_bytes` count only rows visible to ordinary reads and quota. Archived
+/// rows retained for an uninstalled producer are reported separately and are never pruned
+/// automatically.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OwnerUsage {
     pub records: u64,
@@ -312,6 +342,8 @@ pub struct OwnerUsage {
     pub max_bytes: u64,
     pub max_age_seconds: Option<u64>,
     pub oldest_updated_at: Option<i64>,
+    pub archived_records: u64,
+    pub archived_logical_bytes: u64,
     /// SQLite page allocation for the whole pool; shared across owners.
     pub physical_bytes_estimate: u64,
 }
@@ -414,19 +446,25 @@ impl SharedDataStore {
         let existing = match write.resource_id {
             Some(resource_id) => tx
                 .query_row(
-                    "SELECT record_id, revision FROM shared_records
+                    "SELECT record_id, revision, archived FROM shared_records
                      WHERE owner_key = ?1 AND dataset_id = ?2 AND resource_id = ?3",
                     params![owner.key(), write.dataset_id, resource_id],
                     |row| {
                         Ok(ExistingRecord {
                             record_id: row.get(0)?,
                             revision: row.get::<_, i64>(1)?.max(0) as u64,
+                            archived: row.get::<_, i64>(2)? != 0,
                         })
                     },
                 )
                 .optional()?,
             None => None,
         };
+        // A producer that was uninstalled with retained data, then reinstalled, must not replace
+        // an archived row before the host reviews reuse. Refuse the write without changing it.
+        if existing.as_ref().is_some_and(|record| record.archived) {
+            return Err(SharedDataError::ArchivedRecordExists);
+        }
         let current_revision = existing.as_ref().map_or(0, |record| record.revision);
         if let Some(expected) = write.expected_revision
             && expected != current_revision
@@ -585,7 +623,8 @@ impl SharedDataStore {
             .query_row(
                 &format!(
                     "SELECT {RECORD_COLUMNS} FROM shared_records
-                     WHERE record_id = ?1 AND (expires_at IS NULL OR expires_at > ?2)"
+                     WHERE record_id = ?1 AND archived = 0
+                       AND (expires_at IS NULL OR expires_at > ?2)"
                 ),
                 params![record_id, now],
                 record_from,
@@ -605,7 +644,8 @@ impl SharedDataStore {
         validate_text(dataset_id, MAX_IDENTIFIER_BYTES)?;
         let mut statement = self.conn.prepare(&format!(
             "SELECT {RECORD_COLUMNS} FROM shared_records
-             WHERE dataset_id = ?1 AND (expires_at IS NULL OR expires_at > ?2)
+             WHERE dataset_id = ?1 AND archived = 0
+               AND (expires_at IS NULL OR expires_at > ?2)
              ORDER BY received_at ASC, record_id ASC"
         ))?;
         statement
@@ -627,7 +667,7 @@ impl SharedDataStore {
         check_owner(&self.conn, owner, now, false)?;
         let mut statement = self.conn.prepare(&format!(
             "SELECT {RECORD_COLUMNS} FROM shared_records
-             WHERE owner_key = ?1 AND dataset_id = ?2
+             WHERE owner_key = ?1 AND dataset_id = ?2 AND archived = 0
                AND (expires_at IS NULL OR expires_at > ?3)
              ORDER BY received_at ASC, record_id ASC"
         ))?;
@@ -763,6 +803,70 @@ impl SharedDataStore {
         })
     }
 
+    /// Makes every record of one owner inert for uninstall retention.
+    ///
+    /// Archived rows stay attributed to the original owner and on disk, but ordinary reads,
+    /// lists and usage skip them, automatic retention never prunes them and a producer cannot
+    /// replace an archived resource record. A later install needs the separate host reuse review.
+    /// Blocking: call this on the storage worker.
+    pub fn archive_owner(
+        &mut self,
+        owner: &OwnerScope,
+        now: i64,
+    ) -> Result<ArchiveOutcome, SharedDataError> {
+        validate_now(now)?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        check_owner(&tx, owner, now, false)?;
+        let archived = tx.execute(
+            "UPDATE shared_records SET archived = 1
+             WHERE owner_key = ?1 AND archived = 0",
+            [owner.key()],
+        )? as u64;
+        let pool_revision = if archived > 0 {
+            advance_pool(&tx)?
+        } else {
+            current_pool_revision(&tx)?
+        };
+        tx.commit()?;
+        Ok(ArchiveOutcome {
+            records: archived,
+            pool_revision,
+        })
+    }
+
+    /// Restores one owner's archived records after an explicit host review.
+    ///
+    /// This is the only way retained records become visible again. It never touches another
+    /// owner. Blocking: call this on the storage worker.
+    pub fn reuse_archived_owner(
+        &mut self,
+        owner: &OwnerScope,
+        now: i64,
+    ) -> Result<ArchiveOutcome, SharedDataError> {
+        validate_now(now)?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        check_owner(&tx, owner, now, false)?;
+        let reused = tx.execute(
+            "UPDATE shared_records SET archived = 0
+             WHERE owner_key = ?1 AND archived = 1",
+            [owner.key()],
+        )? as u64;
+        let pool_revision = if reused > 0 {
+            advance_pool(&tx)?
+        } else {
+            current_pool_revision(&tx)?
+        };
+        tx.commit()?;
+        Ok(ArchiveOutcome {
+            records: reused,
+            pool_revision,
+        })
+    }
+
     /// Marks a record as protected from retention pruning, or releases it. Host-only: no plugin
     /// request reaches this method. It never changes the payload or the record revision.
     pub fn set_user_protected(
@@ -795,6 +899,7 @@ impl SharedDataStore {
 struct ExistingRecord {
     record_id: String,
     revision: u64,
+    archived: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -973,9 +1078,18 @@ fn owner_usage(
     let (records, logical_bytes, oldest_updated_at): (i64, i64, Option<i64>) = conn.query_row(
         "SELECT COUNT(*), COALESCE(SUM(logical_bytes), 0), MIN(updated_at)
          FROM shared_records
-         WHERE owner_key = ?1 AND (expires_at IS NULL OR expires_at > ?2)",
+         WHERE owner_key = ?1 AND archived = 0
+           AND (expires_at IS NULL OR expires_at > ?2)",
         params![owner.key(), now],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    let (archived_records, archived_logical_bytes): (i64, i64) = conn.query_row(
+        "SELECT COUNT(*), COALESCE(SUM(logical_bytes), 0)
+         FROM shared_records
+         WHERE owner_key = ?1 AND archived = 1
+           AND (expires_at IS NULL OR expires_at > ?2)",
+        params![owner.key(), now],
+        |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     let page_count: i64 = conn.query_row("PRAGMA page_count", [], |row| row.get(0))?;
     let page_size: i64 = conn.query_row("PRAGMA page_size", [], |row| row.get(0))?;
@@ -985,6 +1099,8 @@ fn owner_usage(
         max_bytes: effective_max_bytes(policy),
         max_age_seconds: policy.max_age_seconds,
         oldest_updated_at,
+        archived_records: archived_records.max(0) as u64,
+        archived_logical_bytes: archived_logical_bytes.max(0) as u64,
         physical_bytes_estimate: page_count.max(0) as u64 * page_size.max(0) as u64,
     })
 }
@@ -997,7 +1113,8 @@ fn usage_excluding(
 ) -> Result<u64, SharedDataError> {
     let bytes: i64 = conn.query_row(
         "SELECT COALESCE(SUM(logical_bytes), 0) FROM shared_records
-         WHERE owner_key = ?1 AND (expires_at IS NULL OR expires_at > ?2)
+         WHERE owner_key = ?1 AND archived = 0
+           AND (expires_at IS NULL OR expires_at > ?2)
            AND (?3 IS NULL OR record_id != ?3)",
         params![owner.key(), now, except],
         |row| row.get(0),
@@ -1018,7 +1135,7 @@ fn prune_expired(
     let victims = victims(
         conn,
         "SELECT record_id, logical_bytes FROM shared_records
-         WHERE owner_key = ?1 AND user_protected = 0
+         WHERE owner_key = ?1 AND user_protected = 0 AND archived = 0
            AND expires_at IS NOT NULL AND expires_at <= ?2
          ORDER BY expires_at ASC, updated_at ASC, record_id ASC LIMIT ?3",
         params![owner.key(), now, limit as i64],
@@ -1043,7 +1160,7 @@ fn prune_aged(
     let victims = victims(
         conn,
         "SELECT record_id, logical_bytes FROM shared_records
-         WHERE owner_key = ?1 AND user_protected = 0 AND updated_at <= ?2
+         WHERE owner_key = ?1 AND user_protected = 0 AND archived = 0 AND updated_at <= ?2
          ORDER BY updated_at ASC, received_at ASC, record_id ASC LIMIT ?3",
         params![owner.key(), cutoff, limit as i64],
     )?;
@@ -1059,7 +1176,7 @@ fn oldest_unprotected(
     Ok(conn
         .query_row(
             "SELECT record_id, logical_bytes FROM shared_records
-             WHERE owner_key = ?1 AND user_protected = 0
+             WHERE owner_key = ?1 AND user_protected = 0 AND archived = 0
                AND (expires_at IS NULL OR expires_at > ?2)
                AND (?3 IS NULL OR record_id != ?3)
              ORDER BY updated_at ASC, received_at ASC, record_id ASC LIMIT 1",
@@ -1159,7 +1276,7 @@ fn record_by_id(
         .query_row(
             &format!(
                 "SELECT {RECORD_COLUMNS} FROM shared_records
-                 WHERE owner_key = ?1 AND record_id = ?2
+                 WHERE owner_key = ?1 AND record_id = ?2 AND archived = 0
                    AND (expires_at IS NULL OR expires_at > ?3)"
             ),
             params![owner.key(), record_id, now],
@@ -1189,6 +1306,7 @@ fn record_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<SharedRecord> {
         pool_revision: row.get::<_, i64>(16)?.max(0) as u64,
         size_bytes: row.get::<_, i64>(17)?.max(0) as u64,
         user_protected: row.get::<_, i64>(18)? != 0,
+        archived: row.get::<_, i64>(26)? != 0,
         provenance: RecordProvenance {
             source_plugin_id: row.get(19)?,
             source_publisher_fingerprint: row.get(20)?,

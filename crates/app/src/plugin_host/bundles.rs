@@ -56,6 +56,7 @@ use super::{
     package::PluginKind,
     process::ProviderProcesses,
     publisher_trust::key_fingerprint,
+    retention::{DataRetention, DurableRetentionOutcome, DurableRetentionSink},
 };
 
 /// Bundle-level identity shown once for the whole review.
@@ -700,7 +701,8 @@ pub struct BundleRemovalFailure {
 }
 
 /// A fully removed bundle: the mapping that was read and every component package it deleted.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RemovedBundle {
     pub bundle: BundleRecord,
     pub components: Vec<RemovedBundleComponent>,
@@ -1025,6 +1027,79 @@ fn remove_private_namespace(
     fs::remove_dir_all(&dir)
         .map_err(|error| format!("private data could not be removed: {error}"))?;
     Ok(true)
+}
+
+/// One component whose durable shared records could not be retained or deleted.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BundleDurableRetentionFailure {
+    pub plugin_id: String,
+    pub version: String,
+    pub error: String,
+}
+
+/// One retention choice applied to every component a package-only removal removed.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BundleDurableRetentionResult {
+    /// `kept` or `deleted`, matching the choice applied to every removed component.
+    pub data_retention: &'static str,
+    pub retained: Vec<DurableRetentionOutcome>,
+    pub failures: Vec<BundleDurableRetentionFailure>,
+}
+
+/// A package-only removal plus the durable-retention result for its removed components.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemovedBundleWithRetention {
+    pub removed: RemovedBundle,
+    pub durable: BundleDurableRetentionResult,
+}
+
+/// Applies one keep-or-delete choice to every component a bundle removal actually deleted.
+///
+/// The bundle mapping is package-only, so retention is a separate host decision. Keeping archives
+/// each component's rows under its own owner; deleting removes only that owner's rows. A failure
+/// for one component is reported by plugin id and does not change another component's data.
+pub async fn apply_bundle_durable_retention(
+    removed: &[RemovedBundleComponent],
+    retention: DataRetention,
+    sink: &dyn DurableRetentionSink,
+) -> BundleDurableRetentionResult {
+    let mut retained = Vec::with_capacity(removed.len());
+    let mut failures = Vec::new();
+    for component in removed {
+        match sink.apply(&component.plugin_id, retention).await {
+            Ok(outcome) => retained.push(outcome),
+            Err(error) => failures.push(BundleDurableRetentionFailure {
+                plugin_id: component.plugin_id.clone(),
+                version: component.version.clone(),
+                error,
+            }),
+        }
+    }
+    BundleDurableRetentionResult {
+        data_retention: retention.as_str(),
+        retained,
+        failures,
+    }
+}
+
+/// Remove one installed bundle and apply one durable-retention choice to the components whose
+/// packages were removed. The mapping, grants, activation and private stores are still left to
+/// the caller, exactly as in [`remove_installed_bundle`]. A partial package removal returns its
+/// error before any retention is applied; retry the removal to finish it.
+pub async fn remove_installed_bundle_with_retention(
+    bundle_id: impl Into<String>,
+    registry: PluginPackageRegistry,
+    bundles: SqlitePluginBundleStore,
+    stopper: &dyn BundleComponentStopper,
+    retention: DataRetention,
+    sink: &dyn DurableRetentionSink,
+) -> Result<RemovedBundleWithRetention, BundleRemovalError> {
+    let removed = remove_installed_bundle(bundle_id, registry, bundles, stopper).await?;
+    let durable = apply_bundle_durable_retention(&removed.components, retention, sink).await;
+    Ok(RemovedBundleWithRetention { removed, durable })
 }
 
 /// The archive must still be the exact bundle the user reviewed. Byte-level comparison is the
@@ -2718,6 +2793,84 @@ mod tests {
             self.stopped.lock().unwrap().push(plugin_id.to_owned());
             Box::pin(std::future::ready(()))
         }
+    }
+
+    /// Records the durable-retention choice made for each removed component.
+    #[derive(Default)]
+    struct RecordingRetention {
+        calls: Mutex<Vec<(String, DataRetention)>>,
+    }
+
+    impl RecordingRetention {
+        fn calls(&self) -> Vec<(String, DataRetention)> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl DurableRetentionSink for RecordingRetention {
+        fn apply<'a>(
+            &'a self,
+            plugin_id: &'a str,
+            retention: DataRetention,
+        ) -> Pin<Box<dyn Future<Output = Result<DurableRetentionOutcome, String>> + Send + 'a>>
+        {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((plugin_id.to_owned(), retention));
+            let outcome = DurableRetentionOutcome {
+                plugin_id: plugin_id.to_owned(),
+                data_retention: retention.as_str(),
+                archived_records: u64::from(retention == DataRetention::Keep),
+                removed_records: u64::from(retention == DataRetention::Delete),
+                reclaimed_bytes: 0,
+            };
+            Box::pin(std::future::ready(Ok(outcome)))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_bundle_removal_applies_one_retention_choice_to_every_removed_component() {
+        let components = vec![
+            RemovedBundleComponent {
+                plugin_id: "org.example.dolphin".to_owned(),
+                version: "0.1.0".to_owned(),
+                stopped: true,
+            },
+            RemovedBundleComponent {
+                plugin_id: "org.example.dolphin.launch".to_owned(),
+                version: "0.2.0".to_owned(),
+                stopped: false,
+            },
+        ];
+        let sink = RecordingRetention::default();
+
+        let kept = apply_bundle_durable_retention(&components, DataRetention::Keep, &sink).await;
+        assert_eq!(kept.data_retention, "kept");
+        assert_eq!(kept.retained.len(), 2);
+        assert!(kept.failures.is_empty());
+        assert!(
+            kept.retained.iter().all(|outcome| {
+                outcome.data_retention == "kept" && outcome.archived_records == 1
+            })
+        );
+        assert_eq!(
+            sink.calls(),
+            [
+                ("org.example.dolphin".to_owned(), DataRetention::Keep),
+                ("org.example.dolphin.launch".to_owned(), DataRetention::Keep)
+            ]
+        );
+
+        let deleted =
+            apply_bundle_durable_retention(&components[..1], DataRetention::Delete, &sink).await;
+        assert_eq!(deleted.data_retention, "deleted");
+        assert_eq!(deleted.retained.len(), 1);
+        assert_eq!(deleted.retained[0].removed_records, 1);
+        assert_eq!(
+            sink.calls().last(),
+            Some(&("org.example.dolphin".to_owned(), DataRetention::Delete))
+        );
     }
 
     #[tokio::test]

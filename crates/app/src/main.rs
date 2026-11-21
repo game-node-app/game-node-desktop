@@ -641,6 +641,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         commands::plugin_shared_data_replace,
         commands::plugin_durable_usage,
         commands::plugin_durable_delete,
+        commands::plugin_durable_reuse,
         commands::plugin_enable,
         commands::plugin_disable,
         commands::plugin_remove,

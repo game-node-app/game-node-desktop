@@ -978,6 +978,8 @@ fn plugin_durable_usage_for(
         max_bytes: gamenode_platform::plugin_shared_data::MAX_OWNER_LOGICAL_BYTES,
         max_age_seconds: None,
         oldest_updated_at: None,
+        archived_records: 0,
+        archived_logical_bytes: 0,
         physical_bytes_estimate: 0,
     });
     PluginDurableUsage {
@@ -1205,13 +1207,37 @@ pub async fn plugin_disable(
         .map_err(|error| error.message().to_owned())
 }
 
+/// Uninstalls one plugin after applying the user's durable shared-data choice. Omitting
+/// `deleteData` keeps the rows, which is the default uninstall choice.
 #[tauri::command]
 pub async fn plugin_remove(
     lifecycle: tauri::State<'_, Arc<crate::plugin_host::runtime::ThirdPartyPluginLifecycle>>,
     plugin_id: String,
-) -> Result<(), String> {
+    delete_data: Option<bool>,
+) -> Result<crate::plugin_host::runtime::DurableRetentionOutcome, String> {
+    use crate::plugin_host::runtime::DataRetention;
+    let retention = if delete_data.unwrap_or(false) {
+        DataRetention::Delete
+    } else {
+        DataRetention::Keep
+    };
     lifecycle
-        .remove(plugin_id)
+        .remove_with_retention(plugin_id, retention)
+        .await
+        .map_err(|error| error.message().to_owned())
+}
+
+/// Reuses a reinstall's archived durable records after a separate host review. The user must
+/// confirm the reuse; a consumer or new package cannot call this on another producer's data.
+#[tauri::command]
+pub async fn plugin_durable_reuse(
+    lifecycle: tauri::State<'_, Arc<crate::plugin_host::runtime::ThirdPartyPluginLifecycle>>,
+    plugin_id: String,
+    expected_profile_id: String,
+    confirmed: bool,
+) -> Result<crate::plugin_host::runtime::DurableRetentionOutcome, String> {
+    lifecycle
+        .reuse_archived_durable_data(plugin_id, &expected_profile_id, confirmed)
         .await
         .map_err(|error| error.message().to_owned())
 }

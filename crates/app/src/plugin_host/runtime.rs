@@ -27,7 +27,7 @@ use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tonic::Status;
 
@@ -284,6 +284,8 @@ pub struct PluginConfigurationState {
     pub available: bool,
     pub revision: Option<String>,
 }
+
+pub use super::retention::{DataRetention, DurableRetentionOutcome, DurableRetentionSink};
 
 pub(crate) struct SharingIdentityObservation {
     pub identity: PluginIdentity,
@@ -1263,7 +1265,116 @@ impl ThirdPartyPluginLifecycle {
         Ok(())
     }
 
-    pub async fn remove(&self, plugin_id: String) -> Result<(), Status> {
+    /// The host-resolved durable owner of an installed plugin, without re-reading its manifest.
+    ///
+    /// Uninstall must not depend on package byte verification: a broken or incompatible package
+    /// still has to be removable, while its retained data must stay attributed to the identity the
+    /// pinned registry and the active profile already established.
+    async fn removal_owner(&self, plugin_id: &str) -> Result<OwnerScope, Status> {
+        let profile = self.api.profiles().require()?;
+        let provider_ids = self.api.third_party_provider_ids_for_plugin(plugin_id);
+        let [provider_id] = provider_ids.as_slice() else {
+            return Err(Status::failed_precondition(
+                "third-party plugin has no unique registered provider",
+            ));
+        };
+        let (registered_id, publisher_fingerprint) =
+            self.api.third_party_identity(provider_id).ok_or_else(|| {
+                Status::failed_precondition("third-party plugin identity is unavailable")
+            })?;
+        if registered_id != plugin_id {
+            return Err(Status::failed_precondition(
+                "registered plugin identity changed",
+            ));
+        }
+        let resolver = self
+            .api
+            .profiles()
+            .resolver(plugin_id, &publisher_fingerprint, None)?;
+        OwnerScope::new(*resolver.storage_owner().key(), profile.epoch())
+            .map_err(|_| Status::failed_precondition("plugin profile is invalid"))
+    }
+
+    /// Applies one keep-or-delete choice to a producer's durable shared records. Keep archives
+    /// them under the original owner; delete removes them and reports the reclaimed bytes. Another
+    /// owner's rows and the private plugin stores are never touched.
+    pub(crate) async fn apply_durable_retention(
+        &self,
+        plugin_id: &str,
+        retention: DataRetention,
+    ) -> Result<DurableRetentionOutcome, Status> {
+        let owner = self.removal_owner(plugin_id).await?;
+        let now = unix_now()?;
+        let pool = self.api.shared_pool();
+        let mut outcome = DurableRetentionOutcome {
+            plugin_id: plugin_id.to_owned(),
+            data_retention: retention.as_str(),
+            archived_records: 0,
+            removed_records: 0,
+            reclaimed_bytes: 0,
+        };
+        match retention {
+            DataRetention::Keep => {
+                outcome.archived_records = pool
+                    .archive_owner(owner, now)
+                    .await?
+                    .map_or(0, |archived| archived.records);
+            }
+            DataRetention::Delete => {
+                if let Some(deleted) = pool.delete_owner(owner, now).await? {
+                    outcome.removed_records = deleted.removed_records;
+                    outcome.reclaimed_bytes = deleted.reclaimed_bytes;
+                }
+            }
+        }
+        Ok(outcome)
+    }
+
+    /// Restores one reinstall's archived durable records after a separate host review. The owner
+    /// comes from the pinned registry identity and the active profile, so a consumer or a new
+    /// package cannot call this on another producer's data.
+    pub async fn reuse_archived_durable_data(
+        &self,
+        plugin_id: String,
+        expected_profile_id: &str,
+        confirmed: bool,
+    ) -> Result<DurableRetentionOutcome, Status> {
+        if !confirmed {
+            return Err(Status::failed_precondition(
+                "reusing archived shared data requires confirmation",
+            ));
+        }
+        let profile = self.api.profiles().require()?;
+        if profile.profile_id() != expected_profile_id {
+            return Err(Status::failed_precondition("plugin profile changed"));
+        }
+        // The package identity is pinned in the registry; byte verification is not required to
+        // find the owner, so a damaged reinstall can still be reviewed and cleaned up.
+        let owner = self.removal_owner(&plugin_id).await?;
+        let now = unix_now()?;
+        let reused = self
+            .api
+            .shared_pool()
+            .reuse_archived_owner(owner, now)
+            .await?
+            .map_or(0, |reused| reused.records);
+        Ok(DurableRetentionOutcome {
+            plugin_id,
+            data_retention: DataRetention::Keep.as_str(),
+            archived_records: reused,
+            removed_records: 0,
+            reclaimed_bytes: 0,
+        })
+    }
+
+    /// Uninstalls one plugin after applying an explicit durable-data retention choice. The choice
+    /// is applied before the package and account state are removed, so the verified installation
+    /// identity is still available; keeping archives the rows, deleting removes only that owner.
+    pub async fn remove_with_retention(
+        &self,
+        plugin_id: String,
+        retention: DataRetention,
+    ) -> Result<DurableRetentionOutcome, Status> {
         let _mutation = self.mutation.lock().await;
         let profile = self.api.profiles().require()?;
         let registry = self.registry.clone();
@@ -1297,6 +1408,25 @@ impl ThirdPartyPluginLifecycle {
             self.processes.terminate_provider(provider_id).await;
             self.api.disconnect(provider_id).await;
         }
+        // Apply the choice after the producer sessions are gone, so a publication racing the
+        // uninstall cannot leave a new live row behind. The registration is still available for
+        // resolving the owner; it is removed below. A plugin that was installed without a unique
+        // registration has no resolvable owner and must still be removable; no other identity's
+        // rows are guessed or touched.
+        let durable = match self.apply_durable_retention(&plugin_id, retention).await {
+            Ok(outcome) => outcome,
+            Err(error) if error.code() == tonic::Code::FailedPrecondition => {
+                tracing::warn!(plugin = %plugin_id, %error, "durable retention skipped at uninstall");
+                DurableRetentionOutcome {
+                    plugin_id: plugin_id.clone(),
+                    data_retention: retention.as_str(),
+                    archived_records: 0,
+                    removed_records: 0,
+                    reclaimed_bytes: 0,
+                }
+            }
+            Err(error) => return Err(error),
+        };
         if !provider_ids.is_empty() {
             self.api.unregister_third_party_plugin(&plugin_id).await?;
         }
@@ -1308,7 +1438,15 @@ impl ThirdPartyPluginLifecycle {
         tokio::task::spawn_blocking(move || state.remove_plugin_account_state(&plugin_id))
             .await
             .map_err(|_| Status::internal("plugin state removal worker failed"))?
-            .map_err(|error| Status::internal(format!("plugin account state: {error}")))
+            .map_err(|error| Status::internal(format!("plugin account state: {error}")))?;
+        Ok(durable)
+    }
+
+    /// Removes one plugin and keeps its durable shared records (the default uninstall choice).
+    pub async fn remove(&self, plugin_id: String) -> Result<(), Status> {
+        self.remove_with_retention(plugin_id, DataRetention::Keep)
+            .await
+            .map(|_| ())
     }
 
     /// Uninstalls one installed bundle: the shared removal primitive stops every active component
@@ -1351,6 +1489,29 @@ impl ThirdPartyPluginLifecycle {
             private_data,
         )
         .await?;
+
+        // The bundle mapping only covers packages, so the same keep-or-delete choice is applied
+        // separately to each removed component's durable shared records. Keeping archives them
+        // under the owner; deleting removes only that owner's rows.
+        let durable = super::bundles::apply_bundle_durable_retention(
+            &outcome.removed,
+            if delete_data {
+                DataRetention::Delete
+            } else {
+                DataRetention::Keep
+            },
+            self,
+        )
+        .await;
+        outcome
+            .failures
+            .extend(durable.failures.into_iter().map(|failure| {
+                super::bundles::BundleRemovalFailure {
+                    plugin_id: failure.plugin_id,
+                    version: failure.version,
+                    error: format!("durable shared data: {}", failure.error),
+                }
+            }));
 
         let state = self.state.clone();
         let removed = outcome.removed.clone();
@@ -1437,6 +1598,29 @@ impl ThirdPartyPluginLifecycle {
             }
         });
     }
+}
+
+impl DurableRetentionSink for ThirdPartyPluginLifecycle {
+    fn apply<'a>(
+        &'a self,
+        plugin_id: &'a str,
+        retention: DataRetention,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<DurableRetentionOutcome, String>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            self.apply_durable_retention(plugin_id, retention)
+                .await
+                .map_err(|error| error.message().to_owned())
+        })
+    }
+}
+
+fn unix_now() -> Result<i64, Status> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs().max(1) as i64)
+        .map_err(|_| Status::failed_precondition("the system clock is before the Unix epoch"))
 }
 
 fn package_status(error: PackageLifecycleError) -> Status {

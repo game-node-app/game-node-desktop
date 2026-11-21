@@ -50,7 +50,7 @@ unserved handlers as requirements, not evidence of runtime enforcement.
 | `ComputerPublishHardware` | `computer.hardware.publish` |
 | `GamePresencePublish`, `GamePresenceClear` | `game.presence.publish` |
 | `GamePerformancePublishSamples`, `GamePerformanceEndSeries` | `game.performance.publish` |
-| `DataPublish` | `data.publish`; accepts custom datasets only, append-only and session-retained (`SESSION_ONLY`) |
+| `DataPublish` | `data.publish`; `PERSISTENT` additionally requires `storage.persist`. Accepts custom datasets; `SESSION_ONLY` stays in host memory and `PERSISTENT` enters the owner-scoped public pool |
 | `DataGet`, `DataList`, `DataWatch` | authenticated resource session plus owner access or the host's current dataset/record sharing policy; selectors request authorized scopes but grant no access |
 | `PersistenceGetUsage`, `PersistenceListEntries`, `PersistenceDeleteEntries`, `PersistenceClear`, `PersistenceSetRetentionPolicy` | `storage.persist`, restricted to the caller's namespace |
 | `ToolsList`, `ToolsRequestApply`, `ToolsRequestRemove` | `tools.read`, `tools.apply`, `tools.remove` |
@@ -428,8 +428,40 @@ come from the design; the rest were chosen by reasoning, not measured, and are o
 
 The quota counts logical bytes, not the size of the store file, which is larger (SQLite pages and
 indexes). There is no per-plugin rate limit on writes; they are serialized per namespace, which
-bounds contention but not frequency. The user-facing cleanup, usage screens, uninstall choices and
-the `Persistence*` methods are separate tasks (16.x, 17.2).
+bounds contention but not frequency. The `Persistence*` methods and the host's future per-file
+cleanup screen cover private storage; the durable public pool below has its own usage, deletion
+and uninstall choice.
+
+## Durable shared public pool
+
+`DataPublish` with `PERSISTENT` writes to a host-owned public pool that is separate from private
+`StoragePut(PERSISTENT)` data and from `plugin-persistence.sqlite3`. The request needs
+`data.publish` plus `storage.persist`; without the second grant it is `PERMISSION_DENIED` and
+nothing is stored, in memory or on disk. `SESSION_ONLY` remains the default and never reaches the
+pool.
+
+- **Ownership and provenance.** The host derives the owner from the authenticated plugin id,
+  pinned publisher fingerprint and active account profile, and assigns the record id, revision,
+  provenance and timestamps. A request cannot name an owner, path or namespace.
+- **Actual durability.** `DataMutationReply.durability` and `DataRecord.durability` report the
+  mode actually stored (`SESSION_ONLY` or `PERSISTENT`) and `expires_at` reports the expiry; there
+  is no silent downgrade. `UNSPECIFIED` in a request is `INVALID_ARGUMENT`.
+- **Cross-session reads.** A consumer with the current category or selected-record grant can read
+  a durable record while the producer is stopped. Revocation, profile change, expiry and retention
+  fence reads and queued watches immediately; the producer does not have to reconnect.
+- **Limits.** One record is at most 1 MiB. Each owner has a 64 MiB logical byte limit, an optional
+  user age limit (up to 365 days) and a producer TTL of at most 30 days. A write for the same
+  producer/dataset/resource replaces that producer's own record; another owner's record is never
+  replaced. Quota pruning removes the owner's oldest unprotected rows first and reports reclaimed
+  bytes. Protection and the retained-size/usage view are host-only.
+- **Uninstall and reuse.** Uninstall offers keep or delete for a producer's durable records.
+  Keep archives them under the original owner: reads, lists, watches, usage and automatic pruning
+  skip them, and a reinstall cannot replace or read them before a separate confirmed host reuse
+  review. Delete removes only that owner's rows. Another owner's rows, private storage, grants and
+  library history are untouched. Bundle and component uninstall apply the same choice to every
+  component they removed.
+- **No paths.** Replies and errors carry logical sizes, counts, limits and timestamps only. The
+  physical pool file and the private plugin stores are never exposed to plugins.
 
 ## Files
 

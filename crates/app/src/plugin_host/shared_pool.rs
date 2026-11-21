@@ -14,8 +14,8 @@ use super::grants::PluginIdentity;
 use super::shared_data::{DurableRecord, Provenance};
 use super::sharing_policy::SharingClass;
 use gamenode_platform::plugin_shared_data::{
-    OwnerScope, OwnerUsage, PruneOutcome, RecordProvenance, RecordWrite, SharedDataError,
-    SharedDataStore, SharedRecord, WriteOutcome,
+    ArchiveOutcome, OwnerScope, OwnerUsage, PruneOutcome, RecordProvenance, RecordWrite,
+    SharedDataError, SharedDataStore, SharedRecord, WriteOutcome,
 };
 use gamenode_plugin_protocol::proto::CommonDataCategory;
 use serde_json::Map;
@@ -170,6 +170,39 @@ impl DurableSharedPool {
         owner: OwnerScope,
         now: i64,
     ) -> Result<Option<PruneOutcome>, Status> {
+        self.mutate_opened(move |store| store.delete_owner(&owner, now))
+            .await
+    }
+
+    /// Makes one producer's durable records inert for uninstall retention. `None` means this host
+    /// never persisted a record. Another owner's rows and the private plugin stores are untouched.
+    pub(crate) async fn archive_owner(
+        self: &Arc<Self>,
+        owner: OwnerScope,
+        now: i64,
+    ) -> Result<Option<ArchiveOutcome>, Status> {
+        self.mutate_opened(move |store| store.archive_owner(&owner, now))
+            .await
+    }
+
+    /// Restores one producer's archived records after an explicit host review. `None` means this
+    /// host never persisted a record. A plugin RPC can never reach this decision.
+    pub(crate) async fn reuse_archived_owner(
+        self: &Arc<Self>,
+        owner: OwnerScope,
+        now: i64,
+    ) -> Result<Option<ArchiveOutcome>, Status> {
+        self.mutate_opened(move |store| store.reuse_archived_owner(&owner, now))
+            .await
+    }
+
+    /// Runs one blocking mutation on the storage worker after opening an existing pool. An absent
+    /// pool is not created and answers `None`.
+    async fn mutate_opened<T, F>(self: &Arc<Self>, mutate: F) -> Result<Option<T>, Status>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut SharedDataStore) -> Result<T, SharedDataError> + Send + 'static,
+    {
         let Some(dir) = self.dir.clone() else {
             return Ok(None);
         };
@@ -182,10 +215,7 @@ impl DurableSharedPool {
                 }
             }
             let store = store.as_mut().expect("the pool is open");
-            store
-                .delete_owner(&owner, now)
-                .map(Some)
-                .map_err(pool_status)
+            mutate(store).map(Some).map_err(pool_status)
         })
         .await
         .map_err(|_| Status::unavailable("the durable shared-data worker is unavailable"))?
@@ -296,6 +326,9 @@ fn pool_status(error: SharedDataError) -> Status {
         SharedDataError::StaleProfileEpoch => {
             Status::failed_precondition("shared-data owner scope is stale")
         }
+        SharedDataError::ArchivedRecordExists => Status::failed_precondition(
+            "archived shared data requires a host reuse review before it can be replaced",
+        ),
         SharedDataError::Open(_)
         | SharedDataError::Database(_)
         | SharedDataError::NewerVersion
@@ -394,6 +427,75 @@ mod tests {
                 .removed_records,
             0
         );
+    }
+
+    #[tokio::test]
+    async fn archiving_and_reuse_are_owner_scoped_and_leave_private_files_alone() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let pool = Arc::new(DurableSharedPool::new(dir.path()));
+        let producer = owner(1);
+        let other = owner(2);
+        let producer_record = pool
+            .persist(write("producer", "disc-1", r#"{"title":"Dolphin"}"#))
+            .await
+            .unwrap();
+        pool.persist(write("other", "disc-2", r#"{"title":"Other"}"#))
+            .await
+            .unwrap();
+
+        let storage_dir = dir
+            .path()
+            .join("plugin-data")
+            .join("publisher")
+            .join("plugin");
+        fs::create_dir_all(&storage_dir).unwrap();
+        let storage_file = storage_dir.join("storage.sqlite3");
+        fs::write(&storage_file, b"private-storage").unwrap();
+
+        let live_before = pool.usage(producer, 110).await.unwrap().unwrap();
+        assert_eq!(live_before.records, 1);
+        assert_eq!(live_before.archived_records, 0);
+        let archived = pool.archive_owner(producer, 120).await.unwrap().unwrap();
+        assert_eq!(archived.records, 1);
+        assert!(
+            pool.get_any(producer_record.record_id.clone(), 120)
+                .await
+                .unwrap()
+                .is_none(),
+            "an archived row is not readable across owners"
+        );
+        let usage = pool.usage(producer, 120).await.unwrap().unwrap();
+        assert_eq!(usage.records, 0);
+        assert_eq!(usage.archived_records, 1);
+        assert_eq!(usage.archived_logical_bytes, live_before.logical_bytes);
+        let other_usage = pool.usage(other, 120).await.unwrap().unwrap();
+        assert_eq!(other_usage.records, 1);
+        assert_eq!(other_usage.archived_records, 0);
+
+        let error = pool
+            .persist(write("producer", "disc-1", r#"{"title":"Replacement"}"#))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+
+        let reused = pool
+            .reuse_archived_owner(producer, 130)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reused.records, 1);
+        assert_eq!(pool.usage(producer, 130).await.unwrap().unwrap().records, 1);
+        let reused_record = pool
+            .get_any(producer_record.record_id, 130)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            reused_record.fields.get("title"),
+            Some(&serde_json::Value::String("Dolphin".to_owned()))
+        );
+        assert_eq!(fs::read(&storage_file).unwrap(), b"private-storage");
+        assert_eq!(pool.usage(other, 130).await.unwrap().unwrap().records, 1);
     }
 
     #[tokio::test]

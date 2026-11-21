@@ -631,3 +631,377 @@ async fn a_stopped_provider_stays_installed_and_start_clears_obsolete_failures()
 
     host.shutdown().await;
 }
+
+/// A minimal installed and registered third-party plugin beside a host-owned durable pool.
+struct UninstallFixture {
+    dir: tempfile::TempDir,
+    root: crate::plugin_host::PluginApi,
+    state: PluginStateLayout,
+    registry: gamenode_platform::plugin_registry::PluginPackageRegistry,
+    plugin_id: &'static str,
+    fingerprint: String,
+    owner: OwnerScope,
+}
+
+impl UninstallFixture {
+    fn new(plugin_id: &'static str, provider_id: &'static str) -> Self {
+        use crate::plugin_host::{PluginApi, provider::ExtensionServices};
+        use gamenode_platform::plugin_shared_data::OwnerScope;
+
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().join("app-data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let root = PluginApi {
+            shared_pool: Arc::new(crate::plugin_host::shared_pool::DurableSharedPool::new(
+                &data_dir,
+            )),
+            ..Default::default()
+        };
+        let state = PluginStateLayout::new(dir.path().join("state"));
+        root.set_state_layout(state.clone());
+        root.providers.profiles().update(Some("account-one"), true);
+        let fingerprint = "ab".repeat(32);
+        root.providers
+            .register(Registration {
+                provider_id: provider_id.into(),
+                plugin_id: plugin_id.into(),
+                declared_developer: "Example Developer".into(),
+                package_digest: vec![7; 32],
+                kind: RegistrationKind::Provider,
+                origin: RegistrationOrigin::ThirdParty {
+                    publisher_fingerprint: fingerprint.clone(),
+                },
+                capabilities: vec![cap::CONTEXT.into()],
+                shared_catalog: false,
+                playtime: Default::default(),
+                services: Arc::new(ExtensionServices),
+            })
+            .unwrap();
+        let epoch = root.providers.profiles().require().unwrap().epoch();
+        let resolver = root
+            .providers
+            .profiles()
+            .resolver(plugin_id, &fingerprint, None)
+            .unwrap();
+        let owner = OwnerScope::new(*resolver.storage_owner().key(), epoch).unwrap();
+        let registry = gamenode_platform::plugin_registry::PluginPackageRegistry::at(
+            dir.path().join("registry"),
+        )
+        .unwrap();
+        let source = dir.path().join("source");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("plugin.json"), b"{}").unwrap();
+        registry
+            .install_verified(plugin_id, "1.0.0", &source, true)
+            .unwrap();
+        Self {
+            dir,
+            root,
+            state,
+            registry,
+            plugin_id,
+            fingerprint,
+            owner,
+        }
+    }
+
+    fn lifecycle(&self) -> ThirdPartyPluginLifecycle {
+        let processes = ProviderProcesses::new_for_lifecycle(
+            self.root.providers.clone(),
+            self.dir.path().join("plugins.sock"),
+            vec![],
+            self.state.clone(),
+        )
+        .unwrap();
+        ThirdPartyPluginLifecycle::new(
+            self.root.providers.clone(),
+            processes,
+            self.state.clone(),
+            self.registry.clone(),
+            ManagedPackageLifecycle::new(self.registry.clone()),
+        )
+    }
+
+    fn reinstall(&self, version: &str) {
+        use crate::plugin_host::provider::ExtensionServices;
+
+        self.root
+            .providers
+            .register(Registration {
+                provider_id: "producer".into(),
+                plugin_id: self.plugin_id.into(),
+                declared_developer: "Example Developer".into(),
+                package_digest: vec![7; 32],
+                kind: RegistrationKind::Provider,
+                origin: RegistrationOrigin::ThirdParty {
+                    publisher_fingerprint: self.fingerprint.clone(),
+                },
+                capabilities: vec![cap::CONTEXT.into()],
+                shared_catalog: false,
+                playtime: Default::default(),
+                services: Arc::new(ExtensionServices),
+            })
+            .unwrap();
+        let source = self.dir.path().join(format!("source-{version}"));
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("plugin.json"), b"{}").unwrap();
+        self.registry
+            .install_verified(self.plugin_id, version, &source, true)
+            .unwrap();
+    }
+
+    async fn publish(&self, resource: &str, title: &str) -> String {
+        use crate::plugin_host::shared_pool::DurableWrite;
+        use gamenode_platform::plugin_shared_data::RecordProvenance;
+
+        let record = self
+            .root
+            .shared_pool
+            .persist(DurableWrite {
+                owner: self.owner,
+                dataset_id: "org.example.catalog".to_owned(),
+                schema_id: "org.example.catalog.v1".to_owned(),
+                schema_version: 1,
+                fields_json: format!(r#"{{"title":"{title}"}}"#),
+                opaque_payload: Vec::new(),
+                resource_id: Some(resource.to_owned()),
+                observed_at: 1_700_000_000,
+                sequence: 1,
+                source_observation_id: format!("observation-{resource}"),
+                expires_at: None,
+                now: 1_700_000_000,
+                provenance: RecordProvenance {
+                    source_plugin_id: self.plugin_id.to_owned(),
+                    source_publisher_fingerprint: self.fingerprint.clone(),
+                    source_profile_id: "account-one".to_owned(),
+                    declared_developer: "Example Developer".to_owned(),
+                    origin: "registry".to_owned(),
+                    package_version: "1.0.0".to_owned(),
+                    package_digest: vec![7; 32],
+                },
+            })
+            .await
+            .unwrap();
+        record.record_id
+    }
+}
+
+#[tokio::test]
+async fn uninstall_keep_archives_only_the_plugins_durable_records_and_keeps_private_storage() {
+    use crate::plugin_host::retention::DataRetention;
+
+    let fixture = UninstallFixture::new("org.example.producer", "producer");
+    let record_id = fixture.publish("disc-1", "Dolphin").await;
+    let other_owner = OwnerScope::new([9; 32], 1).unwrap();
+    fixture
+        .root
+        .shared_pool
+        .persist(crate::plugin_host::shared_pool::DurableWrite {
+            owner: other_owner,
+            dataset_id: "org.example.catalog".to_owned(),
+            schema_id: "org.example.catalog.v1".to_owned(),
+            schema_version: 1,
+            fields_json: r#"{"title":"Other"}"#.to_owned(),
+            opaque_payload: Vec::new(),
+            resource_id: Some("disc-2".to_owned()),
+            observed_at: 1_700_000_000,
+            sequence: 1,
+            source_observation_id: "observation-other".to_owned(),
+            expires_at: None,
+            now: 1_700_000_000,
+            provenance: gamenode_platform::plugin_shared_data::RecordProvenance {
+                source_plugin_id: "org.example.other".to_owned(),
+                source_publisher_fingerprint: "cd".repeat(32),
+                source_profile_id: "account-one".to_owned(),
+                declared_developer: "Other".to_owned(),
+                origin: "registry".to_owned(),
+                package_version: "1.0.0".to_owned(),
+                package_digest: vec![8; 32],
+            },
+        })
+        .await
+        .unwrap();
+    let private = fixture.dir.path().join("plugin-data/private.json");
+    std::fs::create_dir_all(private.parent().unwrap()).unwrap();
+    std::fs::write(&private, b"private").unwrap();
+
+    let lifecycle = fixture.lifecycle();
+    let outcome = lifecycle
+        .remove_with_retention(fixture.plugin_id.to_owned(), DataRetention::Keep)
+        .await
+        .unwrap();
+    assert_eq!(outcome.data_retention, "kept");
+    assert_eq!(outcome.archived_records, 1);
+    assert_eq!(outcome.removed_records, 0);
+
+    let usage = fixture
+        .root
+        .shared_pool
+        .usage(fixture.owner, 1_700_000_100)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(usage.records, 0, "kept rows are inert");
+    assert_eq!(usage.archived_records, 1);
+    assert!(
+        fixture
+            .root
+            .shared_pool
+            .get_any(record_id, 1_700_000_100)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let other = fixture
+        .root
+        .shared_pool
+        .usage(other_owner, 1_700_000_100)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(other.records, 1, "another owner is untouched");
+    assert_eq!(other.archived_records, 0);
+    assert_eq!(std::fs::read(&private).unwrap(), b"private");
+}
+
+#[tokio::test]
+async fn reinstalling_requires_a_reviewed_reuse_before_archived_records_are_readable() {
+    use crate::plugin_host::retention::DataRetention;
+
+    let fixture = UninstallFixture::new("org.example.producer", "producer");
+    let record_id = fixture.publish("disc-1", "Dolphin").await;
+    let lifecycle = fixture.lifecycle();
+    lifecycle
+        .remove_with_retention(fixture.plugin_id.to_owned(), DataRetention::Keep)
+        .await
+        .unwrap();
+
+    // Archived rows are invisible to every ordinary read path, including a fresh consumer list.
+    assert!(
+        fixture
+            .root
+            .shared_pool
+            .list_dataset_any("org.example.catalog".to_owned(), 1_700_000_100)
+            .await
+            .unwrap()
+            .0
+            .is_empty()
+    );
+    assert!(
+        fixture
+            .root
+            .shared_pool
+            .get_any(record_id.clone(), 1_700_000_100)
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    // A reinstall shares the owner key, but still needs the separate reviewed reuse decision.
+    fixture.reinstall("1.0.1");
+    let profile_id = fixture
+        .root
+        .providers
+        .profiles()
+        .require()
+        .unwrap()
+        .profile_id()
+        .to_owned();
+    let denied = lifecycle
+        .reuse_archived_durable_data(fixture.plugin_id.to_owned(), &profile_id, false)
+        .await
+        .unwrap_err();
+    assert_eq!(denied.code(), tonic::Code::FailedPrecondition);
+    assert!(
+        fixture
+            .root
+            .shared_pool
+            .get_any(record_id.clone(), 1_700_000_110)
+            .await
+            .unwrap()
+            .is_none(),
+        "an unconfirmed reuse changes nothing"
+    );
+
+    let reused = lifecycle
+        .reuse_archived_durable_data(fixture.plugin_id.to_owned(), &profile_id, true)
+        .await
+        .unwrap();
+    assert_eq!(reused.archived_records, 1);
+    let listed = fixture
+        .root
+        .shared_pool
+        .list_dataset_any("org.example.catalog".to_owned(), 1_700_000_120)
+        .await
+        .unwrap()
+        .0;
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].record_id, record_id);
+    assert_eq!(
+        listed[0].fields.get("title"),
+        Some(&serde_json::Value::String("Dolphin".to_owned()))
+    );
+}
+
+#[tokio::test]
+async fn uninstall_delete_removes_only_the_selected_plugins_durable_records() {
+    use crate::plugin_host::retention::DataRetention;
+
+    let fixture = UninstallFixture::new("org.example.producer", "producer");
+    fixture.publish("disc-1", "Dolphin").await;
+    let other_owner = OwnerScope::new([9; 32], 1).unwrap();
+    fixture
+        .root
+        .shared_pool
+        .persist(crate::plugin_host::shared_pool::DurableWrite {
+            owner: other_owner,
+            dataset_id: "org.example.catalog".to_owned(),
+            schema_id: "org.example.catalog.v1".to_owned(),
+            schema_version: 1,
+            fields_json: r#"{"title":"Other"}"#.to_owned(),
+            opaque_payload: Vec::new(),
+            resource_id: Some("disc-2".to_owned()),
+            observed_at: 1_700_000_000,
+            sequence: 1,
+            source_observation_id: "observation-other".to_owned(),
+            expires_at: None,
+            now: 1_700_000_000,
+            provenance: gamenode_platform::plugin_shared_data::RecordProvenance {
+                source_plugin_id: "org.example.other".to_owned(),
+                source_publisher_fingerprint: "cd".repeat(32),
+                source_profile_id: "account-one".to_owned(),
+                declared_developer: "Other".to_owned(),
+                origin: "registry".to_owned(),
+                package_version: "1.0.0".to_owned(),
+                package_digest: vec![8; 32],
+            },
+        })
+        .await
+        .unwrap();
+
+    let lifecycle = fixture.lifecycle();
+    let outcome = lifecycle
+        .remove_with_retention(fixture.plugin_id.to_owned(), DataRetention::Delete)
+        .await
+        .unwrap();
+    assert_eq!(outcome.data_retention, "deleted");
+    assert_eq!(outcome.removed_records, 1);
+    assert!(outcome.reclaimed_bytes > 0);
+    let usage = fixture
+        .root
+        .shared_pool
+        .usage(fixture.owner, 1_700_000_100)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(usage.records, 0);
+    assert_eq!(usage.archived_records, 0);
+    let other = fixture
+        .root
+        .shared_pool
+        .usage(other_owner, 1_700_000_100)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(other.records, 1, "another owner is untouched");
+}

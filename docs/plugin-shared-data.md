@@ -1,11 +1,14 @@
 # Shared plugin data
 
 `ResourceHost.DataPublish`, `DataGet`, `DataList` and `DataWatch` are the public
-wire API for session-retained plugin data. Use the generated
+wire API for session-retained and durable plugin data. Use the generated
 `ResourceHost` client and the session's `resource_context`; no source-private
 RPC or Core dashboard is part of this contract. `DataPublish` requires the
-`data.publish` capability. Reads require an authenticated plugin session and
-host authorization for each record; there is no general `data.read` grant.
+`data.publish` capability, and `PERSISTENT` publication additionally requires
+the independent `storage.persist` grant. Reads require an authenticated plugin
+session and host authorization for each record; there is no general
+`data.read` grant, and a durable record is filtered by the same grants while
+its producer is offline.
 
 ## Dataset, method, permission and projection matrix
 
@@ -31,7 +34,7 @@ reads directly instead: the runtime catalog through `RuntimesList`,
 
 | Dataset or information family | Write methods and grants | Read methods and grants | Returned projection and scope |
 | --- | --- | --- | --- |
-| Custom shared dataset | `DataPublish` with `data.publish` | `DataGet`, `DataList`, `DataWatch` with owner access or exact source/recipient/dataset review | `DataRecord` has a host-assigned ID and revision, dataset/schema, observation and expiry metadata, and host-attributed provenance. The payload has the reviewed top-level `Struct` fields or the whole opaque payload when explicitly approved. |
+| Custom shared dataset | `DataPublish` with `data.publish`; `PERSISTENT` also requires `storage.persist` | `DataGet`, `DataList`, `DataWatch` with owner access or exact source/recipient/dataset review | `DataRecord` has a host-assigned ID and revision, dataset/schema, observation and expiry metadata, the actual `durability`, and host-attributed provenance. The payload has the reviewed top-level `Struct` fields or the whole opaque payload when explicitly approved. A durable record remains readable while its producer is offline. |
 | Approved game paths and volumes (`GAME_PATHS`) | Location inspection is read-only | `Locations.Inspect`, `WatchAvailability`, `GetSize`, `GetAccess`, `GetLastModified`, `GetFingerprint`, `Compare`. Use `game.storage.inspect` for approved installation/library resources and `game.saves.inspect` for approved save/prefix resources or own save profiles. | Inspection and availability return scoped volume/attachment metadata and opaque volume tokens. Size, access, timestamps, fingerprints and comparison results describe the approved scope. Location details, handles and relative names stay in that scoped API. |
 | Runtime catalog (`RUNTIME_CATALOG`) | `RuntimesRegister`, `RuntimesUpdate`, `RuntimesRemove` with `game.runtime.create`, `game.runtime.update`, `game.runtime.delete` respectively. Register/update replies also require `files.read`, and the executable must be approved. | `RuntimesList`, `RuntimesGet`, `RuntimesWatch` with `game.runtime.read` and `files.read`. An explicit `RUNTIME_CATALOG` selector returns other plugins' records after the recipient's current category grant, without a source-to-recipient policy. | The caller's own runtime ID, name, version, formats, platform, revision, observation time and argument template, with an approved executable handle bound to the session. A shared projection adds host-recorded producer provenance and validated extension namespaces but always has an empty executable handle; shared records cannot be updated, removed or launched. |
 | Content availability (`CONTENT_AVAILABILITY`) | `GamesRegisterContent` with `library.discovery`, `files.read` and an approved content handle | `LibraryList`, `LibraryGet`, `LibraryWatch` with `library.read` and `library.read.all` for whole-library scope | Registration binds content to a scoped game/installation and the caller's runtime. Library reads return logical game/installation and display metadata. `LibraryEntry.runtime_availability` lists safe content/runtime identities for the caller's own bindings by default; an explicit `CONTENT_AVAILABILITY` selector adds other plugins' bindings after the current category grant, with no path, handle or byte payload. Other categories remain `UNIMPLEMENTED` on Library reads. |
@@ -42,6 +45,81 @@ reads directly instead: the runtime catalog through `RuntimesList`,
 | Game presence | `GamePresencePublish`, `GamePresenceClear` with `game.presence.publish` | `GamePresence.List`, `Get`, `Watch` with `game.presence.read` and exact sensitive source/recipient field review | The producer explicitly publishes bounded details for a numeric GameNode game ID and safe session ID. The host assigns sequence and observation time, caps TTL at five minutes, replaces prior state for the same producer/game/session, and removes it on clear, expiry or producer-session close. Presence is descriptive and does not set online status or influence process/playtime decisions. |
 | Game performance history (`GAME_PERFORMANCE_HISTORY`) | `GamePerformancePublishSamples`, `GamePerformanceEndSeries` with `game.performance.publish` | `GamePerformance.List`, `Get`, `Watch`, `QuerySeries`, `Aggregate` with `game.performance.read`; foreign common history additionally requires explicitly selecting the category or an authorized record | Each bounded series is tied to the host-selected game/installation, local computer context, plugin session and optional runtime recipe revision. Samples identify source/tool/version, Unix-millisecond observation time, sample interval, explicit FPS/CPU/RAM units and semantics, measurement quality and sequence. Only actual retained observations are queried or aggregated. Missing sequence numbers remain gaps; no values are interpolated. History is session-retained and removed when the producer session closes. |
 | Private plugin storage | `StoragePut` with `storage.write` and additionally `storage.persist` for `PERSISTENT`. `StorageDelete` with `storage.delete`. | `StorageGet` with `storage.read` | Private bytes, revision, durability and expiration in the authenticated plugin/publisher/profile namespace. Shared-data grants cannot address these keys. |
+
+### Durable publication, retention and cross-session reads
+
+`DataPublishRequest.durability` selects the storage mode. `SESSION_ONLY` is the
+default and unchanged: the record disappears when the producer session closes.
+`PERSISTENT` requires both `data.publish` and `storage.persist`, writes the
+validated record to the host-owned public pool and returns the actual mode and
+expiry in `DataMutationReply.durability` and `.expires_at`. A missing
+`storage.persist` is an explicit `PERMISSION_DENIED`; the host never downgrades
+the request to a session copy. `UNSPECIFIED` is `INVALID_ARGUMENT`.
+
+Every returned `DataRecord` carries the additive `durability` field, so a
+consumer can distinguish a durable record from a session copy without guessing
+from the producer's state. `StorageDurability` values are
+`SESSION_DURABILITY_UNSPECIFIED`, `SESSION_ONLY` and `PERSISTENT`; the field is
+additive and older clients ignore it.
+
+A durable publication is private until the same category or selected-record
+review grants read access. The producer may be stopped: `DataGet`, `DataList`
+and `DataWatch` merge durable rows with live session rows under the current
+policy revision, field projection and owner-private default. Revocation,
+profile change and expiry fence reads and queued watches immediately, without
+requiring the producer to reconnect. The persisted pool sequence is handed to
+`DataList` and `DataWatch`, so a restart can resume after an exact revision and
+a stale cursor is rejected instead of silently skipping records.
+
+Durable limits and retention (all values are logical, never a path):
+
+| Limit | Value |
+| --- | --- |
+| One durable record | 1 MiB, one non-empty `Struct` or non-empty `opaque_payload` |
+| Per-owner default byte limit | 64 MiB; a user policy may only lower it |
+| Per-owner default age limit | none; a user policy is optional and bounded to 365 days |
+| Producer TTL | 0 (no expiry) or up to 30 days, capped by the host |
+| Bounded prune | expired rows first, then the owner's oldest unprotected rows, at most 1024 rows per pass |
+
+A write for the same producer, dataset and `resource_id` replaces that
+producer's record in place and raises its record revision; another producer's
+record is never replaced. A publication without `resource_id` appends a new
+host id. Quota and retention prune only the publishing owner's oldest
+unprotected rows and report the reclaimed bytes. `set_user_protected` is
+host-only; a plugin cannot mark its own rows or name another owner.
+
+### Uninstall, kept records and reviewed reuse
+
+Uninstall offers one keep-or-delete choice for a producer's durable records:
+
+- **Keep** archives every row under the original owner. The rows stay on disk
+  and keep their host-assigned provenance, but ordinary reads, lists, watches,
+  usage and automatic pruning skip them. A reinstalled package that shares the
+  owner identity cannot replace an archived resource record and cannot read the
+  old rows. A separate host review (`plugin_durable_reuse`, confirmed by the
+  user) restores them; only then do the consumer's normal grants apply again.
+- **Delete** removes only that producer's rows and reports the bytes actually
+  reclaimed. Another owner's durable rows, the private `plugin-data` stores,
+  grants and library history are untouched.
+
+Bundle and component uninstall use the same choice for every component package
+they actually removed. A partial removal reports the components that remain;
+retention is applied only to the components whose packages were deleted. The
+pool is host-owned and separate from private `StoragePut(PERSISTENT)` data, so
+uninstalling a producer never turns private storage into a public pool.
+
+The fixture below proves the whole path with two plugins and real RPCs:
+`two_plugin_durable_catalog_fixture_survives_stop_restart_revocation_and_cleanup`
+in `crates/app/src/plugin_host/resources/tests/data.rs` publishes a durable
+catalog record, stops the producer, reads it from the consumer, restarts the
+broker and pool, revokes the grant and reclaims only the producer's owner.
+
+```sh
+cargo test -p gamenode-app --lib --locked -- two_plugin_durable_catalog_fixture
+cargo test -p gamenode-app --lib --locked -- uninstall_keep_archives
+cargo test -p gamenode-app --lib --locked -- reinstalling_requires_a_reviewed_reuse
+cargo test -p gamenode-platform plugin_shared_data --locked
+```
 
 ### Storage diagnostics
 
@@ -159,23 +237,29 @@ request has `projection_id`, it selects a host-defined projection.
 
 | Method | Request and result | Permission and behavior |
 | --- | --- | --- |
-| `DataPublish` | `DataPublishRequest` → `DataMutationReply` | Requires `data.publish`. Appends a custom dataset record and returns its host-assigned ID and revision. Set `durability` to `SESSION_ONLY` and `mutation.expected_revision` to `0`. For private durable values, use `StoragePut` with `PERSISTENT` and the independent `storage.persist` grant. |
+| `DataPublish` | `DataPublishRequest` → `DataMutationReply` | Requires `data.publish`; `PERSISTENT` additionally requires `storage.persist`. Appends or replaces a custom dataset record and returns its host-assigned ID, revision, actual `durability` and `expires_at`. Set `mutation.expected_revision` to `0` for an append. For private durable values, use `StoragePut` with `PERSISTENT` and its separate grant; the public pool never reuses private storage. |
 | `DataGet` | `DataGetRequest` → `DataGetReply` | Requires the session context and an exact record ID. For a common record owned by another plugin, also select its category or record ID through `CommonDataSelector`. For a foreign custom or sensitive record, the exact policy authorizes its reviewed fields by ID independently of the history/live settings. Hidden and missing records return `NOT_FOUND`. |
 | `DataList` | `DataListRequest` → `DataListReply` | Requires a `PageRequest` with session context. Pages one dataset with history access. Leave `filter` empty. Supply the common selector on the request or on `page`. If both are present, they must agree. The opaque cursor is bound to the session and query, expires after five minutes and is fenced by changes to the snapshot or sharing policy. |
 | `DataWatch` | `DataWatchRequest` → stream of `DataEvent` | Requires session context and filters each event with current live-sharing authorization. `after_revision = 0` starts at the current broker revision without replay. Any nonzero position must match the current revision. If policy revocation or queue overflow ends the stream, list and subscribe again. |
 
-To retain a shared record, a consumer must first read it through its current
-sharing grant and then explicitly copy the returned projection into its own
-namespace with `StoragePut`. This requires the independent `storage.write` and
-`storage.persist` grants, and the consumer chooses the logical key and expiry.
-The host never persists a foreign record automatically, and a retention grant
-does not expand which source fields the consumer can read. The stored copy
-remains owned by the consumer's authenticated plugin/publisher/profile identity.
+There are two different durable outcomes. A producer that owns the reference
+data can publish it as `PERSISTENT` under `data.publish` plus `storage.persist`;
+the host stores it in the public pool with host provenance and later applies the
+uninstall/retention rules above. A consumer that only read a record through a
+grant can explicitly copy the returned projection into its own private
+namespace with `StoragePut`. That copy requires the independent `storage.write`
+and `storage.persist` grants and the logical key/expiry are the consumer's.
+These stores never overlap: publishing does not write a consumer's private
+storage, reading does not create a durable public copy, a retention grant does
+not expand which source fields the consumer can read, and the stored copy
+remains owned by the consumer's authenticated plugin/publisher/profile
+identity.
 
 `DataPublishRequest` carries `dataset_id`, `schema_id`, `schema_version`,
 `durability`, and `ttl_seconds`, plus one payload chosen from a non-empty
-protobuf `Struct` and non-empty `opaque_payload` bytes. Use a namespaced
-dataset ID. Set `schema_id` to that ID or a dot-qualified child and set a
+protobuf `Struct` and non-empty `opaque_payload` bytes. `SESSION_ONLY` needs
+only `data.publish`; `PERSISTENT` needs `data.publish` plus `storage.persist`.
+Use a namespaced dataset ID. Set `schema_id` to that ID or a dot-qualified child and set a
 positive `schema_version`. Sharing opaque bytes requires an explicit
 `opaque_payload` field grant and delivers the entire payload. The
 producer also supplies `resource_id`, non-negative `observed_at`, a positive
@@ -204,7 +288,10 @@ reuse a key after the earlier session's data has been removed.
    `SESSION_ONLY`, `resource_id = "runtime-primary"`, `sequence = 1`, an
    observation time and a unique `source_observation_id`. The fixture sends
    a `Struct` with `fps` and a dummy `device_id` to exercise projection.
-   Keep the returned record ID.
+   Keep the returned record ID. For reference data that must outlive the
+   producer, send `PERSISTENT` with `storage.persist` and keep
+   `mutation.expected_revision = 0`; the reply reports `PERSISTENT` and the
+   expiry actually stored.
 2. In the host's plugin inventory, review the exact producer, recipient and
    dataset. Approve only `fps`, with history for list and live delivery for watch.
    The host binds the policy to the verified plugin IDs, publisher fingerprints
@@ -251,8 +338,12 @@ values inside nested objects, under other keys or inside opaque bytes.
 Custom fields carry data and cannot grant execution, ownership or access.
 
 Shared reads grant access to the authorized projection for the current query
-or delivery. Durable recipient copies require separate retention consent
-(task 1.13). Use the private `Storage*` API for the owner's private bytes.
+or delivery. A durable producer publication requires the separate
+`storage.persist` grant; a consumer that copies a projection into its own
+private namespace needs `storage.write` plus `storage.persist`. Uninstall Keep
+does not grant a new consumer access to archived rows: the host must first apply
+the reviewed reuse decision described above. Use the private `Storage*` API for
+an owner's private bytes.
 
 The Rust SDK exposes the generated client through
 `HostClient::resource_client()`. Pass `HostClient::resource_context()` in each

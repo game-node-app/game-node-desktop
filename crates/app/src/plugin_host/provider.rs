@@ -17,6 +17,7 @@ use super::package::PlaytimeCapabilities;
 use super::profile::PluginProfiles;
 use super::runtime::RuntimeSessionHandler;
 use super::shared_data::DataBroker;
+use super::shared_pool::DurableSharedPool;
 
 const MAX_OPERATIONS: usize = 32;
 const COMMAND_QUEUE: usize = 32;
@@ -402,6 +403,8 @@ pub struct ProviderApi {
     configuration_windows: Arc<tokio::sync::Mutex<HashMap<(String, String), ConfigurationWindow>>>,
     runtime_session_handler: Arc<Mutex<Option<Arc<dyn RuntimeSessionHandler>>>>,
     shared_data_broker: Arc<Mutex<Option<Weak<DataBroker>>>>,
+    /// The host-owned durable public pool; disabled unless the application supplies its folder.
+    shared_pool: Arc<Mutex<Arc<DurableSharedPool>>>,
 }
 
 /// Declared configuration surfaces and the active session's explicit grants.
@@ -795,6 +798,16 @@ fn permission_set(kind: ProviderOperation) -> BTreeSet<&'static str> {
 impl ProviderApi {
     pub(crate) fn set_shared_data_broker(&self, broker: &Arc<DataBroker>) {
         *lock(&self.shared_data_broker) = Some(Arc::downgrade(broker));
+    }
+
+    /// Shares the application's durable public pool with lifecycle code that resolves owners
+    /// outside a plugin session (uninstall retention and its reviewed reuse).
+    pub fn set_shared_pool(&self, pool: Arc<DurableSharedPool>) {
+        *lock(&self.shared_pool) = pool;
+    }
+
+    pub(crate) fn shared_pool(&self) -> Arc<DurableSharedPool> {
+        lock(&self.shared_pool).clone()
     }
 
     pub fn set_runtime_session_handler(&self, handler: Arc<dyn RuntimeSessionHandler>) {

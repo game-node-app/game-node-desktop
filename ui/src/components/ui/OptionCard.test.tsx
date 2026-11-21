@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { IconBookmark, IconDeviceGamepad2, IconTrophy } from '@tabler/icons-react';
+import { IconBookmark, IconDeviceGamepad2, IconInfinity, IconTrophy } from '@tabler/icons-react';
 import { OptionCard, OptionCardGroup } from './OptionCard';
 import { Pill } from './Pill';
 import { renderUi } from './testUtils';
@@ -69,6 +69,16 @@ describe('OptionCard', () => {
       'font-semibold',
       'text-text-primary',
     );
+  });
+
+  it('lets a long status label wrap instead of clipping it', () => {
+    renderUi(
+      <OptionCard value="ongoing" title="Em andamento" icon={IconInfinity} />,
+    );
+
+    const label = screen.getByText('Em andamento');
+    expect(label).toHaveClass('whitespace-normal', 'leading-note');
+    expect(label).not.toHaveClass('truncate');
   });
 
   it('renders a match row as a listbox option with cover, meta and pill', () => {

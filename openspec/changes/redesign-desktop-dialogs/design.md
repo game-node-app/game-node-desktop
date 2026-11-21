@@ -291,6 +291,27 @@ The mock gains fixtures and handlers for every new field and input:
 - Manual check in the mock against `screens/*.png`, plus native Windows acceptance for the image picker
   and the browser reopen.
 
+### Intentional deviations from the screens
+
+The implementation keeps these differences from `design-reference/screens/`, because behavior the
+specs require (or real data) needs them. They are not defects in the visual check.
+
+- **D02 — five status cards.** `Ongoing` is a real GameNode status (`IconInfinity`), so the row shows
+  five cards where Figma shows four (see D3). In pt-BR the `Em andamento` label wraps onto a second
+  line, and the cards grow together to keep the row aligned.
+- **D05 — status disclosures.** The protection card keeps the save-support `Pill` (`Supported`,
+  `Needs selection`, …) and the history keeps the backup job-state `Pill` (`Backup completed`,
+  running, failed), so a support problem or a failed run is visible inside the dialog.
+- **D06 — tool metadata.** The tool card keeps the license label and the source-page button, the
+  channel row keeps the refresh button, and the anti-cheat callout lists the detected evidence paths.
+  These come from the existing tool views and stay reachable for support and verification.
+- **D09 — remove default.** "Remove and don't import again" stays preselected (see D9); Figma's frame
+  shows the other card selected as sample state.
+- **D12 — sync checklist.** The statuses/collections row is replaced by "Games detected on this PC and
+  their matches", because statuses and collections are only sent through explicit actions (see D9).
+- **D01/D08 — no developer line.** GameNode search returns no developer, so the option meta and the
+  preview omit it, and there is no developer-mismatch match reason (see Goals/Non-Goals and D2).
+
 ## Risks / Trade-offs
 
 - [The server's `POST /v1/collections` returns no id] → Re-list and match by name and novelty. If two

@@ -147,3 +147,9 @@ However, it **does not** replace native OS acceptance for:
 For those OS-level checks, use `cargo xwin test --workspace --target x86_64-pc-windows-msvc --locked`
 and `scripts/install-windows-wsl.sh` as documented in
 [docs/development.md](docs/development.md).
+
+Native Windows acceptance is never assigned to the user. After Linux acceptance is recorded and
+the Windows cross-build/test compilation passes, the handoff belongs to **Lamarck (GameNode
+Core)**; record it as a `Windows handoff — Lamarck (GameNode Core)` task and do not complete it
+from cross-build results. See
+[docs/development.md](docs/development.md#native-windows-acceptance-handoff).

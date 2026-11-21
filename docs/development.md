@@ -153,6 +153,19 @@ Native Linux and Windows builds require their corresponding prerequisites above.
 This change does not configure hosted CI runners; its verification commands are
 run locally, and cross-compilation does not replace native OS acceptance.
 
+### Native Windows acceptance handoff
+
+The desktop change author does not run native Windows acceptance. A change is ready for handoff
+when its Linux acceptance is recorded and the Windows cross-build and test compilation pass
+locally (`cargo xwin ...`). The Windows candidate is then handed to **Lamarck (GameNode Core)**,
+who runs the native checks and records the outcomes in
+[windows-verification.md](windows-verification.md).
+
+OpenSpec tasks keep two explicit items: the Linux/cross-build work owned by this repository and
+a `Windows handoff — Lamarck (GameNode Core)` task that stays unchecked until he records the
+result. Cross-compilation never completes the handoff. Pull requests list the pending handoff
+and never claim native Windows execution.
+
 ## Scoped verification for implementation tasks
 
 Start with the smallest checks that exercise the changed behavior: the focused test

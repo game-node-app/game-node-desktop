@@ -12,7 +12,7 @@ const GRANTS: &[&str] = &[
     cap::GAME_PERFORMANCE_READ,
 ];
 
-fn sample(sequence: u64, observed_at: i64, fps: f64) -> PerformanceSample {
+pub(super) fn sample(sequence: u64, observed_at: i64, fps: f64) -> PerformanceSample {
     PerformanceSample {
         observed_at,
         frames_per_second: fps,
@@ -27,14 +27,21 @@ fn sample(sequence: u64, observed_at: i64, fps: f64) -> PerformanceSample {
     }
 }
 
-fn request(
-    fixture: &Fixture,
+/// A valid performance batch for one authenticated session context. Shared with the combined
+/// two-plugin flow so the measurement semantics stay identical across fixtures.
+pub(super) fn request_for(
+    context: &ServiceContext,
     key: &str,
     expected_revision: u64,
     samples: Vec<PerformanceSample>,
 ) -> PerformanceSamplesRequest {
     PerformanceSamplesRequest {
-        mutation: Some(fixture.mutation(key, expected_revision)),
+        mutation: Some(MutationContext {
+            context: Some(context.clone()),
+            idempotency_key: key.into(),
+            expected_revision,
+            ..Default::default()
+        }),
         series_id: "series-primary".into(),
         game_id: "5".into(),
         samples,
@@ -53,6 +60,15 @@ fn request(
         memory_unit: "bytes".into(),
         ..Default::default()
     }
+}
+
+fn request(
+    fixture: &Fixture,
+    key: &str,
+    expected_revision: u64,
+    samples: Vec<PerformanceSample>,
+) -> PerformanceSamplesRequest {
+    request_for(&fixture.context(), key, expected_revision, samples)
 }
 
 async fn fixture() -> Fixture {

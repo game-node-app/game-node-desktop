@@ -177,6 +177,7 @@ fn upgrading_the_first_schema_keeps_records_and_adds_no_session_rows() {
     assert_eq!(record.revision, 1);
     assert_eq!(record.pool_revision, 1);
     assert!(!record.user_protected);
+    assert!(!record.archived);
     assert_eq!(store.pool_revision().unwrap(), 1);
     let records: i64 = store
         .conn
@@ -1137,6 +1138,168 @@ fn deleting_with_a_stale_profile_epoch_changes_nothing() {
         Err(SharedDataError::StaleProfileEpoch)
     ));
     assert_eq!(store.usage(&current, 101).unwrap().records, 1);
+}
+
+#[test]
+fn archiving_retains_only_the_owners_rows_until_a_reviewed_reuse() {
+    let dir = TempDir::new().unwrap();
+    let mut store = SharedDataStore::open(dir.path()).unwrap();
+    let archived_owner = owner(17, 1);
+    let other_owner = owner(18, 1);
+    let archived_provenance = provenance("producer");
+    let other_provenance = provenance("other");
+
+    let first = publish(
+        &mut store,
+        archived_owner,
+        record(
+            "org.example.catalog",
+            Some("disc-1"),
+            r#"{"title":"Dolphin"}"#,
+            &archived_provenance,
+            100,
+        ),
+    );
+    let second = publish(
+        &mut store,
+        archived_owner,
+        record(
+            "org.example.catalog",
+            None,
+            r#"{"title":"Second"}"#,
+            &archived_provenance,
+            101,
+        ),
+    );
+    let other = publish(
+        &mut store,
+        other_owner,
+        record(
+            "org.example.catalog",
+            Some("disc-2"),
+            r#"{"title":"Other"}"#,
+            &other_provenance,
+            102,
+        ),
+    );
+    let archived_bytes = first.record.size_bytes + second.record.size_bytes;
+    let other_bytes = other.record.size_bytes;
+    let pool_before = store.pool_revision().unwrap();
+
+    let outcome = store.archive_owner(&archived_owner, 110).unwrap();
+    assert_eq!(outcome.records, 2);
+    assert_eq!(outcome.pool_revision, pool_before + 1);
+
+    // Ordinary owner and cross-owner reads skip archived rows.
+    assert!(
+        store
+            .get(&archived_owner, &first.record.record_id, 110)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        store
+            .get_any(&first.record.record_id, 110)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        store
+            .list_dataset(&archived_owner, "org.example.catalog", 110)
+            .unwrap()
+            .records
+            .is_empty(),
+        "the archived owner sees no live row"
+    );
+    let any = store.list_dataset_any("org.example.catalog", 110).unwrap();
+    assert_eq!(any.len(), 1, "only the other owner's row stays visible");
+    assert_eq!(any[0].record_id, other.record.record_id);
+    assert!(!any[0].archived);
+
+    let usage = store.usage(&archived_owner, 110).unwrap();
+    assert_eq!(usage.records, 0);
+    assert_eq!(usage.logical_bytes, 0);
+    assert_eq!(usage.archived_records, 2);
+    assert_eq!(usage.archived_logical_bytes, archived_bytes);
+    let other_usage = store.usage(&other_owner, 110).unwrap();
+    assert_eq!(other_usage.records, 1);
+    assert_eq!(other_usage.logical_bytes, other_bytes);
+    assert_eq!(other_usage.archived_records, 0);
+
+    // A reinstall cannot replace the archived resource invisibly, and retention never prunes it.
+    let mut replacement = record(
+        "org.example.catalog",
+        Some("disc-1"),
+        r#"{"title":"Replacement"}"#,
+        &archived_provenance,
+        120,
+    );
+    replacement.expected_revision = None;
+    assert!(matches!(
+        store.write(archived_owner, replacement),
+        Err(SharedDataError::ArchivedRecordExists)
+    ));
+    assert_eq!(store.pool_revision().unwrap(), outcome.pool_revision);
+    let pruned = store.prune(&archived_owner, 130).unwrap();
+    assert_eq!(pruned.removed_records, 0);
+    assert_eq!(
+        store.usage(&archived_owner, 130).unwrap().archived_records,
+        2
+    );
+
+    // An explicit host review is the only path back to ordinary reads.
+    let reused = store.reuse_archived_owner(&archived_owner, 140).unwrap();
+    assert_eq!(reused.records, 2);
+    assert_eq!(reused.pool_revision, pruned.pool_revision + 1);
+    let listed = store
+        .list_dataset(&archived_owner, "org.example.catalog", 140)
+        .unwrap();
+    assert_eq!(listed.records.len(), 2);
+    assert!(listed.records.iter().all(|record| !record.archived));
+    assert_eq!(
+        store
+            .get(&archived_owner, &first.record.record_id, 140)
+            .unwrap()
+            .map(|record| record.fields_json),
+        Some(r#"{"title":"Dolphin"}"#.to_owned())
+    );
+    let usage = store.usage(&archived_owner, 140).unwrap();
+    assert_eq!(usage.records, 2);
+    assert_eq!(usage.logical_bytes, archived_bytes);
+    assert_eq!(usage.archived_records, 0);
+    assert_eq!(
+        store
+            .get(&other_owner, &other.record.record_id, 140)
+            .unwrap(),
+        Some(other.record.clone())
+    );
+    assert_eq!(store.usage(&other_owner, 140).unwrap().records, 1);
+}
+
+#[test]
+fn archiving_with_a_stale_profile_epoch_changes_nothing() {
+    let dir = TempDir::new().unwrap();
+    let mut store = SharedDataStore::open(dir.path()).unwrap();
+    let stale = owner(19, 1);
+    let current = owner(19, 2);
+    publish(
+        &mut store,
+        current,
+        record(
+            "org.example.catalog",
+            Some("resource"),
+            r#"{"v":1}"#,
+            &provenance("producer"),
+            100,
+        ),
+    );
+
+    assert!(matches!(
+        store.archive_owner(&stale, 101),
+        Err(SharedDataError::StaleProfileEpoch)
+    ));
+    assert_eq!(store.usage(&current, 101).unwrap().records, 1);
+    assert_eq!(store.usage(&current, 101).unwrap().archived_records, 0);
 }
 
 #[test]

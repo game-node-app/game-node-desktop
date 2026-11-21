@@ -716,6 +716,7 @@ impl SettingsStore for SqliteSettingsStore {
 mod tests {
     use super::*;
     use gamenode_core::{Locale, StartScope, ToolChannel};
+    use rusqlite::types::ValueRef;
     use sha2::{Digest, Sha256};
     use tempfile::TempDir;
 
@@ -859,18 +860,6 @@ mod tests {
 
     #[test]
     fn fresh_and_main_upgrade_databases_have_the_same_complete_schema() {
-        fn schema(conn: &Connection) -> Vec<(String, String, String, String)> {
-            let mut statement = conn.prepare(
-                "SELECT type, name, tbl_name, COALESCE(sql, '') FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
-            ).unwrap();
-            statement
-                .query_map([], |row| {
-                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-                })
-                .unwrap()
-                .map(Result::unwrap)
-                .collect()
-        }
         let dir = TempDir::new().unwrap();
         let fresh = db_path(&dir).with_file_name("fresh.sqlite");
         let upgraded = db_path(&dir).with_file_name("main.sqlite");
@@ -883,7 +872,7 @@ mod tests {
         drop(main_conn);
         let main_conn = open(&upgraded).unwrap();
         assert_eq!(versions(&main_conn), versions(&fresh_conn));
-        assert_eq!(schema(&fresh_conn), schema(&main_conn));
+        assert_eq!(schema_rows(&fresh_conn), schema_rows(&main_conn));
     }
 
     fn db_path(dir: &TempDir) -> std::path::PathBuf {
@@ -905,6 +894,244 @@ mod tests {
             .iter()
             .map(|migration| (migration.version, migration.name.to_owned()))
             .collect()
+    }
+
+    fn quote_identifier(name: &str) -> String {
+        format!("\"{}\"", name.replace('"', "\"\""))
+    }
+
+    fn table_names(conn: &Connection) -> Vec<String> {
+        let mut statement = conn
+            .prepare(
+                "SELECT name FROM sqlite_master
+                 WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+                 ORDER BY name",
+            )
+            .unwrap();
+        statement
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    fn table_columns(conn: &Connection, table: &str) -> Vec<String> {
+        let mut statement = conn
+            .prepare(&format!("PRAGMA table_info({})", quote_identifier(table)))
+            .unwrap();
+        statement
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    fn encoded_value(value: ValueRef<'_>) -> Vec<u8> {
+        let (tag, bytes): (u8, Vec<u8>) = match value {
+            ValueRef::Null => (b'n', Vec::new()),
+            ValueRef::Integer(number) => (b'i', number.to_le_bytes().to_vec()),
+            ValueRef::Real(number) => (b'r', number.to_le_bytes().to_vec()),
+            ValueRef::Text(text) => (b't', text.to_vec()),
+            ValueRef::Blob(blob) => (b'b', blob.to_vec()),
+        };
+        let mut encoded = Vec::with_capacity(bytes.len() + 9);
+        encoded.push(tag);
+        encoded.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+        encoded.extend_from_slice(&bytes);
+        encoded
+    }
+
+    /// Row count and a SHA-256 over the requested columns of every row, independent of row order.
+    fn table_digest(conn: &Connection, table: &str, columns: &[String]) -> (i64, String) {
+        let projection = columns
+            .iter()
+            .map(|column| quote_identifier(column))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut statement = conn
+            .prepare(&format!(
+                "SELECT {projection} FROM {}",
+                quote_identifier(table)
+            ))
+            .unwrap();
+        let mut rows = statement
+            .query_map([], |row| {
+                let mut encoded = Vec::new();
+                for index in 0..columns.len() {
+                    encoded.extend_from_slice(&encoded_value(row.get_ref(index)?));
+                }
+                Ok(encoded)
+            })
+            .unwrap()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>();
+        rows.sort();
+        let mut hasher = Sha256::new();
+        for row in &rows {
+            hasher.update((row.len() as u64).to_le_bytes());
+            hasher.update(row);
+        }
+        (rows.len() as i64, format!("{:x}", hasher.finalize()))
+    }
+
+    /// Representative, fictional data for every table that `main` shipped (schema versions 1-16).
+    ///
+    /// `main` is `origin/main` at `e37ccd1`; the tests below build this shape with
+    /// `&MIGRATIONS[..16]`, whose SQL is byte-identical to `main`'s shipped migration files.
+    fn seed_main_shaped_database(conn: &Connection) {
+        conn.execute_batch(
+            r#"
+            INSERT INTO settings (key, value) VALUES ('window.width', '1280');
+            INSERT INTO settings (key, value) VALUES ('account.last_id', 'acct-fixture');
+            INSERT INTO library_entries
+                (key, provider, store_id, name, install_dir, fields_json, installed,
+                 first_seen, last_seen, owned, family_shared)
+            VALUES ('fixture:1', 'fixture', '1', 'Fixture Game', '/games/fixture',
+                    '{"state_flags":"4"}', 1, 100, 200, 1, 1);
+            INSERT INTO provider_scans
+                (provider, last_success_at, last_error, last_catalog_at, catalog_error,
+                 last_family_at, family_error)
+            VALUES ('fixture', 200, 'scan warning', 190, 'catalog warning', 195, NULL);
+            INSERT INTO auto_matches (category, uid, game_ids_json, checked_at)
+            VALUES (1, 'uid-1', '[42]', 110);
+            INSERT INTO chosen_matches (account_id, entry_key, game_id, chosen_at)
+            VALUES ('acct-fixture', 'fixture:1', 42, 120);
+            INSERT INTO games
+                (game_id, name, release_year, cover_url, cover_file, cover_failed_at, platforms)
+            VALUES (42, 'Fixture Game', 2020, 'https://images.example/42.jpg', '42.jpg', NULL,
+                    '["windows","linux"]');
+            INSERT INTO playtime_sessions
+                (id, account_id, entry_key, game_id, source, platform_id, started_at,
+                 checkpoint_at, ended_at)
+            VALUES ('session-1', 'acct-fixture', 'fixture:1', 42, 'fixture', 6, 100, 200, 300);
+            INSERT INTO playtime_totals
+                (account_id, entry_key, total_seconds, last_played_at, accepted_game_id,
+                 accepted_seconds, rejected_seconds)
+            VALUES ('acct-fixture', 'fixture:1', 3600, 300, 42, 3600, 0);
+            INSERT INTO manual_registrations (id, file_identity, removed, payload)
+            VALUES ('reg-1', 'identity-1', 0, '{"title":"Fixture Registration"}');
+            INSERT INTO discovery_watches (id, payload)
+            VALUES ('watch-1', '{"path":"/games/fixture"}');
+            INSERT INTO discovery_candidates (fingerprint, payload)
+            VALUES ('candidate-1', '{"title":"Fixture Candidate"}');
+            INSERT INTO local_inferences (account_id, installation_id, payload)
+            VALUES ('acct-fixture', 'installation-1', '{"game_id":42}');
+            INSERT INTO save_profiles (id, installation_id, revision, payload)
+            VALUES ('profile-1', 'installation-1', 3, '{"label":"Fixture Save"}');
+            INSERT INTO backup_jobs
+                (id, installation_id, profile_id, revision, play_period, destination,
+                 state, payload)
+            VALUES ('backup-job-1', 'installation-1', 'profile-1', 3, '2020-01-01',
+                    '/backups', 'completed', '{"ok":true}');
+            INSERT INTO backup_destinations (path) VALUES ('/backups');
+            INSERT INTO backup_version_meta
+                (installation, profile, backup_id, reason, play_seconds, created_at)
+            VALUES ('installation-1', 'profile-1', 'backup-1', 'manual', 3600, 300);
+            INSERT INTO tool_installations
+                (entry_key, tool_id, channel, version, target_exe, proxy_dll, state,
+                 installed_at, updated_at)
+            VALUES ('fixture:1', 'fixture-tool', 'stable', '1.0.0', 'bin/game.exe', 'dxgi.dll',
+                    'installed', 1000, 1000);
+            INSERT INTO tool_files
+                (entry_key, tool_id, relative_path, installed_sha256, backup_path,
+                 original_sha256, prior_owner_tool_id, created_dirs_json, ini_patches_json,
+                 ini_section, ini_key, ini_value, ini_prior_value)
+            VALUES ('fixture:1', 'fixture-tool', 'dxgi.dll', 'installed-sha', '/backups/dxgi.dll',
+                    'original-sha', NULL, '["bin"]', '[]', 'section', 'key', 'value', 'prior');
+            INSERT INTO tool_releases_cache
+                (tool_id, channel, version, tag_name, name, published_at, download_url,
+                 asset_name, size_bytes, sha256, cached_path, fetched_at)
+            VALUES ('fixture-tool', 'stable', '1.0.0', 'v1.0.0', 'Fixture Tool',
+                    '2026-01-01', 'https://downloads.example/tool.7z', 'tool.7z', 1024,
+                    'release-sha', NULL, 1000);
+            INSERT INTO store_accounts (provider, account_id, account_name, last_verified_at)
+            VALUES ('fixture', 'store-account-1', 'Fixture Account', 900);
+            INSERT INTO favorites (account_id, game_id, is_favorite, pending, updated_at)
+            VALUES ('acct-fixture', 42, 1, 0, 170);
+            INSERT INTO port_catalog_snapshot (id, payload, fetched_at, entry_count)
+            VALUES (1, '{"apps":["qcat_1"]}', 420, 1);
+            INSERT INTO port_overlay (id, version, etag, payload)
+            VALUES (1, 1, 'etag-v1', 'schema_version = 1');
+            INSERT INTO port_install_jobs
+                (id, catalog_id, slug, port_name, release_version, state, phase,
+                 install_folder, created_paths, registration_id, result_seen,
+                 plan_json, release_json, created_at, updated_at, finished_at)
+            VALUES ('port-job-1', 'qcat_1', 'fixture-port', 'Fixture Port', 'v1', 'completed',
+                    '"completed"', '/ports/fixture', '["/ports/fixture"]', 'port-reg-1', 1,
+                    '{}', '{}', 430, 440, 440);
+            INSERT INTO port_installations
+                (registration_id, catalog_id, slug, port_name, installed_version,
+                 install_folder, environment_json, job_id)
+            VALUES ('port-reg-1', 'qcat_1', 'fixture-port', 'Fixture Port', 'v1',
+                    '/ports/fixture', '{"ROLE":"gameplay"}', 'port-job-1');
+            INSERT INTO port_preferences (id, view_mode, filters_json, install_parent)
+            VALUES (1, 'list', '{"installed":true}', '/ports');
+            INSERT INTO achievement_games
+                (provider, store_account_id, entry_id, state, language, last_success_at,
+                 last_attempt_at, failure)
+            VALUES ('fixture', 'store-account-1', '1', 'ready', 'english', 500, 500, NULL);
+            INSERT INTO achievements
+                (provider, store_account_id, entry_id, achievement_id, name, description,
+                 hidden, icon_url, icon_gray_url, unlocked, unlocked_at, position,
+                 global_percent)
+            VALUES ('fixture', 'store-account-1', '1', 'achievement-1', 'First', 'Do it', 0,
+                    'https://images.example/icon.png', 'https://images.example/gray.png',
+                    1, 510, 0, 420);
+            INSERT INTO saved_views (account_id, name, payload, position, created_at)
+            VALUES ('acct-fixture', 'Fixture View', '{"sort":"name"}', 0, 600);
+            INSERT INTO hidden_entries (account_id, entry_key, hidden_at)
+            VALUES ('acct-fixture', 'fixture:1', 610);
+            INSERT INTO account_library_entries
+                (account_id, game_id, entry_id, status, collection_ids)
+            VALUES ('acct-fixture', 42, '1', 'owned', '["collection-1"]');
+            INSERT INTO account_collections
+                (account_id, collection_id, name, default_status, position)
+            VALUES ('acct-fixture', 'collection-1', 'Fixture Collection', 'owned', 0);
+            INSERT INTO account_library_reads (account_id, read_at)
+            VALUES ('acct-fixture', 620);
+            INSERT INTO sync_summaries (account_id, completed_at, accepted_games, stores, held)
+            VALUES ('acct-fixture', 700, 1, 1, 0);
+            "#,
+        )
+        .unwrap();
+    }
+
+    struct MainShapedSnapshot {
+        tables: Vec<(String, Vec<String>, i64, String)>,
+        history: Vec<(u32, String, i64)>,
+    }
+
+    fn snapshot_table_data(conn: &Connection) -> MainShapedSnapshot {
+        let mut history_statement = conn
+            .prepare("SELECT version, name, applied_at FROM schema_migrations ORDER BY version")
+            .unwrap();
+        let history = history_statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        let mut tables = Vec::new();
+        for table in table_names(conn) {
+            if table == "schema_migrations" {
+                continue;
+            }
+            let columns = table_columns(conn, &table);
+            let (rows, digest) = table_digest(conn, &table, &columns);
+            assert!(
+                rows > 0,
+                "the fixture has no representative row for {table}"
+            );
+            tables.push((table, columns, rows, digest));
+        }
+        MainShapedSnapshot { tables, history }
+    }
+
+    fn snapshot_fingerprint(snapshot: &MainShapedSnapshot) -> String {
+        let mut hasher = Sha256::new();
+        for (table, _, rows, digest) in &snapshot.tables {
+            hasher.update(format!("{table}:{rows}:{digest}\n"));
+        }
+        format!("{:x}", hasher.finalize())
     }
 
     fn geometry() -> WindowGeometry {
@@ -2792,6 +3019,193 @@ mod tests {
             [],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn a_populated_main_shaped_database_upgrades_to_the_complete_schema_without_losing_data() {
+        let dir = TempDir::new().unwrap();
+        let path = db_path(&dir);
+        let before = {
+            let conn = open_with(&path, &MIGRATIONS[..16]).unwrap();
+            assert_eq!(versions(&conn), migration_history(&MIGRATIONS[..16]));
+            seed_main_shaped_database(&conn);
+            snapshot_table_data(&conn)
+        };
+        assert_eq!(before.history.len(), 16);
+        println!(
+            "main-shaped fixture: {} tables, {} rows, fingerprint {}",
+            before.tables.len(),
+            before.tables.iter().map(|(.., rows, _)| rows).sum::<i64>(),
+            snapshot_fingerprint(&before),
+        );
+
+        let upgraded = open(&path).unwrap();
+
+        // The runner appends this build's migrations to main's history without rewriting it.
+        assert_eq!(
+            versions(&upgraded),
+            migration_history(MIGRATIONS),
+            "the full migration history is recorded in order"
+        );
+        let history_after: Vec<(u32, String, i64)> = upgraded
+            .prepare("SELECT version, name, applied_at FROM schema_migrations ORDER BY version")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(
+            &history_after[..16],
+            before.history.as_slice(),
+            "main's recorded versions, names and applied times are untouched"
+        );
+
+        // Every table that main shipped still exists with the same rows in the same columns.
+        let columns_after = table_columns_by_table(&upgraded);
+        for (table, columns, rows, digest) in &before.tables {
+            let current_columns = columns_after
+                .get(table)
+                .unwrap_or_else(|| panic!("{table} disappeared during the upgrade"));
+            for column in columns {
+                assert!(
+                    current_columns.contains(column),
+                    "{table}.{column} disappeared during the upgrade"
+                );
+            }
+            let (rows_after, digest_after) = table_digest(&upgraded, table, columns);
+            assert_eq!(rows_after, *rows, "{table} kept its row count");
+            assert_eq!(digest_after, *digest, "{table} kept its row data");
+        }
+
+        // Tables added by this build start empty and the additive columns use their defaults.
+        for table in table_names(&upgraded) {
+            if table == "schema_migrations" || before.tables.iter().any(|(old, ..)| *old == table) {
+                continue;
+            }
+            let (rows, _) = table_digest(&upgraded, &table, &table_columns(&upgraded, &table));
+            assert_eq!(rows, 0, "{table} is new in this build and starts empty");
+        }
+        let (source, target): (String, Option<String>) = upgraded
+            .query_row(
+                "SELECT source, (SELECT target_json FROM library_entries WHERE key = 'fixture:1')
+                 FROM chosen_matches WHERE account_id = 'acct-fixture'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(source, "user", "pre-existing choices stay user-made");
+        assert_eq!(target, None, "an entry starts without a detected target");
+        println!(
+            "upgraded database: {} tables, history {} entries (1-{}), main tables preserved, new tables empty",
+            table_names(&upgraded).len(),
+            versions(&upgraded).len(),
+            versions(&upgraded).last().unwrap().0,
+        );
+
+        // The upgraded database has the same complete schema as a database created now.
+        let fresh_path = dir.path().join("fresh.sqlite3");
+        let fresh = open(&fresh_path).unwrap();
+        assert_eq!(schema_rows(&upgraded), schema_rows(&fresh));
+
+        // The verified pre-migration snapshot was kept beside the upgraded database.
+        let snapshots = snapshots_for(&dir, &path);
+        assert_eq!(snapshots.len(), 1, "one verified snapshot is retained");
+        let snapshot =
+            Connection::open_with_flags(&snapshots[0], rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .unwrap();
+        let integrity: String = snapshot
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(integrity, "ok");
+        assert_eq!(versions(&snapshot), migration_history(&MIGRATIONS[..16]));
+        for (table, columns, rows, digest) in &before.tables {
+            assert_eq!(
+                table_digest(&snapshot, table, columns),
+                (*rows, digest.clone()),
+                "the snapshot preserves {table}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_main_shaped_build_refuses_the_upgraded_database_untouched() {
+        let dir = TempDir::new().unwrap();
+        let path = db_path(&dir);
+        {
+            let conn = open_with(&path, &MIGRATIONS[..16]).unwrap();
+            seed_main_shaped_database(&conn);
+        }
+        drop(open(&path).unwrap());
+        let before = std::fs::read(&path).unwrap();
+
+        // Simulates the shipped main build (`origin/main` at `e37ccd1`, schema 16), whose runner
+        // refuses any database whose highest recorded version is newer than its own list.
+        let error = open_with(&path, &MIGRATIONS[..16]).unwrap_err();
+        assert_eq!(
+            error,
+            StorageError::NewerSchema {
+                found: 25,
+                supported: 16
+            }
+        );
+        println!(
+            "older build refusal: {error}; sha256 before {} after {}",
+            format!("{:x}", Sha256::digest(&before)),
+            format!("{:x}", Sha256::digest(std::fs::read(&path).unwrap())),
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            before,
+            "an older build leaves the upgraded database byte-for-byte unchanged"
+        );
+        assert_eq!(
+            versions(&Connection::open(&path).unwrap()),
+            migration_history(MIGRATIONS),
+            "refusal neither truncates nor rewrites the history"
+        );
+    }
+
+    fn table_columns_by_table(conn: &Connection) -> std::collections::HashMap<String, Vec<String>> {
+        table_names(conn)
+            .into_iter()
+            .map(|table| {
+                let columns = table_columns(conn, &table);
+                (table, columns)
+            })
+            .collect()
+    }
+
+    fn schema_rows(conn: &Connection) -> Vec<(String, String, String, String)> {
+        let mut statement = conn
+            .prepare(
+                "SELECT type, name, tbl_name, COALESCE(sql, '') FROM sqlite_master
+                 WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
+            )
+            .unwrap();
+        statement
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    fn snapshots_for(dir: &TempDir, database: &Path) -> Vec<std::path::PathBuf> {
+        let prefix = format!(
+            "{}.pre-migration-",
+            database.file_name().unwrap().to_string_lossy()
+        );
+        std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(Result::unwrap)
+            .map(|entry| entry.path())
+            .filter(|candidate| {
+                candidate
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with(&prefix))
+            })
+            .collect()
     }
 
     #[test]

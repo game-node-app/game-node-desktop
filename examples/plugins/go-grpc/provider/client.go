@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"example.com/gamenode/plugins/go-grpc/proto"
 	"google.golang.org/grpc"
@@ -23,6 +24,10 @@ var Capabilities = []string{
 	"library.discovery",
 	"library.catalog",
 	"playtime.counter",
+	"ui.configure",
+	"storage.read",
+	"storage.write",
+	"storage.persist",
 }
 
 var ErrNegotiation = errors.New("host did not grant the requested provider API")
@@ -30,10 +35,11 @@ var ErrNegotiation = errors.New("host did not grant the requested provider API")
 // Client owns one authenticated provider session. It contains no host-side authority beyond the
 // capability grants returned by OpenSession.
 type Client struct {
-	conn     *grpc.ClientConn
-	context  *proto.ServiceContext
-	info     *proto.ProviderContext
-	commands grpc.BidiStreamingClient[proto.ProviderEvent, proto.ProviderCommand]
+	conn          *grpc.ClientConn
+	context       *proto.ServiceContext
+	info          *proto.ProviderContext
+	commands      grpc.BidiStreamingClient[proto.ProviderEvent, proto.ProviderCommand]
+	configuration *ConfigurationLifecycle
 }
 
 // Open authenticates, opens the exchange stream, sends Ready and reads the provider's host context.
@@ -104,7 +110,9 @@ func Open(ctx context.Context, endpoint string, credential []byte, operationID s
 		_ = commands.CloseSend()
 		return fail(ErrNegotiation)
 	}
-	return &Client{conn: conn, context: serviceContext, info: info, commands: commands}, nil
+	resources := proto.NewResourceHostClient(conn)
+	configuration := NewConfigurationLifecycle(resourcePreferenceStore{client: resources}, systemWindowLauncher{}, serviceContext)
+	return &Client{conn: conn, context: serviceContext, info: info, commands: commands, configuration: configuration}, nil
 }
 
 func contains(values []string, wanted string) bool {
@@ -138,7 +146,13 @@ func (c *Client) Run(ctx context.Context, implementation Implementation) error {
 		if command.GetOperation() == proto.ProviderOperation_PROVIDER_OPERATION_SHUTDOWN {
 			return nil
 		}
-		for _, event := range implementation.Handle(command) {
+		var events []*proto.ProviderEvent
+		if isConfigurationOperation(command.GetOperation()) {
+			events = []*proto.ProviderEvent{c.configuration.Handle(ctx, command)}
+		} else {
+			events = implementation.Handle(command)
+		}
+		for _, event := range events {
 			if err := c.commands.Send(event); err != nil {
 				return fmt.Errorf("send provider result: %w", err)
 			}
@@ -147,6 +161,11 @@ func (c *Client) Run(ctx context.Context, implementation Implementation) error {
 }
 
 func (c *Client) Close() error {
+	if c.configuration != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		c.configuration.Shutdown(ctx)
+		cancel()
+	}
 	if c.commands != nil {
 		_ = c.commands.CloseSend()
 	}
@@ -154,4 +173,15 @@ func (c *Client) Close() error {
 		return c.conn.Close()
 	}
 	return nil
+}
+
+func isConfigurationOperation(operation proto.ProviderOperation) bool {
+	switch operation {
+	case proto.ProviderOperation_PROVIDER_OPERATION_CONFIGURATION_OPEN,
+		proto.ProviderOperation_PROVIDER_OPERATION_CONFIGURATION_FOCUS,
+		proto.ProviderOperation_PROVIDER_OPERATION_CONFIGURATION_CLOSE:
+		return true
+	default:
+		return false
+	}
 }

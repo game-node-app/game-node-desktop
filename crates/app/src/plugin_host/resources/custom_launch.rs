@@ -573,7 +573,7 @@ impl ResourceApi {
             },
             fingerprint,
             review,
-            game_name: projection.display_name.unwrap_or_else(|| projection.name),
+            game_name: projection.display_name.unwrap_or(projection.name),
         })
     }
 

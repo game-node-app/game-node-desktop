@@ -986,7 +986,7 @@ impl Engine {
     }
 
     /// Returns the same host-owned coordinator used by launches for backup/restore integration.
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(all(test, any(target_os = "linux", windows)))]
     pub(crate) fn shared_resource_leases(
         &self,
     ) -> Arc<crate::plugin_host::resource_leases::ResourceLeases> {

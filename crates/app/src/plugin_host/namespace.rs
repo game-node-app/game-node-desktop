@@ -18,6 +18,7 @@ pub(crate) enum OwnerKind {
 }
 
 impl OwnerKind {
+    #[cfg(test)]
     fn provider_scoped(self) -> bool {
         matches!(self, Self::Account | Self::Secret)
     }
@@ -154,6 +155,7 @@ impl ExternalNamespaceResolver {
     }
 
     /// A service adapter checks the supplied owner before accessing its backing store.
+    #[cfg(test)]
     pub(crate) fn owns(&self, owner: &NamespaceOwner, kind: OwnerKind) -> bool {
         (!kind.provider_scoped() || self.provider_id.is_some())
             && owner.kind == kind
@@ -181,10 +183,8 @@ impl ExternalNamespaceResolver {
                 OwnerKind::Secret => b"secret",
             },
         );
-        if provider_scoped {
-            if let Some(provider_id) = &self.provider_id {
-                hash_part(&mut hash, provider_id.as_bytes());
-            }
+        if provider_scoped && let Some(provider_id) = &self.provider_id {
+            hash_part(&mut hash, provider_id.as_bytes());
         }
         NamespaceOwner {
             key: hash.finalize().into(),

@@ -822,6 +822,41 @@ running with the user's OS permissions, so filesystem and network access by that
 confined by the host API. Community code is not enabled by these bundled-plugin permissions or
 declarations.
 
+## Conformance checks for examples and the public surface
+
+Before changing the public protocol or an example, run:
+
+```sh
+python3 scripts/check-plugin-conformance.py
+python3 -m unittest scripts.tests.test_plugin_conformance
+```
+
+The checker verifies:
+
+- both checked-in Go binding trees (`examples/plugins/go-grpc/proto`, `examples/go/proto`) match
+  `plugin.proto`. It compares the embedded file descriptor and, when the pinned generators are on
+  `PATH`, performs a full regeneration diff. Install libprotoc 36.1 and the pinned `protoc-gen-go`
+  and `protoc-gen-go-grpc` versions recorded in `generate-proto.sh`.
+- the examples keep their public dependency boundary: the Rust example depends on the exact
+  published `gamenode-plugin-sdk` and no internal crate, and the Go modules import no workspace
+  package and carry no `replace` directive that escapes the module.
+- each example manifest's plugin/provider identity, SemVer version and `api.min`/`api.max` match
+  its source constants and the host's supported window (`MIN_API_MINOR` through `API_MINOR`). The
+  host's legacy 1.1–1.5 fallback and feature gating are covered by the
+  `crates/plugin-protocol/src/capability.rs` tests; the checker keeps the examples aligned with
+  those constants.
+- `DescribeApi` advertises each served route exactly once, every advertised route exists in
+  `plugin.proto`, and the three session methods are present. Routes present in the protocol but
+  absent from the served tables are deferred: they must answer `UNIMPLEMENTED` and must never be
+  advertised.
+
+Contribution expectations: regenerate bindings with the pinned tools and include them in the same
+change as the proto edit; never import Core, platform or application crates into an example; keep a
+manifest in step with its identity and API constants; implement a route before adding it to a
+`SERVED` table, and remove it from `DescribeApi` if it becomes unavailable. On the host side,
+`deferred_plugin_routes_are_unadvertised_and_unimplemented` and the exact `DescribeApi`
+route test in `plugin_host::resources::tests` enforce the same boundary.
+
 ## Implementation rules for store plugins
 
 - Keep store parsing, account/session validation, HTTP calls, login interpretation, discovery and

@@ -61,9 +61,13 @@ pub const GAME_SAVES_DELETE: &str = "game.saves.delete";
 pub const GAME_STORAGE_INSPECT: &str = "game.storage.inspect";
 pub const GAME_SAVES_INSPECT: &str = "game.saves.inspect";
 pub const STORAGE_DIAGNOSTICS_PUBLISH: &str = "storage.diagnostics.publish";
+pub const STORAGE_DIAGNOSTICS_READ: &str = "storage.diagnostics.read";
 pub const COMPUTER_HARDWARE_PUBLISH: &str = "computer.hardware.publish";
+pub const COMPUTER_HARDWARE_READ: &str = "computer.hardware.read";
 pub const GAME_PRESENCE_PUBLISH: &str = "game.presence.publish";
+pub const GAME_PRESENCE_READ: &str = "game.presence.read";
 pub const GAME_PERFORMANCE_PUBLISH: &str = "game.performance.publish";
+pub const GAME_PERFORMANCE_READ: &str = "game.performance.read";
 pub const GAME_SESSIONS_REPORT: &str = "game.sessions.report";
 pub const DATA_PUBLISH: &str = "data.publish";
 /// Common-data category read grants are optional and start denied for every plugin.
@@ -265,9 +269,13 @@ pub const KNOWN: &[&str] = &[
     GAME_STORAGE_INSPECT,
     GAME_SAVES_INSPECT,
     STORAGE_DIAGNOSTICS_PUBLISH,
+    STORAGE_DIAGNOSTICS_READ,
     COMPUTER_HARDWARE_PUBLISH,
+    COMPUTER_HARDWARE_READ,
     GAME_PRESENCE_PUBLISH,
+    GAME_PRESENCE_READ,
     GAME_PERFORMANCE_PUBLISH,
+    GAME_PERFORMANCE_READ,
     GAME_SESSIONS_REPORT,
     DATA_PUBLISH,
     COMMON_GAME_PATHS_READ,
@@ -313,9 +321,13 @@ pub const THIRD_PARTY_CAPABILITIES: &[&str] = &[
     GAME_STORAGE_INSPECT,
     GAME_SAVES_INSPECT,
     STORAGE_DIAGNOSTICS_PUBLISH,
+    STORAGE_DIAGNOSTICS_READ,
     COMPUTER_HARDWARE_PUBLISH,
+    COMPUTER_HARDWARE_READ,
     GAME_PRESENCE_PUBLISH,
+    GAME_PRESENCE_READ,
     GAME_PERFORMANCE_PUBLISH,
+    GAME_PERFORMANCE_READ,
     GAME_SESSIONS_REPORT,
     DATA_PUBLISH,
     COMMON_GAME_PATHS_READ,

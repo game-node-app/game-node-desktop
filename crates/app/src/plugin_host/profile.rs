@@ -358,12 +358,40 @@ impl PluginStateLayout {
         Self { root: root.into() }
     }
 
+    /// Refuse the development-only plugin state layouts instead of silently ignoring them or
+    /// importing user trust/grants without review. This check is read-only and must run before
+    /// opening any current plugin stores.
+    pub(crate) fn refuse_legacy_layouts(
+        paths: &gamenode_platform::paths::DataPaths,
+    ) -> io::Result<()> {
+        for legacy in [
+            paths.private_dir().join("publisher-keys.json"),
+            paths.data_dir().join("plugin-state"),
+        ] {
+            match fs::symlink_metadata(&legacy) {
+                Ok(_) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "unsupported legacy third-party plugin state at {}; it was left untouched",
+                            legacy.display()
+                        ),
+                    ));
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    }
+
     /// The desktop runtime's existing state directory for managed plugins.
     pub fn managed(paths: &gamenode_platform::paths::DataPaths) -> Self {
         Self::new(paths.plugin_data_dir().join("state"))
     }
 
     pub(super) fn prepare_managed(paths: &gamenode_platform::paths::DataPaths) -> io::Result<Self> {
+        Self::refuse_legacy_layouts(paths)?;
         let layout = Self::managed(paths);
         ensure_private_dir(&paths.plugin_data_dir())?;
         ensure_private_dir(&layout.root)?;
@@ -461,10 +489,7 @@ impl PluginStateLayout {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(error) => return Err(error.into()),
         }
-        let entries = match fs::read_dir(&accounts) {
-            Ok(entries) => entries,
-            Err(error) => return Err(error.into()),
-        };
+        let entries = fs::read_dir(&accounts)?;
         let mut directories = Vec::new();
         for entry in entries {
             let entry = entry?;

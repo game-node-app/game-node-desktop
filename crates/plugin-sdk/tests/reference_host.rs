@@ -196,10 +196,10 @@ impl provider_host_server::ProviderHost for ReferenceHost {
                 }),
                 operation: operation as i32,
                 target_operation_id: if matches!(
-                    ProviderOperation::try_from(operation),
-                    Ok(ProviderOperation::ConfigurationOpen
+                    operation,
+                    ProviderOperation::ConfigurationOpen
                         | ProviderOperation::ConfigurationFocus
-                        | ProviderOperation::ConfigurationClose)
+                        | ProviderOperation::ConfigurationClose
                 ) {
                     id.into()
                 } else {
@@ -207,6 +207,7 @@ impl provider_host_server::ProviderHost for ReferenceHost {
                 },
                 settings: None,
                 runtime_session_result: None,
+                runtime_session_context_result: None,
                 achievements: None,
             };
             for (operation, id) in [

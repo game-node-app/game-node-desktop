@@ -225,6 +225,8 @@ fn context_provider_id(registration: &Registration) -> &str {
 
 struct Provider {
     registration: Registration,
+    extension_schemas:
+        std::sync::RwLock<Vec<gamenode_plugin_protocol::proto::ExtensionSchemaDescriptor>>,
     declared_capabilities: std::sync::RwLock<Vec<String>>,
     capabilities: std::sync::RwLock<Vec<String>>,
     /// Set for third-party providers: their profile epoch is the account profile's epoch.
@@ -1608,6 +1610,7 @@ impl ProviderApi {
         state.providers.insert(
             registration.provider_id.clone(),
             Arc::new(Provider {
+                extension_schemas: std::sync::RwLock::new(Vec::new()),
                 declared_capabilities: std::sync::RwLock::new(registration.capabilities.clone()),
                 capabilities: std::sync::RwLock::new(registration.capabilities.clone()),
                 profiles: matches!(registration.origin, RegistrationOrigin::ThirdParty { .. })
@@ -1624,6 +1627,53 @@ impl ProviderApi {
 
     pub fn begin_launch(&self, provider_id: &str) -> Result<Launch, Status> {
         self.begin_launch_for_profile(provider_id, None)
+    }
+
+    /// Attach descriptors derived by the host from the integrity-verified active package.
+    /// RPC payloads cannot register or replace this catalog.
+    pub(crate) fn set_extension_schemas(
+        &self,
+        provider_id: &str,
+        plugin_id: &str,
+        publisher_fingerprint: &str,
+        descriptors: Vec<gamenode_plugin_protocol::proto::ExtensionSchemaDescriptor>,
+    ) -> Result<(), Status> {
+        gamenode_plugin_protocol::extensions::validate_schema_catalog(&descriptors)
+            .map_err(|_| Status::invalid_argument("invalid package extension schema catalog"))?;
+        let state = lock(&self.state);
+        let provider = state
+            .providers
+            .get(provider_id)
+            .ok_or_else(|| Status::not_found("plugin registration not found"))?;
+        if provider.registration.plugin_id != plugin_id
+            || !matches!(&provider.registration.origin, RegistrationOrigin::ThirdParty { publisher_fingerprint: actual } if actual == publisher_fingerprint)
+        {
+            return Err(Status::permission_denied(
+                "schema catalog package identity mismatch",
+            ));
+        }
+        *provider
+            .extension_schemas
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = descriptors;
+        Ok(())
+    }
+
+    pub(crate) fn extension_schemas_for_provider(
+        &self,
+        provider_id: &str,
+    ) -> Vec<gamenode_plugin_protocol::proto::ExtensionSchemaDescriptor> {
+        lock(&self.state)
+            .providers
+            .get(provider_id)
+            .map(|provider| {
+                provider
+                    .extension_schemas
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone()
+            })
+            .unwrap_or_default()
     }
 
     pub(crate) fn begin_launch_for_profile(
@@ -1909,7 +1959,14 @@ impl ProviderApi {
         if extension_session {
             granted.insert(cap::CONTEXT.to_owned());
         }
-        if !granted.contains(cap::CONTEXT) {
+        // A full provider may be settings- or configuration-only, without library context; the
+        // registration check above accepts exactly those three capabilities. Context-requiring
+        // calls stay denied per operation, so the session still cannot enumerate the library.
+        const SESSION_SCOPE: [&str; 3] = [cap::CONTEXT, cap::SETTINGS, cap::CONFIGURE];
+        if !SESSION_SCOPE
+            .iter()
+            .any(|capability| granted.contains(*capability))
+        {
             return Err(denial(DenialReason::NotGranted, cap::CONTEXT, 0));
         }
         if let Some(permission) = pending
@@ -1987,7 +2044,7 @@ impl ProviderApi {
         Ok(OpenSessionReply {
             resource_context,
             session_id,
-            granted_capabilities: granted_capabilities,
+            granted_capabilities,
             api_major: gamenode_plugin_protocol::API_MAJOR,
             api_minor: minor,
             features: selection
@@ -2040,14 +2097,6 @@ impl ProviderApi {
             })
             .map(|provider| provider.registration.provider_id.clone())
             .collect()
-    }
-
-    pub(crate) fn third_party_plugin_id(&self, provider_id: &str) -> Option<String> {
-        lock(&self.state)
-            .providers
-            .get(provider_id)
-            .filter(|provider| provider.profiles.is_some())
-            .map(|provider| provider.registration.plugin_id.clone())
     }
 
     pub(crate) fn is_extension(&self, provider_id: &str) -> bool {

@@ -33,7 +33,11 @@ struct ChildPlugin;
 
 #[tonic::async_trait]
 impl ProviderPlugin for ChildPlugin {
-    async fn handle(&self, _: ProviderCommand, host: HostClient) -> Result<OperationResult, Error> {
+    async fn handle(
+        &self,
+        command: ProviderCommand,
+        host: HostClient,
+    ) -> Result<OperationResult, Error> {
         if std::env::var("GAMENODE_TEST_PLUGIN_MODE").as_deref() == Ok("crash-once")
             && let Some(path) = std::env::var_os("GAMENODE_TEST_PLUGIN_CRASH_MARKER")
             && std::fs::OpenOptions::new()
@@ -45,6 +49,24 @@ impl ProviderPlugin for ChildPlugin {
             std::process::exit(23);
         }
         assert_eq!(host.provider_context().await?.provider_id, "fixture");
+        if std::env::var("GAMENODE_TEST_PLUGIN_MODE").as_deref() == Ok("provider-catalog")
+            && command.operation == ProviderOperation::SyncCatalog as i32
+        {
+            let completion = host
+                .catalog_chunks(
+                    CatalogCategory::Owned,
+                    vec![gamenode_plugin_protocol::models::CatalogRecord::new(
+                        "fixture-game",
+                        "Fixture Game",
+                    )],
+                )
+                .await?;
+            return Ok(OperationResult {
+                disposition: OperationDisposition::Completed as i32,
+                catalogs: vec![completion],
+                ..Default::default()
+            });
+        }
         Ok(OperationResult {
             disposition: OperationDisposition::Completed as i32,
             ..Default::default()
@@ -84,12 +106,18 @@ async fn fixture_process() {
         tokio::time::sleep(Duration::from_secs(30)).await;
         return;
     }
+    let capabilities: &[&str] =
+        if std::env::var("GAMENODE_TEST_PLUGIN_MODE").as_deref() == Ok("provider-catalog") {
+            &[capability::CONTEXT, capability::CATALOG]
+        } else {
+            &[capability::CONTEXT]
+        };
     let session = Session::open(
         gamenode_plugin_sdk::Launch::from_env().unwrap(),
         "fixture.plugin",
         "fixture",
         "1.0",
-        &[capability::CONTEXT],
+        capabilities,
     )
     .await
     .unwrap();
@@ -280,7 +308,7 @@ async fn extension_fixture_process(mode: &str) {
     assert_eq!(context.target_game.as_ref(), Some(&target));
     assert!(session.host.provider_context().await.is_err());
     let output = std::env::var_os("GAMENODE_TEST_PLUGIN_TREE_OUTPUT").unwrap();
-    let child = std::process::Command::new("sh")
+    let mut child = std::process::Command::new("sh")
         .args([
             "-c",
             r#"trap '' TERM; while :; do printf x >> "$1"; sleep 0.05; done"#,
@@ -290,7 +318,11 @@ async fn extension_fixture_process(mode: &str) {
         .spawn()
         .unwrap();
     let pid_path = std::env::var_os("GAMENODE_TEST_PLUGIN_TREE_PID").unwrap();
-    std::fs::write(pid_path, child.id().to_string()).unwrap();
+    std::fs::write(&pid_path, child.id().to_string()).unwrap();
+    // The fixture child outlives this session; reap it after the host tears down the tree.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
     if mode == "extension-crash" {
         let marker = std::env::var_os("GAMENODE_TEST_PLUGIN_CRASH_MARKER").unwrap();
         while !std::path::Path::new(&marker).exists() {

@@ -139,6 +139,17 @@ pub enum PersistenceError {
     NewerVersion,
 }
 
+/// One host-attributed record write with optimistic revision control.
+pub struct RecordWrite<'a> {
+    pub category: &'a str,
+    pub logical_key: &'a str,
+    pub value: &'a [u8],
+    pub provenance: &'a RecordProvenance,
+    pub expected_revision: u64,
+    pub expires_at: Option<i64>,
+    pub now: i64,
+}
+
 /// One logical owner/profile persistence database.
 pub struct PluginPersistence {
     conn: Connection,
@@ -214,16 +225,16 @@ impl PluginPersistence {
 
     /// Stores one host-attributed record with optimistic revision control and bounded logical
     /// quotas. A revision of zero creates; updates must present the current revision.
-    pub fn put(
-        &mut self,
-        category: &str,
-        logical_key: &str,
-        value: &[u8],
-        provenance: &RecordProvenance,
-        expected_revision: u64,
-        expires_at: Option<i64>,
-        now: i64,
-    ) -> Result<PutOutcome, PersistenceError> {
+    pub fn put(&mut self, write: RecordWrite<'_>) -> Result<PutOutcome, PersistenceError> {
+        let RecordWrite {
+            category,
+            logical_key,
+            value,
+            provenance,
+            expected_revision,
+            expires_at,
+            now,
+        } = write;
         validate_selector(category, logical_key)?;
         provenance.validate()?;
         if value.len() > MAX_RECORD_BYTES || expires_at.is_some_and(|expiry| expiry <= now) {

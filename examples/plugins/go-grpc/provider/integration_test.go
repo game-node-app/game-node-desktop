@@ -26,12 +26,122 @@ type observedExchange struct {
 type fixtureHost struct {
 	proto.UnimplementedPluginHostServer
 	proto.UnimplementedProviderHostServer
+	proto.UnimplementedResourceHostServer
 
-	credential []byte
-	mu         sync.Mutex
-	open       *proto.OpenSessionRequest
-	context    *proto.ServiceContext
-	exchange   observedExchange
+	credential           []byte
+	mu                   sync.Mutex
+	open                 *proto.OpenSessionRequest
+	context              *proto.ServiceContext
+	exchange             observedExchange
+	configuration        bool
+	preference           []byte
+	preferenceRevision   uint64
+	preferenceDurability proto.StorageDurability
+	accounts             map[uint64]*proto.AccountIdentity
+	secrets              map[uint64][]byte
+	grants               map[uint64]map[string]bool
+}
+
+func (h *fixtureHost) authContext(ctx *proto.ServiceContext, permission string) error {
+	if ctx.GetSessionId() != "fixture-session" || ctx.GetProviderId() != ProviderID ||
+		ctx.GetSessionKind() != proto.SessionKind_SESSION_KIND_PROVIDER ||
+		!reflect.DeepEqual(ctx.GetSessionCredential(), h.credential) || ctx.GetProfileEpoch() == 0 {
+		return status.Error(codes.Unauthenticated, "fixture auth context mismatch")
+	}
+	if !h.grants[ctx.GetProfileEpoch()][permission] {
+		return status.Error(codes.PermissionDenied, "fixture grant denied")
+	}
+	return nil
+}
+
+func (h *fixtureHost) Account(_ context.Context, request *proto.AccountRequest) (*proto.AccountReply, error) {
+	if request.GetContext() == nil {
+		return nil, status.Error(codes.Unauthenticated, "missing context")
+	}
+	ctx := request.GetContext()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	switch action := request.GetAction().(type) {
+	case *proto.AccountRequest_Read:
+		if err := h.authContext(ctx, "account.state.read"); err != nil {
+			return nil, err
+		}
+		account := h.accounts[ctx.GetProfileEpoch()]
+		if account != nil {
+			account = pbproto.Clone(account).(*proto.AccountIdentity)
+		}
+		return &proto.AccountReply{Account: account, Accepted: true}, nil
+	case *proto.AccountRequest_Save:
+		if err := h.authContext(ctx, "account.state.publish"); err != nil {
+			return nil, err
+		}
+		if action.Save.GetProviderId() != ProviderID {
+			return nil, status.Error(codes.InvalidArgument, "unexpected provider")
+		}
+		h.accounts[ctx.GetProfileEpoch()] = pbproto.Clone(action.Save).(*proto.AccountIdentity)
+		return &proto.AccountReply{Accepted: true}, nil
+	case *proto.AccountRequest_Clear:
+		if err := h.authContext(ctx, "account.state.publish"); err != nil {
+			return nil, err
+		}
+		delete(h.accounts, ctx.GetProfileEpoch())
+		return &proto.AccountReply{Accepted: true}, nil
+	default:
+		return nil, status.Error(codes.InvalidArgument, "missing account action")
+	}
+}
+
+func (h *fixtureHost) Secret(_ context.Context, request *proto.SecretRequest) (*proto.SecretReply, error) {
+	if request.GetContext() == nil {
+		return nil, status.Error(codes.Unauthenticated, "missing context")
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	ctx := request.GetContext()
+	permission := map[proto.SecretOperation]string{
+		proto.SecretOperation_SECRET_OPERATION_READ:   "secrets.read",
+		proto.SecretOperation_SECRET_OPERATION_WRITE:  "secrets.write",
+		proto.SecretOperation_SECRET_OPERATION_DELETE: "secrets.delete",
+	}[request.GetOperation()]
+	if err := h.authContext(ctx, permission); err != nil {
+		return nil, err
+	}
+	switch request.GetOperation() {
+	case proto.SecretOperation_SECRET_OPERATION_WRITE:
+		if request.GetKey() != "session" || string(request.GetValue()) != "fixture-token" {
+			return nil, status.Error(codes.InvalidArgument, "invalid fixture secret")
+		}
+		h.secrets[ctx.GetProfileEpoch()] = append([]byte(nil), request.GetValue()...)
+		return &proto.SecretReply{Outcome: &proto.SecretReply_Accepted{Accepted: true}}, nil
+	case proto.SecretOperation_SECRET_OPERATION_READ:
+		value, ok := h.secrets[ctx.GetProfileEpoch()]
+		if !ok {
+			return &proto.SecretReply{Outcome: &proto.SecretReply_Absent{Absent: true}}, nil
+		}
+		return &proto.SecretReply{Outcome: &proto.SecretReply_Value{Value: append([]byte(nil), value...)}}, nil
+	case proto.SecretOperation_SECRET_OPERATION_DELETE:
+		delete(h.secrets, ctx.GetProfileEpoch())
+		return &proto.SecretReply{Outcome: &proto.SecretReply_Accepted{Accepted: true}}, nil
+	default:
+		return nil, status.Error(codes.InvalidArgument, "invalid secret operation")
+	}
+}
+
+func (h *fixtureHost) Login(_ context.Context, request *proto.LoginRequest) (*proto.LoginReply, error) {
+	if request.GetContext() == nil {
+		return nil, status.Error(codes.Unauthenticated, "missing context")
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if err := h.authContext(request.GetContext(), "auth.webview"); err != nil {
+		return nil, err
+	}
+	if request.GetHandle() != "host-defined-fixture-login" || request.GetOperation() != proto.LoginOperation_LOGIN_OPERATION_OPEN {
+		return nil, status.Error(codes.PermissionDenied, "login handle is not in host fixture policy")
+	}
+	pageResult := `{"authenticated":true}`
+	return &proto.LoginReply{Handle: request.GetHandle(), State: proto.LoginState_LOGIN_STATE_OPEN,
+		PageResultJson: &pageResult}, nil
 }
 
 func (h *fixtureHost) OpenSession(_ context.Context, request *proto.OpenSessionRequest) (*proto.OpenSessionReply, error) {
@@ -83,6 +193,14 @@ func (h *fixtureHost) Exchange(stream grpc.BidiStreamingServer[proto.ProviderEve
 		fixtureCommand("discover-1", proto.ProviderOperation_PROVIDER_OPERATION_DISCOVER),
 		fixtureCommand("catalog-1", proto.ProviderOperation_PROVIDER_OPERATION_SYNC_CATALOG),
 		fixtureCommand("counter-1", proto.ProviderOperation_PROVIDER_OPERATION_READ_COUNTER),
+	}
+	if h.configuration {
+		commands = append(commands,
+			fixtureConfigurationCommand("config-open-1", "window-1", proto.ProviderOperation_PROVIDER_OPERATION_CONFIGURATION_OPEN),
+			fixtureConfigurationCommand("config-focus-1", "window-1", proto.ProviderOperation_PROVIDER_OPERATION_CONFIGURATION_FOCUS),
+			fixtureConfigurationCommand("config-open-2", "window-2", proto.ProviderOperation_PROVIDER_OPERATION_CONFIGURATION_OPEN),
+			fixtureConfigurationCommand("config-close-2", "window-2", proto.ProviderOperation_PROVIDER_OPERATION_CONFIGURATION_CLOSE),
+		)
 	}
 	for _, command := range commands {
 		if err := stream.Send(command); err != nil {
@@ -146,12 +264,112 @@ func fixtureCommand(operationID string, operation proto.ProviderOperation) *prot
 	}
 }
 
+func fixtureConfigurationCommand(operationID, windowID string, operation proto.ProviderOperation) *proto.ProviderCommand {
+	command := fixtureCommand(operationID, operation)
+	command.TargetOperationId = windowID
+	return command
+}
+
+func (h *fixtureHost) StorageGet(_ context.Context, request *proto.StorageGetRequest) (*proto.StorageGetReply, error) {
+	if request.GetContext().GetSessionId() != "fixture-session" || request.GetContext().GetProviderId() != ProviderID ||
+		request.GetContext().GetOperationId() != "fixture-launch" || request.GetKey() != preferenceKey {
+		return nil, status.Error(codes.PermissionDenied, "fixture storage read scope mismatch")
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return &proto.StorageGetReply{
+		Value:      append([]byte(nil), h.preference...),
+		Revision:   h.preferenceRevision,
+		Found:      h.preferenceRevision > 0,
+		Durability: h.preferenceDurability,
+	}, nil
+}
+
+func (h *fixtureHost) StoragePut(_ context.Context, request *proto.StoragePutRequest) (*proto.StorageMutationReply, error) {
+	mutation := request.GetMutation()
+	if mutation.GetContext().GetSessionId() != "fixture-session" || mutation.GetContext().GetProviderId() != ProviderID ||
+		mutation.GetContext().GetOperationId() != "fixture-launch" || mutation.GetIdempotencyKey() == "" || request.GetKey() != preferenceKey ||
+		request.GetDurability() != proto.StorageDurability_STORAGE_DURABILITY_PERSISTENT {
+		return nil, status.Error(codes.PermissionDenied, "fixture storage write scope mismatch")
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if mutation.GetExpectedRevision() != h.preferenceRevision {
+		return &proto.StorageMutationReply{
+			Revision:   h.preferenceRevision,
+			Outcome:    proto.MutationOutcome_MUTATION_OUTCOME_REVISION_CONFLICT,
+			Durability: h.preferenceDurability,
+		}, nil
+	}
+	h.preference = append([]byte(nil), request.GetValue()...)
+	h.preferenceRevision++
+	h.preferenceDurability = request.GetDurability()
+	return &proto.StorageMutationReply{
+		Revision:   h.preferenceRevision,
+		Outcome:    proto.MutationOutcome_MUTATION_OUTCOME_APPLIED,
+		Durability: h.preferenceDurability,
+	}, nil
+}
+
+type fixtureConfigWindow struct {
+	index int
+	mu    sync.Mutex
+	exit  WindowExit
+	done  chan struct{}
+	once  sync.Once
+}
+
+func (w *fixtureConfigWindow) Focus(context.Context) bool {
+	if w.index == 0 {
+		w.finish(WindowExit{Preference: []byte("Library"), Saved: true})
+	}
+	return true
+}
+
+func (w *fixtureConfigWindow) Stop(context.Context) error {
+	w.finish(WindowExit{})
+	return nil
+}
+
+func (w *fixtureConfigWindow) Done() <-chan struct{} { return w.done }
+
+func (w *fixtureConfigWindow) Result() WindowExit {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.exit
+}
+
+func (w *fixtureConfigWindow) finish(exit WindowExit) {
+	w.once.Do(func() {
+		w.mu.Lock()
+		w.exit = exit
+		w.mu.Unlock()
+		close(w.done)
+	})
+}
+
+type fixtureWindowLauncher struct {
+	mu          sync.Mutex
+	preferences []string
+	windows     []*fixtureConfigWindow
+}
+
+func (l *fixtureWindowLauncher) Start(preference string) (ConfigWindow, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	window := &fixtureConfigWindow{index: len(l.windows), done: make(chan struct{})}
+	l.preferences = append(l.preferences, preference)
+	l.windows = append(l.windows, window)
+	return window, nil
+}
+
 func TestProviderExchangeOverLocalTransport(t *testing.T) {
 	listener, endpoint := listenFixture(t)
 	host := &fixtureHost{credential: []byte("0123456789abcdef0123456789abcdef")}
 	server := grpc.NewServer()
 	proto.RegisterPluginHostServer(server, host)
 	proto.RegisterProviderHostServer(server, host)
+	proto.RegisterResourceHostServer(server, host)
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- server.Serve(listener) }()
 	t.Cleanup(func() {
@@ -224,5 +442,161 @@ func TestProviderExchangeOverLocalTransport(t *testing.T) {
 	if counter == nil || len(counter.GetCounters()) != 1 || counter.GetCounters()[0].GetId() != "demo-catalog-game" ||
 		counter.GetCounters()[0].GetSeconds() != 7200 || counter.GetCounters()[0].LastPlayed == nil {
 		t.Fatalf("unexpected counter result: %v", counter)
+	}
+}
+
+func TestConfigurationLifecyclePersistsPreferenceThroughHostFixture(t *testing.T) {
+	listener, endpoint := listenFixture(t)
+	host := &fixtureHost{
+		credential:    []byte("0123456789abcdef0123456789abcdef"),
+		configuration: true,
+	}
+	server := grpc.NewServer()
+	proto.RegisterPluginHostServer(server, host)
+	proto.RegisterProviderHostServer(server, host)
+	proto.RegisterResourceHostServer(server, host)
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve(listener) }()
+	t.Cleanup(func() {
+		server.Stop()
+		_ = listener.Close()
+		select {
+		case <-serveDone:
+		case <-time.After(time.Second):
+			t.Error("fixture gRPC server did not stop")
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client, err := Open(ctx, endpoint, host.credential, "fixture-launch")
+	if err != nil {
+		t.Fatalf("open provider: %v", err)
+	}
+	launcher := &fixtureWindowLauncher{}
+	client.configuration = NewConfigurationLifecycle(
+		resourcePreferenceStore{client: proto.NewResourceHostClient(client.conn)},
+		launcher,
+		client.Context(),
+	)
+	if err := client.Run(ctx, Demo{}); err != nil {
+		t.Fatalf("run provider: %v", err)
+	}
+
+	windowIDs := map[string]string{
+		"config-open-1":  "window-1",
+		"config-focus-1": "window-1",
+		"config-open-2":  "window-2",
+		"config-close-2": "window-2",
+	}
+	for id, windowID := range windowIDs {
+		result := host.exchange.results[id]
+		if result == nil || result.GetConfiguration() == nil || !result.GetConfiguration().GetAccepted() {
+			t.Fatalf("configuration operation %s was not accepted: %v", id, result)
+		}
+		if result.GetConfiguration().GetSessionId() != "fixture-session" {
+			t.Fatalf("configuration operation %s lost session correlation: %v", id, result.GetConfiguration())
+		}
+		if result.GetConfiguration().GetWindowId() != windowID {
+			t.Fatalf("configuration operation %s lost window correlation: %v", id, result.GetConfiguration())
+		}
+	}
+	launcher.mu.Lock()
+	preferences := append([]string(nil), launcher.preferences...)
+	launcher.mu.Unlock()
+	if !reflect.DeepEqual(preferences, []string{"Games", "Library"}) {
+		t.Fatalf("configuration window preferences = %v, want default then persisted value", preferences)
+	}
+	host.mu.Lock()
+	defer host.mu.Unlock()
+	if string(host.preference) != "Library" || host.preferenceRevision != 1 ||
+		host.preferenceDurability != proto.StorageDurability_STORAGE_DURABILITY_PERSISTENT {
+		t.Fatalf("host did not persist the non-secret preference: value=%q revision=%d durability=%s",
+			host.preference, host.preferenceRevision, host.preferenceDurability)
+	}
+}
+
+func TestAccountSecretAndHostDefinedLoginAreProfileScopedAndGrantChecked(t *testing.T) {
+	listener, endpoint := listenFixture(t)
+	host := &fixtureHost{
+		credential: []byte("0123456789abcdef0123456789abcdef"),
+		accounts:   make(map[uint64]*proto.AccountIdentity),
+		secrets:    make(map[uint64][]byte),
+		grants: map[uint64]map[string]bool{
+			1: {"account.state.read": true, "account.state.publish": true, "secrets.read": true, "secrets.write": true, "auth.webview": true},
+			2: {"account.state.read": true, "secrets.read": true},
+			3: {},
+		},
+	}
+	server := grpc.NewServer()
+	proto.RegisterPluginHostServer(server, host)
+	proto.RegisterProviderHostServer(server, host)
+	proto.RegisterResourceHostServer(server, host)
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve(listener) }()
+	t.Cleanup(func() {
+		server.Stop()
+		_ = listener.Close()
+		select {
+		case <-serveDone:
+		case <-time.After(time.Second):
+			t.Error("fixture gRPC server did not stop")
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client, err := Open(ctx, endpoint, host.credential, "fixture-launch")
+	if err != nil {
+		t.Fatalf("open provider: %v", err)
+	}
+	defer client.Close()
+	service := proto.NewProviderHostClient(client.conn)
+	profileA := client.Context()
+	profileA.ProfileEpoch = 1
+	accountName := "Fake User"
+	account := &proto.AccountIdentity{ProviderId: ProviderID, AccountId: "fixture-account", AccountName: &accountName}
+	if reply, err := service.Account(ctx, &proto.AccountRequest{Context: profileA, Action: &proto.AccountRequest_Save{Save: account}}); err != nil || !reply.GetAccepted() {
+		t.Fatalf("save fake account: reply=%v err=%v", reply, err)
+	}
+	if reply, err := service.Account(ctx, &proto.AccountRequest{Context: profileA, Action: &proto.AccountRequest_Read{Read: true}}); err != nil || reply.GetAccount().GetAccountId() != "fixture-account" {
+		t.Fatalf("read fake account: reply=%v err=%v", reply, err)
+	}
+	if reply, err := service.Secret(ctx, &proto.SecretRequest{Context: profileA, Key: "session", Operation: proto.SecretOperation_SECRET_OPERATION_WRITE, Value: []byte("fixture-token")}); err != nil || !reply.GetAccepted() {
+		t.Fatalf("write fake secret: reply=%v err=%v", reply, err)
+	}
+	if reply, err := service.Secret(ctx, &proto.SecretRequest{Context: profileA, Key: "session", Operation: proto.SecretOperation_SECRET_OPERATION_READ}); err != nil || string(reply.GetValue()) != "fixture-token" {
+		t.Fatalf("read fake secret: reply=%v err=%v", reply, err)
+	}
+	login, err := service.Login(ctx, &proto.LoginRequest{Context: profileA, Operation: proto.LoginOperation_LOGIN_OPERATION_OPEN, Handle: "host-defined-fixture-login"})
+	if err != nil || login.GetState() != proto.LoginState_LOGIN_STATE_OPEN || login.GetPageResultJson() != `{"authenticated":true}` || len(login.GetCookies()) != 0 {
+		t.Fatalf("host-defined login result = %v, err=%v", login, err)
+	}
+	if _, err := service.Login(ctx, &proto.LoginRequest{Context: profileA, Operation: proto.LoginOperation_LOGIN_OPERATION_OPEN, Handle: "plugin-supplied-script"}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("plugin-supplied login handle error = %v, want permission denied", err)
+	}
+
+	profileB := client.Context()
+	profileB.ProfileEpoch = 2
+	if reply, err := service.Account(ctx, &proto.AccountRequest{Context: profileB, Action: &proto.AccountRequest_Read{Read: true}}); err != nil || reply.GetAccount() != nil {
+		t.Fatalf("account leaked across profiles: reply=%v err=%v", reply, err)
+	}
+	if reply, err := service.Secret(ctx, &proto.SecretRequest{Context: profileB, Key: "session", Operation: proto.SecretOperation_SECRET_OPERATION_READ}); err != nil || !reply.GetAbsent() {
+		t.Fatalf("secret leaked across profiles: reply=%v err=%v", reply, err)
+	}
+	if _, err := service.Login(ctx, &proto.LoginRequest{Context: profileB, Operation: proto.LoginOperation_LOGIN_OPERATION_OPEN, Handle: "host-defined-fixture-login"}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("login without the profile grant error = %v, want permission denied", err)
+	}
+
+	denied := client.Context()
+	denied.ProfileEpoch = 3
+	if _, err := service.Account(ctx, &proto.AccountRequest{Context: denied, Action: &proto.AccountRequest_Read{Read: true}}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("account read without grant error = %v, want permission denied", err)
+	}
+	if _, err := service.Secret(ctx, &proto.SecretRequest{Context: denied, Key: "session", Operation: proto.SecretOperation_SECRET_OPERATION_READ}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("secret read without grant error = %v, want permission denied", err)
+	}
+	if _, err := service.Login(ctx, &proto.LoginRequest{Context: denied, Operation: proto.LoginOperation_LOGIN_OPERATION_OPEN, Handle: "host-defined-fixture-login"}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("login without grant error = %v, want permission denied", err)
 	}
 }

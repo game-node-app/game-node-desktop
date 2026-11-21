@@ -372,6 +372,72 @@ impl Namespace<'_> {
         }
     }
 
+    /// Durable logical entries exposed to Persistence administration. Values and paths never
+    /// leave the store; session-only values are deliberately excluded.
+    pub fn persistence_entries(&mut self) -> Result<Vec<durable::PersistenceEntry>, Status> {
+        let now = self.now;
+        match self.durable(false)? {
+            Some(store) => store.persistence_entries(now).map_err(unavailable),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    pub fn physical_bytes(&mut self) -> Result<u64, Status> {
+        match self.durable(false)? {
+            Some(store) => store.physical_bytes().map_err(unavailable),
+            None => Ok(0),
+        }
+    }
+
+    /// Deletes an atomic set of durable keys and advances the namespace revision once.
+    pub fn delete_persistence_entries(
+        &mut self,
+        keys: &[String],
+        guard: &CommitGuard,
+    ) -> Result<(u64, u64), Status> {
+        let entries = self.persistence_entries()?;
+        let wanted: std::collections::HashSet<&str> = keys.iter().map(String::as_str).collect();
+        if !wanted
+            .iter()
+            .all(|key| entries.iter().any(|entry| entry.key == **key))
+        {
+            return Err(Status::not_found("persistence entry not found"));
+        }
+        if wanted.is_empty() {
+            return Ok((0, self.inner.counter));
+        }
+        guard()?;
+        let revision = self.inner.counter.saturating_add(1);
+        let now = self.now;
+        let store = self
+            .durable(false)?
+            .ok_or_else(|| Status::not_found("persistence entry not found"))?;
+        let reclaimed = store
+            .delete_persistence_entries(keys, now, revision)
+            .map_err(unavailable)?;
+        self.inner.counter = revision;
+        Ok((reclaimed, revision))
+    }
+
+    pub fn set_retention_policy(
+        &mut self,
+        category: &str,
+        policy: durable::RetentionPolicy,
+        guard: &CommitGuard,
+    ) -> Result<(u64, u64), Status> {
+        guard()?;
+        let revision = self.inner.counter.saturating_add(1);
+        let now = self.now;
+        let store = self
+            .durable(true)?
+            .ok_or_else(|| Status::unavailable("plugin storage unavailable"))?;
+        let reclaimed = store
+            .set_retention_policy(category, policy, now, revision)
+            .map_err(unavailable)?;
+        self.inner.counter = revision;
+        Ok((reclaimed, revision))
+    }
+
     /// Stores `value` under `key` when `expected` is the key's current revision (0 for a key
     /// that does not exist). `guard` is checked right before the first change. Over the quota
     /// is `RESOURCE_EXHAUSTED` and changes nothing.

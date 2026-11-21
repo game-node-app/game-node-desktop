@@ -166,10 +166,9 @@ impl ResourceApi {
                     if !running
                         && let Ok(caller) = api.providers.authorize_resource_session(Some(&context))
                         && caller.namespace.is_some()
+                        && let Err(error) = api.start_library_monitor(&caller, &context).await
                     {
-                        if let Err(error) = api.start_library_monitor(&caller, &context).await {
-                            tracing::debug!(code = ?error.code(), "library-root monitoring is unavailable");
-                        }
+                        tracing::debug!(code = ?error.code(), "library-root monitoring is unavailable");
                     }
                 }
                 tokio::time::sleep(Duration::from_secs(1)).await;

@@ -1,12 +1,19 @@
 [package]
-name = "gamenode-plugin-configuration-example"
+name = "gamenode-plugin-mvp-example"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
 publish = false
 
-[workspace]
-
 [dependencies]
-async-trait = "0.1.92"
-gamenode-plugin-sdk = { path = "../../../crates/plugin-sdk" }
-tokio = { version = "1.54.1", features = ["macros", "process", "rt-multi-thread", "sync", "time"] }
+async-trait = "0.1"
+gamenode-plugin-sdk = "=0.1.0"
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1.54.1", features = ["macros", "net", "rt-multi-thread", "sync"] }
+tokio-stream = { version = "0.1", features = ["net"] }
+tonic = { version = "0.14", features = ["transport"] }
+
+[workspace]

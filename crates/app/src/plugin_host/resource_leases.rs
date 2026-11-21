@@ -4,7 +4,9 @@
 //! restore hold an exclusive lease for the complete operation. Acquiring a set is atomic: either
 //! every key is reserved or none is. The plugin protocol never receives these keys or leases.
 
+#[cfg(test)]
 use super::grants::PluginIdentity;
+#[cfg(test)]
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
@@ -20,6 +22,7 @@ const MAX_LEASE_KEYS: usize = 64;
 pub struct ResourceLeaseKey([u8; 32]);
 
 impl ResourceLeaseKey {
+    #[cfg(test)]
     pub(crate) fn derive(
         identity: &PluginIdentity,
         profile_epoch: u64,
@@ -45,6 +48,7 @@ impl ResourceLeaseKey {
     }
 }
 
+#[cfg(test)]
 fn hash_part(digest: &mut Sha256, bytes: &[u8]) {
     digest.update((bytes.len() as u64).to_be_bytes());
     digest.update(bytes);
@@ -71,6 +75,7 @@ pub(crate) trait ResourceLeaseCoordinator: Send + Sync {
     ) -> Result<Box<dyn ResourceLease>, ResourceLeaseError>;
 
     /// Atomically reserve all keys exclusively for backup or restore.
+    #[cfg(test)]
     fn acquire_exclusive(
         &self,
         keys: &[ResourceLeaseKey],
@@ -167,6 +172,7 @@ impl ResourceLeaseCoordinator for ResourceLeases {
         self.reserve(keys, false)
     }
 
+    #[cfg(test)]
     fn acquire_exclusive(
         &self,
         keys: &[ResourceLeaseKey],

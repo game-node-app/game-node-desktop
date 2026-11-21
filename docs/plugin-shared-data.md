@@ -37,21 +37,123 @@ reads directly instead: the runtime catalog through `RuntimesList`,
 | Content availability (`CONTENT_AVAILABILITY`) | `GamesRegisterContent` with `library.discovery`, `files.read` and an approved content handle | `LibraryList`, `LibraryGet`, `LibraryWatch` with `library.read` and `library.read.all` for whole-library scope | Registration binds content to a scoped game/installation and the caller's runtime. Library reads return logical game/installation and display metadata. `LibraryEntry.runtime_availability` lists safe content/runtime identities for the caller's own bindings by default; an explicit `CONTENT_AVAILABILITY` selector adds other plugins' bindings after the current category grant, with no path, handle or byte payload. Other categories remain `UNIMPLEMENTED` on Library reads. |
 | Logical library roots (`LIBRARY_ROOTS`) | `LibrariesCreate`, `LibrariesAddRoot` with `library.roots.create`. `LibrariesUpdate`, `LibrariesUpdateRoot` with `library.roots.update`. `LibrariesRemove`, `LibrariesRemoveRoot` with `library.roots.delete`. Adding a root requires folder approval. | `LibrariesList`, `LibrariesGet`, `LibrariesWatch` with `library.roots.read` | The caller's logical library IDs, names, descriptions and revisions. Roots include IDs, names, availability, watching/discovery state and approved session-bound handles. Common-data selectors return `UNIMPLEMENTED`. |
 | Save profiles (`SAVE_PROFILES`) | `Saves.CreateProfile`, `Saves.UpdateProfile`, `Saves.RemoveProfile` with `game.saves.create`, `game.saves.update`, `game.saves.delete` respectively | `Saves.ListProfiles`, `Saves.GetProfile` with `game.saves.read` and game/resource scope | Logical profile metadata, runtime/format, revision, naming rules and handles for currently approved folders. Current desktop reads are owner-only. Category selectors on these routes return `UNIMPLEMENTED`. |
+| Storage diagnostics | `StorageDiagnosticsPublishBenchmark`, `StorageDiagnosticsPublishSmart` with `storage.diagnostics.publish` | `StorageDiagnostics.List`, `Get`, `Watch` with `storage.diagnostics.read` and the current sensitive-data projection policy | Host-attributed benchmark/SMART report, schema/version, observation time, revision, projected measurements/attributes and the opaque volume token only when approved. Reports are session-retained. |
+| Computer hardware observations | `ComputerPublishHardware` with `computer.hardware.publish` | `Computer.List`, `Get`, `Watch` with `computer.hardware.read` and exact sensitive source/recipient field review | The host assigns the active computer context and producer identity. Observations carry a schema/version and host-validated timestamp; caller-supplied computer IDs and common unique-identifier fields are rejected. Reports are session-retained and removed when the producer session closes. GameNode does not collect hardware. |
+| Game presence | `GamePresencePublish`, `GamePresenceClear` with `game.presence.publish` | `GamePresence.List`, `Get`, `Watch` with `game.presence.read` and exact sensitive source/recipient field review | The producer explicitly publishes bounded details for a numeric GameNode game ID and safe session ID. The host assigns sequence and observation time, caps TTL at five minutes, replaces prior state for the same producer/game/session, and removes it on clear, expiry or producer-session close. Presence is descriptive and does not set online status or influence process/playtime decisions. |
+| Game performance history (`GAME_PERFORMANCE_HISTORY`) | `GamePerformancePublishSamples`, `GamePerformanceEndSeries` with `game.performance.publish` | `GamePerformance.List`, `Get`, `Watch`, `QuerySeries`, `Aggregate` with `game.performance.read`; foreign common history additionally requires explicitly selecting the category or an authorized record | Each bounded series is tied to the host-selected game/installation, local computer context, plugin session and optional runtime recipe revision. Samples identify source/tool/version, Unix-millisecond observation time, sample interval, explicit FPS/CPU/RAM units and semantics, measurement quality and sequence. Only actual retained observations are queried or aggregated. Missing sequence numbers remain gaps; no values are interpolated. History is session-retained and removed when the producer session closes. |
 | Private plugin storage | `StoragePut` with `storage.write` and additionally `storage.persist` for `PERSISTENT`. `StorageDelete` with `storage.delete`. | `StorageGet` with `storage.read` | Private bytes, revision, durability and expiration in the authenticated plugin/publisher/profile namespace. Shared-data grants cannot address these keys. |
 
-### Reserved routes
+### Storage diagnostics
 
-Both the writes and reads in this table are `UNIMPLEMENTED`. Grants and
-projections here describe the published contract for the follow-up tasks.
-Where a request has `projection_id`, it selects a host-defined projection.
+Storage diagnostics reports are session-retained producer claims. The host derives the volume
+identity token from the caller's approved file handle, validates report structure, and never
+starts benchmark or SMART tools. `projection_id` is `benchmark.v1` or `smart.v1`; the matching
+dataset policy selects the report fields visible to another plugin. The opaque volume token is
+itself a projected field, so a report reader receives it only when that field is approved. A new
+volume token is a distinct resource binding and does not match reports from a replaced disk.
+
+### Game performance history
+
+The performance publisher accepts at most 1000 samples and 1 MiB per batch, limits each
+authenticated plugin to one accepted batch per second, and requires the declared sample interval
+to be 100–60000 ms. Each session-retained series is bounded to 1 MiB. A rejected rate or storage
+limit returns `MUTATION_OUTCOME_BACKPRESSURE`, `dropped_samples` and `retry_after_ms`; the last
+accepted series remains unchanged. A repeated latest batch is idempotent. Sequence gaps are
+reported as missing samples; a repeated or decreasing sequence is rejected.
+
+`PerformanceSample.observed_at` is Unix milliseconds. FPS uses `frames/second` and states whether
+it is instantaneous, frame-count-window or frame-time-derived, with instantaneous/average/minimum/
+maximum/percentile statistic and measured/estimated quality. CPU uses `percent`, identifies
+process/system scope and whole-machine (0–100) or per-core normalization. Memory uses `bytes`,
+identifies working-set or resident memory, and names the collection source. Frame-window samples
+must state a 100–600000 ms window; instantaneous samples use a zero window. Source/tool/version,
+runtime and recipe revision are descriptive metadata. The host binds the report to the game and
+installation selected for the authenticated session and supplies `active-host` as the local
+computer context. It does not launch a collector or verify that a claimed runtime collected it.
+
+`List` returns series in the requested game/computer scope. `QuerySeries` selects the time window,
+page and optional resolution; resolution selects actual samples and never creates interpolated
+points. `Aggregate` accepts `fps`, `cpu_percent` or `memory_bytes` with `average`, `min`, `max` or
+nearest-rank `p0` through `p100`, and reports units, sample count, source provenance and sequence
+coverage. Common history remains private unless the query explicitly selects its category or an
+authorized record and the current sharing grant permits it. `series_id` is the stable owner-facing
+series token. `record_id` is the current broker identity and may be used as `series_id` for a
+selected-record read; a replacement creates a new record identity, so category-scoped consent is
+the appropriate choice for an evolving history. Producer-session close removes history; durable
+retention requires the separate `storage.persist` workflow.
+
+#### Collection belongs to the publisher; transport belongs to GameNode
+
+The plugin decides whether it has a legitimate source for an observation and collects it using its
+own implementation or an explicitly selected external tool. GameNode does not bundle or start a
+SMART/benchmark scanner, hardware inventory collector, game instrumentation plugin, FPS overlay or
+prediction service. The host authenticates the publisher, checks permissions and bounds, binds the
+report to the active profile/session and approved context, stores it for the declared lifetime, and
+projects it to readers only under current consent. A report is a publisher claim; runtime IDs and
+collector names do not prove that a process was inspected or that Core collected the value.
+
+| Family | Publisher supplies | GameNode transports and validates |
+| --- | --- | --- |
+| Storage diagnostics | Benchmark/SMART measurements, tool/version, units, conditions and unavailable/error states | Approved volume identity, report schema, bounds, session retention and exact sensitive-field projection |
+| Computer and presence | Hardware observations or explicit game/session presence updates | Host computer context, safe field names, timestamps/TTL, session cleanup and exact sensitive-field projection |
+| Game performance | FPS/CPU/memory samples, measurement semantics, source/tool and sample sequence | Selected game/installation, local computer context, units/bounds, sequence coverage, backpressure and explicitly selected shared history |
+
+For example, a producer's local payload may resemble the following before the host adds authenticated
+ownership, selected-game context, revision and session provenance:
+
+```json
+{
+  "schema_id": "game.performance.history.v1",
+  "schema_version": 1,
+  "source": "overlay-frame-counter",
+  "tool": {"name": "Example Collector", "version": "2.0"},
+  "sample_interval_ms": 100,
+  "units": {"fps": "frames/second", "cpu": "percent", "memory": "bytes"},
+  "samples": [
+    {
+      "sequence": 1,
+      "observed_at": 1795219200123,
+      "fps": {"value": 60.0, "method": "instantaneous", "quality": "measured"},
+      "cpu": {"value": 34.5, "scope": "process", "normalization": "whole_machine_percent"},
+      "memory": {"value": 536870912, "kind": "working_set_bytes", "source": "example-tool"}
+    }
+  ]
+}
+```
+
+This is a documentation shape, not a second wire format: clients use the generated
+`PerformanceSamplesRequest` and `PerformanceSample` messages. `observed_at` is Unix milliseconds;
+the host stores only validated actual observations and does not fill gaps or derive measurements.
+
+Benchmark fields include tool/version, units, named measurements, per-measurement units and
+conditions. SMART fields carry model/firmware and named attributes with units. Both accept
+explicit `available`, `unavailable`, `unsupported`, `access_denied` and `error` states; missing
+measurements are not encoded as zero. Reports remain in the authenticated session and disappear
+when it closes; this does not grant durable storage.
+
+### Private persistence administration
+
+`PersistenceGetUsage` reports the caller's durable logical and quota bytes plus an
+estimated physical allocation; `PersistenceListEntries` pages the caller's
+persistent entries by opaque entry ID and logical key, category, size and last
+use. `PersistenceDeleteEntries`, `PersistenceClear` and
+`PersistenceSetRetentionPolicy` require the exact current namespace revision and
+apply atomically. Session-only values are not listed or counted. A retention
+policy (private category, maximum age and maximum bytes) removes entries beyond
+the selected bounds immediately, oldest use first. The namespace, identity,
+profile and cursors come from the authenticated session; values, physical paths
+and request-supplied plugin or path selectors are never exposed. Further
+per-category accounting, host cleanup and uninstall retention remain tasks
+1.15–1.17.
+
+### Other reserved routes
+
+The remaining writes and reads in this table are `UNIMPLEMENTED`. Grants and
+projections here describe the published contract for the follow-up tasks. Where a
+request has `projection_id`, it selects a host-defined projection.
 
 | Dataset or information family | Write methods and grants | Read methods and grants | Contracted projection |
 | --- | --- | --- | --- |
-| Storage diagnostics (1.9) | `StorageDiagnosticsPublishBenchmark`, `StorageDiagnosticsPublishSmart` with `storage.diagnostics.publish` | `StorageDiagnostics.List`, `Get`, `Watch` with `storage.diagnostics.read` and explicit sensitive-data review | Report ID and kind, host-attributed owner, opaque volume token, schema/version, typed measurements, approved extension, observation time and revision. |
-| Computer hardware (1.10) | `ComputerPublishHardware` with `computer.hardware.publish` | `Computer.List`, `Get`, `Watch` with `computer.hardware.read` and explicit sensitive-data review | Record ID and computer context, host-attributed owner, schema/version, typed observations, approved extension, observation time and revision. Exclude raw serials and leave missing identifiers absent. |
-| Game presence (1.10) | `GamePresencePublish`, `GamePresenceClear` with `game.presence.publish` | `GamePresence.List`, `Get`, `Watch` with `game.presence.read` and explicit sensitive-data review | Presence ID, game/session scope, host-attributed owner, sequence, observation/expiry, approved details and revision. Presence is an observation and grants no authority over online status or host process state. |
-| Performance history (`GAME_PERFORMANCE_HISTORY`, 1.11) | `GamePerformancePublishSamples`, `GamePerformanceEndSeries` with `game.performance.publish` | `GamePerformance.List`, `Get`, `Watch`, `QuerySeries`, `Aggregate` with `game.performance.read` and explicit common category/record selection backed by a grant, or exact sensitive projection review | Series ID, game/install/computer/session context, host-attributed owner, revision and typed samples (FPS, CPU percent, memory bytes). Queries include coverage and dropped samples. Aggregates include units, count, coverage and provenance. |
-| Private persistence administration (1.14–1.17) | `PersistenceDeleteEntries`, `PersistenceClear`, `PersistenceSetRetentionPolicy` with `storage.persist` | `PersistenceGetUsage`, `PersistenceListEntries` with `storage.persist` | Owner-scoped usage and quota counts, logical IDs/keys, categories, sizes and last-used times. Physical paths remain host-only. |
 
 ## Shared Data requests
 
@@ -61,6 +163,14 @@ Where a request has `projection_id`, it selects a host-defined projection.
 | `DataGet` | `DataGetRequest` → `DataGetReply` | Requires the session context and an exact record ID. For a common record owned by another plugin, also select its category or record ID through `CommonDataSelector`. For a foreign custom or sensitive record, the exact policy authorizes its reviewed fields by ID independently of the history/live settings. Hidden and missing records return `NOT_FOUND`. |
 | `DataList` | `DataListRequest` → `DataListReply` | Requires a `PageRequest` with session context. Pages one dataset with history access. Leave `filter` empty. Supply the common selector on the request or on `page`. If both are present, they must agree. The opaque cursor is bound to the session and query, expires after five minutes and is fenced by changes to the snapshot or sharing policy. |
 | `DataWatch` | `DataWatchRequest` → stream of `DataEvent` | Requires session context and filters each event with current live-sharing authorization. `after_revision = 0` starts at the current broker revision without replay. Any nonzero position must match the current revision. If policy revocation or queue overflow ends the stream, list and subscribe again. |
+
+To retain a shared record, a consumer must first read it through its current
+sharing grant and then explicitly copy the returned projection into its own
+namespace with `StoragePut`. This requires the independent `storage.write` and
+`storage.persist` grants, and the consumer chooses the logical key and expiry.
+The host never persists a foreign record automatically, and a retention grant
+does not expand which source fields the consumer can read. The stored copy
+remains owned by the consumer's authenticated plugin/publisher/profile identity.
 
 `DataPublishRequest` carries `dataset_id`, `schema_id`, `schema_version`,
 `durability`, and `ttl_seconds`, plus one payload chosen from a non-empty

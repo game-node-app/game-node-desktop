@@ -194,6 +194,7 @@ fn runtime_update_request(
         }),
         runtime: Some(runtime_record(spec, runtime_id, expected_revision)),
         field_mask,
+        extension_patch: None,
     }
 }
 
@@ -391,6 +392,15 @@ pub(crate) fn timed<T>(message: T) -> Request<T> {
     request
 }
 
+/// The library entry and exact recipe revision a custom launch was approved for.
+struct ApprovedRecipe<'a> {
+    game_id: &'a str,
+    installation_id: &'a str,
+    expected_revision: u64,
+    recipe_id: &'a str,
+    recipe_revision: u64,
+}
+
 /// Typed access to the library resources, bound to one session's `resource_context`. Get it from
 /// [`HostClient::resources`](crate::HostClient::resources). Cheap to clone.
 #[derive(Clone)]
@@ -446,20 +456,16 @@ impl Resources {
 
     fn custom_launch_execution(
         context: &ServiceContext,
-        game_id: &str,
-        installation_id: &str,
-        expected_revision: u64,
-        recipe_id: &str,
-        recipe_revision: u64,
+        approved: ApprovedRecipe<'_>,
         user_intent_id: &str,
         key: &str,
     ) -> CustomLaunchRequest {
         CustomLaunchRequest {
             context: Some(context.clone()),
-            game_id: game_id.to_owned(),
-            installation_id: installation_id.to_owned(),
+            game_id: approved.game_id.to_owned(),
+            installation_id: approved.installation_id.to_owned(),
             content_id: String::new(),
-            expected_revision,
+            expected_revision: approved.expected_revision,
             user_intent_id: user_intent_id.to_owned(),
             idempotency_key: key.to_owned(),
             executable_handle: String::new(),
@@ -468,8 +474,8 @@ impl Resources {
             environment_set: Default::default(),
             environment_unset: Vec::new(),
             runtime_handle: String::new(),
-            recipe_id: recipe_id.to_owned(),
-            recipe_revision,
+            recipe_id: approved.recipe_id.to_owned(),
+            recipe_revision: approved.recipe_revision,
             uri: String::new(),
         }
     }
@@ -606,6 +612,33 @@ impl Resources {
                 key,
                 expected_revision,
             )))
+            .await
+            .map(tonic::Response::into_inner)
+    }
+
+    /// Applies the protocol's revision checked typed and namespace patch to an owned runtime.
+    /// Namespace operations are further restricted by the host to this plugin's namespace.
+    pub async fn runtime_update_patch(
+        &self,
+        runtime_id: &str,
+        runtime: RuntimeSpec,
+        patch: ExtensionPatch,
+        field_mask: impl IntoIterator<Item = impl Into<String>>,
+        expected_revision: u64,
+        key: &str,
+    ) -> Result<RuntimeMutationReply, Status> {
+        let mut request = runtime_update_request(
+            &self.context,
+            runtime_id,
+            runtime,
+            field_mask.into_iter().map(Into::into).collect(),
+            key,
+            expected_revision,
+        );
+        request.extension_patch = Some(patch);
+        self.client
+            .clone()
+            .runtimes_update(timed(request))
             .await
             .map(tonic::Response::into_inner)
     }
@@ -873,6 +906,7 @@ impl Resources {
     /// replacement executable, argv, cwd, runtime or environment payload, so the host can only
     /// execute the immutable recipe it approved. A denied `game.custom_launch` grant stays a
     /// `PERMISSION_DENIED` error; there is no fallback to standard launch.
+    #[allow(clippy::too_many_arguments)] // Published SDK API: a parameter struct would break plugin callers.
     pub async fn request_custom_launch(
         &self,
         game_id: &str,
@@ -887,11 +921,13 @@ impl Resources {
             .clone()
             .games_request_custom_launch(timed(Self::custom_launch_execution(
                 &self.context,
-                game_id,
-                installation_id,
-                expected_revision,
-                recipe_id,
-                recipe_revision,
+                ApprovedRecipe {
+                    game_id,
+                    installation_id,
+                    expected_revision,
+                    recipe_id,
+                    recipe_revision,
+                },
                 user_intent_id,
                 key,
             )))
@@ -1249,11 +1285,13 @@ mod custom_launch_tests {
         let context = ServiceContext::default();
         let request = Resources::custom_launch_execution(
             &context,
-            "620",
-            "steam:620",
-            12,
-            "recipe-1",
-            4,
+            ApprovedRecipe {
+                game_id: "620",
+                installation_id: "steam:620",
+                expected_revision: 12,
+                recipe_id: "recipe-1",
+                recipe_revision: 4,
+            },
             "intent",
             "key",
         );

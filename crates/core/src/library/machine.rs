@@ -1143,15 +1143,14 @@ impl LibraryMachine {
                 expected_revision,
                 target,
             } => {
-                if let Some(entry) = self.entries.get_mut(&entry_key) {
-                    if entry
+                if let Some(entry) = self.entries.get_mut(&entry_key)
+                    && entry
                         .target
                         .as_ref()
                         .is_some_and(|current| current.revision == expected_revision)
-                    {
-                        entry.target = Some(target);
-                        self.view_dirty = true;
-                    }
+                {
+                    entry.target = Some(target);
+                    self.view_dirty = true;
                 }
                 vec![]
             }

@@ -1643,7 +1643,7 @@ async fn provider_free_extension_gets_only_its_host_selected_launch_context() {
         .unwrap();
     assert!(!api.connected(&internal_id));
     assert!(
-        api.authorize_resource_session(Some(&restarted_context))
+        api.authorize_resource_session(Some(restarted_context))
             .is_err()
     );
     assert_eq!(runtime_sessions.reports.load(Ordering::Relaxed), 4);

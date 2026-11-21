@@ -420,21 +420,80 @@ message LibraryRecordReply { LibraryRecord library = 1; uint64 revision = 2; }
 message LibraryRecordEvent { uint64 revision = 1; string event_type = 2; LibraryRecord library = 3; }
 message LibraryMutationReply { string resource_id = 1; uint64 revision = 2; MutationOutcome outcome = 3; }
 message RuntimeRegisterRequest { MutationContext mutation = 1; RuntimeRecord runtime = 2; }
-message RuntimeUpdateRequest { MutationContext mutation = 1; RuntimeRecord runtime = 2; repeated string field_mask = 3; }
+message RuntimeUpdateRequest {
+  MutationContext mutation = 1;
+  RuntimeRecord runtime = 2;
+  repeated string field_mask = 3;
+  ExtensionPatch extension_patch = 4;
+}
 message RuntimeMutationReply { RuntimeRecord runtime = 1; MutationOutcome outcome = 2; }
 message RuntimeRecordReply { RuntimeRecord runtime = 1; uint64 revision = 2; }
 message RuntimeRecordEvent { uint64 revision = 1; string event_type = 2; RuntimeRecord runtime = 3; }
 message RuntimesListReply { repeated RuntimeRecord runtimes = 1; string next_cursor = 2; uint64 revision = 3; }
 message ContentRegistrationRequest { MutationContext mutation = 1; string game_id = 2; string installation_id = 3; string content_handle = 4; string content_kind = 5; string runtime_id = 6; repeated string supported_platforms = 7; string content_id = 8; }
-message ReportMutationReply { string report_id = 1; uint64 revision = 2; MutationOutcome outcome = 3; }
-message BenchmarkReportRequest { MutationContext mutation = 1; string volume_handle = 2; string tool_name = 3; string tool_version = 4; map<string,double> measurements = 5; string units = 6; int64 observed_at = 7; }
-message SmartReportRequest { MutationContext mutation = 1; string volume_handle = 2; string device_model = 3; string firmware = 4; map<string,string> attributes = 5; int64 observed_at = 6; }
+message ReportMutationReply {
+  string report_id = 1;
+  uint64 revision = 2;
+  MutationOutcome outcome = 3;
+  // Used by bounded batch publishers to report accepted/dropped samples and retry guidance.
+  uint32 accepted_samples = 4;
+  uint32 dropped_samples = 5;
+  uint32 retry_after_ms = 6;
+  int64 retained_from = 7;
+  int64 retained_to = 8;
+}
+enum DiagnosticValueState { DIAGNOSTIC_VALUE_STATE_UNSPECIFIED = 0; DIAGNOSTIC_VALUE_STATE_AVAILABLE = 1; DIAGNOSTIC_VALUE_STATE_UNAVAILABLE = 2; DIAGNOSTIC_VALUE_STATE_UNSUPPORTED = 3; DIAGNOSTIC_VALUE_STATE_ACCESS_DENIED = 4; DIAGNOSTIC_VALUE_STATE_ERROR = 5; }
+message BenchmarkReportRequest { MutationContext mutation = 1; string volume_handle = 2; string tool_name = 3; string tool_version = 4; map<string,double> measurements = 5; string units = 6; int64 observed_at = 7; map<string,string> measurement_units = 8; map<string,DiagnosticValueState> measurement_states = 9; google.protobuf.Struct conditions = 10; }
+message SmartReportRequest { MutationContext mutation = 1; string volume_handle = 2; string device_model = 3; string firmware = 4; map<string,string> attributes = 5; int64 observed_at = 6; map<string,string> attribute_units = 7; map<string,DiagnosticValueState> attribute_states = 8; google.protobuf.Struct conditions = 9; }
 message HardwareReportRequest { MutationContext mutation = 1; string computer_id = 2; string schema_id = 3; uint32 schema_version = 4; google.protobuf.Struct observations = 5; int64 observed_at = 6; }
 message PresencePublishRequest { MutationContext mutation = 1; string game_id = 2; string session_id = 3; google.protobuf.Struct details = 4; uint64 ttl_seconds = 5; }
 message PresenceClearRequest { MutationContext mutation = 1; string game_id = 2; string session_id = 3; }
-message PerformanceSample { int64 observed_at = 1; double frames_per_second = 2; double cpu_percent = 3; uint64 memory_bytes = 4; uint64 sequence = 5; }
-message PerformanceSamplesRequest { MutationContext mutation = 1; string series_id = 2; string game_id = 3; string computer_id = 4; repeated PerformanceSample samples = 5; }
-message PerformanceEndSeriesRequest { MutationContext mutation = 1; string series_id = 2; int64 ended_at = 3; }
+enum PerformanceFpsMethod { PERFORMANCE_FPS_METHOD_UNSPECIFIED = 0; PERFORMANCE_FPS_METHOD_INSTANTANEOUS = 1; PERFORMANCE_FPS_METHOD_FRAME_COUNT_WINDOW = 2; PERFORMANCE_FPS_METHOD_FRAME_TIME_DERIVED = 3; }
+enum PerformanceFpsStatistic { PERFORMANCE_FPS_STATISTIC_UNSPECIFIED = 0; PERFORMANCE_FPS_STATISTIC_INSTANTANEOUS = 1; PERFORMANCE_FPS_STATISTIC_AVERAGE = 2; PERFORMANCE_FPS_STATISTIC_MINIMUM = 3; PERFORMANCE_FPS_STATISTIC_MAXIMUM = 4; PERFORMANCE_FPS_STATISTIC_PERCENTILE = 5; }
+enum PerformanceMeasurementQuality { PERFORMANCE_MEASUREMENT_QUALITY_UNSPECIFIED = 0; PERFORMANCE_MEASUREMENT_QUALITY_MEASURED = 1; PERFORMANCE_MEASUREMENT_QUALITY_ESTIMATED = 2; }
+enum PerformanceCpuScope { PERFORMANCE_CPU_SCOPE_UNSPECIFIED = 0; PERFORMANCE_CPU_SCOPE_PROCESS = 1; PERFORMANCE_CPU_SCOPE_SYSTEM = 2; }
+enum PerformanceCpuNormalization { PERFORMANCE_CPU_NORMALIZATION_UNSPECIFIED = 0; PERFORMANCE_CPU_NORMALIZATION_WHOLE_MACHINE_PERCENT = 1; PERFORMANCE_CPU_NORMALIZATION_PER_CORE_PERCENT = 2; }
+enum PerformanceMemoryKind { PERFORMANCE_MEMORY_KIND_UNSPECIFIED = 0; PERFORMANCE_MEMORY_KIND_WORKING_SET_BYTES = 1; PERFORMANCE_MEMORY_KIND_RESIDENT_BYTES = 2; }
+message PerformanceSample {
+  // Unix milliseconds, preserving the cadence allowed by sample_interval_ms (down to 100 ms).
+  int64 observed_at = 1;
+  // Always frames/second; fps_method/fps_statistic describe the collection window and statistic.
+  double frames_per_second = 2;
+  // Percent; scope and normalization are declared once for the series.
+  double cpu_percent = 3;
+  // Bytes of working set or resident memory as declared by the series.
+  uint64 memory_bytes = 4;
+  // Positive and increasing within one series. Gaps remain visible as dropped samples.
+  uint64 sequence = 5;
+  uint32 sampling_window_ms = 6;
+  PerformanceFpsMethod fps_method = 7;
+  PerformanceFpsStatistic fps_statistic = 8;
+  optional double fps_percentile = 9;
+  optional double frames_per_second_min = 10;
+  optional double frames_per_second_max = 11;
+  PerformanceMeasurementQuality quality = 12;
+}
+message PerformanceSamplesRequest {
+  MutationContext mutation = 1;
+  string series_id = 2;
+  string game_id = 3;
+  string computer_id = 4;
+  repeated PerformanceSample samples = 5;
+  string runtime_id = 6;
+  string runtime_recipe_revision = 7;
+  string source = 8;
+  string tool_name = 9;
+  string tool_version = 10;
+  uint32 sample_interval_ms = 11;
+  PerformanceCpuScope cpu_scope = 12;
+  PerformanceCpuNormalization cpu_normalization = 13;
+  PerformanceMemoryKind memory_kind = 14;
+  string memory_source = 15;
+  string fps_unit = 16;
+  string cpu_unit = 17;
+  string memory_unit = 18;
+}
+message PerformanceEndSeriesRequest { MutationContext mutation = 1; string series_id = 2; int64 ended_at = 3; uint64 expected_last_sequence = 4; }
 message DataPublishRequest { MutationContext mutation = 1; string dataset_id = 2; string schema_id = 3; uint32 schema_version = 4; google.protobuf.Struct value = 5; StorageDurability durability = 6; uint64 ttl_seconds = 7; bytes opaque_payload = 8; string resource_id = 9; int64 observed_at = 10; uint64 sequence = 11; string source_observation_id = 12; }
 message DataMutationReply { string record_id = 1; uint64 revision = 2; int64 expires_at = 3; MutationOutcome outcome = 4; }
 message DataGetRequest { ServiceContext context = 1; string dataset_id = 2; string record_id = 3; CommonDataSelector common_data_categories = 4; }
@@ -528,7 +587,7 @@ message MatchingSearchReply { repeated MatchCandidate candidates = 1; string nex
 // `revision` is the entry's artwork revision: 0 while the cover is the game's own.
 message ArtworkReadReply { bytes encoded_image = 1; string media_type = 2; uint64 byte_length = 3; uint64 revision = 4; }
 message MutationReply { string resource_id = 1; uint64 revision = 2; MutationOutcome outcome = 3; }
-enum MutationOutcome { MUTATION_OUTCOME_UNSPECIFIED = 0; MUTATION_OUTCOME_APPLIED = 1; MUTATION_OUTCOME_ALREADY_APPLIED = 2; MUTATION_OUTCOME_REVISION_CONFLICT = 3; }
+enum MutationOutcome { MUTATION_OUTCOME_UNSPECIFIED = 0; MUTATION_OUTCOME_APPLIED = 1; MUTATION_OUTCOME_ALREADY_APPLIED = 2; MUTATION_OUTCOME_REVISION_CONFLICT = 3; MUTATION_OUTCOME_BACKPRESSURE = 4; }
 // `name` is the detected name (or the matched game's name when the provider reported none);
 // `display_name` is the presentation override the owning provider wrote with MetadataUpdate and is
 // empty when none is set. `metadata_revision` is the revision of that override for this
@@ -671,7 +730,37 @@ message PerformanceGetRequest { ServiceContext context = 1; string series_id = 2
 message PerformanceWatchRequest { ServiceContext context = 1; string game_id = 2; string computer_context_id = 3; string projection_id = 4; uint64 after_sequence = 5; CommonDataSelector common_data_categories = 6; }
 message PerformanceQuerySeriesRequest { ServiceContext context = 1; string series_id = 2; int64 from_time = 3; int64 to_time = 4; uint32 resolution_ms = 5; PageRequest page = 6; CommonDataSelector common_data_categories = 7; }
 message PerformanceAggregateRequest { ServiceContext context = 1; string series_id = 2; int64 from_time = 3; int64 to_time = 4; string metric = 5; string aggregation = 6; CommonDataSelector common_data_categories = 7; }
-message PerformanceSeries { string series_id = 1; string game_id = 2; string installation_id = 3; string computer_context_id = 4; string session_id = 5; string owner_plugin_id = 6; repeated PerformanceSample samples = 7; uint64 revision = 8; }
+message PerformanceSeries {
+  // Stable host-owned owner token. record_id identifies the current broker revision for
+  // selected-record sharing; replacement creates a new record_id.
+  string series_id = 1;
+  string game_id = 2;
+  string installation_id = 3;
+  string computer_context_id = 4;
+  string session_id = 5;
+  string owner_plugin_id = 6;
+  repeated PerformanceSample samples = 7;
+  uint64 revision = 8;
+  string runtime_id = 9;
+  string runtime_recipe_revision = 10;
+  string source = 11;
+  string tool_name = 12;
+  string tool_version = 13;
+  uint32 sample_interval_ms = 14;
+  PerformanceCpuScope cpu_scope = 15;
+  PerformanceCpuNormalization cpu_normalization = 16;
+  PerformanceMemoryKind memory_kind = 17;
+  string memory_source = 18;
+  int64 started_at = 19;
+  int64 ended_at = 20;
+  uint64 dropped_samples = 21;
+  string coverage = 22;
+  string provenance = 23;
+  string fps_unit = 24;
+  string cpu_unit = 25;
+  string memory_unit = 26;
+  string record_id = 27;
+}
 message PerformanceListReply { repeated PerformanceSeries series = 1; string next_cursor = 2; uint64 revision = 3; }
 message PerformanceGetReply { PerformanceSeries series = 1; }
 message PerformanceEvent { uint64 sequence = 1; string event_type = 2; PerformanceSeries series = 3; }

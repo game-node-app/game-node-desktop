@@ -124,6 +124,7 @@ pub struct RuntimeResource {
     pub supported_formats: Vec<String>,
     /// Ordered argument template. Each token is a literal or a content path; never shell text.
     pub launch_arguments: Vec<RuntimeArgumentTemplate>,
+    #[serde(default)]
     pub revision: u64,
     /// Unix seconds assigned by the host when the resource is stored.
     pub observed_at: i64,

@@ -345,7 +345,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     return false;
                 };
                 match signal {
-                    Signal::Open(confirmation) => app.emit(EVENT, &confirmation).is_ok(),
+                    Signal::Open(confirmation) => app.emit(EVENT, confirmation.as_ref()).is_ok(),
                     Signal::Closed(id) => app.emit(CLOSED_EVENT, &id).is_ok(),
                 }
             },

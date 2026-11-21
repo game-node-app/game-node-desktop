@@ -386,8 +386,16 @@ async fn data_publish_list_get_and_watch_use_the_snapshot_revision() {
     server.abort();
 }
 
-async fn consumer_session(fixture: &Fixture) -> Session {
-    let capabilities = [cap::CONTEXT, cap::STORAGE_WRITE];
+pub(super) async fn consumer_session(fixture: &Fixture) -> Session {
+    consumer_session_with_grants(fixture, &[cap::STORAGE_WRITE]).await
+}
+
+pub(super) async fn consumer_session_with_grants(
+    fixture: &Fixture,
+    grants: &[&'static str],
+) -> Session {
+    let mut capabilities = vec![cap::CONTEXT];
+    capabilities.extend_from_slice(grants);
     fixture
         .api
         .register(Registration {
@@ -434,7 +442,10 @@ async fn consumer_session(fixture: &Fixture) -> Session {
     session
 }
 
-fn authenticated_identity(fixture: &Fixture, context: &ServiceContext) -> PluginIdentity {
+pub(super) fn authenticated_identity(
+    fixture: &Fixture,
+    context: &ServiceContext,
+) -> PluginIdentity {
     let caller = fixture
         .api
         .authorize_resource_session(Some(context))
@@ -693,6 +704,101 @@ async fn persisted_custom_policy_filters_authenticated_public_exchange_and_revok
         .into_inner();
     assert!(denied.records.is_empty());
     server.abort();
+}
+
+#[tokio::test]
+async fn recipient_must_explicitly_persist_a_projected_shared_record() {
+    use gamenode_plugin_protocol::prost::Message;
+
+    let fixture = Fixture::new(&[cap::DATA_PUBLISH]).await;
+    let consumer = consumer_session_with_grants(
+        &fixture,
+        &[cap::STORAGE_READ, cap::STORAGE_WRITE, cap::STORAGE_PERSIST],
+    )
+    .await;
+    let consumer_context = consumer.host.resource_context().unwrap().clone();
+    let source = authenticated_identity(&fixture, &fixture.context());
+    let recipient = authenticated_identity(&fixture, &consumer_context);
+    fixture
+        .shared_policies
+        .set_source_recipient_policy(
+            SourceRecipientPolicy::new(
+                source,
+                recipient,
+                SharingClass::Custom,
+                "org.example.metrics.v1".into(),
+                ["fps".into()],
+                true,
+                false,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+    let published = fixture
+        .client()
+        .data_publish(data_publish(
+            &fixture,
+            "retained-shared-record",
+            value(&[("fps", number(60.0)), ("device_id", number(42.0))]),
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    let read = consumer
+        .host
+        .resource_client()
+        .data_get(DataGetRequest {
+            context: Some(consumer_context.clone()),
+            dataset_id: "org.example.metrics.v1".into(),
+            record_id: published.record_id,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .record
+        .unwrap();
+    assert_eq!(read.value.as_ref().unwrap().fields.len(), 1);
+    assert!(read.value.as_ref().unwrap().fields.contains_key("fps"));
+
+    let stored = consumer
+        .host
+        .resource_client()
+        .storage_put(StoragePutRequest {
+            mutation: Some(MutationContext {
+                context: Some(consumer_context.clone()),
+                idempotency_key: "retain-projected-report".into(),
+                expected_revision: 0,
+                ..Default::default()
+            }),
+            key: "shared/metrics/latest".into(),
+            value: read.encode_to_vec(),
+            durability: StorageDurability::Persistent as i32,
+            ttl_seconds: 3600,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(stored.durability, StorageDurability::Persistent as i32);
+    assert!(stored.expires_at > 0);
+    assert!(stored.usage_bytes > 0);
+
+    let restored = consumer
+        .host
+        .resource_client()
+        .storage_get(StorageGetRequest {
+            context: Some(consumer_context),
+            key: "shared/metrics/latest".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(restored.found);
+    assert_eq!(restored.durability, StorageDurability::Persistent as i32);
+    assert_eq!(restored.expires_at, stored.expires_at);
+    let retained = DataRecord::decode(restored.value.as_slice()).unwrap();
+    assert_eq!(retained.value.unwrap().fields.len(), 1);
 }
 
 #[tokio::test]

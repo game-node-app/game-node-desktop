@@ -2,11 +2,81 @@ use super::*;
 use crate::plugin_host::grants::{
     EffectiveGrant, GrantScope, PermissionDecision, PermissionRequest,
 };
+use gamenode_platform::paths::DataPaths;
+use tempfile::TempDir;
 
 fn profiles_with(account: Option<&str>, verified: bool) -> PluginProfiles {
     let profiles = PluginProfiles::default();
     profiles.update(account, verified);
     profiles
+}
+
+#[test]
+fn legacy_publisher_pin_layout_is_refused_without_replacing_current_trust() {
+    let temp = TempDir::new().unwrap();
+    let paths = DataPaths::at(temp.path());
+    let legacy = paths.private_dir().join("publisher-keys.json");
+    let current = PluginStateLayout::managed(&paths)
+        .trust_dir()
+        .join("publisher-keys.json");
+    std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(current.parent().unwrap()).unwrap();
+    let legacy_bytes = br#"{"schema":1,"publishers":{"org.example":{"fingerprint":"old"}}}"#;
+    let current_bytes = br#"{"schema":1,"publishers":{"org.example":{"fingerprint":"current"}}}"#;
+    std::fs::write(&legacy, legacy_bytes).unwrap();
+    std::fs::write(&current, current_bytes).unwrap();
+
+    let error = PluginStateLayout::refuse_legacy_layouts(&paths).unwrap_err();
+    assert!(error.to_string().contains("left untouched"));
+    assert_eq!(std::fs::read(&legacy).unwrap(), legacy_bytes);
+    assert_eq!(std::fs::read(&current).unwrap(), current_bytes);
+}
+
+#[test]
+fn legacy_grants_directory_is_refused_without_changing_legacy_or_current_state() {
+    let temp = TempDir::new().unwrap();
+    let paths = DataPaths::at(temp.path());
+    let legacy = paths.data_dir().join("plugin-state");
+    let layout = PluginStateLayout::prepare_managed(&paths).unwrap();
+    let profiles = profiles_with(Some("user"), true);
+    let profile = profiles.current().unwrap();
+    let current = layout.account_dir(&profile).unwrap().join("grants.json");
+    std::fs::create_dir_all(legacy.join("accounts/profile-1")).unwrap();
+    std::fs::create_dir_all(current.parent().unwrap()).unwrap();
+    let legacy_bytes = b"legacy grants are not imported";
+    let current_bytes = b"current grants remain unchanged";
+    std::fs::write(legacy.join("accounts/profile-1/grants.json"), legacy_bytes).unwrap();
+    std::fs::write(&current, current_bytes).unwrap();
+
+    let error = PluginStateLayout::refuse_legacy_layouts(&paths).unwrap_err();
+    assert!(error.to_string().contains("left untouched"));
+    assert_eq!(
+        std::fs::read(legacy.join("accounts/profile-1/grants.json")).unwrap(),
+        legacy_bytes
+    );
+    assert_eq!(std::fs::read(current).unwrap(), current_bytes);
+}
+
+#[test]
+fn prepare_managed_refuses_legacy_state_before_creating_current_layout() {
+    let temp = TempDir::new().unwrap();
+    let paths = DataPaths::at(temp.path());
+    let legacy = paths.data_dir().join("plugin-state");
+    std::fs::create_dir_all(&legacy).unwrap();
+    std::fs::write(legacy.join("sentinel"), b"keep").unwrap();
+
+    assert!(PluginStateLayout::prepare_managed(&paths).is_err());
+    assert_eq!(std::fs::read(legacy.join("sentinel")).unwrap(), b"keep");
+    assert!(!paths.plugin_data_dir().exists());
+}
+
+#[test]
+fn current_plugin_layout_is_allowed_when_no_legacy_state_exists() {
+    let temp = TempDir::new().unwrap();
+    let paths = DataPaths::at(temp.path());
+    PluginStateLayout::refuse_legacy_layouts(&paths).unwrap();
+    PluginStateLayout::prepare_managed(&paths).unwrap();
+    assert!(paths.plugin_data_dir().join("state").is_dir());
 }
 
 #[test]
@@ -159,7 +229,10 @@ fn active_profile_exposes_only_its_authenticated_identities_and_activation() {
         .replace_grants(identity.clone(), &[grant_request()], &[])
         .unwrap();
 
-    assert_eq!(profiles.identities().unwrap(), [identity.clone()]);
+    assert_eq!(
+        profiles.identities().unwrap(),
+        std::slice::from_ref(&identity)
+    );
     assert!(!profiles.is_enabled(&identity.plugin_id).unwrap());
     layout
         .open_activation(&current)

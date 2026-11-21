@@ -308,19 +308,19 @@ impl ResourceApi {
         if let Some(job) = self.jobs.replay(&owner, &action.key, hash)? {
             return Ok(job);
         }
-        let authorized =
-            if !action.intent.is_empty() && self.intents.redeem(&binding, &action.intent).is_ok() {
-                Authorized::Already
-            } else if self.remembered(&caller, &binding).await? {
-                Authorized::Already
-            } else {
-                if !self.intents.can_confirm() {
-                    return Err(Status::failed_precondition(
-                        "this GameNode build cannot ask for confirmations yet",
-                    ));
-                }
-                Authorized::Ask(self.intents.begin_pending(&binding)?)
-            };
+        let authorized = if (!action.intent.is_empty()
+            && self.intents.redeem(&binding, &action.intent).is_ok())
+            || self.remembered(&caller, &binding).await?
+        {
+            Authorized::Already
+        } else {
+            if !self.intents.can_confirm() {
+                return Err(Status::failed_precondition(
+                    "this GameNode build cannot ask for confirmations yet",
+                ));
+            }
+            Authorized::Ask(self.intents.begin_pending(&binding)?)
+        };
         let awaiting = matches!(authorized, Authorized::Ask(_)).then_some(AWAITING);
 
         let api = self.clone();

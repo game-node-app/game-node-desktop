@@ -107,6 +107,159 @@ fn expired_entries_are_gone_and_free_their_space() {
 }
 
 #[test]
+fn persistence_entries_are_logical_ordered_and_track_last_use() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = store(temp.path());
+    store
+        .put("beta", b"two", 1, None, 100, QUOTA_BYTES)
+        .unwrap();
+    store
+        .put("alpha", b"one", 2, Some(200), 150, QUOTA_BYTES)
+        .unwrap();
+    store
+        .put("expired", b"gone", 3, Some(50), 50, QUOTA_BYTES)
+        .unwrap();
+    assert!(store.get("beta", 160).unwrap().is_some());
+
+    let entries = store.persistence_entries(180).unwrap();
+    assert_eq!(
+        entries,
+        [
+            PersistenceEntry {
+                key: "alpha".into(),
+                size_bytes: 3,
+                last_used_at: 150,
+            },
+            PersistenceEntry {
+                key: "beta".into(),
+                size_bytes: 3,
+                last_used_at: 160,
+            },
+        ]
+    );
+    let remaining = store.persistence_entries(200).unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].key, "beta");
+    assert!(store.physical_bytes().unwrap() > 0);
+}
+
+#[test]
+fn retention_policy_prunes_by_age_and_size_without_touching_the_newest_entry() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = store(temp.path());
+    for (index, key) in ["old", "middle", "new"].iter().enumerate() {
+        let at = 100 + index as i64 * 100;
+        store
+            .put(key, b"value", index as u64 + 1, None, at, QUOTA_BYTES)
+            .unwrap();
+    }
+    let policy = RetentionPolicy {
+        max_age_seconds: 150,
+        max_bytes: 0,
+    };
+    assert_eq!(
+        store
+            .set_retention_policy("private", policy, 300, 4)
+            .unwrap(),
+        charge("old", 5)
+    );
+    assert_eq!(
+        store
+            .persistence_entries(300)
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.key)
+            .collect::<Vec<_>>(),
+        ["middle", "new"]
+    );
+    assert_eq!(store.retention_policy("private").unwrap(), Some(policy));
+
+    // A smaller byte bound removes the oldest remaining entry first.
+    let policy = RetentionPolicy {
+        max_age_seconds: 0,
+        max_bytes: charge("new", 5),
+    };
+    store
+        .set_retention_policy("private", policy, 300, 5)
+        .unwrap();
+    assert!(store.get("middle", 300).unwrap().is_none());
+    assert!(store.get("new", 300).unwrap().is_some());
+    // A write does not prune itself; it remains bounded by the next policy or quota check.
+    assert_eq!(
+        store
+            .put("newest", b"value", 6, None, 300, QUOTA_BYTES)
+            .unwrap(),
+        PutResult::Stored {
+            usage: charge("new", 5) + charge("newest", 5)
+        }
+    );
+    assert!(store.get("newest", 300).unwrap().is_some());
+}
+
+#[test]
+fn deleting_persistence_entries_is_selected_and_advances_the_revision() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = store(temp.path());
+    store.put("keep", b"k", 1, None, 0, QUOTA_BYTES).unwrap();
+    store
+        .put("drop", b"value", 2, None, 0, QUOTA_BYTES)
+        .unwrap();
+    assert_eq!(
+        store
+            .delete_persistence_entries(&["drop".into()], 0, 3)
+            .unwrap(),
+        charge("drop", 5)
+    );
+    assert_eq!(store.high_water().unwrap(), 3);
+    assert!(store.get("keep", 0).unwrap().is_some());
+    assert!(store.get("drop", 0).unwrap().is_none());
+    // A missing key is not an error when the caller already validated the set.
+    assert_eq!(
+        store
+            .delete_persistence_entries(&["missing".into()], 0, 4)
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn a_version_ten_store_gains_last_use_and_retention_tables() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("ns");
+    let mut current = store(&dir);
+    current.put("old", b"v", 1, None, 100, QUOTA_BYTES).unwrap();
+    drop(current);
+
+    let conn = Connection::open(dir.join(STORE_FILE)).unwrap();
+    conn.execute_batch(
+        "DROP TABLE retention_policies;
+         ALTER TABLE entries DROP COLUMN last_used_at;
+         PRAGMA user_version = 10;",
+    )
+    .unwrap();
+    drop(conn);
+
+    let mut upgraded = store(&dir);
+    assert_eq!(
+        upgraded
+            .persistence_entries(100)
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.key)
+            .collect::<Vec<_>>(),
+        ["old"]
+    );
+    assert_eq!(upgraded.retention_policy("private").unwrap(), None);
+    upgraded
+        .set_retention_policy("private", RetentionPolicy::default(), 100, 2)
+        .unwrap();
+    assert_eq!(
+        upgraded.retention_policy("private").unwrap(),
+        Some(RetentionPolicy::default())
+    );
+}
+
+#[test]
 fn remove_reports_the_revision_it_deleted_and_keeps_the_high_water() {
     let temp = tempfile::tempdir().unwrap();
     let mut store = store(temp.path());

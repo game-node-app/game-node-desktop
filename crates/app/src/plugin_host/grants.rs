@@ -890,13 +890,12 @@ fn validate_scope_for_permission(
     if operation == Operation::Create && matches!(scope, GrantScope::SelectedRecords { .. }) {
         return Err(GrantError::InvalidScope);
     }
-    if let GrantScope::SelectedRecords { record_ids, .. } = scope {
-        if record_ids.is_empty()
+    if let GrantScope::SelectedRecords { record_ids, .. } = scope
+        && (record_ids.is_empty()
             || record_ids.len() > 1000
-            || record_ids.iter().any(|id| !valid_identity_part(id, 256))
-        {
-            return Err(GrantError::InvalidScope);
-        }
+            || record_ids.iter().any(|id| !valid_identity_part(id, 256)))
+    {
+        return Err(GrantError::InvalidScope);
     }
     Ok(())
 }
@@ -1392,7 +1391,7 @@ mod tests {
             }]),
         );
         store
-            .replace_grants(actor.clone(), &[unknown.clone()], &[])
+            .replace_grants(actor.clone(), std::slice::from_ref(&unknown), &[])
             .unwrap();
         assert_eq!(
             store.effective_grants(&actor)[0].state,

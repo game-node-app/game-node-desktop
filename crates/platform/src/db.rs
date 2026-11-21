@@ -172,25 +172,23 @@ pub fn migrate(conn: &mut Connection, migrations: &[Migration]) -> Result<(), St
     }
     let supported = latest_version(migrations);
 
-    // Inspect without writing, so a newer or foreign database stays byte-for-byte unchanged.
-    let has_history = conn
-        .query_row(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'",
-            [],
-            |_| Ok(()),
-        )
-        .optional()
-        .map_err(failed)?
-        .is_some();
-    let applied = if has_history {
-        let found: Option<u32> = conn
-            .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
-                row.get(0)
-            })
-            .map_err(failed)?;
-        let found = found.unwrap_or(0);
+    // Inspect the full recorded history without writing, so mismatched, foreign or newer
+    // databases stay byte-for-byte unchanged.
+    let history = migration_history_from_connection(conn)?;
+    let applied = if let Some(history) = &history {
+        let found = history.last().map_or(0, |(version, _)| *version);
         if found > supported {
             return Err(StorageError::NewerSchema { found, supported });
+        }
+        let expected = migrations
+            .iter()
+            .take(history.len())
+            .map(|migration| (migration.version, migration.name.to_owned()))
+            .collect::<Vec<_>>();
+        if history != &expected {
+            return Err(StorageError::Failed(
+                "the local database migration history does not match this version; the database was left unchanged".into(),
+            ));
         }
         found
     } else {
@@ -206,10 +204,138 @@ pub fn migrate(conn: &mut Connection, migrations: &[Migration]) -> Result<(), St
         0
     };
 
+    if applied < supported
+        && history.is_some()
+        && let Some(path) = conn.path().filter(|path| is_persistent_database_path(path))
+    {
+        create_verified_migration_snapshot(
+            conn,
+            Path::new(path),
+            history.as_deref().unwrap_or_default(),
+        )?;
+    }
+
     for migration in migrations.iter().filter(|m| m.version > applied) {
         run_migration(conn, migration).map_err(|_| StorageError::MigrationFailed {
             version: migration.version,
         })?;
+    }
+    Ok(())
+}
+
+fn migration_history_from_connection(
+    conn: &Connection,
+) -> Result<Option<Vec<(u32, String)>>, StorageError> {
+    let has_history = conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'",
+            [],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(failed)?
+        .is_some();
+    if !has_history {
+        return Ok(None);
+    }
+
+    let mut statement = conn
+        .prepare("SELECT version, name FROM schema_migrations ORDER BY version")
+        .map_err(failed)?;
+    let rows = statement
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(failed)?;
+    rows.map(|row| row.map_err(failed))
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
+}
+
+fn is_persistent_database_path(path: &str) -> bool {
+    path != ":memory:" && !path.starts_with("file::memory:") && Path::new(path).is_file()
+}
+
+fn create_verified_migration_snapshot(
+    conn: &Connection,
+    database_path: &Path,
+    expected_history: &[(u32, String)],
+) -> Result<(), StorageError> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let parent = database_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let database_name = database_path
+        .file_name()
+        .ok_or_else(|| failed("could not identify the local database file"))?
+        .to_string_lossy();
+    let prefix = format!("{database_name}.pre-migration-");
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(failed)?
+        .as_nanos();
+    let stem = format!("{prefix}{timestamp}-{}", std::process::id());
+    let mut temporary = parent.join(format!(".{stem}.tmp"));
+    let mut snapshot = parent.join(format!("{stem}.sqlite"));
+    for suffix in 0..8 {
+        if !temporary.exists() && !snapshot.exists() {
+            break;
+        }
+        temporary = parent.join(format!(".{stem}-{suffix}.tmp"));
+        snapshot = parent.join(format!("{stem}-{suffix}.sqlite"));
+    }
+    if temporary.exists() || snapshot.exists() {
+        return Err(failed(
+            "could not reserve a migration snapshot file; the migration was not run",
+        ));
+    }
+
+    let result = (|| -> Result<(), StorageError> {
+        conn.backup(rusqlite::MAIN_DB, &temporary, Some(|_| {}))
+            .map_err(failed)?;
+        let snapshot_conn =
+            Connection::open_with_flags(&temporary, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .map_err(failed)?;
+        let integrity: String = snapshot_conn
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .map_err(failed)?;
+        if integrity != "ok"
+            || migration_history_from_connection(&snapshot_conn)?.as_deref()
+                != Some(expected_history)
+        {
+            return Err(failed(
+                "the pre-migration snapshot did not pass verification; the migration was not run",
+            ));
+        }
+        drop(snapshot_conn);
+        std::fs::File::open(&temporary)
+            .and_then(|file| file.sync_all())
+            .map_err(failed)?;
+        std::fs::rename(&temporary, &snapshot).map_err(failed)?;
+        #[cfg(unix)]
+        std::fs::File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(failed)?;
+        Ok(())
+    })();
+
+    if let Err(error) = result {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(failed(format!(
+            "could not create a verified pre-migration snapshot; the migration was not run ({error})"
+        )));
+    }
+
+    if let Ok(entries) = std::fs::read_dir(parent) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if name.starts_with(&prefix) && path != snapshot {
+                let _ = std::fs::remove_file(path);
+            }
+        }
     }
     Ok(())
 }
@@ -1327,6 +1453,140 @@ mod tests {
             .unwrap();
         assert_eq!(leaked, 0, "the partial migration was rolled back");
         assert_eq!(SqliteSettingsStore::new(conn).load().unwrap(), saved);
+    }
+
+    #[test]
+    fn mismatched_migration_history_is_rejected_without_changing_the_file() {
+        let dir = TempDir::new().unwrap();
+        let path = db_path(&dir);
+        drop(open_with(&path, &MIGRATIONS[..3]).unwrap());
+        Connection::open(&path)
+            .unwrap()
+            .execute(
+                "UPDATE schema_migrations SET name = 'unexpected_name' WHERE version = 2",
+                [],
+            )
+            .unwrap();
+        let before = std::fs::read(&path).unwrap();
+
+        assert!(matches!(open(&path), Err(StorageError::Failed(_))));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn integration_branch_migration_history_is_rejected_without_changing_the_file() {
+        // This is the unpublished history used by the integration branch before reconciliation.
+        // Several version numbers overlap with main but identify different migrations.
+        let dir = TempDir::new().unwrap();
+        let path = db_path(&dir);
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL);
+             CREATE TABLE integration_user_data (id TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO integration_user_data VALUES ('sentinel', 'preserve me');",
+        )
+        .unwrap();
+        let integration_history = [
+            "initial_settings",
+            "library",
+            "playtime",
+            "drm_free_backups",
+            "game_tools",
+            "store_accounts_and_catalog",
+            "favorites",
+            "ports",
+            "achievements",
+            "library_installations",
+            "library_display_overrides",
+            "chosen_match_source",
+            "library_artwork_overrides",
+            "library_entry_targets",
+            "library_organization",
+            "plugin_custom_launch_recipes",
+            "plugin_runtime_resources",
+            "library_launch_recipe_selection",
+        ];
+        for (index, name) in integration_history.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO schema_migrations (version, name) VALUES (?1, ?2)",
+                params![index as u32 + 1, name],
+            )
+            .unwrap();
+        }
+        drop(conn);
+
+        let before = std::fs::read(&path).unwrap();
+        assert!(matches!(open(&path), Err(StorageError::Failed(_))));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn failed_upgrade_keeps_the_latest_verified_snapshot_with_user_data() {
+        const V18_BAD: Migration = Migration {
+            version: 18,
+            name: "broken_second_upgrade",
+            sql: "CREATE TABLE half_done (id INTEGER PRIMARY KEY); INSERT INTO missing_table VALUES (1);",
+        };
+
+        let dir = TempDir::new().unwrap();
+        let path = db_path(&dir);
+        let saved = Settings {
+            window: Some(geometry()),
+            ..Settings::default()
+        };
+        SqliteSettingsStore::open_with_for_test(&path, &MIGRATIONS[..16])
+            .save(&saved)
+            .unwrap();
+
+        let mut through_v17 = MIGRATIONS[..16].to_vec();
+        through_v17.push(V17_OK);
+        drop(open_with(&path, &through_v17).unwrap());
+
+        let mut failing_upgrade = through_v17.clone();
+        failing_upgrade.push(V18_BAD);
+        let error = open_with(&path, &failing_upgrade).unwrap_err();
+        assert_eq!(error, StorageError::MigrationFailed { version: 18 });
+        assert_eq!(
+            error.to_string(),
+            "local database migration 18 failed and was rolled back"
+        );
+
+        let snapshot_prefix = format!(
+            "{}.pre-migration-",
+            path.file_name().unwrap().to_string_lossy()
+        );
+        let snapshots = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(Result::unwrap)
+            .map(|entry| entry.path())
+            .filter(|candidate| {
+                candidate
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with(&snapshot_prefix))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(snapshots.len(), 1, "only the latest snapshot is retained");
+
+        let snapshot =
+            Connection::open_with_flags(&snapshots[0], rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .unwrap();
+        let integrity: String = snapshot
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(integrity, "ok");
+        assert_eq!(versions(&snapshot), migration_history(&through_v17));
+        assert_eq!(SqliteSettingsStore::new(snapshot).load().unwrap(), saved);
+
+        let upgraded = Connection::open(path).unwrap();
+        assert_eq!(versions(&upgraded), migration_history(&through_v17));
+        let leaked: i64 = upgraded
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'half_done'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(leaked, 0, "the failed migration rolled back");
     }
 
     #[test]

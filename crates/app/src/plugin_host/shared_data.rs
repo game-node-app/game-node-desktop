@@ -100,6 +100,17 @@ pub struct PublicationReceipt {
     pub duplicate: bool,
 }
 
+/// Snapshot of one record returned only to host code for mutation of its authenticated owner
+/// resource. RPC readers must use the projected query APIs below.
+#[derive(Clone, Debug)]
+pub struct OwnedRecord {
+    pub fields: Map<String, Value>,
+    pub revision: u64,
+    pub sequence: u64,
+    pub source_observation_id: String,
+    pub observed_at: i64,
+}
+
 /// Provenance is kept outside the plugin field map and only extended by the host.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Provenance {
@@ -307,15 +318,14 @@ impl QuerySelector {
         // Category and selected-record grants are independent. If both are selected and the
         // category grant denies, the record selector still gets its own authorization check.
         let mut scopes = Vec::with_capacity(2);
-        if record.class == SharingClass::Common {
-            if record
+        if record.class == SharingClass::Common
+            && record
                 .category
                 .is_some_and(|category| self.categories.contains(&category))
-            {
-                scopes.push(AccessScope::Category(
-                    record.category.expect("checked above"),
-                ));
-            }
+        {
+            scopes.push(AccessScope::Category(
+                record.category.expect("checked above"),
+            ));
         }
         if self.record_ids.contains(&record.record_id) {
             scopes.push(AccessScope::SelectedRecord(record.record_id.clone()));
@@ -429,8 +439,130 @@ impl DataBroker {
         publication: Publication,
         now: i64,
     ) -> Result<PublicationReceipt, BrokerError> {
+        self.publish_inner(publication, now, false)
+    }
+
+    /// Publishes the latest value for a resource stream, removing its previous retained value
+    /// atomically. This is for bounded current-state domains such as GamePresence; ordinary Data
+    /// observations continue to use append-only [`publish`](Self::publish).
+    pub fn publish_replacing(
+        &self,
+        publication: Publication,
+        now: i64,
+    ) -> Result<PublicationReceipt, BrokerError> {
+        self.publish_inner(publication, now, true)
+    }
+
+    /// Returns the owner's current record for one host-scoped resource. This is for a host
+    /// service that atomically replaces a typed series; it is not a plugin-facing read path.
+    pub fn owner_resource(
+        &self,
+        owner: &PluginIdentity,
+        dataset_id: &str,
+        resource_id: &str,
+        now: i64,
+    ) -> Option<OwnedRecord> {
+        let mut state = self.lock();
+        prune_expired_locked(&mut state, now);
+        state
+            .rows
+            .iter()
+            .find(|record| {
+                &record.owner == owner
+                    && record.dataset_id == dataset_id
+                    && record.resource_id == resource_id
+            })
+            .map(|record| OwnedRecord {
+                fields: record.fields.clone(),
+                revision: record.revision,
+                sequence: record.sequence,
+                source_observation_id: record.source_observation_id.clone(),
+                observed_at: record.observed_at,
+            })
+    }
+
+    /// Current broker revision, used to fence a host-owned composite cursor across pages.
+    pub fn revision(&self) -> u64 {
+        self.lock().revision
+    }
+
+    fn publish_inner(
+        &self,
+        publication: Publication,
+        now: i64,
+        replace_resource: bool,
+    ) -> Result<PublicationReceipt, BrokerError> {
         let (record, subscribers) = {
             let mut state = self.lock();
+            if replace_resource {
+                validate_publication(&publication, now)?;
+                prune_expired_locked(&mut state, now);
+                if let Some(prior) = state.rows.iter().find(|record| {
+                    record.owner == publication.owner
+                        && record.dataset_id == publication.dataset_id
+                        && record.resource_id == publication.resource_id
+                        && record.source_observation_id == publication.source_observation_id
+                }) && same_observation(prior, &publication)
+                {
+                    return Ok(PublicationReceipt {
+                        record_id: prior.record_id.clone(),
+                        revision: prior.revision,
+                        duplicate: true,
+                    });
+                }
+                if publication.sequence > 0 {
+                    let stream = PublicationStream {
+                        owner: publication.owner.plugin_id.clone(),
+                        publisher_fingerprint: publication.owner.publisher_fingerprint.clone(),
+                        profile: publication.owner.profile_id.clone(),
+                        dataset_id: publication.dataset_id.clone(),
+                        resource_id: publication.resource_id.clone(),
+                    };
+                    if let Some(cursor) = state.sequences.get(&stream)
+                        && publication.sequence <= cursor.sequence
+                    {
+                        return Err(BrokerError::SequenceConflict(cursor.sequence));
+                    }
+                }
+                let replaced_bytes = state
+                    .rows
+                    .iter()
+                    .filter(|record| {
+                        record.owner == publication.owner
+                            && record.dataset_id == publication.dataset_id
+                            && record.resource_id == publication.resource_id
+                    })
+                    .map(|record| record.bytes)
+                    .sum::<usize>();
+                let replaced_count = state
+                    .rows
+                    .iter()
+                    .filter(|record| {
+                        record.owner == publication.owner
+                            && record.dataset_id == publication.dataset_id
+                            && record.resource_id == publication.resource_id
+                    })
+                    .count();
+                let new_bytes = publication_bytes(&publication)?;
+                if new_bytes > MAX_RECORD_BYTES {
+                    return Err(BrokerError::RecordTooLarge);
+                }
+                if state.rows.len().saturating_sub(replaced_count) >= MAX_RECORDS
+                    || state
+                        .bytes
+                        .saturating_sub(replaced_bytes)
+                        .saturating_add(new_bytes)
+                        > MAX_RETAINED_BYTES
+                {
+                    return Err(BrokerError::QuotaExceeded);
+                }
+                remove_resource_records(
+                    &mut state,
+                    &publication.owner,
+                    &publication.dataset_id,
+                    &publication.resource_id,
+                );
+            }
             let (record, duplicate) = Self::insert(&mut state, publication, None, now)?;
             if duplicate {
                 return Ok(PublicationReceipt {
@@ -532,9 +664,34 @@ impl DataBroker {
         self.query(request, authorizer, now)
     }
 
+    /// Exact host-owned resource lookup through the same authorization/projection path as a
+    /// general query. Resource IDs are opaque to the broker and are distinct from record IDs.
+    pub fn query_data_resource(
+        &self,
+        request: QueryRequest,
+        resource_id: &str,
+        authorizer: &dyn Authorizer,
+        now: i64,
+    ) -> Result<QueryResult, BrokerError> {
+        if resource_id.trim().is_empty() || resource_id.len() > MAX_RESOURCE_ID_BYTES {
+            return Err(BrokerError::InvalidPublication);
+        }
+        self.query_inner(request, Some(resource_id), authorizer, now)
+    }
+
     fn query(
         &self,
         request: QueryRequest,
+        authorizer: &dyn Authorizer,
+        now: i64,
+    ) -> Result<QueryResult, BrokerError> {
+        self.query_inner(request, None, authorizer, now)
+    }
+
+    fn query_inner(
+        &self,
+        request: QueryRequest,
+        resource_id: Option<&str>,
         authorizer: &dyn Authorizer,
         now: i64,
     ) -> Result<QueryResult, BrokerError> {
@@ -576,6 +733,9 @@ impl DataBroker {
                             .record_id
                             .as_ref()
                             .is_none_or(|record_id| &record.record_id == record_id)
+                        && resource_id.is_none_or(|resource_id| {
+                            record.resource_id == resource_id || record.record_id == resource_id
+                        })
                         && request
                             .category
                             .is_none_or(|category| record.category == Some(category))
@@ -1083,6 +1243,29 @@ fn retain_live_sequences(state: &mut BrokerState) {
         .retain(|_, cursor| live_records.contains(cursor.record_id.as_str()));
 }
 
+fn remove_resource_records(
+    state: &mut BrokerState,
+    owner: &PluginIdentity,
+    dataset_id: &str,
+    resource_id: &str,
+) {
+    let before = state.rows.len();
+    let mut removed_bytes = 0usize;
+    state.rows.retain(|record| {
+        let matches = &record.owner == owner
+            && record.dataset_id == dataset_id
+            && record.resource_id == resource_id;
+        if matches {
+            removed_bytes = removed_bytes.saturating_add(record.bytes);
+        }
+        !matches
+    });
+    if state.rows.len() != before {
+        state.bytes = state.bytes.saturating_sub(removed_bytes);
+        state.revision = state.revision.saturating_add(1);
+    }
+}
+
 fn prune_expired_locked(state: &mut BrokerState, now: i64) -> usize {
     let before = state.rows.len();
     let expired_bytes = state
@@ -1404,6 +1587,65 @@ mod tests {
             publisher: None,
             expires_at: None,
         }
+    }
+
+    #[test]
+    fn replacing_resource_keeps_only_the_current_record_and_sequence_is_monotonic() {
+        let broker = DataBroker::new();
+        let owner = identity("publisher");
+        let mut first = publication(&owner, &[("state", Value::String("playing".into()))]);
+        first.dataset_id = "game.presence.v1".into();
+        first.class = SharingClass::Sensitive;
+        first.category = None;
+        first.schema_id = "game.presence.v1".into();
+        first.resource_id = "game:1/session:a".into();
+        first.sequence = 1;
+        first.source_observation_id = "presence-1".into();
+        first.expires_at = Some(500);
+        broker.publish_replacing(first.clone(), 100).unwrap();
+
+        let mut latest = first.clone();
+        latest.fields = [("state".into(), Value::String("menu".into()))]
+            .into_iter()
+            .collect();
+        latest.sequence = 2;
+        latest.source_observation_id = "presence-2".into();
+        broker.publish_replacing(latest, 101).unwrap();
+
+        let result = broker
+            .query_data(
+                QueryRequest {
+                    caller: owner.clone(),
+                    dataset_id: "game.presence.v1".into(),
+                    record_id: None,
+                    category: None,
+                    selector: None,
+                    delivery: Delivery::History,
+                    page_size: 10,
+                    cursor: None,
+                },
+                &TestAuthorizer::new(
+                    [],
+                    [],
+                    [SharingClass::Sensitive],
+                    ["state".into()],
+                    true,
+                    true,
+                ),
+                102,
+            )
+            .unwrap();
+        assert_eq!(result.records.len(), 1);
+        assert_eq!(result.records[0].sequence(), 2);
+        assert_eq!(result.records[0].fields()["state"], "menu");
+
+        let mut stale = first;
+        stale.sequence = 2;
+        stale.source_observation_id = "stale".into();
+        assert!(matches!(
+            broker.publish_replacing(stale, 103),
+            Err(BrokerError::SequenceConflict(2))
+        ));
     }
 
     fn sequenced_publication(

@@ -541,7 +541,7 @@ fn extract_archive<R: Read + Seek>(
     if central_attributes.len() != archive.len() {
         return Err(PackageArchiveError::InvalidStagingDirectory);
     }
-    for index in 0..archive.len() {
+    for (index, &(creator_system, external_attributes)) in central_attributes.iter().enumerate() {
         let mut entry = archive
             .by_index(index)
             .map_err(PackageArchiveError::InvalidZip)?;
@@ -556,7 +556,6 @@ fn extract_archive<R: Read + Seek>(
             return Err(PackageArchiveError::PathCollision);
         }
 
-        let (creator_system, external_attributes) = central_attributes[index];
         if entry.is_symlink()
             || has_special_unix_type(entry.unix_mode(), is_directory)
             || (creator_system == 0 && external_attributes as u16 & 0x0440 != 0)

@@ -78,12 +78,12 @@ pub enum EmulationPolicy {
 
 impl EmulationPolicy {
     pub fn accepts(self, status: &EmulationStatus) -> bool {
-        match (self, status) {
-            (_, EmulationStatus::Native) => true,
-            (Self::AllowEmulated, EmulationStatus::Emulated) => true,
-            (Self::AllowUnknown, EmulationStatus::Unknown) => true,
-            _ => false,
-        }
+        matches!(
+            (self, status),
+            (_, EmulationStatus::Native)
+                | (Self::AllowEmulated, EmulationStatus::Emulated)
+                | (Self::AllowUnknown, EmulationStatus::Unknown)
+        )
     }
 }
 

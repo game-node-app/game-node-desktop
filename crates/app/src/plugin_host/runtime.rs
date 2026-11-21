@@ -1122,13 +1122,11 @@ impl ThirdPartyPluginLifecycle {
             if enabled
                 && !self.api.is_extension(&config.provider_id)
                 && self.api.profiles().is_current(profile_epoch)
+                && let Err(restart_error) = self.processes.ensure_started(&config.provider_id).await
             {
-                if let Err(restart_error) = self.processes.ensure_started(&config.provider_id).await
-                {
-                    return Err(Status::unavailable(format!(
-                        "candidate activation failed ({error}); previous version was restored but could not restart ({restart_error})"
-                    )));
-                }
+                return Err(Status::unavailable(format!(
+                    "candidate activation failed ({error}); previous version was restored but could not restart ({restart_error})"
+                )));
             }
             return Err(error);
         }
@@ -1597,9 +1595,22 @@ impl HostedProviders {
                 compatibility_details: Some(report.compatibility_review()),
             };
             let services = if report.manifest.kind == super::package::PluginKind::Provider {
+                // ProviderServices validates the host context as a provider TOML manifest. A
+                // managed package has its own signed JSON manifest instead, so compose the
+                // minimal context from that already verified identity. Do not accept a manifest
+                // supplied over RPC or copy package data into host capabilities/actions.
+                let context_manifest = format!(
+                    "id = {:?}\nname = {:?}\nplatforms = [{:?}]\nsource = {:?}\n\n[scan]\n",
+                    provider_id,
+                    report.manifest.name,
+                    std::env::consts::OS,
+                    installed.plugin_id
+                );
                 Some(Arc::new(ProviderServices::new_external(
                     ProviderContext {
                         provider_id: provider_id.clone(),
+                        platform: std::env::consts::OS.into(),
+                        manifest_toml: context_manifest,
                         ..Default::default()
                     },
                     paths.clone(),
@@ -1627,7 +1638,7 @@ impl HostedProviders {
                     }
                 },
                 origin: super::provider::RegistrationOrigin::ThirdParty {
-                    publisher_fingerprint,
+                    publisher_fingerprint: publisher_fingerprint.clone(),
                 },
                 declared_developer: report.manifest.name.clone(),
                 package_digest: Vec::new(),
@@ -1643,6 +1654,15 @@ impl HostedProviders {
                     .map_err(|_| Status::internal("plugin registration worker failed"))?;
             if let Err(error) = registered {
                 tracing::warn!(plugin_id = %installed.plugin_id, %error, "managed plugin registration was rejected");
+                continue;
+            }
+            if let Err(error) = api.set_extension_schemas(
+                &provider_id,
+                &installed.plugin_id,
+                &publisher_fingerprint,
+                report.extension_schemas.clone(),
+            ) {
+                tracing::warn!(plugin_id = %installed.plugin_id, %error, "managed plugin schema catalog was rejected");
                 continue;
             }
             managed_plugins.push(inventory_entry);
@@ -2943,6 +2963,7 @@ mod managed_runtime_tests {
                     unknown_facts: vec![],
                 },
             }],
+            extension_schemas: vec![],
         };
 
         let config = managed_process_config(&installed, &report, [7; 32]).unwrap();

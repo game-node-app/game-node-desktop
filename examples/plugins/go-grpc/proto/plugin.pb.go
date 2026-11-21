@@ -285,6 +285,370 @@ func (JobState) EnumDescriptor() ([]byte, []int) {
 	return file_plugin_proto_rawDescGZIP(), []int{4}
 }
 
+type DiagnosticValueState int32
+
+const (
+	DiagnosticValueState_DIAGNOSTIC_VALUE_STATE_UNSPECIFIED   DiagnosticValueState = 0
+	DiagnosticValueState_DIAGNOSTIC_VALUE_STATE_AVAILABLE     DiagnosticValueState = 1
+	DiagnosticValueState_DIAGNOSTIC_VALUE_STATE_UNAVAILABLE   DiagnosticValueState = 2
+	DiagnosticValueState_DIAGNOSTIC_VALUE_STATE_UNSUPPORTED   DiagnosticValueState = 3
+	DiagnosticValueState_DIAGNOSTIC_VALUE_STATE_ACCESS_DENIED DiagnosticValueState = 4
+	DiagnosticValueState_DIAGNOSTIC_VALUE_STATE_ERROR         DiagnosticValueState = 5
+)
+
+// Enum value maps for DiagnosticValueState.
+var (
+	DiagnosticValueState_name = map[int32]string{
+		0: "DIAGNOSTIC_VALUE_STATE_UNSPECIFIED",
+		1: "DIAGNOSTIC_VALUE_STATE_AVAILABLE",
+		2: "DIAGNOSTIC_VALUE_STATE_UNAVAILABLE",
+		3: "DIAGNOSTIC_VALUE_STATE_UNSUPPORTED",
+		4: "DIAGNOSTIC_VALUE_STATE_ACCESS_DENIED",
+		5: "DIAGNOSTIC_VALUE_STATE_ERROR",
+	}
+	DiagnosticValueState_value = map[string]int32{
+		"DIAGNOSTIC_VALUE_STATE_UNSPECIFIED":   0,
+		"DIAGNOSTIC_VALUE_STATE_AVAILABLE":     1,
+		"DIAGNOSTIC_VALUE_STATE_UNAVAILABLE":   2,
+		"DIAGNOSTIC_VALUE_STATE_UNSUPPORTED":   3,
+		"DIAGNOSTIC_VALUE_STATE_ACCESS_DENIED": 4,
+		"DIAGNOSTIC_VALUE_STATE_ERROR":         5,
+	}
+)
+
+func (x DiagnosticValueState) Enum() *DiagnosticValueState {
+	p := new(DiagnosticValueState)
+	*p = x
+	return p
+}
+
+func (x DiagnosticValueState) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (DiagnosticValueState) Descriptor() protoreflect.EnumDescriptor {
+	return file_plugin_proto_enumTypes[5].Descriptor()
+}
+
+func (DiagnosticValueState) Type() protoreflect.EnumType {
+	return &file_plugin_proto_enumTypes[5]
+}
+
+func (x DiagnosticValueState) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use DiagnosticValueState.Descriptor instead.
+func (DiagnosticValueState) EnumDescriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{5}
+}
+
+type PerformanceFpsMethod int32
+
+const (
+	PerformanceFpsMethod_PERFORMANCE_FPS_METHOD_UNSPECIFIED        PerformanceFpsMethod = 0
+	PerformanceFpsMethod_PERFORMANCE_FPS_METHOD_INSTANTANEOUS      PerformanceFpsMethod = 1
+	PerformanceFpsMethod_PERFORMANCE_FPS_METHOD_FRAME_COUNT_WINDOW PerformanceFpsMethod = 2
+	PerformanceFpsMethod_PERFORMANCE_FPS_METHOD_FRAME_TIME_DERIVED PerformanceFpsMethod = 3
+)
+
+// Enum value maps for PerformanceFpsMethod.
+var (
+	PerformanceFpsMethod_name = map[int32]string{
+		0: "PERFORMANCE_FPS_METHOD_UNSPECIFIED",
+		1: "PERFORMANCE_FPS_METHOD_INSTANTANEOUS",
+		2: "PERFORMANCE_FPS_METHOD_FRAME_COUNT_WINDOW",
+		3: "PERFORMANCE_FPS_METHOD_FRAME_TIME_DERIVED",
+	}
+	PerformanceFpsMethod_value = map[string]int32{
+		"PERFORMANCE_FPS_METHOD_UNSPECIFIED":        0,
+		"PERFORMANCE_FPS_METHOD_INSTANTANEOUS":      1,
+		"PERFORMANCE_FPS_METHOD_FRAME_COUNT_WINDOW": 2,
+		"PERFORMANCE_FPS_METHOD_FRAME_TIME_DERIVED": 3,
+	}
+)
+
+func (x PerformanceFpsMethod) Enum() *PerformanceFpsMethod {
+	p := new(PerformanceFpsMethod)
+	*p = x
+	return p
+}
+
+func (x PerformanceFpsMethod) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (PerformanceFpsMethod) Descriptor() protoreflect.EnumDescriptor {
+	return file_plugin_proto_enumTypes[6].Descriptor()
+}
+
+func (PerformanceFpsMethod) Type() protoreflect.EnumType {
+	return &file_plugin_proto_enumTypes[6]
+}
+
+func (x PerformanceFpsMethod) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use PerformanceFpsMethod.Descriptor instead.
+func (PerformanceFpsMethod) EnumDescriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{6}
+}
+
+type PerformanceFpsStatistic int32
+
+const (
+	PerformanceFpsStatistic_PERFORMANCE_FPS_STATISTIC_UNSPECIFIED   PerformanceFpsStatistic = 0
+	PerformanceFpsStatistic_PERFORMANCE_FPS_STATISTIC_INSTANTANEOUS PerformanceFpsStatistic = 1
+	PerformanceFpsStatistic_PERFORMANCE_FPS_STATISTIC_AVERAGE       PerformanceFpsStatistic = 2
+	PerformanceFpsStatistic_PERFORMANCE_FPS_STATISTIC_MINIMUM       PerformanceFpsStatistic = 3
+	PerformanceFpsStatistic_PERFORMANCE_FPS_STATISTIC_MAXIMUM       PerformanceFpsStatistic = 4
+	PerformanceFpsStatistic_PERFORMANCE_FPS_STATISTIC_PERCENTILE    PerformanceFpsStatistic = 5
+)
+
+// Enum value maps for PerformanceFpsStatistic.
+var (
+	PerformanceFpsStatistic_name = map[int32]string{
+		0: "PERFORMANCE_FPS_STATISTIC_UNSPECIFIED",
+		1: "PERFORMANCE_FPS_STATISTIC_INSTANTANEOUS",
+		2: "PERFORMANCE_FPS_STATISTIC_AVERAGE",
+		3: "PERFORMANCE_FPS_STATISTIC_MINIMUM",
+		4: "PERFORMANCE_FPS_STATISTIC_MAXIMUM",
+		5: "PERFORMANCE_FPS_STATISTIC_PERCENTILE",
+	}
+	PerformanceFpsStatistic_value = map[string]int32{
+		"PERFORMANCE_FPS_STATISTIC_UNSPECIFIED":   0,
+		"PERFORMANCE_FPS_STATISTIC_INSTANTANEOUS": 1,
+		"PERFORMANCE_FPS_STATISTIC_AVERAGE":       2,
+		"PERFORMANCE_FPS_STATISTIC_MINIMUM":       3,
+		"PERFORMANCE_FPS_STATISTIC_MAXIMUM":       4,
+		"PERFORMANCE_FPS_STATISTIC_PERCENTILE":    5,
+	}
+)
+
+func (x PerformanceFpsStatistic) Enum() *PerformanceFpsStatistic {
+	p := new(PerformanceFpsStatistic)
+	*p = x
+	return p
+}
+
+func (x PerformanceFpsStatistic) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (PerformanceFpsStatistic) Descriptor() protoreflect.EnumDescriptor {
+	return file_plugin_proto_enumTypes[7].Descriptor()
+}
+
+func (PerformanceFpsStatistic) Type() protoreflect.EnumType {
+	return &file_plugin_proto_enumTypes[7]
+}
+
+func (x PerformanceFpsStatistic) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use PerformanceFpsStatistic.Descriptor instead.
+func (PerformanceFpsStatistic) EnumDescriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{7}
+}
+
+type PerformanceMeasurementQuality int32
+
+const (
+	PerformanceMeasurementQuality_PERFORMANCE_MEASUREMENT_QUALITY_UNSPECIFIED PerformanceMeasurementQuality = 0
+	PerformanceMeasurementQuality_PERFORMANCE_MEASUREMENT_QUALITY_MEASURED    PerformanceMeasurementQuality = 1
+	PerformanceMeasurementQuality_PERFORMANCE_MEASUREMENT_QUALITY_ESTIMATED   PerformanceMeasurementQuality = 2
+)
+
+// Enum value maps for PerformanceMeasurementQuality.
+var (
+	PerformanceMeasurementQuality_name = map[int32]string{
+		0: "PERFORMANCE_MEASUREMENT_QUALITY_UNSPECIFIED",
+		1: "PERFORMANCE_MEASUREMENT_QUALITY_MEASURED",
+		2: "PERFORMANCE_MEASUREMENT_QUALITY_ESTIMATED",
+	}
+	PerformanceMeasurementQuality_value = map[string]int32{
+		"PERFORMANCE_MEASUREMENT_QUALITY_UNSPECIFIED": 0,
+		"PERFORMANCE_MEASUREMENT_QUALITY_MEASURED":    1,
+		"PERFORMANCE_MEASUREMENT_QUALITY_ESTIMATED":   2,
+	}
+)
+
+func (x PerformanceMeasurementQuality) Enum() *PerformanceMeasurementQuality {
+	p := new(PerformanceMeasurementQuality)
+	*p = x
+	return p
+}
+
+func (x PerformanceMeasurementQuality) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (PerformanceMeasurementQuality) Descriptor() protoreflect.EnumDescriptor {
+	return file_plugin_proto_enumTypes[8].Descriptor()
+}
+
+func (PerformanceMeasurementQuality) Type() protoreflect.EnumType {
+	return &file_plugin_proto_enumTypes[8]
+}
+
+func (x PerformanceMeasurementQuality) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use PerformanceMeasurementQuality.Descriptor instead.
+func (PerformanceMeasurementQuality) EnumDescriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{8}
+}
+
+type PerformanceCpuScope int32
+
+const (
+	PerformanceCpuScope_PERFORMANCE_CPU_SCOPE_UNSPECIFIED PerformanceCpuScope = 0
+	PerformanceCpuScope_PERFORMANCE_CPU_SCOPE_PROCESS     PerformanceCpuScope = 1
+	PerformanceCpuScope_PERFORMANCE_CPU_SCOPE_SYSTEM      PerformanceCpuScope = 2
+)
+
+// Enum value maps for PerformanceCpuScope.
+var (
+	PerformanceCpuScope_name = map[int32]string{
+		0: "PERFORMANCE_CPU_SCOPE_UNSPECIFIED",
+		1: "PERFORMANCE_CPU_SCOPE_PROCESS",
+		2: "PERFORMANCE_CPU_SCOPE_SYSTEM",
+	}
+	PerformanceCpuScope_value = map[string]int32{
+		"PERFORMANCE_CPU_SCOPE_UNSPECIFIED": 0,
+		"PERFORMANCE_CPU_SCOPE_PROCESS":     1,
+		"PERFORMANCE_CPU_SCOPE_SYSTEM":      2,
+	}
+)
+
+func (x PerformanceCpuScope) Enum() *PerformanceCpuScope {
+	p := new(PerformanceCpuScope)
+	*p = x
+	return p
+}
+
+func (x PerformanceCpuScope) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (PerformanceCpuScope) Descriptor() protoreflect.EnumDescriptor {
+	return file_plugin_proto_enumTypes[9].Descriptor()
+}
+
+func (PerformanceCpuScope) Type() protoreflect.EnumType {
+	return &file_plugin_proto_enumTypes[9]
+}
+
+func (x PerformanceCpuScope) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use PerformanceCpuScope.Descriptor instead.
+func (PerformanceCpuScope) EnumDescriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{9}
+}
+
+type PerformanceCpuNormalization int32
+
+const (
+	PerformanceCpuNormalization_PERFORMANCE_CPU_NORMALIZATION_UNSPECIFIED           PerformanceCpuNormalization = 0
+	PerformanceCpuNormalization_PERFORMANCE_CPU_NORMALIZATION_WHOLE_MACHINE_PERCENT PerformanceCpuNormalization = 1
+	PerformanceCpuNormalization_PERFORMANCE_CPU_NORMALIZATION_PER_CORE_PERCENT      PerformanceCpuNormalization = 2
+)
+
+// Enum value maps for PerformanceCpuNormalization.
+var (
+	PerformanceCpuNormalization_name = map[int32]string{
+		0: "PERFORMANCE_CPU_NORMALIZATION_UNSPECIFIED",
+		1: "PERFORMANCE_CPU_NORMALIZATION_WHOLE_MACHINE_PERCENT",
+		2: "PERFORMANCE_CPU_NORMALIZATION_PER_CORE_PERCENT",
+	}
+	PerformanceCpuNormalization_value = map[string]int32{
+		"PERFORMANCE_CPU_NORMALIZATION_UNSPECIFIED":           0,
+		"PERFORMANCE_CPU_NORMALIZATION_WHOLE_MACHINE_PERCENT": 1,
+		"PERFORMANCE_CPU_NORMALIZATION_PER_CORE_PERCENT":      2,
+	}
+)
+
+func (x PerformanceCpuNormalization) Enum() *PerformanceCpuNormalization {
+	p := new(PerformanceCpuNormalization)
+	*p = x
+	return p
+}
+
+func (x PerformanceCpuNormalization) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (PerformanceCpuNormalization) Descriptor() protoreflect.EnumDescriptor {
+	return file_plugin_proto_enumTypes[10].Descriptor()
+}
+
+func (PerformanceCpuNormalization) Type() protoreflect.EnumType {
+	return &file_plugin_proto_enumTypes[10]
+}
+
+func (x PerformanceCpuNormalization) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use PerformanceCpuNormalization.Descriptor instead.
+func (PerformanceCpuNormalization) EnumDescriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{10}
+}
+
+type PerformanceMemoryKind int32
+
+const (
+	PerformanceMemoryKind_PERFORMANCE_MEMORY_KIND_UNSPECIFIED       PerformanceMemoryKind = 0
+	PerformanceMemoryKind_PERFORMANCE_MEMORY_KIND_WORKING_SET_BYTES PerformanceMemoryKind = 1
+	PerformanceMemoryKind_PERFORMANCE_MEMORY_KIND_RESIDENT_BYTES    PerformanceMemoryKind = 2
+)
+
+// Enum value maps for PerformanceMemoryKind.
+var (
+	PerformanceMemoryKind_name = map[int32]string{
+		0: "PERFORMANCE_MEMORY_KIND_UNSPECIFIED",
+		1: "PERFORMANCE_MEMORY_KIND_WORKING_SET_BYTES",
+		2: "PERFORMANCE_MEMORY_KIND_RESIDENT_BYTES",
+	}
+	PerformanceMemoryKind_value = map[string]int32{
+		"PERFORMANCE_MEMORY_KIND_UNSPECIFIED":       0,
+		"PERFORMANCE_MEMORY_KIND_WORKING_SET_BYTES": 1,
+		"PERFORMANCE_MEMORY_KIND_RESIDENT_BYTES":    2,
+	}
+)
+
+func (x PerformanceMemoryKind) Enum() *PerformanceMemoryKind {
+	p := new(PerformanceMemoryKind)
+	*p = x
+	return p
+}
+
+func (x PerformanceMemoryKind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (PerformanceMemoryKind) Descriptor() protoreflect.EnumDescriptor {
+	return file_plugin_proto_enumTypes[11].Descriptor()
+}
+
+func (PerformanceMemoryKind) Type() protoreflect.EnumType {
+	return &file_plugin_proto_enumTypes[11]
+}
+
+func (x PerformanceMemoryKind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use PerformanceMemoryKind.Descriptor instead.
+func (PerformanceMemoryKind) EnumDescriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{11}
+}
+
 type MutationOutcome int32
 
 const (
@@ -292,6 +656,7 @@ const (
 	MutationOutcome_MUTATION_OUTCOME_APPLIED           MutationOutcome = 1
 	MutationOutcome_MUTATION_OUTCOME_ALREADY_APPLIED   MutationOutcome = 2
 	MutationOutcome_MUTATION_OUTCOME_REVISION_CONFLICT MutationOutcome = 3
+	MutationOutcome_MUTATION_OUTCOME_BACKPRESSURE      MutationOutcome = 4
 )
 
 // Enum value maps for MutationOutcome.
@@ -301,12 +666,14 @@ var (
 		1: "MUTATION_OUTCOME_APPLIED",
 		2: "MUTATION_OUTCOME_ALREADY_APPLIED",
 		3: "MUTATION_OUTCOME_REVISION_CONFLICT",
+		4: "MUTATION_OUTCOME_BACKPRESSURE",
 	}
 	MutationOutcome_value = map[string]int32{
 		"MUTATION_OUTCOME_UNSPECIFIED":       0,
 		"MUTATION_OUTCOME_APPLIED":           1,
 		"MUTATION_OUTCOME_ALREADY_APPLIED":   2,
 		"MUTATION_OUTCOME_REVISION_CONFLICT": 3,
+		"MUTATION_OUTCOME_BACKPRESSURE":      4,
 	}
 )
 
@@ -321,11 +688,11 @@ func (x MutationOutcome) String() string {
 }
 
 func (MutationOutcome) Descriptor() protoreflect.EnumDescriptor {
-	return file_plugin_proto_enumTypes[5].Descriptor()
+	return file_plugin_proto_enumTypes[12].Descriptor()
 }
 
 func (MutationOutcome) Type() protoreflect.EnumType {
-	return &file_plugin_proto_enumTypes[5]
+	return &file_plugin_proto_enumTypes[12]
 }
 
 func (x MutationOutcome) Number() protoreflect.EnumNumber {
@@ -334,7 +701,7 @@ func (x MutationOutcome) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use MutationOutcome.Descriptor instead.
 func (MutationOutcome) EnumDescriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{5}
+	return file_plugin_proto_rawDescGZIP(), []int{12}
 }
 
 type CommonDataCategory int32
@@ -382,11 +749,11 @@ func (x CommonDataCategory) String() string {
 }
 
 func (CommonDataCategory) Descriptor() protoreflect.EnumDescriptor {
-	return file_plugin_proto_enumTypes[6].Descriptor()
+	return file_plugin_proto_enumTypes[13].Descriptor()
 }
 
 func (CommonDataCategory) Type() protoreflect.EnumType {
-	return &file_plugin_proto_enumTypes[6]
+	return &file_plugin_proto_enumTypes[13]
 }
 
 func (x CommonDataCategory) Number() protoreflect.EnumNumber {
@@ -395,7 +762,7 @@ func (x CommonDataCategory) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use CommonDataCategory.Descriptor instead.
 func (CommonDataCategory) EnumDescriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{6}
+	return file_plugin_proto_rawDescGZIP(), []int{13}
 }
 
 type InspectionAvailability int32
@@ -443,11 +810,11 @@ func (x InspectionAvailability) String() string {
 }
 
 func (InspectionAvailability) Descriptor() protoreflect.EnumDescriptor {
-	return file_plugin_proto_enumTypes[7].Descriptor()
+	return file_plugin_proto_enumTypes[14].Descriptor()
 }
 
 func (InspectionAvailability) Type() protoreflect.EnumType {
-	return &file_plugin_proto_enumTypes[7]
+	return &file_plugin_proto_enumTypes[14]
 }
 
 func (x InspectionAvailability) Number() protoreflect.EnumNumber {
@@ -456,7 +823,7 @@ func (x InspectionAvailability) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use InspectionAvailability.Descriptor instead.
 func (InspectionAvailability) EnumDescriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{7}
+	return file_plugin_proto_rawDescGZIP(), []int{14}
 }
 
 type ExtensionFieldClassification int32
@@ -495,11 +862,11 @@ func (x ExtensionFieldClassification) String() string {
 }
 
 func (ExtensionFieldClassification) Descriptor() protoreflect.EnumDescriptor {
-	return file_plugin_proto_enumTypes[8].Descriptor()
+	return file_plugin_proto_enumTypes[15].Descriptor()
 }
 
 func (ExtensionFieldClassification) Type() protoreflect.EnumType {
-	return &file_plugin_proto_enumTypes[8]
+	return &file_plugin_proto_enumTypes[15]
 }
 
 func (x ExtensionFieldClassification) Number() protoreflect.EnumNumber {
@@ -508,7 +875,7 @@ func (x ExtensionFieldClassification) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ExtensionFieldClassification.Descriptor instead.
 func (ExtensionFieldClassification) EnumDescriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{8}
+	return file_plugin_proto_rawDescGZIP(), []int{15}
 }
 
 type ProviderOperation int32
@@ -602,11 +969,11 @@ func (x ProviderOperation) String() string {
 }
 
 func (ProviderOperation) Descriptor() protoreflect.EnumDescriptor {
-	return file_plugin_proto_enumTypes[9].Descriptor()
+	return file_plugin_proto_enumTypes[16].Descriptor()
 }
 
 func (ProviderOperation) Type() protoreflect.EnumType {
-	return &file_plugin_proto_enumTypes[9]
+	return &file_plugin_proto_enumTypes[16]
 }
 
 func (x ProviderOperation) Number() protoreflect.EnumNumber {
@@ -615,7 +982,7 @@ func (x ProviderOperation) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ProviderOperation.Descriptor instead.
 func (ProviderOperation) EnumDescriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{9}
+	return file_plugin_proto_rawDescGZIP(), []int{16}
 }
 
 type AccountConnection int32
@@ -666,11 +1033,11 @@ func (x AccountConnection) String() string {
 }
 
 func (AccountConnection) Descriptor() protoreflect.EnumDescriptor {
-	return file_plugin_proto_enumTypes[10].Descriptor()
+	return file_plugin_proto_enumTypes[17].Descriptor()
 }
 
 func (AccountConnection) Type() protoreflect.EnumType {
-	return &file_plugin_proto_enumTypes[10]
+	return &file_plugin_proto_enumTypes[17]
 }
 
 func (x AccountConnection) Number() protoreflect.EnumNumber {
@@ -679,7 +1046,7 @@ func (x AccountConnection) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use AccountConnection.Descriptor instead.
 func (AccountConnection) EnumDescriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{10}
+	return file_plugin_proto_rawDescGZIP(), []int{17}
 }
 
 type SecretStorage int32
@@ -718,11 +1085,11 @@ func (x SecretStorage) String() string {
 }
 
 func (SecretStorage) Descriptor() protoreflect.EnumDescriptor {
-	return file_plugin_proto_enumTypes[11].Descriptor()
+	return file_plugin_proto_enumTypes[18].Descriptor()
 }
 
 func (SecretStorage) Type() protoreflect.EnumType {
-	return &file_plugin_proto_enumTypes[11]
+	return &file_plugin_proto_enumTypes[18]
 }
 
 func (x SecretStorage) Number() protoreflect.EnumNumber {
@@ -731,7 +1098,7 @@ func (x SecretStorage) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use SecretStorage.Descriptor instead.
 func (SecretStorage) EnumDescriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{11}
+	return file_plugin_proto_rawDescGZIP(), []int{18}
 }
 
 type CatalogFailure int32
@@ -785,11 +1152,11 @@ func (x CatalogFailure) String() string {
 }
 
 func (CatalogFailure) Descriptor() protoreflect.EnumDescriptor {
-	return file_plugin_proto_enumTypes[12].Descriptor()
+	return file_plugin_proto_enumTypes[19].Descriptor()
 }
 
 func (CatalogFailure) Type() protoreflect.EnumType {
-	return &file_plugin_proto_enumTypes[12]
+	return &file_plugin_proto_enumTypes[19]
 }
 
 func (x CatalogFailure) Number() protoreflect.EnumNumber {
@@ -798,7 +1165,7 @@ func (x CatalogFailure) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use CatalogFailure.Descriptor instead.
 func (CatalogFailure) EnumDescriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{12}
+	return file_plugin_proto_rawDescGZIP(), []int{19}
 }
 
 type SecretOperation int32
@@ -837,11 +1204,11 @@ func (x SecretOperation) String() string {
 }
 
 func (SecretOperation) Descriptor() protoreflect.EnumDescriptor {
-	return file_plugin_proto_enumTypes[13].Descriptor()
+	return file_plugin_proto_enumTypes[20].Descriptor()
 }
 
 func (SecretOperation) Type() protoreflect.EnumType {
-	return &file_plugin_proto_enumTypes[13]
+	return &file_plugin_proto_enumTypes[20]
 }
 
 func (x SecretOperation) Number() protoreflect.EnumNumber {
@@ -850,7 +1217,7 @@ func (x SecretOperation) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use SecretOperation.Descriptor instead.
 func (SecretOperation) EnumDescriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{13}
+	return file_plugin_proto_rawDescGZIP(), []int{20}
 }
 
 type ServiceFailure int32
@@ -889,11 +1256,11 @@ func (x ServiceFailure) String() string {
 }
 
 func (ServiceFailure) Descriptor() protoreflect.EnumDescriptor {
-	return file_plugin_proto_enumTypes[14].Descriptor()
+	return file_plugin_proto_enumTypes[21].Descriptor()
 }
 
 func (ServiceFailure) Type() protoreflect.EnumType {
-	return &file_plugin_proto_enumTypes[14]
+	return &file_plugin_proto_enumTypes[21]
 }
 
 func (x ServiceFailure) Number() protoreflect.EnumNumber {
@@ -902,7 +1269,7 @@ func (x ServiceFailure) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ServiceFailure.Descriptor instead.
 func (ServiceFailure) EnumDescriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{14}
+	return file_plugin_proto_rawDescGZIP(), []int{21}
 }
 
 type LoginOperation int32
@@ -947,11 +1314,11 @@ func (x LoginOperation) String() string {
 }
 
 func (LoginOperation) Descriptor() protoreflect.EnumDescriptor {
-	return file_plugin_proto_enumTypes[15].Descriptor()
+	return file_plugin_proto_enumTypes[22].Descriptor()
 }
 
 func (LoginOperation) Type() protoreflect.EnumType {
-	return &file_plugin_proto_enumTypes[15]
+	return &file_plugin_proto_enumTypes[22]
 }
 
 func (x LoginOperation) Number() protoreflect.EnumNumber {
@@ -960,7 +1327,7 @@ func (x LoginOperation) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use LoginOperation.Descriptor instead.
 func (LoginOperation) EnumDescriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{15}
+	return file_plugin_proto_rawDescGZIP(), []int{22}
 }
 
 type LoginState int32
@@ -1005,11 +1372,11 @@ func (x LoginState) String() string {
 }
 
 func (LoginState) Descriptor() protoreflect.EnumDescriptor {
-	return file_plugin_proto_enumTypes[16].Descriptor()
+	return file_plugin_proto_enumTypes[23].Descriptor()
 }
 
 func (LoginState) Type() protoreflect.EnumType {
-	return &file_plugin_proto_enumTypes[16]
+	return &file_plugin_proto_enumTypes[23]
 }
 
 func (x LoginState) Number() protoreflect.EnumNumber {
@@ -1018,7 +1385,7 @@ func (x LoginState) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use LoginState.Descriptor instead.
 func (LoginState) EnumDescriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{16}
+	return file_plugin_proto_rawDescGZIP(), []int{23}
 }
 
 type CatalogCategory int32
@@ -1054,11 +1421,11 @@ func (x CatalogCategory) String() string {
 }
 
 func (CatalogCategory) Descriptor() protoreflect.EnumDescriptor {
-	return file_plugin_proto_enumTypes[17].Descriptor()
+	return file_plugin_proto_enumTypes[24].Descriptor()
 }
 
 func (CatalogCategory) Type() protoreflect.EnumType {
-	return &file_plugin_proto_enumTypes[17]
+	return &file_plugin_proto_enumTypes[24]
 }
 
 func (x CatalogCategory) Number() protoreflect.EnumNumber {
@@ -1067,7 +1434,7 @@ func (x CatalogCategory) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use CatalogCategory.Descriptor instead.
 func (CatalogCategory) EnumDescriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{17}
+	return file_plugin_proto_rawDescGZIP(), []int{24}
 }
 
 type OperationDisposition int32
@@ -1109,11 +1476,11 @@ func (x OperationDisposition) String() string {
 }
 
 func (OperationDisposition) Descriptor() protoreflect.EnumDescriptor {
-	return file_plugin_proto_enumTypes[18].Descriptor()
+	return file_plugin_proto_enumTypes[25].Descriptor()
 }
 
 func (OperationDisposition) Type() protoreflect.EnumType {
-	return &file_plugin_proto_enumTypes[18]
+	return &file_plugin_proto_enumTypes[25]
 }
 
 func (x OperationDisposition) Number() protoreflect.EnumNumber {
@@ -1122,7 +1489,7 @@ func (x OperationDisposition) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use OperationDisposition.Descriptor instead.
 func (OperationDisposition) EnumDescriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{18}
+	return file_plugin_proto_rawDescGZIP(), []int{25}
 }
 
 type AccountLoginOutcome int32
@@ -1170,11 +1537,11 @@ func (x AccountLoginOutcome) String() string {
 }
 
 func (AccountLoginOutcome) Descriptor() protoreflect.EnumDescriptor {
-	return file_plugin_proto_enumTypes[19].Descriptor()
+	return file_plugin_proto_enumTypes[26].Descriptor()
 }
 
 func (AccountLoginOutcome) Type() protoreflect.EnumType {
-	return &file_plugin_proto_enumTypes[19]
+	return &file_plugin_proto_enumTypes[26]
 }
 
 func (x AccountLoginOutcome) Number() protoreflect.EnumNumber {
@@ -1183,7 +1550,7 @@ func (x AccountLoginOutcome) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use AccountLoginOutcome.Descriptor instead.
 func (AccountLoginOutcome) EnumDescriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{19}
+	return file_plugin_proto_rawDescGZIP(), []int{26}
 }
 
 type SettingsPersistence int32
@@ -1219,11 +1586,11 @@ func (x SettingsPersistence) String() string {
 }
 
 func (SettingsPersistence) Descriptor() protoreflect.EnumDescriptor {
-	return file_plugin_proto_enumTypes[20].Descriptor()
+	return file_plugin_proto_enumTypes[27].Descriptor()
 }
 
 func (SettingsPersistence) Type() protoreflect.EnumType {
-	return &file_plugin_proto_enumTypes[20]
+	return &file_plugin_proto_enumTypes[27]
 }
 
 func (x SettingsPersistence) Number() protoreflect.EnumNumber {
@@ -1232,7 +1599,7 @@ func (x SettingsPersistence) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use SettingsPersistence.Descriptor instead.
 func (SettingsPersistence) EnumDescriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{20}
+	return file_plugin_proto_rawDescGZIP(), []int{27}
 }
 
 type SettingsFailure int32
@@ -1283,11 +1650,11 @@ func (x SettingsFailure) String() string {
 }
 
 func (SettingsFailure) Descriptor() protoreflect.EnumDescriptor {
-	return file_plugin_proto_enumTypes[21].Descriptor()
+	return file_plugin_proto_enumTypes[28].Descriptor()
 }
 
 func (SettingsFailure) Type() protoreflect.EnumType {
-	return &file_plugin_proto_enumTypes[21]
+	return &file_plugin_proto_enumTypes[28]
 }
 
 func (x SettingsFailure) Number() protoreflect.EnumNumber {
@@ -1296,7 +1663,7 @@ func (x SettingsFailure) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use SettingsFailure.Descriptor instead.
 func (SettingsFailure) EnumDescriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{21}
+	return file_plugin_proto_rawDescGZIP(), []int{28}
 }
 
 type RuntimeSessionTransition int32
@@ -1347,11 +1714,11 @@ func (x RuntimeSessionTransition) String() string {
 }
 
 func (RuntimeSessionTransition) Descriptor() protoreflect.EnumDescriptor {
-	return file_plugin_proto_enumTypes[22].Descriptor()
+	return file_plugin_proto_enumTypes[29].Descriptor()
 }
 
 func (RuntimeSessionTransition) Type() protoreflect.EnumType {
-	return &file_plugin_proto_enumTypes[22]
+	return &file_plugin_proto_enumTypes[29]
 }
 
 func (x RuntimeSessionTransition) Number() protoreflect.EnumNumber {
@@ -1360,7 +1727,7 @@ func (x RuntimeSessionTransition) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use RuntimeSessionTransition.Descriptor instead.
 func (RuntimeSessionTransition) EnumDescriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{22}
+	return file_plugin_proto_rawDescGZIP(), []int{29}
 }
 
 type RuntimeSessionOutcome int32
@@ -1411,11 +1778,11 @@ func (x RuntimeSessionOutcome) String() string {
 }
 
 func (RuntimeSessionOutcome) Descriptor() protoreflect.EnumDescriptor {
-	return file_plugin_proto_enumTypes[23].Descriptor()
+	return file_plugin_proto_enumTypes[30].Descriptor()
 }
 
 func (RuntimeSessionOutcome) Type() protoreflect.EnumType {
-	return &file_plugin_proto_enumTypes[23]
+	return &file_plugin_proto_enumTypes[30]
 }
 
 func (x RuntimeSessionOutcome) Number() protoreflect.EnumNumber {
@@ -1424,7 +1791,7 @@ func (x RuntimeSessionOutcome) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use RuntimeSessionOutcome.Descriptor instead.
 func (RuntimeSessionOutcome) EnumDescriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{23}
+	return file_plugin_proto_rawDescGZIP(), []int{30}
 }
 
 type OpenSessionRequest struct {
@@ -6096,12 +6463,13 @@ func (x *RuntimeRegisterRequest) GetRuntime() *RuntimeRecord {
 }
 
 type RuntimeUpdateRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Mutation      *MutationContext       `protobuf:"bytes,1,opt,name=mutation,proto3" json:"mutation,omitempty"`
-	Runtime       *RuntimeRecord         `protobuf:"bytes,2,opt,name=runtime,proto3" json:"runtime,omitempty"`
-	FieldMask     []string               `protobuf:"bytes,3,rep,name=field_mask,json=fieldMask,proto3" json:"field_mask,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Mutation       *MutationContext       `protobuf:"bytes,1,opt,name=mutation,proto3" json:"mutation,omitempty"`
+	Runtime        *RuntimeRecord         `protobuf:"bytes,2,opt,name=runtime,proto3" json:"runtime,omitempty"`
+	FieldMask      []string               `protobuf:"bytes,3,rep,name=field_mask,json=fieldMask,proto3" json:"field_mask,omitempty"`
+	ExtensionPatch *ExtensionPatch        `protobuf:"bytes,4,opt,name=extension_patch,json=extensionPatch,proto3" json:"extension_patch,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *RuntimeUpdateRequest) Reset() {
@@ -6151,6 +6519,13 @@ func (x *RuntimeUpdateRequest) GetRuntime() *RuntimeRecord {
 func (x *RuntimeUpdateRequest) GetFieldMask() []string {
 	if x != nil {
 		return x.FieldMask
+	}
+	return nil
+}
+
+func (x *RuntimeUpdateRequest) GetExtensionPatch() *ExtensionPatch {
+	if x != nil {
+		return x.ExtensionPatch
 	}
 	return nil
 }
@@ -6480,12 +6855,18 @@ func (x *ContentRegistrationRequest) GetContentId() string {
 }
 
 type ReportMutationReply struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ReportId      string                 `protobuf:"bytes,1,opt,name=report_id,json=reportId,proto3" json:"report_id,omitempty"`
-	Revision      uint64                 `protobuf:"varint,2,opt,name=revision,proto3" json:"revision,omitempty"`
-	Outcome       MutationOutcome        `protobuf:"varint,3,opt,name=outcome,proto3,enum=gamenode.plugin.v1.MutationOutcome" json:"outcome,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	ReportId string                 `protobuf:"bytes,1,opt,name=report_id,json=reportId,proto3" json:"report_id,omitempty"`
+	Revision uint64                 `protobuf:"varint,2,opt,name=revision,proto3" json:"revision,omitempty"`
+	Outcome  MutationOutcome        `protobuf:"varint,3,opt,name=outcome,proto3,enum=gamenode.plugin.v1.MutationOutcome" json:"outcome,omitempty"`
+	// Used by bounded batch publishers to report accepted/dropped samples and retry guidance.
+	AcceptedSamples uint32 `protobuf:"varint,4,opt,name=accepted_samples,json=acceptedSamples,proto3" json:"accepted_samples,omitempty"`
+	DroppedSamples  uint32 `protobuf:"varint,5,opt,name=dropped_samples,json=droppedSamples,proto3" json:"dropped_samples,omitempty"`
+	RetryAfterMs    uint32 `protobuf:"varint,6,opt,name=retry_after_ms,json=retryAfterMs,proto3" json:"retry_after_ms,omitempty"`
+	RetainedFrom    int64  `protobuf:"varint,7,opt,name=retained_from,json=retainedFrom,proto3" json:"retained_from,omitempty"`
+	RetainedTo      int64  `protobuf:"varint,8,opt,name=retained_to,json=retainedTo,proto3" json:"retained_to,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *ReportMutationReply) Reset() {
@@ -6539,17 +6920,55 @@ func (x *ReportMutationReply) GetOutcome() MutationOutcome {
 	return MutationOutcome_MUTATION_OUTCOME_UNSPECIFIED
 }
 
+func (x *ReportMutationReply) GetAcceptedSamples() uint32 {
+	if x != nil {
+		return x.AcceptedSamples
+	}
+	return 0
+}
+
+func (x *ReportMutationReply) GetDroppedSamples() uint32 {
+	if x != nil {
+		return x.DroppedSamples
+	}
+	return 0
+}
+
+func (x *ReportMutationReply) GetRetryAfterMs() uint32 {
+	if x != nil {
+		return x.RetryAfterMs
+	}
+	return 0
+}
+
+func (x *ReportMutationReply) GetRetainedFrom() int64 {
+	if x != nil {
+		return x.RetainedFrom
+	}
+	return 0
+}
+
+func (x *ReportMutationReply) GetRetainedTo() int64 {
+	if x != nil {
+		return x.RetainedTo
+	}
+	return 0
+}
+
 type BenchmarkReportRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Mutation      *MutationContext       `protobuf:"bytes,1,opt,name=mutation,proto3" json:"mutation,omitempty"`
-	VolumeHandle  string                 `protobuf:"bytes,2,opt,name=volume_handle,json=volumeHandle,proto3" json:"volume_handle,omitempty"`
-	ToolName      string                 `protobuf:"bytes,3,opt,name=tool_name,json=toolName,proto3" json:"tool_name,omitempty"`
-	ToolVersion   string                 `protobuf:"bytes,4,opt,name=tool_version,json=toolVersion,proto3" json:"tool_version,omitempty"`
-	Measurements  map[string]float64     `protobuf:"bytes,5,rep,name=measurements,proto3" json:"measurements,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"fixed64,2,opt,name=value"`
-	Units         string                 `protobuf:"bytes,6,opt,name=units,proto3" json:"units,omitempty"`
-	ObservedAt    int64                  `protobuf:"varint,7,opt,name=observed_at,json=observedAt,proto3" json:"observed_at,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state             protoimpl.MessageState          `protogen:"open.v1"`
+	Mutation          *MutationContext                `protobuf:"bytes,1,opt,name=mutation,proto3" json:"mutation,omitempty"`
+	VolumeHandle      string                          `protobuf:"bytes,2,opt,name=volume_handle,json=volumeHandle,proto3" json:"volume_handle,omitempty"`
+	ToolName          string                          `protobuf:"bytes,3,opt,name=tool_name,json=toolName,proto3" json:"tool_name,omitempty"`
+	ToolVersion       string                          `protobuf:"bytes,4,opt,name=tool_version,json=toolVersion,proto3" json:"tool_version,omitempty"`
+	Measurements      map[string]float64              `protobuf:"bytes,5,rep,name=measurements,proto3" json:"measurements,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"fixed64,2,opt,name=value"`
+	Units             string                          `protobuf:"bytes,6,opt,name=units,proto3" json:"units,omitempty"`
+	ObservedAt        int64                           `protobuf:"varint,7,opt,name=observed_at,json=observedAt,proto3" json:"observed_at,omitempty"`
+	MeasurementUnits  map[string]string               `protobuf:"bytes,8,rep,name=measurement_units,json=measurementUnits,proto3" json:"measurement_units,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	MeasurementStates map[string]DiagnosticValueState `protobuf:"bytes,9,rep,name=measurement_states,json=measurementStates,proto3" json:"measurement_states,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value,enum=gamenode.plugin.v1.DiagnosticValueState"`
+	Conditions        *structpb.Struct                `protobuf:"bytes,10,opt,name=conditions,proto3" json:"conditions,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *BenchmarkReportRequest) Reset() {
@@ -6631,16 +7050,40 @@ func (x *BenchmarkReportRequest) GetObservedAt() int64 {
 	return 0
 }
 
+func (x *BenchmarkReportRequest) GetMeasurementUnits() map[string]string {
+	if x != nil {
+		return x.MeasurementUnits
+	}
+	return nil
+}
+
+func (x *BenchmarkReportRequest) GetMeasurementStates() map[string]DiagnosticValueState {
+	if x != nil {
+		return x.MeasurementStates
+	}
+	return nil
+}
+
+func (x *BenchmarkReportRequest) GetConditions() *structpb.Struct {
+	if x != nil {
+		return x.Conditions
+	}
+	return nil
+}
+
 type SmartReportRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Mutation      *MutationContext       `protobuf:"bytes,1,opt,name=mutation,proto3" json:"mutation,omitempty"`
-	VolumeHandle  string                 `protobuf:"bytes,2,opt,name=volume_handle,json=volumeHandle,proto3" json:"volume_handle,omitempty"`
-	DeviceModel   string                 `protobuf:"bytes,3,opt,name=device_model,json=deviceModel,proto3" json:"device_model,omitempty"`
-	Firmware      string                 `protobuf:"bytes,4,opt,name=firmware,proto3" json:"firmware,omitempty"`
-	Attributes    map[string]string      `protobuf:"bytes,5,rep,name=attributes,proto3" json:"attributes,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	ObservedAt    int64                  `protobuf:"varint,6,opt,name=observed_at,json=observedAt,proto3" json:"observed_at,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state           protoimpl.MessageState          `protogen:"open.v1"`
+	Mutation        *MutationContext                `protobuf:"bytes,1,opt,name=mutation,proto3" json:"mutation,omitempty"`
+	VolumeHandle    string                          `protobuf:"bytes,2,opt,name=volume_handle,json=volumeHandle,proto3" json:"volume_handle,omitempty"`
+	DeviceModel     string                          `protobuf:"bytes,3,opt,name=device_model,json=deviceModel,proto3" json:"device_model,omitempty"`
+	Firmware        string                          `protobuf:"bytes,4,opt,name=firmware,proto3" json:"firmware,omitempty"`
+	Attributes      map[string]string               `protobuf:"bytes,5,rep,name=attributes,proto3" json:"attributes,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	ObservedAt      int64                           `protobuf:"varint,6,opt,name=observed_at,json=observedAt,proto3" json:"observed_at,omitempty"`
+	AttributeUnits  map[string]string               `protobuf:"bytes,7,rep,name=attribute_units,json=attributeUnits,proto3" json:"attribute_units,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	AttributeStates map[string]DiagnosticValueState `protobuf:"bytes,8,rep,name=attribute_states,json=attributeStates,proto3" json:"attribute_states,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value,enum=gamenode.plugin.v1.DiagnosticValueState"`
+	Conditions      *structpb.Struct                `protobuf:"bytes,9,opt,name=conditions,proto3" json:"conditions,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *SmartReportRequest) Reset() {
@@ -6713,6 +7156,27 @@ func (x *SmartReportRequest) GetObservedAt() int64 {
 		return x.ObservedAt
 	}
 	return 0
+}
+
+func (x *SmartReportRequest) GetAttributeUnits() map[string]string {
+	if x != nil {
+		return x.AttributeUnits
+	}
+	return nil
+}
+
+func (x *SmartReportRequest) GetAttributeStates() map[string]DiagnosticValueState {
+	if x != nil {
+		return x.AttributeStates
+	}
+	return nil
+}
+
+func (x *SmartReportRequest) GetConditions() *structpb.Struct {
+	if x != nil {
+		return x.Conditions
+	}
+	return nil
 }
 
 type HardwareReportRequest struct {
@@ -6936,14 +7400,26 @@ func (x *PresenceClearRequest) GetSessionId() string {
 }
 
 type PerformanceSample struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	ObservedAt      int64                  `protobuf:"varint,1,opt,name=observed_at,json=observedAt,proto3" json:"observed_at,omitempty"`
-	FramesPerSecond float64                `protobuf:"fixed64,2,opt,name=frames_per_second,json=framesPerSecond,proto3" json:"frames_per_second,omitempty"`
-	CpuPercent      float64                `protobuf:"fixed64,3,opt,name=cpu_percent,json=cpuPercent,proto3" json:"cpu_percent,omitempty"`
-	MemoryBytes     uint64                 `protobuf:"varint,4,opt,name=memory_bytes,json=memoryBytes,proto3" json:"memory_bytes,omitempty"`
-	Sequence        uint64                 `protobuf:"varint,5,opt,name=sequence,proto3" json:"sequence,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Unix milliseconds, preserving the cadence allowed by sample_interval_ms (down to 100 ms).
+	ObservedAt int64 `protobuf:"varint,1,opt,name=observed_at,json=observedAt,proto3" json:"observed_at,omitempty"`
+	// Always frames/second; fps_method/fps_statistic describe the collection window and statistic.
+	FramesPerSecond float64 `protobuf:"fixed64,2,opt,name=frames_per_second,json=framesPerSecond,proto3" json:"frames_per_second,omitempty"`
+	// Percent; scope and normalization are declared once for the series.
+	CpuPercent float64 `protobuf:"fixed64,3,opt,name=cpu_percent,json=cpuPercent,proto3" json:"cpu_percent,omitempty"`
+	// Bytes of working set or resident memory as declared by the series.
+	MemoryBytes uint64 `protobuf:"varint,4,opt,name=memory_bytes,json=memoryBytes,proto3" json:"memory_bytes,omitempty"`
+	// Positive and increasing within one series. Gaps remain visible as dropped samples.
+	Sequence           uint64                        `protobuf:"varint,5,opt,name=sequence,proto3" json:"sequence,omitempty"`
+	SamplingWindowMs   uint32                        `protobuf:"varint,6,opt,name=sampling_window_ms,json=samplingWindowMs,proto3" json:"sampling_window_ms,omitempty"`
+	FpsMethod          PerformanceFpsMethod          `protobuf:"varint,7,opt,name=fps_method,json=fpsMethod,proto3,enum=gamenode.plugin.v1.PerformanceFpsMethod" json:"fps_method,omitempty"`
+	FpsStatistic       PerformanceFpsStatistic       `protobuf:"varint,8,opt,name=fps_statistic,json=fpsStatistic,proto3,enum=gamenode.plugin.v1.PerformanceFpsStatistic" json:"fps_statistic,omitempty"`
+	FpsPercentile      *float64                      `protobuf:"fixed64,9,opt,name=fps_percentile,json=fpsPercentile,proto3,oneof" json:"fps_percentile,omitempty"`
+	FramesPerSecondMin *float64                      `protobuf:"fixed64,10,opt,name=frames_per_second_min,json=framesPerSecondMin,proto3,oneof" json:"frames_per_second_min,omitempty"`
+	FramesPerSecondMax *float64                      `protobuf:"fixed64,11,opt,name=frames_per_second_max,json=framesPerSecondMax,proto3,oneof" json:"frames_per_second_max,omitempty"`
+	Quality            PerformanceMeasurementQuality `protobuf:"varint,12,opt,name=quality,proto3,enum=gamenode.plugin.v1.PerformanceMeasurementQuality" json:"quality,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *PerformanceSample) Reset() {
@@ -7011,15 +7487,77 @@ func (x *PerformanceSample) GetSequence() uint64 {
 	return 0
 }
 
+func (x *PerformanceSample) GetSamplingWindowMs() uint32 {
+	if x != nil {
+		return x.SamplingWindowMs
+	}
+	return 0
+}
+
+func (x *PerformanceSample) GetFpsMethod() PerformanceFpsMethod {
+	if x != nil {
+		return x.FpsMethod
+	}
+	return PerformanceFpsMethod_PERFORMANCE_FPS_METHOD_UNSPECIFIED
+}
+
+func (x *PerformanceSample) GetFpsStatistic() PerformanceFpsStatistic {
+	if x != nil {
+		return x.FpsStatistic
+	}
+	return PerformanceFpsStatistic_PERFORMANCE_FPS_STATISTIC_UNSPECIFIED
+}
+
+func (x *PerformanceSample) GetFpsPercentile() float64 {
+	if x != nil && x.FpsPercentile != nil {
+		return *x.FpsPercentile
+	}
+	return 0
+}
+
+func (x *PerformanceSample) GetFramesPerSecondMin() float64 {
+	if x != nil && x.FramesPerSecondMin != nil {
+		return *x.FramesPerSecondMin
+	}
+	return 0
+}
+
+func (x *PerformanceSample) GetFramesPerSecondMax() float64 {
+	if x != nil && x.FramesPerSecondMax != nil {
+		return *x.FramesPerSecondMax
+	}
+	return 0
+}
+
+func (x *PerformanceSample) GetQuality() PerformanceMeasurementQuality {
+	if x != nil {
+		return x.Quality
+	}
+	return PerformanceMeasurementQuality_PERFORMANCE_MEASUREMENT_QUALITY_UNSPECIFIED
+}
+
 type PerformanceSamplesRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Mutation      *MutationContext       `protobuf:"bytes,1,opt,name=mutation,proto3" json:"mutation,omitempty"`
-	SeriesId      string                 `protobuf:"bytes,2,opt,name=series_id,json=seriesId,proto3" json:"series_id,omitempty"`
-	GameId        string                 `protobuf:"bytes,3,opt,name=game_id,json=gameId,proto3" json:"game_id,omitempty"`
-	ComputerId    string                 `protobuf:"bytes,4,opt,name=computer_id,json=computerId,proto3" json:"computer_id,omitempty"`
-	Samples       []*PerformanceSample   `protobuf:"bytes,5,rep,name=samples,proto3" json:"samples,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state                 protoimpl.MessageState      `protogen:"open.v1"`
+	Mutation              *MutationContext            `protobuf:"bytes,1,opt,name=mutation,proto3" json:"mutation,omitempty"`
+	SeriesId              string                      `protobuf:"bytes,2,opt,name=series_id,json=seriesId,proto3" json:"series_id,omitempty"`
+	GameId                string                      `protobuf:"bytes,3,opt,name=game_id,json=gameId,proto3" json:"game_id,omitempty"`
+	ComputerId            string                      `protobuf:"bytes,4,opt,name=computer_id,json=computerId,proto3" json:"computer_id,omitempty"`
+	Samples               []*PerformanceSample        `protobuf:"bytes,5,rep,name=samples,proto3" json:"samples,omitempty"`
+	RuntimeId             string                      `protobuf:"bytes,6,opt,name=runtime_id,json=runtimeId,proto3" json:"runtime_id,omitempty"`
+	RuntimeRecipeRevision string                      `protobuf:"bytes,7,opt,name=runtime_recipe_revision,json=runtimeRecipeRevision,proto3" json:"runtime_recipe_revision,omitempty"`
+	Source                string                      `protobuf:"bytes,8,opt,name=source,proto3" json:"source,omitempty"`
+	ToolName              string                      `protobuf:"bytes,9,opt,name=tool_name,json=toolName,proto3" json:"tool_name,omitempty"`
+	ToolVersion           string                      `protobuf:"bytes,10,opt,name=tool_version,json=toolVersion,proto3" json:"tool_version,omitempty"`
+	SampleIntervalMs      uint32                      `protobuf:"varint,11,opt,name=sample_interval_ms,json=sampleIntervalMs,proto3" json:"sample_interval_ms,omitempty"`
+	CpuScope              PerformanceCpuScope         `protobuf:"varint,12,opt,name=cpu_scope,json=cpuScope,proto3,enum=gamenode.plugin.v1.PerformanceCpuScope" json:"cpu_scope,omitempty"`
+	CpuNormalization      PerformanceCpuNormalization `protobuf:"varint,13,opt,name=cpu_normalization,json=cpuNormalization,proto3,enum=gamenode.plugin.v1.PerformanceCpuNormalization" json:"cpu_normalization,omitempty"`
+	MemoryKind            PerformanceMemoryKind       `protobuf:"varint,14,opt,name=memory_kind,json=memoryKind,proto3,enum=gamenode.plugin.v1.PerformanceMemoryKind" json:"memory_kind,omitempty"`
+	MemorySource          string                      `protobuf:"bytes,15,opt,name=memory_source,json=memorySource,proto3" json:"memory_source,omitempty"`
+	FpsUnit               string                      `protobuf:"bytes,16,opt,name=fps_unit,json=fpsUnit,proto3" json:"fps_unit,omitempty"`
+	CpuUnit               string                      `protobuf:"bytes,17,opt,name=cpu_unit,json=cpuUnit,proto3" json:"cpu_unit,omitempty"`
+	MemoryUnit            string                      `protobuf:"bytes,18,opt,name=memory_unit,json=memoryUnit,proto3" json:"memory_unit,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *PerformanceSamplesRequest) Reset() {
@@ -7087,13 +7625,105 @@ func (x *PerformanceSamplesRequest) GetSamples() []*PerformanceSample {
 	return nil
 }
 
+func (x *PerformanceSamplesRequest) GetRuntimeId() string {
+	if x != nil {
+		return x.RuntimeId
+	}
+	return ""
+}
+
+func (x *PerformanceSamplesRequest) GetRuntimeRecipeRevision() string {
+	if x != nil {
+		return x.RuntimeRecipeRevision
+	}
+	return ""
+}
+
+func (x *PerformanceSamplesRequest) GetSource() string {
+	if x != nil {
+		return x.Source
+	}
+	return ""
+}
+
+func (x *PerformanceSamplesRequest) GetToolName() string {
+	if x != nil {
+		return x.ToolName
+	}
+	return ""
+}
+
+func (x *PerformanceSamplesRequest) GetToolVersion() string {
+	if x != nil {
+		return x.ToolVersion
+	}
+	return ""
+}
+
+func (x *PerformanceSamplesRequest) GetSampleIntervalMs() uint32 {
+	if x != nil {
+		return x.SampleIntervalMs
+	}
+	return 0
+}
+
+func (x *PerformanceSamplesRequest) GetCpuScope() PerformanceCpuScope {
+	if x != nil {
+		return x.CpuScope
+	}
+	return PerformanceCpuScope_PERFORMANCE_CPU_SCOPE_UNSPECIFIED
+}
+
+func (x *PerformanceSamplesRequest) GetCpuNormalization() PerformanceCpuNormalization {
+	if x != nil {
+		return x.CpuNormalization
+	}
+	return PerformanceCpuNormalization_PERFORMANCE_CPU_NORMALIZATION_UNSPECIFIED
+}
+
+func (x *PerformanceSamplesRequest) GetMemoryKind() PerformanceMemoryKind {
+	if x != nil {
+		return x.MemoryKind
+	}
+	return PerformanceMemoryKind_PERFORMANCE_MEMORY_KIND_UNSPECIFIED
+}
+
+func (x *PerformanceSamplesRequest) GetMemorySource() string {
+	if x != nil {
+		return x.MemorySource
+	}
+	return ""
+}
+
+func (x *PerformanceSamplesRequest) GetFpsUnit() string {
+	if x != nil {
+		return x.FpsUnit
+	}
+	return ""
+}
+
+func (x *PerformanceSamplesRequest) GetCpuUnit() string {
+	if x != nil {
+		return x.CpuUnit
+	}
+	return ""
+}
+
+func (x *PerformanceSamplesRequest) GetMemoryUnit() string {
+	if x != nil {
+		return x.MemoryUnit
+	}
+	return ""
+}
+
 type PerformanceEndSeriesRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Mutation      *MutationContext       `protobuf:"bytes,1,opt,name=mutation,proto3" json:"mutation,omitempty"`
-	SeriesId      string                 `protobuf:"bytes,2,opt,name=series_id,json=seriesId,proto3" json:"series_id,omitempty"`
-	EndedAt       int64                  `protobuf:"varint,3,opt,name=ended_at,json=endedAt,proto3" json:"ended_at,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	Mutation             *MutationContext       `protobuf:"bytes,1,opt,name=mutation,proto3" json:"mutation,omitempty"`
+	SeriesId             string                 `protobuf:"bytes,2,opt,name=series_id,json=seriesId,proto3" json:"series_id,omitempty"`
+	EndedAt              int64                  `protobuf:"varint,3,opt,name=ended_at,json=endedAt,proto3" json:"ended_at,omitempty"`
+	ExpectedLastSequence uint64                 `protobuf:"varint,4,opt,name=expected_last_sequence,json=expectedLastSequence,proto3" json:"expected_last_sequence,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *PerformanceEndSeriesRequest) Reset() {
@@ -7143,6 +7773,13 @@ func (x *PerformanceEndSeriesRequest) GetSeriesId() string {
 func (x *PerformanceEndSeriesRequest) GetEndedAt() int64 {
 	if x != nil {
 		return x.EndedAt
+	}
+	return 0
+}
+
+func (x *PerformanceEndSeriesRequest) GetExpectedLastSequence() uint64 {
+	if x != nil {
+		return x.ExpectedLastSequence
 	}
 	return 0
 }
@@ -15218,17 +15855,38 @@ func (x *PerformanceAggregateRequest) GetCommonDataCategories() *CommonDataSelec
 }
 
 type PerformanceSeries struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	SeriesId          string                 `protobuf:"bytes,1,opt,name=series_id,json=seriesId,proto3" json:"series_id,omitempty"`
-	GameId            string                 `protobuf:"bytes,2,opt,name=game_id,json=gameId,proto3" json:"game_id,omitempty"`
-	InstallationId    string                 `protobuf:"bytes,3,opt,name=installation_id,json=installationId,proto3" json:"installation_id,omitempty"`
-	ComputerContextId string                 `protobuf:"bytes,4,opt,name=computer_context_id,json=computerContextId,proto3" json:"computer_context_id,omitempty"`
-	SessionId         string                 `protobuf:"bytes,5,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	OwnerPluginId     string                 `protobuf:"bytes,6,opt,name=owner_plugin_id,json=ownerPluginId,proto3" json:"owner_plugin_id,omitempty"`
-	Samples           []*PerformanceSample   `protobuf:"bytes,7,rep,name=samples,proto3" json:"samples,omitempty"`
-	Revision          uint64                 `protobuf:"varint,8,opt,name=revision,proto3" json:"revision,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Stable host-owned owner token. record_id identifies the current broker revision for
+	// selected-record sharing; replacement creates a new record_id.
+	SeriesId              string                      `protobuf:"bytes,1,opt,name=series_id,json=seriesId,proto3" json:"series_id,omitempty"`
+	GameId                string                      `protobuf:"bytes,2,opt,name=game_id,json=gameId,proto3" json:"game_id,omitempty"`
+	InstallationId        string                      `protobuf:"bytes,3,opt,name=installation_id,json=installationId,proto3" json:"installation_id,omitempty"`
+	ComputerContextId     string                      `protobuf:"bytes,4,opt,name=computer_context_id,json=computerContextId,proto3" json:"computer_context_id,omitempty"`
+	SessionId             string                      `protobuf:"bytes,5,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	OwnerPluginId         string                      `protobuf:"bytes,6,opt,name=owner_plugin_id,json=ownerPluginId,proto3" json:"owner_plugin_id,omitempty"`
+	Samples               []*PerformanceSample        `protobuf:"bytes,7,rep,name=samples,proto3" json:"samples,omitempty"`
+	Revision              uint64                      `protobuf:"varint,8,opt,name=revision,proto3" json:"revision,omitempty"`
+	RuntimeId             string                      `protobuf:"bytes,9,opt,name=runtime_id,json=runtimeId,proto3" json:"runtime_id,omitempty"`
+	RuntimeRecipeRevision string                      `protobuf:"bytes,10,opt,name=runtime_recipe_revision,json=runtimeRecipeRevision,proto3" json:"runtime_recipe_revision,omitempty"`
+	Source                string                      `protobuf:"bytes,11,opt,name=source,proto3" json:"source,omitempty"`
+	ToolName              string                      `protobuf:"bytes,12,opt,name=tool_name,json=toolName,proto3" json:"tool_name,omitempty"`
+	ToolVersion           string                      `protobuf:"bytes,13,opt,name=tool_version,json=toolVersion,proto3" json:"tool_version,omitempty"`
+	SampleIntervalMs      uint32                      `protobuf:"varint,14,opt,name=sample_interval_ms,json=sampleIntervalMs,proto3" json:"sample_interval_ms,omitempty"`
+	CpuScope              PerformanceCpuScope         `protobuf:"varint,15,opt,name=cpu_scope,json=cpuScope,proto3,enum=gamenode.plugin.v1.PerformanceCpuScope" json:"cpu_scope,omitempty"`
+	CpuNormalization      PerformanceCpuNormalization `protobuf:"varint,16,opt,name=cpu_normalization,json=cpuNormalization,proto3,enum=gamenode.plugin.v1.PerformanceCpuNormalization" json:"cpu_normalization,omitempty"`
+	MemoryKind            PerformanceMemoryKind       `protobuf:"varint,17,opt,name=memory_kind,json=memoryKind,proto3,enum=gamenode.plugin.v1.PerformanceMemoryKind" json:"memory_kind,omitempty"`
+	MemorySource          string                      `protobuf:"bytes,18,opt,name=memory_source,json=memorySource,proto3" json:"memory_source,omitempty"`
+	StartedAt             int64                       `protobuf:"varint,19,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
+	EndedAt               int64                       `protobuf:"varint,20,opt,name=ended_at,json=endedAt,proto3" json:"ended_at,omitempty"`
+	DroppedSamples        uint64                      `protobuf:"varint,21,opt,name=dropped_samples,json=droppedSamples,proto3" json:"dropped_samples,omitempty"`
+	Coverage              string                      `protobuf:"bytes,22,opt,name=coverage,proto3" json:"coverage,omitempty"`
+	Provenance            string                      `protobuf:"bytes,23,opt,name=provenance,proto3" json:"provenance,omitempty"`
+	FpsUnit               string                      `protobuf:"bytes,24,opt,name=fps_unit,json=fpsUnit,proto3" json:"fps_unit,omitempty"`
+	CpuUnit               string                      `protobuf:"bytes,25,opt,name=cpu_unit,json=cpuUnit,proto3" json:"cpu_unit,omitempty"`
+	MemoryUnit            string                      `protobuf:"bytes,26,opt,name=memory_unit,json=memoryUnit,proto3" json:"memory_unit,omitempty"`
+	RecordId              string                      `protobuf:"bytes,27,opt,name=record_id,json=recordId,proto3" json:"record_id,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *PerformanceSeries) Reset() {
@@ -15315,6 +15973,139 @@ func (x *PerformanceSeries) GetRevision() uint64 {
 		return x.Revision
 	}
 	return 0
+}
+
+func (x *PerformanceSeries) GetRuntimeId() string {
+	if x != nil {
+		return x.RuntimeId
+	}
+	return ""
+}
+
+func (x *PerformanceSeries) GetRuntimeRecipeRevision() string {
+	if x != nil {
+		return x.RuntimeRecipeRevision
+	}
+	return ""
+}
+
+func (x *PerformanceSeries) GetSource() string {
+	if x != nil {
+		return x.Source
+	}
+	return ""
+}
+
+func (x *PerformanceSeries) GetToolName() string {
+	if x != nil {
+		return x.ToolName
+	}
+	return ""
+}
+
+func (x *PerformanceSeries) GetToolVersion() string {
+	if x != nil {
+		return x.ToolVersion
+	}
+	return ""
+}
+
+func (x *PerformanceSeries) GetSampleIntervalMs() uint32 {
+	if x != nil {
+		return x.SampleIntervalMs
+	}
+	return 0
+}
+
+func (x *PerformanceSeries) GetCpuScope() PerformanceCpuScope {
+	if x != nil {
+		return x.CpuScope
+	}
+	return PerformanceCpuScope_PERFORMANCE_CPU_SCOPE_UNSPECIFIED
+}
+
+func (x *PerformanceSeries) GetCpuNormalization() PerformanceCpuNormalization {
+	if x != nil {
+		return x.CpuNormalization
+	}
+	return PerformanceCpuNormalization_PERFORMANCE_CPU_NORMALIZATION_UNSPECIFIED
+}
+
+func (x *PerformanceSeries) GetMemoryKind() PerformanceMemoryKind {
+	if x != nil {
+		return x.MemoryKind
+	}
+	return PerformanceMemoryKind_PERFORMANCE_MEMORY_KIND_UNSPECIFIED
+}
+
+func (x *PerformanceSeries) GetMemorySource() string {
+	if x != nil {
+		return x.MemorySource
+	}
+	return ""
+}
+
+func (x *PerformanceSeries) GetStartedAt() int64 {
+	if x != nil {
+		return x.StartedAt
+	}
+	return 0
+}
+
+func (x *PerformanceSeries) GetEndedAt() int64 {
+	if x != nil {
+		return x.EndedAt
+	}
+	return 0
+}
+
+func (x *PerformanceSeries) GetDroppedSamples() uint64 {
+	if x != nil {
+		return x.DroppedSamples
+	}
+	return 0
+}
+
+func (x *PerformanceSeries) GetCoverage() string {
+	if x != nil {
+		return x.Coverage
+	}
+	return ""
+}
+
+func (x *PerformanceSeries) GetProvenance() string {
+	if x != nil {
+		return x.Provenance
+	}
+	return ""
+}
+
+func (x *PerformanceSeries) GetFpsUnit() string {
+	if x != nil {
+		return x.FpsUnit
+	}
+	return ""
+}
+
+func (x *PerformanceSeries) GetCpuUnit() string {
+	if x != nil {
+		return x.CpuUnit
+	}
+	return ""
+}
+
+func (x *PerformanceSeries) GetMemoryUnit() string {
+	if x != nil {
+		return x.MemoryUnit
+	}
+	return ""
+}
+
+func (x *PerformanceSeries) GetRecordId() string {
+	if x != nil {
+		return x.RecordId
+	}
+	return ""
 }
 
 type PerformanceListReply struct {
@@ -20248,15 +21039,17 @@ func (x *RuntimeSessionContextResult) GetDenial() *DenialDetail {
 }
 
 type RuntimeSessionReport struct {
-	state               protoimpl.MessageState   `protogen:"open.v1"`
-	CorrelationId       string                   `protobuf:"bytes,1,opt,name=correlation_id,json=correlationId,proto3" json:"correlation_id,omitempty"`
-	GameId              string                   `protobuf:"bytes,2,opt,name=game_id,json=gameId,proto3" json:"game_id,omitempty"`
-	InstallationId      string                   `protobuf:"bytes,3,opt,name=installation_id,json=installationId,proto3" json:"installation_id,omitempty"`
-	ContentId           string                   `protobuf:"bytes,4,opt,name=content_id,json=contentId,proto3" json:"content_id,omitempty"`
-	RuntimeId           string                   `protobuf:"bytes,5,opt,name=runtime_id,json=runtimeId,proto3" json:"runtime_id,omitempty"`
-	RuntimeInstanceId   string                   `protobuf:"bytes,6,opt,name=runtime_instance_id,json=runtimeInstanceId,proto3" json:"runtime_instance_id,omitempty"`
-	ReporterSessionId   string                   `protobuf:"bytes,7,opt,name=reporter_session_id,json=reporterSessionId,proto3" json:"reporter_session_id,omitempty"`
-	Sequence            uint64                   `protobuf:"varint,8,opt,name=sequence,proto3" json:"sequence,omitempty"`
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	CorrelationId     string                 `protobuf:"bytes,1,opt,name=correlation_id,json=correlationId,proto3" json:"correlation_id,omitempty"`
+	GameId            string                 `protobuf:"bytes,2,opt,name=game_id,json=gameId,proto3" json:"game_id,omitempty"`
+	InstallationId    string                 `protobuf:"bytes,3,opt,name=installation_id,json=installationId,proto3" json:"installation_id,omitempty"`
+	ContentId         string                 `protobuf:"bytes,4,opt,name=content_id,json=contentId,proto3" json:"content_id,omitempty"`
+	RuntimeId         string                 `protobuf:"bytes,5,opt,name=runtime_id,json=runtimeId,proto3" json:"runtime_id,omitempty"`
+	RuntimeInstanceId string                 `protobuf:"bytes,6,opt,name=runtime_instance_id,json=runtimeInstanceId,proto3" json:"runtime_instance_id,omitempty"`
+	ReporterSessionId string                 `protobuf:"bytes,7,opt,name=reporter_session_id,json=reporterSessionId,proto3" json:"reporter_session_id,omitempty"`
+	Sequence          uint64                 `protobuf:"varint,8,opt,name=sequence,proto3" json:"sequence,omitempty"`
+	// Unix time in seconds. The host accepts reports up to 30 seconds stale or 5 seconds ahead;
+	// session expiry is calculated from host monotonic receipt time.
 	ObservedAt          int64                    `protobuf:"varint,9,opt,name=observed_at,json=observedAt,proto3" json:"observed_at,omitempty"`
 	Transition          RuntimeSessionTransition `protobuf:"varint,10,opt,name=transition,proto3,enum=gamenode.plugin.v1.RuntimeSessionTransition" json:"transition,omitempty"`
 	SourceObservationId string                   `protobuf:"bytes,11,opt,name=source_observation_id,json=sourceObservationId,proto3" json:"source_observation_id,omitempty"`
@@ -20883,12 +21676,13 @@ const file_plugin_proto_rawDesc = "" +
 	"\aoutcome\x18\x03 \x01(\x0e2#.gamenode.plugin.v1.MutationOutcomeR\aoutcome\"\x96\x01\n" +
 	"\x16RuntimeRegisterRequest\x12?\n" +
 	"\bmutation\x18\x01 \x01(\v2#.gamenode.plugin.v1.MutationContextR\bmutation\x12;\n" +
-	"\aruntime\x18\x02 \x01(\v2!.gamenode.plugin.v1.RuntimeRecordR\aruntime\"\xb3\x01\n" +
+	"\aruntime\x18\x02 \x01(\v2!.gamenode.plugin.v1.RuntimeRecordR\aruntime\"\x80\x02\n" +
 	"\x14RuntimeUpdateRequest\x12?\n" +
 	"\bmutation\x18\x01 \x01(\v2#.gamenode.plugin.v1.MutationContextR\bmutation\x12;\n" +
 	"\aruntime\x18\x02 \x01(\v2!.gamenode.plugin.v1.RuntimeRecordR\aruntime\x12\x1d\n" +
 	"\n" +
-	"field_mask\x18\x03 \x03(\tR\tfieldMask\"\x92\x01\n" +
+	"field_mask\x18\x03 \x03(\tR\tfieldMask\x12K\n" +
+	"\x0fextension_patch\x18\x04 \x01(\v2\".gamenode.plugin.v1.ExtensionPatchR\x0eextensionPatch\"\x92\x01\n" +
 	"\x14RuntimeMutationReply\x12;\n" +
 	"\aruntime\x18\x01 \x01(\v2!.gamenode.plugin.v1.RuntimeRecordR\aruntime\x12=\n" +
 	"\aoutcome\x18\x02 \x01(\x0e2#.gamenode.plugin.v1.MutationOutcomeR\aoutcome\"m\n" +
@@ -20915,11 +21709,17 @@ const file_plugin_proto_rawDesc = "" +
 	"runtime_id\x18\x06 \x01(\tR\truntimeId\x12/\n" +
 	"\x13supported_platforms\x18\a \x03(\tR\x12supportedPlatforms\x12\x1d\n" +
 	"\n" +
-	"content_id\x18\b \x01(\tR\tcontentId\"\x8d\x01\n" +
+	"content_id\x18\b \x01(\tR\tcontentId\"\xcd\x02\n" +
 	"\x13ReportMutationReply\x12\x1b\n" +
 	"\treport_id\x18\x01 \x01(\tR\breportId\x12\x1a\n" +
 	"\brevision\x18\x02 \x01(\x04R\brevision\x12=\n" +
-	"\aoutcome\x18\x03 \x01(\x0e2#.gamenode.plugin.v1.MutationOutcomeR\aoutcome\"\x98\x03\n" +
+	"\aoutcome\x18\x03 \x01(\x0e2#.gamenode.plugin.v1.MutationOutcomeR\aoutcome\x12)\n" +
+	"\x10accepted_samples\x18\x04 \x01(\rR\x0facceptedSamples\x12'\n" +
+	"\x0fdropped_samples\x18\x05 \x01(\rR\x0edroppedSamples\x12$\n" +
+	"\x0eretry_after_ms\x18\x06 \x01(\rR\fretryAfterMs\x12#\n" +
+	"\rretained_from\x18\a \x01(\x03R\fretainedFrom\x12\x1f\n" +
+	"\vretained_to\x18\b \x01(\x03R\n" +
+	"retainedTo\"\xe7\x06\n" +
 	"\x16BenchmarkReportRequest\x12?\n" +
 	"\bmutation\x18\x01 \x01(\v2#.gamenode.plugin.v1.MutationContextR\bmutation\x12#\n" +
 	"\rvolume_handle\x18\x02 \x01(\tR\fvolumeHandle\x12\x1b\n" +
@@ -20928,10 +21728,22 @@ const file_plugin_proto_rawDesc = "" +
 	"\fmeasurements\x18\x05 \x03(\v2<.gamenode.plugin.v1.BenchmarkReportRequest.MeasurementsEntryR\fmeasurements\x12\x14\n" +
 	"\x05units\x18\x06 \x01(\tR\x05units\x12\x1f\n" +
 	"\vobserved_at\x18\a \x01(\x03R\n" +
-	"observedAt\x1a?\n" +
+	"observedAt\x12m\n" +
+	"\x11measurement_units\x18\b \x03(\v2@.gamenode.plugin.v1.BenchmarkReportRequest.MeasurementUnitsEntryR\x10measurementUnits\x12p\n" +
+	"\x12measurement_states\x18\t \x03(\v2A.gamenode.plugin.v1.BenchmarkReportRequest.MeasurementStatesEntryR\x11measurementStates\x127\n" +
+	"\n" +
+	"conditions\x18\n" +
+	" \x01(\v2\x17.google.protobuf.StructR\n" +
+	"conditions\x1a?\n" +
 	"\x11MeasurementsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x01R\x05value:\x028\x01\"\xf1\x02\n" +
+	"\x05value\x18\x02 \x01(\x01R\x05value:\x028\x01\x1aC\n" +
+	"\x15MeasurementUnitsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1an\n" +
+	"\x16MeasurementStatesEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12>\n" +
+	"\x05value\x18\x02 \x01(\x0e2(.gamenode.plugin.v1.DiagnosticValueStateR\x05value:\x028\x01\"\xa8\x06\n" +
 	"\x12SmartReportRequest\x12?\n" +
 	"\bmutation\x18\x01 \x01(\v2#.gamenode.plugin.v1.MutationContextR\bmutation\x12#\n" +
 	"\rvolume_handle\x18\x02 \x01(\tR\fvolumeHandle\x12!\n" +
@@ -20941,10 +21753,21 @@ const file_plugin_proto_rawDesc = "" +
 	"attributes\x18\x05 \x03(\v26.gamenode.plugin.v1.SmartReportRequest.AttributesEntryR\n" +
 	"attributes\x12\x1f\n" +
 	"\vobserved_at\x18\x06 \x01(\x03R\n" +
-	"observedAt\x1a=\n" +
+	"observedAt\x12c\n" +
+	"\x0fattribute_units\x18\a \x03(\v2:.gamenode.plugin.v1.SmartReportRequest.AttributeUnitsEntryR\x0eattributeUnits\x12f\n" +
+	"\x10attribute_states\x18\b \x03(\v2;.gamenode.plugin.v1.SmartReportRequest.AttributeStatesEntryR\x0fattributeStates\x127\n" +
+	"\n" +
+	"conditions\x18\t \x01(\v2\x17.google.protobuf.StructR\n" +
+	"conditions\x1a=\n" +
 	"\x0fAttributesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x9b\x02\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aA\n" +
+	"\x13AttributeUnitsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1al\n" +
+	"\x14AttributeStatesEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12>\n" +
+	"\x05value\x18\x02 \x01(\x0e2(.gamenode.plugin.v1.DiagnosticValueStateR\x05value:\x028\x01\"\x9b\x02\n" +
 	"\x15HardwareReportRequest\x12?\n" +
 	"\bmutation\x18\x01 \x01(\v2#.gamenode.plugin.v1.MutationContextR\bmutation\x12\x1f\n" +
 	"\vcomputer_id\x18\x02 \x01(\tR\n" +
@@ -20966,7 +21789,7 @@ const file_plugin_proto_rawDesc = "" +
 	"\bmutation\x18\x01 \x01(\v2#.gamenode.plugin.v1.MutationContextR\bmutation\x12\x17\n" +
 	"\agame_id\x18\x02 \x01(\tR\x06gameId\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x03 \x01(\tR\tsessionId\"\xc0\x01\n" +
+	"session_id\x18\x03 \x01(\tR\tsessionId\"\xb9\x05\n" +
 	"\x11PerformanceSample\x12\x1f\n" +
 	"\vobserved_at\x18\x01 \x01(\x03R\n" +
 	"observedAt\x12*\n" +
@@ -20974,18 +21797,48 @@ const file_plugin_proto_rawDesc = "" +
 	"\vcpu_percent\x18\x03 \x01(\x01R\n" +
 	"cpuPercent\x12!\n" +
 	"\fmemory_bytes\x18\x04 \x01(\x04R\vmemoryBytes\x12\x1a\n" +
-	"\bsequence\x18\x05 \x01(\x04R\bsequence\"\xf4\x01\n" +
+	"\bsequence\x18\x05 \x01(\x04R\bsequence\x12,\n" +
+	"\x12sampling_window_ms\x18\x06 \x01(\rR\x10samplingWindowMs\x12G\n" +
+	"\n" +
+	"fps_method\x18\a \x01(\x0e2(.gamenode.plugin.v1.PerformanceFpsMethodR\tfpsMethod\x12P\n" +
+	"\rfps_statistic\x18\b \x01(\x0e2+.gamenode.plugin.v1.PerformanceFpsStatisticR\ffpsStatistic\x12*\n" +
+	"\x0efps_percentile\x18\t \x01(\x01H\x00R\rfpsPercentile\x88\x01\x01\x126\n" +
+	"\x15frames_per_second_min\x18\n" +
+	" \x01(\x01H\x01R\x12framesPerSecondMin\x88\x01\x01\x126\n" +
+	"\x15frames_per_second_max\x18\v \x01(\x01H\x02R\x12framesPerSecondMax\x88\x01\x01\x12K\n" +
+	"\aquality\x18\f \x01(\x0e21.gamenode.plugin.v1.PerformanceMeasurementQualityR\aqualityB\x11\n" +
+	"\x0f_fps_percentileB\x18\n" +
+	"\x16_frames_per_second_minB\x18\n" +
+	"\x16_frames_per_second_max\"\xbd\x06\n" +
 	"\x19PerformanceSamplesRequest\x12?\n" +
 	"\bmutation\x18\x01 \x01(\v2#.gamenode.plugin.v1.MutationContextR\bmutation\x12\x1b\n" +
 	"\tseries_id\x18\x02 \x01(\tR\bseriesId\x12\x17\n" +
 	"\agame_id\x18\x03 \x01(\tR\x06gameId\x12\x1f\n" +
 	"\vcomputer_id\x18\x04 \x01(\tR\n" +
 	"computerId\x12?\n" +
-	"\asamples\x18\x05 \x03(\v2%.gamenode.plugin.v1.PerformanceSampleR\asamples\"\x96\x01\n" +
+	"\asamples\x18\x05 \x03(\v2%.gamenode.plugin.v1.PerformanceSampleR\asamples\x12\x1d\n" +
+	"\n" +
+	"runtime_id\x18\x06 \x01(\tR\truntimeId\x126\n" +
+	"\x17runtime_recipe_revision\x18\a \x01(\tR\x15runtimeRecipeRevision\x12\x16\n" +
+	"\x06source\x18\b \x01(\tR\x06source\x12\x1b\n" +
+	"\ttool_name\x18\t \x01(\tR\btoolName\x12!\n" +
+	"\ftool_version\x18\n" +
+	" \x01(\tR\vtoolVersion\x12,\n" +
+	"\x12sample_interval_ms\x18\v \x01(\rR\x10sampleIntervalMs\x12D\n" +
+	"\tcpu_scope\x18\f \x01(\x0e2'.gamenode.plugin.v1.PerformanceCpuScopeR\bcpuScope\x12\\\n" +
+	"\x11cpu_normalization\x18\r \x01(\x0e2/.gamenode.plugin.v1.PerformanceCpuNormalizationR\x10cpuNormalization\x12J\n" +
+	"\vmemory_kind\x18\x0e \x01(\x0e2).gamenode.plugin.v1.PerformanceMemoryKindR\n" +
+	"memoryKind\x12#\n" +
+	"\rmemory_source\x18\x0f \x01(\tR\fmemorySource\x12\x19\n" +
+	"\bfps_unit\x18\x10 \x01(\tR\afpsUnit\x12\x19\n" +
+	"\bcpu_unit\x18\x11 \x01(\tR\acpuUnit\x12\x1f\n" +
+	"\vmemory_unit\x18\x12 \x01(\tR\n" +
+	"memoryUnit\"\xcc\x01\n" +
 	"\x1bPerformanceEndSeriesRequest\x12?\n" +
 	"\bmutation\x18\x01 \x01(\v2#.gamenode.plugin.v1.MutationContextR\bmutation\x12\x1b\n" +
 	"\tseries_id\x18\x02 \x01(\tR\bseriesId\x12\x19\n" +
-	"\bended_at\x18\x03 \x01(\x03R\aendedAt\"\x88\x04\n" +
+	"\bended_at\x18\x03 \x01(\x03R\aendedAt\x124\n" +
+	"\x16expected_last_sequence\x18\x04 \x01(\x04R\x14expectedLastSequence\"\x88\x04\n" +
 	"\x12DataPublishRequest\x12?\n" +
 	"\bmutation\x18\x01 \x01(\v2#.gamenode.plugin.v1.MutationContextR\bmutation\x12\x1d\n" +
 	"\n" +
@@ -21698,7 +22551,7 @@ const file_plugin_proto_rawDesc = "" +
 	"\ato_time\x18\x04 \x01(\x03R\x06toTime\x12\x16\n" +
 	"\x06metric\x18\x05 \x01(\tR\x06metric\x12 \n" +
 	"\vaggregation\x18\x06 \x01(\tR\vaggregation\x12\\\n" +
-	"\x16common_data_categories\x18\a \x01(\v2&.gamenode.plugin.v1.CommonDataSelectorR\x14commonDataCategories\"\xc6\x02\n" +
+	"\x16common_data_categories\x18\a \x01(\v2&.gamenode.plugin.v1.CommonDataSelectorR\x14commonDataCategories\"\xcb\b\n" +
 	"\x11PerformanceSeries\x12\x1b\n" +
 	"\tseries_id\x18\x01 \x01(\tR\bseriesId\x12\x17\n" +
 	"\agame_id\x18\x02 \x01(\tR\x06gameId\x12'\n" +
@@ -21708,7 +22561,33 @@ const file_plugin_proto_rawDesc = "" +
 	"session_id\x18\x05 \x01(\tR\tsessionId\x12&\n" +
 	"\x0fowner_plugin_id\x18\x06 \x01(\tR\rownerPluginId\x12?\n" +
 	"\asamples\x18\a \x03(\v2%.gamenode.plugin.v1.PerformanceSampleR\asamples\x12\x1a\n" +
-	"\brevision\x18\b \x01(\x04R\brevision\"\x92\x01\n" +
+	"\brevision\x18\b \x01(\x04R\brevision\x12\x1d\n" +
+	"\n" +
+	"runtime_id\x18\t \x01(\tR\truntimeId\x126\n" +
+	"\x17runtime_recipe_revision\x18\n" +
+	" \x01(\tR\x15runtimeRecipeRevision\x12\x16\n" +
+	"\x06source\x18\v \x01(\tR\x06source\x12\x1b\n" +
+	"\ttool_name\x18\f \x01(\tR\btoolName\x12!\n" +
+	"\ftool_version\x18\r \x01(\tR\vtoolVersion\x12,\n" +
+	"\x12sample_interval_ms\x18\x0e \x01(\rR\x10sampleIntervalMs\x12D\n" +
+	"\tcpu_scope\x18\x0f \x01(\x0e2'.gamenode.plugin.v1.PerformanceCpuScopeR\bcpuScope\x12\\\n" +
+	"\x11cpu_normalization\x18\x10 \x01(\x0e2/.gamenode.plugin.v1.PerformanceCpuNormalizationR\x10cpuNormalization\x12J\n" +
+	"\vmemory_kind\x18\x11 \x01(\x0e2).gamenode.plugin.v1.PerformanceMemoryKindR\n" +
+	"memoryKind\x12#\n" +
+	"\rmemory_source\x18\x12 \x01(\tR\fmemorySource\x12\x1d\n" +
+	"\n" +
+	"started_at\x18\x13 \x01(\x03R\tstartedAt\x12\x19\n" +
+	"\bended_at\x18\x14 \x01(\x03R\aendedAt\x12'\n" +
+	"\x0fdropped_samples\x18\x15 \x01(\x04R\x0edroppedSamples\x12\x1a\n" +
+	"\bcoverage\x18\x16 \x01(\tR\bcoverage\x12\x1e\n" +
+	"\n" +
+	"provenance\x18\x17 \x01(\tR\n" +
+	"provenance\x12\x19\n" +
+	"\bfps_unit\x18\x18 \x01(\tR\afpsUnit\x12\x19\n" +
+	"\bcpu_unit\x18\x19 \x01(\tR\acpuUnit\x12\x1f\n" +
+	"\vmemory_unit\x18\x1a \x01(\tR\n" +
+	"memoryUnit\x12\x1b\n" +
+	"\trecord_id\x18\x1b \x01(\tR\brecordId\"\x92\x01\n" +
 	"\x14PerformanceListReply\x12=\n" +
 	"\x06series\x18\x01 \x03(\v2%.gamenode.plugin.v1.PerformanceSeriesR\x06series\x12\x1f\n" +
 	"\vnext_cursor\x18\x02 \x01(\tR\n" +
@@ -22211,12 +23090,48 @@ const file_plugin_proto_rawDesc = "" +
 	"\x11JOB_STATE_RUNNING\x10\x02\x12\x17\n" +
 	"\x13JOB_STATE_SUCCEEDED\x10\x03\x12\x14\n" +
 	"\x10JOB_STATE_FAILED\x10\x04\x12\x17\n" +
-	"\x13JOB_STATE_CANCELLED\x10\x05*\x9f\x01\n" +
+	"\x13JOB_STATE_CANCELLED\x10\x05*\x80\x02\n" +
+	"\x14DiagnosticValueState\x12&\n" +
+	"\"DIAGNOSTIC_VALUE_STATE_UNSPECIFIED\x10\x00\x12$\n" +
+	" DIAGNOSTIC_VALUE_STATE_AVAILABLE\x10\x01\x12&\n" +
+	"\"DIAGNOSTIC_VALUE_STATE_UNAVAILABLE\x10\x02\x12&\n" +
+	"\"DIAGNOSTIC_VALUE_STATE_UNSUPPORTED\x10\x03\x12(\n" +
+	"$DIAGNOSTIC_VALUE_STATE_ACCESS_DENIED\x10\x04\x12 \n" +
+	"\x1cDIAGNOSTIC_VALUE_STATE_ERROR\x10\x05*\xc6\x01\n" +
+	"\x14PerformanceFpsMethod\x12&\n" +
+	"\"PERFORMANCE_FPS_METHOD_UNSPECIFIED\x10\x00\x12(\n" +
+	"$PERFORMANCE_FPS_METHOD_INSTANTANEOUS\x10\x01\x12-\n" +
+	")PERFORMANCE_FPS_METHOD_FRAME_COUNT_WINDOW\x10\x02\x12-\n" +
+	")PERFORMANCE_FPS_METHOD_FRAME_TIME_DERIVED\x10\x03*\x90\x02\n" +
+	"\x17PerformanceFpsStatistic\x12)\n" +
+	"%PERFORMANCE_FPS_STATISTIC_UNSPECIFIED\x10\x00\x12+\n" +
+	"'PERFORMANCE_FPS_STATISTIC_INSTANTANEOUS\x10\x01\x12%\n" +
+	"!PERFORMANCE_FPS_STATISTIC_AVERAGE\x10\x02\x12%\n" +
+	"!PERFORMANCE_FPS_STATISTIC_MINIMUM\x10\x03\x12%\n" +
+	"!PERFORMANCE_FPS_STATISTIC_MAXIMUM\x10\x04\x12(\n" +
+	"$PERFORMANCE_FPS_STATISTIC_PERCENTILE\x10\x05*\xad\x01\n" +
+	"\x1dPerformanceMeasurementQuality\x12/\n" +
+	"+PERFORMANCE_MEASUREMENT_QUALITY_UNSPECIFIED\x10\x00\x12,\n" +
+	"(PERFORMANCE_MEASUREMENT_QUALITY_MEASURED\x10\x01\x12-\n" +
+	")PERFORMANCE_MEASUREMENT_QUALITY_ESTIMATED\x10\x02*\x81\x01\n" +
+	"\x13PerformanceCpuScope\x12%\n" +
+	"!PERFORMANCE_CPU_SCOPE_UNSPECIFIED\x10\x00\x12!\n" +
+	"\x1dPERFORMANCE_CPU_SCOPE_PROCESS\x10\x01\x12 \n" +
+	"\x1cPERFORMANCE_CPU_SCOPE_SYSTEM\x10\x02*\xb9\x01\n" +
+	"\x1bPerformanceCpuNormalization\x12-\n" +
+	")PERFORMANCE_CPU_NORMALIZATION_UNSPECIFIED\x10\x00\x127\n" +
+	"3PERFORMANCE_CPU_NORMALIZATION_WHOLE_MACHINE_PERCENT\x10\x01\x122\n" +
+	".PERFORMANCE_CPU_NORMALIZATION_PER_CORE_PERCENT\x10\x02*\x9b\x01\n" +
+	"\x15PerformanceMemoryKind\x12'\n" +
+	"#PERFORMANCE_MEMORY_KIND_UNSPECIFIED\x10\x00\x12-\n" +
+	")PERFORMANCE_MEMORY_KIND_WORKING_SET_BYTES\x10\x01\x12*\n" +
+	"&PERFORMANCE_MEMORY_KIND_RESIDENT_BYTES\x10\x02*\xc2\x01\n" +
 	"\x0fMutationOutcome\x12 \n" +
 	"\x1cMUTATION_OUTCOME_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18MUTATION_OUTCOME_APPLIED\x10\x01\x12$\n" +
 	" MUTATION_OUTCOME_ALREADY_APPLIED\x10\x02\x12&\n" +
-	"\"MUTATION_OUTCOME_REVISION_CONFLICT\x10\x03*\xbb\x02\n" +
+	"\"MUTATION_OUTCOME_REVISION_CONFLICT\x10\x03\x12!\n" +
+	"\x1dMUTATION_OUTCOME_BACKPRESSURE\x10\x04*\xbb\x02\n" +
 	"\x12CommonDataCategory\x12$\n" +
 	" COMMON_DATA_CATEGORY_UNSPECIFIED\x10\x00\x12#\n" +
 	"\x1fCOMMON_DATA_CATEGORY_GAME_PATHS\x10\x01\x121\n" +
@@ -22497,847 +23412,876 @@ func file_plugin_proto_rawDescGZIP() []byte {
 	return file_plugin_proto_rawDescData
 }
 
-var file_plugin_proto_enumTypes = make([]protoimpl.EnumInfo, 24)
-var file_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 275)
+var file_plugin_proto_enumTypes = make([]protoimpl.EnumInfo, 31)
+var file_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 279)
 var file_plugin_proto_goTypes = []any{
 	(SessionKind)(0),                         // 0: gamenode.plugin.v1.SessionKind
 	(FeatureAvailability)(0),                 // 1: gamenode.plugin.v1.FeatureAvailability
 	(DenialReason)(0),                        // 2: gamenode.plugin.v1.DenialReason
 	(StorageDurability)(0),                   // 3: gamenode.plugin.v1.StorageDurability
 	(JobState)(0),                            // 4: gamenode.plugin.v1.JobState
-	(MutationOutcome)(0),                     // 5: gamenode.plugin.v1.MutationOutcome
-	(CommonDataCategory)(0),                  // 6: gamenode.plugin.v1.CommonDataCategory
-	(InspectionAvailability)(0),              // 7: gamenode.plugin.v1.InspectionAvailability
-	(ExtensionFieldClassification)(0),        // 8: gamenode.plugin.v1.ExtensionFieldClassification
-	(ProviderOperation)(0),                   // 9: gamenode.plugin.v1.ProviderOperation
-	(AccountConnection)(0),                   // 10: gamenode.plugin.v1.AccountConnection
-	(SecretStorage)(0),                       // 11: gamenode.plugin.v1.SecretStorage
-	(CatalogFailure)(0),                      // 12: gamenode.plugin.v1.CatalogFailure
-	(SecretOperation)(0),                     // 13: gamenode.plugin.v1.SecretOperation
-	(ServiceFailure)(0),                      // 14: gamenode.plugin.v1.ServiceFailure
-	(LoginOperation)(0),                      // 15: gamenode.plugin.v1.LoginOperation
-	(LoginState)(0),                          // 16: gamenode.plugin.v1.LoginState
-	(CatalogCategory)(0),                     // 17: gamenode.plugin.v1.CatalogCategory
-	(OperationDisposition)(0),                // 18: gamenode.plugin.v1.OperationDisposition
-	(AccountLoginOutcome)(0),                 // 19: gamenode.plugin.v1.AccountLoginOutcome
-	(SettingsPersistence)(0),                 // 20: gamenode.plugin.v1.SettingsPersistence
-	(SettingsFailure)(0),                     // 21: gamenode.plugin.v1.SettingsFailure
-	(RuntimeSessionTransition)(0),            // 22: gamenode.plugin.v1.RuntimeSessionTransition
-	(RuntimeSessionOutcome)(0),               // 23: gamenode.plugin.v1.RuntimeSessionOutcome
-	(*OpenSessionRequest)(nil),               // 24: gamenode.plugin.v1.OpenSessionRequest
-	(*OpenSessionReply)(nil),                 // 25: gamenode.plugin.v1.OpenSessionReply
-	(*TargetGameContext)(nil),                // 26: gamenode.plugin.v1.TargetGameContext
-	(*FeatureRequest)(nil),                   // 27: gamenode.plugin.v1.FeatureRequest
-	(*FeatureStatus)(nil),                    // 28: gamenode.plugin.v1.FeatureStatus
-	(*SupportWindow)(nil),                    // 29: gamenode.plugin.v1.SupportWindow
-	(*ApiFeature)(nil),                       // 30: gamenode.plugin.v1.ApiFeature
-	(*ApiMethod)(nil),                        // 31: gamenode.plugin.v1.ApiMethod
-	(*DescribeApiRequest)(nil),               // 32: gamenode.plugin.v1.DescribeApiRequest
-	(*DescribeApiReply)(nil),                 // 33: gamenode.plugin.v1.DescribeApiReply
-	(*GetPermissionsRequest)(nil),            // 34: gamenode.plugin.v1.GetPermissionsRequest
-	(*PermissionGrant)(nil),                  // 35: gamenode.plugin.v1.PermissionGrant
-	(*GetPermissionsReply)(nil),              // 36: gamenode.plugin.v1.GetPermissionsReply
-	(*WatchPermissionChangesRequest)(nil),    // 37: gamenode.plugin.v1.WatchPermissionChangesRequest
-	(*PermissionChange)(nil),                 // 38: gamenode.plugin.v1.PermissionChange
-	(*DenialDetail)(nil),                     // 39: gamenode.plugin.v1.DenialDetail
-	(*DetectedExecutable)(nil),               // 40: gamenode.plugin.v1.DetectedExecutable
-	(*DetectedTarget)(nil),                   // 41: gamenode.plugin.v1.DetectedTarget
-	(*DiscoveryRecord)(nil),                  // 42: gamenode.plugin.v1.DiscoveryRecord
-	(*DiscoveryResult)(nil),                  // 43: gamenode.plugin.v1.DiscoveryResult
-	(*PluginFailure)(nil),                    // 44: gamenode.plugin.v1.PluginFailure
-	(*SubmitDiscoveryRequest)(nil),           // 45: gamenode.plugin.v1.SubmitDiscoveryRequest
-	(*SubmitDiscoveryReply)(nil),             // 46: gamenode.plugin.v1.SubmitDiscoveryReply
-	(*CustomLaunchRemoveRequest)(nil),        // 47: gamenode.plugin.v1.CustomLaunchRemoveRequest
-	(*GameInstallRequest)(nil),               // 48: gamenode.plugin.v1.GameInstallRequest
-	(*StorageGetRequest)(nil),                // 49: gamenode.plugin.v1.StorageGetRequest
-	(*StoragePutRequest)(nil),                // 50: gamenode.plugin.v1.StoragePutRequest
-	(*StorageDeleteRequest)(nil),             // 51: gamenode.plugin.v1.StorageDeleteRequest
-	(*StorageGetReply)(nil),                  // 52: gamenode.plugin.v1.StorageGetReply
-	(*StorageMutationReply)(nil),             // 53: gamenode.plugin.v1.StorageMutationReply
-	(*DeclaredLocation)(nil),                 // 54: gamenode.plugin.v1.DeclaredLocation
-	(*FilesRequestAccessRequest)(nil),        // 55: gamenode.plugin.v1.FilesRequestAccessRequest
-	(*FileHandle)(nil),                       // 56: gamenode.plugin.v1.FileHandle
-	(*FileAccessReply)(nil),                  // 57: gamenode.plugin.v1.FileAccessReply
-	(*FilesListRequest)(nil),                 // 58: gamenode.plugin.v1.FilesListRequest
-	(*FilesListReply)(nil),                   // 59: gamenode.plugin.v1.FilesListReply
-	(*FileEntry)(nil),                        // 60: gamenode.plugin.v1.FileEntry
-	(*FilesReadRequest)(nil),                 // 61: gamenode.plugin.v1.FilesReadRequest
-	(*FileReadReply)(nil),                    // 62: gamenode.plugin.v1.FileReadReply
-	(*FilesWriteRequest)(nil),                // 63: gamenode.plugin.v1.FilesWriteRequest
-	(*FilesDeleteRequest)(nil),               // 64: gamenode.plugin.v1.FilesDeleteRequest
-	(*NetworkFetchRequest)(nil),              // 65: gamenode.plugin.v1.NetworkFetchRequest
-	(*NetworkFetchReply)(nil),                // 66: gamenode.plugin.v1.NetworkFetchReply
-	(*NotificationTranslation)(nil),          // 67: gamenode.plugin.v1.NotificationTranslation
-	(*NotificationPublishRequest)(nil),       // 68: gamenode.plugin.v1.NotificationPublishRequest
-	(*BackupsListRequest)(nil),               // 69: gamenode.plugin.v1.BackupsListRequest
-	(*BackupCreateRequest)(nil),              // 70: gamenode.plugin.v1.BackupCreateRequest
-	(*BackupRestoreRequest)(nil),             // 71: gamenode.plugin.v1.BackupRestoreRequest
-	(*BackupsListReply)(nil),                 // 72: gamenode.plugin.v1.BackupsListReply
-	(*BackupRecord)(nil),                     // 73: gamenode.plugin.v1.BackupRecord
-	(*JobReply)(nil),                         // 74: gamenode.plugin.v1.JobReply
-	(*DomainListRequest)(nil),                // 75: gamenode.plugin.v1.DomainListRequest
-	(*DomainGetRequest)(nil),                 // 76: gamenode.plugin.v1.DomainGetRequest
-	(*DomainWatchRequest)(nil),               // 77: gamenode.plugin.v1.DomainWatchRequest
-	(*DomainRemoveRequest)(nil),              // 78: gamenode.plugin.v1.DomainRemoveRequest
-	(*LibraryCreateRequest)(nil),             // 79: gamenode.plugin.v1.LibraryCreateRequest
-	(*LibraryUpdateRequest)(nil),             // 80: gamenode.plugin.v1.LibraryUpdateRequest
-	(*LibraryRootAddRequest)(nil),            // 81: gamenode.plugin.v1.LibraryRootAddRequest
-	(*LibraryRootUpdateRequest)(nil),         // 82: gamenode.plugin.v1.LibraryRootUpdateRequest
-	(*LibraryRootRemoveRequest)(nil),         // 83: gamenode.plugin.v1.LibraryRootRemoveRequest
-	(*LibraryRecord)(nil),                    // 84: gamenode.plugin.v1.LibraryRecord
-	(*LibraryRootRecord)(nil),                // 85: gamenode.plugin.v1.LibraryRootRecord
-	(*LibrariesListReply)(nil),               // 86: gamenode.plugin.v1.LibrariesListReply
-	(*LibraryRecordReply)(nil),               // 87: gamenode.plugin.v1.LibraryRecordReply
-	(*LibraryRecordEvent)(nil),               // 88: gamenode.plugin.v1.LibraryRecordEvent
-	(*LibraryMutationReply)(nil),             // 89: gamenode.plugin.v1.LibraryMutationReply
-	(*RuntimeRegisterRequest)(nil),           // 90: gamenode.plugin.v1.RuntimeRegisterRequest
-	(*RuntimeUpdateRequest)(nil),             // 91: gamenode.plugin.v1.RuntimeUpdateRequest
-	(*RuntimeMutationReply)(nil),             // 92: gamenode.plugin.v1.RuntimeMutationReply
-	(*RuntimeRecordReply)(nil),               // 93: gamenode.plugin.v1.RuntimeRecordReply
-	(*RuntimeRecordEvent)(nil),               // 94: gamenode.plugin.v1.RuntimeRecordEvent
-	(*RuntimesListReply)(nil),                // 95: gamenode.plugin.v1.RuntimesListReply
-	(*ContentRegistrationRequest)(nil),       // 96: gamenode.plugin.v1.ContentRegistrationRequest
-	(*ReportMutationReply)(nil),              // 97: gamenode.plugin.v1.ReportMutationReply
-	(*BenchmarkReportRequest)(nil),           // 98: gamenode.plugin.v1.BenchmarkReportRequest
-	(*SmartReportRequest)(nil),               // 99: gamenode.plugin.v1.SmartReportRequest
-	(*HardwareReportRequest)(nil),            // 100: gamenode.plugin.v1.HardwareReportRequest
-	(*PresencePublishRequest)(nil),           // 101: gamenode.plugin.v1.PresencePublishRequest
-	(*PresenceClearRequest)(nil),             // 102: gamenode.plugin.v1.PresenceClearRequest
-	(*PerformanceSample)(nil),                // 103: gamenode.plugin.v1.PerformanceSample
-	(*PerformanceSamplesRequest)(nil),        // 104: gamenode.plugin.v1.PerformanceSamplesRequest
-	(*PerformanceEndSeriesRequest)(nil),      // 105: gamenode.plugin.v1.PerformanceEndSeriesRequest
-	(*DataPublishRequest)(nil),               // 106: gamenode.plugin.v1.DataPublishRequest
-	(*DataMutationReply)(nil),                // 107: gamenode.plugin.v1.DataMutationReply
-	(*DataGetRequest)(nil),                   // 108: gamenode.plugin.v1.DataGetRequest
-	(*DataListRequest)(nil),                  // 109: gamenode.plugin.v1.DataListRequest
-	(*DataWatchRequest)(nil),                 // 110: gamenode.plugin.v1.DataWatchRequest
-	(*DataRecord)(nil),                       // 111: gamenode.plugin.v1.DataRecord
-	(*DataProvenance)(nil),                   // 112: gamenode.plugin.v1.DataProvenance
-	(*DataGetReply)(nil),                     // 113: gamenode.plugin.v1.DataGetReply
-	(*DataListReply)(nil),                    // 114: gamenode.plugin.v1.DataListReply
-	(*DataEvent)(nil),                        // 115: gamenode.plugin.v1.DataEvent
-	(*PersistenceUsageRequest)(nil),          // 116: gamenode.plugin.v1.PersistenceUsageRequest
-	(*PersistenceUsageReply)(nil),            // 117: gamenode.plugin.v1.PersistenceUsageReply
-	(*PersistenceListRequest)(nil),           // 118: gamenode.plugin.v1.PersistenceListRequest
-	(*PersistenceListReply)(nil),             // 119: gamenode.plugin.v1.PersistenceListReply
-	(*PersistenceEntry)(nil),                 // 120: gamenode.plugin.v1.PersistenceEntry
-	(*PersistenceDeleteRequest)(nil),         // 121: gamenode.plugin.v1.PersistenceDeleteRequest
-	(*PersistenceClearRequest)(nil),          // 122: gamenode.plugin.v1.PersistenceClearRequest
-	(*RetentionPolicyRequest)(nil),           // 123: gamenode.plugin.v1.RetentionPolicyRequest
-	(*PersistenceMutationReply)(nil),         // 124: gamenode.plugin.v1.PersistenceMutationReply
-	(*ToolsListRequest)(nil),                 // 125: gamenode.plugin.v1.ToolsListRequest
-	(*ToolApplyRequest)(nil),                 // 126: gamenode.plugin.v1.ToolApplyRequest
-	(*ToolRemoveRequest)(nil),                // 127: gamenode.plugin.v1.ToolRemoveRequest
-	(*ToolsListReply)(nil),                   // 128: gamenode.plugin.v1.ToolsListReply
-	(*ToolRecord)(nil),                       // 129: gamenode.plugin.v1.ToolRecord
-	(*PortsListRequest)(nil),                 // 130: gamenode.plugin.v1.PortsListRequest
-	(*PortDetailRequest)(nil),                // 131: gamenode.plugin.v1.PortDetailRequest
-	(*PortInstallRequest)(nil),               // 132: gamenode.plugin.v1.PortInstallRequest
-	(*PortsListReply)(nil),                   // 133: gamenode.plugin.v1.PortsListReply
-	(*PortDetailReply)(nil),                  // 134: gamenode.plugin.v1.PortDetailReply
-	(*PortRecord)(nil),                       // 135: gamenode.plugin.v1.PortRecord
-	(*JobGetRequest)(nil),                    // 136: gamenode.plugin.v1.JobGetRequest
-	(*JobWatchRequest)(nil),                  // 137: gamenode.plugin.v1.JobWatchRequest
-	(*JobCancelRequest)(nil),                 // 138: gamenode.plugin.v1.JobCancelRequest
-	(*JobEvent)(nil),                         // 139: gamenode.plugin.v1.JobEvent
-	(*MutationContext)(nil),                  // 140: gamenode.plugin.v1.MutationContext
-	(*PageRequest)(nil),                      // 141: gamenode.plugin.v1.PageRequest
-	(*LibraryListRequest)(nil),               // 142: gamenode.plugin.v1.LibraryListRequest
-	(*LibraryGetRequest)(nil),                // 143: gamenode.plugin.v1.LibraryGetRequest
-	(*LibraryWatchRequest)(nil),              // 144: gamenode.plugin.v1.LibraryWatchRequest
-	(*MetadataUpdateRequest)(nil),            // 145: gamenode.plugin.v1.MetadataUpdateRequest
-	(*FavoritesListRequest)(nil),             // 146: gamenode.plugin.v1.FavoritesListRequest
-	(*FavoritesSetRequest)(nil),              // 147: gamenode.plugin.v1.FavoritesSetRequest
-	(*MatchingSearchRequest)(nil),            // 148: gamenode.plugin.v1.MatchingSearchRequest
-	(*MatchingAssignRequest)(nil),            // 149: gamenode.plugin.v1.MatchingAssignRequest
-	(*ArtworkReadRequest)(nil),               // 150: gamenode.plugin.v1.ArtworkReadRequest
-	(*ArtworkSetRequest)(nil),                // 151: gamenode.plugin.v1.ArtworkSetRequest
-	(*LibraryListReply)(nil),                 // 152: gamenode.plugin.v1.LibraryListReply
-	(*LibraryGetReply)(nil),                  // 153: gamenode.plugin.v1.LibraryGetReply
-	(*FavoritesListReply)(nil),               // 154: gamenode.plugin.v1.FavoritesListReply
-	(*MatchingSearchReply)(nil),              // 155: gamenode.plugin.v1.MatchingSearchReply
-	(*ArtworkReadReply)(nil),                 // 156: gamenode.plugin.v1.ArtworkReadReply
-	(*MutationReply)(nil),                    // 157: gamenode.plugin.v1.MutationReply
-	(*LibraryEntry)(nil),                     // 158: gamenode.plugin.v1.LibraryEntry
-	(*RuntimeAvailability)(nil),              // 159: gamenode.plugin.v1.RuntimeAvailability
-	(*FavoriteEntry)(nil),                    // 160: gamenode.plugin.v1.FavoriteEntry
-	(*MatchCandidate)(nil),                   // 161: gamenode.plugin.v1.MatchCandidate
-	(*LibraryEvent)(nil),                     // 162: gamenode.plugin.v1.LibraryEvent
-	(*ResourceRequest)(nil),                  // 163: gamenode.plugin.v1.ResourceRequest
-	(*CommonDataSelector)(nil),               // 164: gamenode.plugin.v1.CommonDataSelector
-	(*SaveProfileListRequest)(nil),           // 165: gamenode.plugin.v1.SaveProfileListRequest
-	(*SaveProfileGetRequest)(nil),            // 166: gamenode.plugin.v1.SaveProfileGetRequest
-	(*SaveProfileCreateRequest)(nil),         // 167: gamenode.plugin.v1.SaveProfileCreateRequest
-	(*SaveProfileUpdateRequest)(nil),         // 168: gamenode.plugin.v1.SaveProfileUpdateRequest
-	(*SaveProfileRemoveRequest)(nil),         // 169: gamenode.plugin.v1.SaveProfileRemoveRequest
-	(*SaveProfilePatch)(nil),                 // 170: gamenode.plugin.v1.SaveProfilePatch
-	(*SaveProfile)(nil),                      // 171: gamenode.plugin.v1.SaveProfile
-	(*SaveDirectory)(nil),                    // 172: gamenode.plugin.v1.SaveDirectory
-	(*SaveProfileListReply)(nil),             // 173: gamenode.plugin.v1.SaveProfileListReply
-	(*SaveProfileReply)(nil),                 // 174: gamenode.plugin.v1.SaveProfileReply
-	(*SaveProfileMutationReply)(nil),         // 175: gamenode.plugin.v1.SaveProfileMutationReply
-	(*LocationInspectRequest)(nil),           // 176: gamenode.plugin.v1.LocationInspectRequest
-	(*LocationInspectReply)(nil),             // 177: gamenode.plugin.v1.LocationInspectReply
-	(*LocationSizeRequest)(nil),              // 178: gamenode.plugin.v1.LocationSizeRequest
-	(*LocationSizeReply)(nil),                // 179: gamenode.plugin.v1.LocationSizeReply
-	(*LocationAccessRequest)(nil),            // 180: gamenode.plugin.v1.LocationAccessRequest
-	(*LocationAccessReply)(nil),              // 181: gamenode.plugin.v1.LocationAccessReply
-	(*LocationLastModifiedRequest)(nil),      // 182: gamenode.plugin.v1.LocationLastModifiedRequest
-	(*LocationLastModifiedReply)(nil),        // 183: gamenode.plugin.v1.LocationLastModifiedReply
-	(*LocationFingerprintRequest)(nil),       // 184: gamenode.plugin.v1.LocationFingerprintRequest
-	(*LocationFingerprintReply)(nil),         // 185: gamenode.plugin.v1.LocationFingerprintReply
-	(*LocationCompareRequest)(nil),           // 186: gamenode.plugin.v1.LocationCompareRequest
-	(*LocationCompareReply)(nil),             // 187: gamenode.plugin.v1.LocationCompareReply
-	(*LocationAvailabilityWatchRequest)(nil), // 188: gamenode.plugin.v1.LocationAvailabilityWatchRequest
-	(*LocationAvailabilityEvent)(nil),        // 189: gamenode.plugin.v1.LocationAvailabilityEvent
-	(*LocationDescription)(nil),              // 190: gamenode.plugin.v1.LocationDescription
-	(*LocationObservation)(nil),              // 191: gamenode.plugin.v1.LocationObservation
-	(*LocationAccessEntry)(nil),              // 192: gamenode.plugin.v1.LocationAccessEntry
-	(*LocationTimestamp)(nil),                // 193: gamenode.plugin.v1.LocationTimestamp
-	(*LocationChange)(nil),                   // 194: gamenode.plugin.v1.LocationChange
-	(*DiagnosticListRequest)(nil),            // 195: gamenode.plugin.v1.DiagnosticListRequest
-	(*DiagnosticGetRequest)(nil),             // 196: gamenode.plugin.v1.DiagnosticGetRequest
-	(*DiagnosticWatchRequest)(nil),           // 197: gamenode.plugin.v1.DiagnosticWatchRequest
-	(*DiagnosticReport)(nil),                 // 198: gamenode.plugin.v1.DiagnosticReport
-	(*DiagnosticListReply)(nil),              // 199: gamenode.plugin.v1.DiagnosticListReply
-	(*DiagnosticGetReply)(nil),               // 200: gamenode.plugin.v1.DiagnosticGetReply
-	(*DiagnosticEvent)(nil),                  // 201: gamenode.plugin.v1.DiagnosticEvent
-	(*ComputerListRequest)(nil),              // 202: gamenode.plugin.v1.ComputerListRequest
-	(*ComputerGetRequest)(nil),               // 203: gamenode.plugin.v1.ComputerGetRequest
-	(*ComputerWatchRequest)(nil),             // 204: gamenode.plugin.v1.ComputerWatchRequest
-	(*ComputerReport)(nil),                   // 205: gamenode.plugin.v1.ComputerReport
-	(*ComputerListReply)(nil),                // 206: gamenode.plugin.v1.ComputerListReply
-	(*ComputerGetReply)(nil),                 // 207: gamenode.plugin.v1.ComputerGetReply
-	(*ComputerEvent)(nil),                    // 208: gamenode.plugin.v1.ComputerEvent
-	(*PresenceListRequest)(nil),              // 209: gamenode.plugin.v1.PresenceListRequest
-	(*PresenceGetRequest)(nil),               // 210: gamenode.plugin.v1.PresenceGetRequest
-	(*PresenceWatchRequest)(nil),             // 211: gamenode.plugin.v1.PresenceWatchRequest
-	(*PresenceRecord)(nil),                   // 212: gamenode.plugin.v1.PresenceRecord
-	(*PresenceListReply)(nil),                // 213: gamenode.plugin.v1.PresenceListReply
-	(*PresenceGetReply)(nil),                 // 214: gamenode.plugin.v1.PresenceGetReply
-	(*PresenceEvent)(nil),                    // 215: gamenode.plugin.v1.PresenceEvent
-	(*PerformanceListRequest)(nil),           // 216: gamenode.plugin.v1.PerformanceListRequest
-	(*PerformanceGetRequest)(nil),            // 217: gamenode.plugin.v1.PerformanceGetRequest
-	(*PerformanceWatchRequest)(nil),          // 218: gamenode.plugin.v1.PerformanceWatchRequest
-	(*PerformanceQuerySeriesRequest)(nil),    // 219: gamenode.plugin.v1.PerformanceQuerySeriesRequest
-	(*PerformanceAggregateRequest)(nil),      // 220: gamenode.plugin.v1.PerformanceAggregateRequest
-	(*PerformanceSeries)(nil),                // 221: gamenode.plugin.v1.PerformanceSeries
-	(*PerformanceListReply)(nil),             // 222: gamenode.plugin.v1.PerformanceListReply
-	(*PerformanceGetReply)(nil),              // 223: gamenode.plugin.v1.PerformanceGetReply
-	(*PerformanceEvent)(nil),                 // 224: gamenode.plugin.v1.PerformanceEvent
-	(*PerformanceQuerySeriesReply)(nil),      // 225: gamenode.plugin.v1.PerformanceQuerySeriesReply
-	(*PerformanceAggregateReply)(nil),        // 226: gamenode.plugin.v1.PerformanceAggregateReply
-	(*ResourceReply)(nil),                    // 227: gamenode.plugin.v1.ResourceReply
-	(*ResourceEvent)(nil),                    // 228: gamenode.plugin.v1.ResourceEvent
-	(*GameLaunchRequest)(nil),                // 229: gamenode.plugin.v1.GameLaunchRequest
-	(*GameLaunchReply)(nil),                  // 230: gamenode.plugin.v1.GameLaunchReply
-	(*CustomLaunchRequest)(nil),              // 231: gamenode.plugin.v1.CustomLaunchRequest
-	(*CustomLaunchReply)(nil),                // 232: gamenode.plugin.v1.CustomLaunchReply
-	(*ExtensionPayload)(nil),                 // 233: gamenode.plugin.v1.ExtensionPayload
-	(*ExtensionSchemaField)(nil),             // 234: gamenode.plugin.v1.ExtensionSchemaField
-	(*ExtensionSchemaDescriptor)(nil),        // 235: gamenode.plugin.v1.ExtensionSchemaDescriptor
-	(*ExtensionNamespacePatch)(nil),          // 236: gamenode.plugin.v1.ExtensionNamespacePatch
-	(*ExtensionPatch)(nil),                   // 237: gamenode.plugin.v1.ExtensionPatch
-	(*RuntimeArgumentTemplate)(nil),          // 238: gamenode.plugin.v1.RuntimeArgumentTemplate
-	(*ContentPathArgument)(nil),              // 239: gamenode.plugin.v1.ContentPathArgument
-	(*RuntimeRecord)(nil),                    // 240: gamenode.plugin.v1.RuntimeRecord
-	(*ServiceContext)(nil),                   // 241: gamenode.plugin.v1.ServiceContext
-	(*ProviderCommand)(nil),                  // 242: gamenode.plugin.v1.ProviderCommand
-	(*ProviderContext)(nil),                  // 243: gamenode.plugin.v1.ProviderContext
-	(*AccountIdentity)(nil),                  // 244: gamenode.plugin.v1.AccountIdentity
-	(*AccountStatus)(nil),                    // 245: gamenode.plugin.v1.AccountStatus
-	(*AccountRequest)(nil),                   // 246: gamenode.plugin.v1.AccountRequest
-	(*AccountReply)(nil),                     // 247: gamenode.plugin.v1.AccountReply
-	(*SecretRequest)(nil),                    // 248: gamenode.plugin.v1.SecretRequest
-	(*SecretReply)(nil),                      // 249: gamenode.plugin.v1.SecretReply
-	(*LoginRequest)(nil),                     // 250: gamenode.plugin.v1.LoginRequest
-	(*LoginCookie)(nil),                      // 251: gamenode.plugin.v1.LoginCookie
-	(*LoginReply)(nil),                       // 252: gamenode.plugin.v1.LoginReply
-	(*ActionDeclaration)(nil),                // 253: gamenode.plugin.v1.ActionDeclaration
-	(*ActionRequest)(nil),                    // 254: gamenode.plugin.v1.ActionRequest
-	(*ActionReply)(nil),                      // 255: gamenode.plugin.v1.ActionReply
-	(*CatalogGame)(nil),                      // 256: gamenode.plugin.v1.CatalogGame
-	(*CatalogChunk)(nil),                     // 257: gamenode.plugin.v1.CatalogChunk
-	(*CatalogCompletion)(nil),                // 258: gamenode.plugin.v1.CatalogCompletion
-	(*CounterObservation)(nil),               // 259: gamenode.plugin.v1.CounterObservation
-	(*OperationResult)(nil),                  // 260: gamenode.plugin.v1.OperationResult
-	(*AchievementsRequest)(nil),              // 261: gamenode.plugin.v1.AchievementsRequest
-	(*Achievement)(nil),                      // 262: gamenode.plugin.v1.Achievement
-	(*AchievementGame)(nil),                  // 263: gamenode.plugin.v1.AchievementGame
-	(*AchievementOutcome)(nil),               // 264: gamenode.plugin.v1.AchievementOutcome
-	(*ConfigurationResult)(nil),              // 265: gamenode.plugin.v1.ConfigurationResult
-	(*SettingsContext)(nil),                  // 266: gamenode.plugin.v1.SettingsContext
-	(*SettingsText)(nil),                     // 267: gamenode.plugin.v1.SettingsText
-	(*SettingsValue)(nil),                    // 268: gamenode.plugin.v1.SettingsValue
-	(*SettingsTextField)(nil),                // 269: gamenode.plugin.v1.SettingsTextField
-	(*SettingsNumberField)(nil),              // 270: gamenode.plugin.v1.SettingsNumberField
-	(*SettingsChoiceOption)(nil),             // 271: gamenode.plugin.v1.SettingsChoiceOption
-	(*SettingsChoiceField)(nil),              // 272: gamenode.plugin.v1.SettingsChoiceField
-	(*SettingsField)(nil),                    // 273: gamenode.plugin.v1.SettingsField
-	(*SettingsForm)(nil),                     // 274: gamenode.plugin.v1.SettingsForm
-	(*SettingsSubmission)(nil),               // 275: gamenode.plugin.v1.SettingsSubmission
-	(*SettingsRequest)(nil),                  // 276: gamenode.plugin.v1.SettingsRequest
-	(*SettingsView)(nil),                     // 277: gamenode.plugin.v1.SettingsView
-	(*SettingsApplied)(nil),                  // 278: gamenode.plugin.v1.SettingsApplied
-	(*SettingsFieldErrors)(nil),              // 279: gamenode.plugin.v1.SettingsFieldErrors
-	(*SettingsReply)(nil),                    // 280: gamenode.plugin.v1.SettingsReply
-	(*ProviderEvent)(nil),                    // 281: gamenode.plugin.v1.ProviderEvent
-	(*RuntimeSessionContextRequest)(nil),     // 282: gamenode.plugin.v1.RuntimeSessionContextRequest
-	(*RuntimeSessionContextResult)(nil),      // 283: gamenode.plugin.v1.RuntimeSessionContextResult
-	(*RuntimeSessionReport)(nil),             // 284: gamenode.plugin.v1.RuntimeSessionReport
-	(*RuntimeSessionResult)(nil),             // 285: gamenode.plugin.v1.RuntimeSessionResult
-	nil,                                      // 286: gamenode.plugin.v1.DiscoveryRecord.FieldsEntry
-	nil,                                      // 287: gamenode.plugin.v1.NetworkFetchRequest.HeadersEntry
-	nil,                                      // 288: gamenode.plugin.v1.NetworkFetchReply.HeadersEntry
-	nil,                                      // 289: gamenode.plugin.v1.BenchmarkReportRequest.MeasurementsEntry
-	nil,                                      // 290: gamenode.plugin.v1.SmartReportRequest.AttributesEntry
-	nil,                                      // 291: gamenode.plugin.v1.MetadataUpdateRequest.DisplayFieldsEntry
-	nil,                                      // 292: gamenode.plugin.v1.CustomLaunchRequest.EnvironmentSetEntry
-	nil,                                      // 293: gamenode.plugin.v1.RuntimeRecord.ExtensionsEntry
-	nil,                                      // 294: gamenode.plugin.v1.CatalogGame.FieldsEntry
-	nil,                                      // 295: gamenode.plugin.v1.SettingsText.TranslationsEntry
-	nil,                                      // 296: gamenode.plugin.v1.SettingsSubmission.ValuesEntry
-	nil,                                      // 297: gamenode.plugin.v1.SettingsView.ValuesEntry
-	nil,                                      // 298: gamenode.plugin.v1.SettingsFieldErrors.ErrorsEntry
-	(*structpb.Struct)(nil),                  // 299: google.protobuf.Struct
+	(DiagnosticValueState)(0),                // 5: gamenode.plugin.v1.DiagnosticValueState
+	(PerformanceFpsMethod)(0),                // 6: gamenode.plugin.v1.PerformanceFpsMethod
+	(PerformanceFpsStatistic)(0),             // 7: gamenode.plugin.v1.PerformanceFpsStatistic
+	(PerformanceMeasurementQuality)(0),       // 8: gamenode.plugin.v1.PerformanceMeasurementQuality
+	(PerformanceCpuScope)(0),                 // 9: gamenode.plugin.v1.PerformanceCpuScope
+	(PerformanceCpuNormalization)(0),         // 10: gamenode.plugin.v1.PerformanceCpuNormalization
+	(PerformanceMemoryKind)(0),               // 11: gamenode.plugin.v1.PerformanceMemoryKind
+	(MutationOutcome)(0),                     // 12: gamenode.plugin.v1.MutationOutcome
+	(CommonDataCategory)(0),                  // 13: gamenode.plugin.v1.CommonDataCategory
+	(InspectionAvailability)(0),              // 14: gamenode.plugin.v1.InspectionAvailability
+	(ExtensionFieldClassification)(0),        // 15: gamenode.plugin.v1.ExtensionFieldClassification
+	(ProviderOperation)(0),                   // 16: gamenode.plugin.v1.ProviderOperation
+	(AccountConnection)(0),                   // 17: gamenode.plugin.v1.AccountConnection
+	(SecretStorage)(0),                       // 18: gamenode.plugin.v1.SecretStorage
+	(CatalogFailure)(0),                      // 19: gamenode.plugin.v1.CatalogFailure
+	(SecretOperation)(0),                     // 20: gamenode.plugin.v1.SecretOperation
+	(ServiceFailure)(0),                      // 21: gamenode.plugin.v1.ServiceFailure
+	(LoginOperation)(0),                      // 22: gamenode.plugin.v1.LoginOperation
+	(LoginState)(0),                          // 23: gamenode.plugin.v1.LoginState
+	(CatalogCategory)(0),                     // 24: gamenode.plugin.v1.CatalogCategory
+	(OperationDisposition)(0),                // 25: gamenode.plugin.v1.OperationDisposition
+	(AccountLoginOutcome)(0),                 // 26: gamenode.plugin.v1.AccountLoginOutcome
+	(SettingsPersistence)(0),                 // 27: gamenode.plugin.v1.SettingsPersistence
+	(SettingsFailure)(0),                     // 28: gamenode.plugin.v1.SettingsFailure
+	(RuntimeSessionTransition)(0),            // 29: gamenode.plugin.v1.RuntimeSessionTransition
+	(RuntimeSessionOutcome)(0),               // 30: gamenode.plugin.v1.RuntimeSessionOutcome
+	(*OpenSessionRequest)(nil),               // 31: gamenode.plugin.v1.OpenSessionRequest
+	(*OpenSessionReply)(nil),                 // 32: gamenode.plugin.v1.OpenSessionReply
+	(*TargetGameContext)(nil),                // 33: gamenode.plugin.v1.TargetGameContext
+	(*FeatureRequest)(nil),                   // 34: gamenode.plugin.v1.FeatureRequest
+	(*FeatureStatus)(nil),                    // 35: gamenode.plugin.v1.FeatureStatus
+	(*SupportWindow)(nil),                    // 36: gamenode.plugin.v1.SupportWindow
+	(*ApiFeature)(nil),                       // 37: gamenode.plugin.v1.ApiFeature
+	(*ApiMethod)(nil),                        // 38: gamenode.plugin.v1.ApiMethod
+	(*DescribeApiRequest)(nil),               // 39: gamenode.plugin.v1.DescribeApiRequest
+	(*DescribeApiReply)(nil),                 // 40: gamenode.plugin.v1.DescribeApiReply
+	(*GetPermissionsRequest)(nil),            // 41: gamenode.plugin.v1.GetPermissionsRequest
+	(*PermissionGrant)(nil),                  // 42: gamenode.plugin.v1.PermissionGrant
+	(*GetPermissionsReply)(nil),              // 43: gamenode.plugin.v1.GetPermissionsReply
+	(*WatchPermissionChangesRequest)(nil),    // 44: gamenode.plugin.v1.WatchPermissionChangesRequest
+	(*PermissionChange)(nil),                 // 45: gamenode.plugin.v1.PermissionChange
+	(*DenialDetail)(nil),                     // 46: gamenode.plugin.v1.DenialDetail
+	(*DetectedExecutable)(nil),               // 47: gamenode.plugin.v1.DetectedExecutable
+	(*DetectedTarget)(nil),                   // 48: gamenode.plugin.v1.DetectedTarget
+	(*DiscoveryRecord)(nil),                  // 49: gamenode.plugin.v1.DiscoveryRecord
+	(*DiscoveryResult)(nil),                  // 50: gamenode.plugin.v1.DiscoveryResult
+	(*PluginFailure)(nil),                    // 51: gamenode.plugin.v1.PluginFailure
+	(*SubmitDiscoveryRequest)(nil),           // 52: gamenode.plugin.v1.SubmitDiscoveryRequest
+	(*SubmitDiscoveryReply)(nil),             // 53: gamenode.plugin.v1.SubmitDiscoveryReply
+	(*CustomLaunchRemoveRequest)(nil),        // 54: gamenode.plugin.v1.CustomLaunchRemoveRequest
+	(*GameInstallRequest)(nil),               // 55: gamenode.plugin.v1.GameInstallRequest
+	(*StorageGetRequest)(nil),                // 56: gamenode.plugin.v1.StorageGetRequest
+	(*StoragePutRequest)(nil),                // 57: gamenode.plugin.v1.StoragePutRequest
+	(*StorageDeleteRequest)(nil),             // 58: gamenode.plugin.v1.StorageDeleteRequest
+	(*StorageGetReply)(nil),                  // 59: gamenode.plugin.v1.StorageGetReply
+	(*StorageMutationReply)(nil),             // 60: gamenode.plugin.v1.StorageMutationReply
+	(*DeclaredLocation)(nil),                 // 61: gamenode.plugin.v1.DeclaredLocation
+	(*FilesRequestAccessRequest)(nil),        // 62: gamenode.plugin.v1.FilesRequestAccessRequest
+	(*FileHandle)(nil),                       // 63: gamenode.plugin.v1.FileHandle
+	(*FileAccessReply)(nil),                  // 64: gamenode.plugin.v1.FileAccessReply
+	(*FilesListRequest)(nil),                 // 65: gamenode.plugin.v1.FilesListRequest
+	(*FilesListReply)(nil),                   // 66: gamenode.plugin.v1.FilesListReply
+	(*FileEntry)(nil),                        // 67: gamenode.plugin.v1.FileEntry
+	(*FilesReadRequest)(nil),                 // 68: gamenode.plugin.v1.FilesReadRequest
+	(*FileReadReply)(nil),                    // 69: gamenode.plugin.v1.FileReadReply
+	(*FilesWriteRequest)(nil),                // 70: gamenode.plugin.v1.FilesWriteRequest
+	(*FilesDeleteRequest)(nil),               // 71: gamenode.plugin.v1.FilesDeleteRequest
+	(*NetworkFetchRequest)(nil),              // 72: gamenode.plugin.v1.NetworkFetchRequest
+	(*NetworkFetchReply)(nil),                // 73: gamenode.plugin.v1.NetworkFetchReply
+	(*NotificationTranslation)(nil),          // 74: gamenode.plugin.v1.NotificationTranslation
+	(*NotificationPublishRequest)(nil),       // 75: gamenode.plugin.v1.NotificationPublishRequest
+	(*BackupsListRequest)(nil),               // 76: gamenode.plugin.v1.BackupsListRequest
+	(*BackupCreateRequest)(nil),              // 77: gamenode.plugin.v1.BackupCreateRequest
+	(*BackupRestoreRequest)(nil),             // 78: gamenode.plugin.v1.BackupRestoreRequest
+	(*BackupsListReply)(nil),                 // 79: gamenode.plugin.v1.BackupsListReply
+	(*BackupRecord)(nil),                     // 80: gamenode.plugin.v1.BackupRecord
+	(*JobReply)(nil),                         // 81: gamenode.plugin.v1.JobReply
+	(*DomainListRequest)(nil),                // 82: gamenode.plugin.v1.DomainListRequest
+	(*DomainGetRequest)(nil),                 // 83: gamenode.plugin.v1.DomainGetRequest
+	(*DomainWatchRequest)(nil),               // 84: gamenode.plugin.v1.DomainWatchRequest
+	(*DomainRemoveRequest)(nil),              // 85: gamenode.plugin.v1.DomainRemoveRequest
+	(*LibraryCreateRequest)(nil),             // 86: gamenode.plugin.v1.LibraryCreateRequest
+	(*LibraryUpdateRequest)(nil),             // 87: gamenode.plugin.v1.LibraryUpdateRequest
+	(*LibraryRootAddRequest)(nil),            // 88: gamenode.plugin.v1.LibraryRootAddRequest
+	(*LibraryRootUpdateRequest)(nil),         // 89: gamenode.plugin.v1.LibraryRootUpdateRequest
+	(*LibraryRootRemoveRequest)(nil),         // 90: gamenode.plugin.v1.LibraryRootRemoveRequest
+	(*LibraryRecord)(nil),                    // 91: gamenode.plugin.v1.LibraryRecord
+	(*LibraryRootRecord)(nil),                // 92: gamenode.plugin.v1.LibraryRootRecord
+	(*LibrariesListReply)(nil),               // 93: gamenode.plugin.v1.LibrariesListReply
+	(*LibraryRecordReply)(nil),               // 94: gamenode.plugin.v1.LibraryRecordReply
+	(*LibraryRecordEvent)(nil),               // 95: gamenode.plugin.v1.LibraryRecordEvent
+	(*LibraryMutationReply)(nil),             // 96: gamenode.plugin.v1.LibraryMutationReply
+	(*RuntimeRegisterRequest)(nil),           // 97: gamenode.plugin.v1.RuntimeRegisterRequest
+	(*RuntimeUpdateRequest)(nil),             // 98: gamenode.plugin.v1.RuntimeUpdateRequest
+	(*RuntimeMutationReply)(nil),             // 99: gamenode.plugin.v1.RuntimeMutationReply
+	(*RuntimeRecordReply)(nil),               // 100: gamenode.plugin.v1.RuntimeRecordReply
+	(*RuntimeRecordEvent)(nil),               // 101: gamenode.plugin.v1.RuntimeRecordEvent
+	(*RuntimesListReply)(nil),                // 102: gamenode.plugin.v1.RuntimesListReply
+	(*ContentRegistrationRequest)(nil),       // 103: gamenode.plugin.v1.ContentRegistrationRequest
+	(*ReportMutationReply)(nil),              // 104: gamenode.plugin.v1.ReportMutationReply
+	(*BenchmarkReportRequest)(nil),           // 105: gamenode.plugin.v1.BenchmarkReportRequest
+	(*SmartReportRequest)(nil),               // 106: gamenode.plugin.v1.SmartReportRequest
+	(*HardwareReportRequest)(nil),            // 107: gamenode.plugin.v1.HardwareReportRequest
+	(*PresencePublishRequest)(nil),           // 108: gamenode.plugin.v1.PresencePublishRequest
+	(*PresenceClearRequest)(nil),             // 109: gamenode.plugin.v1.PresenceClearRequest
+	(*PerformanceSample)(nil),                // 110: gamenode.plugin.v1.PerformanceSample
+	(*PerformanceSamplesRequest)(nil),        // 111: gamenode.plugin.v1.PerformanceSamplesRequest
+	(*PerformanceEndSeriesRequest)(nil),      // 112: gamenode.plugin.v1.PerformanceEndSeriesRequest
+	(*DataPublishRequest)(nil),               // 113: gamenode.plugin.v1.DataPublishRequest
+	(*DataMutationReply)(nil),                // 114: gamenode.plugin.v1.DataMutationReply
+	(*DataGetRequest)(nil),                   // 115: gamenode.plugin.v1.DataGetRequest
+	(*DataListRequest)(nil),                  // 116: gamenode.plugin.v1.DataListRequest
+	(*DataWatchRequest)(nil),                 // 117: gamenode.plugin.v1.DataWatchRequest
+	(*DataRecord)(nil),                       // 118: gamenode.plugin.v1.DataRecord
+	(*DataProvenance)(nil),                   // 119: gamenode.plugin.v1.DataProvenance
+	(*DataGetReply)(nil),                     // 120: gamenode.plugin.v1.DataGetReply
+	(*DataListReply)(nil),                    // 121: gamenode.plugin.v1.DataListReply
+	(*DataEvent)(nil),                        // 122: gamenode.plugin.v1.DataEvent
+	(*PersistenceUsageRequest)(nil),          // 123: gamenode.plugin.v1.PersistenceUsageRequest
+	(*PersistenceUsageReply)(nil),            // 124: gamenode.plugin.v1.PersistenceUsageReply
+	(*PersistenceListRequest)(nil),           // 125: gamenode.plugin.v1.PersistenceListRequest
+	(*PersistenceListReply)(nil),             // 126: gamenode.plugin.v1.PersistenceListReply
+	(*PersistenceEntry)(nil),                 // 127: gamenode.plugin.v1.PersistenceEntry
+	(*PersistenceDeleteRequest)(nil),         // 128: gamenode.plugin.v1.PersistenceDeleteRequest
+	(*PersistenceClearRequest)(nil),          // 129: gamenode.plugin.v1.PersistenceClearRequest
+	(*RetentionPolicyRequest)(nil),           // 130: gamenode.plugin.v1.RetentionPolicyRequest
+	(*PersistenceMutationReply)(nil),         // 131: gamenode.plugin.v1.PersistenceMutationReply
+	(*ToolsListRequest)(nil),                 // 132: gamenode.plugin.v1.ToolsListRequest
+	(*ToolApplyRequest)(nil),                 // 133: gamenode.plugin.v1.ToolApplyRequest
+	(*ToolRemoveRequest)(nil),                // 134: gamenode.plugin.v1.ToolRemoveRequest
+	(*ToolsListReply)(nil),                   // 135: gamenode.plugin.v1.ToolsListReply
+	(*ToolRecord)(nil),                       // 136: gamenode.plugin.v1.ToolRecord
+	(*PortsListRequest)(nil),                 // 137: gamenode.plugin.v1.PortsListRequest
+	(*PortDetailRequest)(nil),                // 138: gamenode.plugin.v1.PortDetailRequest
+	(*PortInstallRequest)(nil),               // 139: gamenode.plugin.v1.PortInstallRequest
+	(*PortsListReply)(nil),                   // 140: gamenode.plugin.v1.PortsListReply
+	(*PortDetailReply)(nil),                  // 141: gamenode.plugin.v1.PortDetailReply
+	(*PortRecord)(nil),                       // 142: gamenode.plugin.v1.PortRecord
+	(*JobGetRequest)(nil),                    // 143: gamenode.plugin.v1.JobGetRequest
+	(*JobWatchRequest)(nil),                  // 144: gamenode.plugin.v1.JobWatchRequest
+	(*JobCancelRequest)(nil),                 // 145: gamenode.plugin.v1.JobCancelRequest
+	(*JobEvent)(nil),                         // 146: gamenode.plugin.v1.JobEvent
+	(*MutationContext)(nil),                  // 147: gamenode.plugin.v1.MutationContext
+	(*PageRequest)(nil),                      // 148: gamenode.plugin.v1.PageRequest
+	(*LibraryListRequest)(nil),               // 149: gamenode.plugin.v1.LibraryListRequest
+	(*LibraryGetRequest)(nil),                // 150: gamenode.plugin.v1.LibraryGetRequest
+	(*LibraryWatchRequest)(nil),              // 151: gamenode.plugin.v1.LibraryWatchRequest
+	(*MetadataUpdateRequest)(nil),            // 152: gamenode.plugin.v1.MetadataUpdateRequest
+	(*FavoritesListRequest)(nil),             // 153: gamenode.plugin.v1.FavoritesListRequest
+	(*FavoritesSetRequest)(nil),              // 154: gamenode.plugin.v1.FavoritesSetRequest
+	(*MatchingSearchRequest)(nil),            // 155: gamenode.plugin.v1.MatchingSearchRequest
+	(*MatchingAssignRequest)(nil),            // 156: gamenode.plugin.v1.MatchingAssignRequest
+	(*ArtworkReadRequest)(nil),               // 157: gamenode.plugin.v1.ArtworkReadRequest
+	(*ArtworkSetRequest)(nil),                // 158: gamenode.plugin.v1.ArtworkSetRequest
+	(*LibraryListReply)(nil),                 // 159: gamenode.plugin.v1.LibraryListReply
+	(*LibraryGetReply)(nil),                  // 160: gamenode.plugin.v1.LibraryGetReply
+	(*FavoritesListReply)(nil),               // 161: gamenode.plugin.v1.FavoritesListReply
+	(*MatchingSearchReply)(nil),              // 162: gamenode.plugin.v1.MatchingSearchReply
+	(*ArtworkReadReply)(nil),                 // 163: gamenode.plugin.v1.ArtworkReadReply
+	(*MutationReply)(nil),                    // 164: gamenode.plugin.v1.MutationReply
+	(*LibraryEntry)(nil),                     // 165: gamenode.plugin.v1.LibraryEntry
+	(*RuntimeAvailability)(nil),              // 166: gamenode.plugin.v1.RuntimeAvailability
+	(*FavoriteEntry)(nil),                    // 167: gamenode.plugin.v1.FavoriteEntry
+	(*MatchCandidate)(nil),                   // 168: gamenode.plugin.v1.MatchCandidate
+	(*LibraryEvent)(nil),                     // 169: gamenode.plugin.v1.LibraryEvent
+	(*ResourceRequest)(nil),                  // 170: gamenode.plugin.v1.ResourceRequest
+	(*CommonDataSelector)(nil),               // 171: gamenode.plugin.v1.CommonDataSelector
+	(*SaveProfileListRequest)(nil),           // 172: gamenode.plugin.v1.SaveProfileListRequest
+	(*SaveProfileGetRequest)(nil),            // 173: gamenode.plugin.v1.SaveProfileGetRequest
+	(*SaveProfileCreateRequest)(nil),         // 174: gamenode.plugin.v1.SaveProfileCreateRequest
+	(*SaveProfileUpdateRequest)(nil),         // 175: gamenode.plugin.v1.SaveProfileUpdateRequest
+	(*SaveProfileRemoveRequest)(nil),         // 176: gamenode.plugin.v1.SaveProfileRemoveRequest
+	(*SaveProfilePatch)(nil),                 // 177: gamenode.plugin.v1.SaveProfilePatch
+	(*SaveProfile)(nil),                      // 178: gamenode.plugin.v1.SaveProfile
+	(*SaveDirectory)(nil),                    // 179: gamenode.plugin.v1.SaveDirectory
+	(*SaveProfileListReply)(nil),             // 180: gamenode.plugin.v1.SaveProfileListReply
+	(*SaveProfileReply)(nil),                 // 181: gamenode.plugin.v1.SaveProfileReply
+	(*SaveProfileMutationReply)(nil),         // 182: gamenode.plugin.v1.SaveProfileMutationReply
+	(*LocationInspectRequest)(nil),           // 183: gamenode.plugin.v1.LocationInspectRequest
+	(*LocationInspectReply)(nil),             // 184: gamenode.plugin.v1.LocationInspectReply
+	(*LocationSizeRequest)(nil),              // 185: gamenode.plugin.v1.LocationSizeRequest
+	(*LocationSizeReply)(nil),                // 186: gamenode.plugin.v1.LocationSizeReply
+	(*LocationAccessRequest)(nil),            // 187: gamenode.plugin.v1.LocationAccessRequest
+	(*LocationAccessReply)(nil),              // 188: gamenode.plugin.v1.LocationAccessReply
+	(*LocationLastModifiedRequest)(nil),      // 189: gamenode.plugin.v1.LocationLastModifiedRequest
+	(*LocationLastModifiedReply)(nil),        // 190: gamenode.plugin.v1.LocationLastModifiedReply
+	(*LocationFingerprintRequest)(nil),       // 191: gamenode.plugin.v1.LocationFingerprintRequest
+	(*LocationFingerprintReply)(nil),         // 192: gamenode.plugin.v1.LocationFingerprintReply
+	(*LocationCompareRequest)(nil),           // 193: gamenode.plugin.v1.LocationCompareRequest
+	(*LocationCompareReply)(nil),             // 194: gamenode.plugin.v1.LocationCompareReply
+	(*LocationAvailabilityWatchRequest)(nil), // 195: gamenode.plugin.v1.LocationAvailabilityWatchRequest
+	(*LocationAvailabilityEvent)(nil),        // 196: gamenode.plugin.v1.LocationAvailabilityEvent
+	(*LocationDescription)(nil),              // 197: gamenode.plugin.v1.LocationDescription
+	(*LocationObservation)(nil),              // 198: gamenode.plugin.v1.LocationObservation
+	(*LocationAccessEntry)(nil),              // 199: gamenode.plugin.v1.LocationAccessEntry
+	(*LocationTimestamp)(nil),                // 200: gamenode.plugin.v1.LocationTimestamp
+	(*LocationChange)(nil),                   // 201: gamenode.plugin.v1.LocationChange
+	(*DiagnosticListRequest)(nil),            // 202: gamenode.plugin.v1.DiagnosticListRequest
+	(*DiagnosticGetRequest)(nil),             // 203: gamenode.plugin.v1.DiagnosticGetRequest
+	(*DiagnosticWatchRequest)(nil),           // 204: gamenode.plugin.v1.DiagnosticWatchRequest
+	(*DiagnosticReport)(nil),                 // 205: gamenode.plugin.v1.DiagnosticReport
+	(*DiagnosticListReply)(nil),              // 206: gamenode.plugin.v1.DiagnosticListReply
+	(*DiagnosticGetReply)(nil),               // 207: gamenode.plugin.v1.DiagnosticGetReply
+	(*DiagnosticEvent)(nil),                  // 208: gamenode.plugin.v1.DiagnosticEvent
+	(*ComputerListRequest)(nil),              // 209: gamenode.plugin.v1.ComputerListRequest
+	(*ComputerGetRequest)(nil),               // 210: gamenode.plugin.v1.ComputerGetRequest
+	(*ComputerWatchRequest)(nil),             // 211: gamenode.plugin.v1.ComputerWatchRequest
+	(*ComputerReport)(nil),                   // 212: gamenode.plugin.v1.ComputerReport
+	(*ComputerListReply)(nil),                // 213: gamenode.plugin.v1.ComputerListReply
+	(*ComputerGetReply)(nil),                 // 214: gamenode.plugin.v1.ComputerGetReply
+	(*ComputerEvent)(nil),                    // 215: gamenode.plugin.v1.ComputerEvent
+	(*PresenceListRequest)(nil),              // 216: gamenode.plugin.v1.PresenceListRequest
+	(*PresenceGetRequest)(nil),               // 217: gamenode.plugin.v1.PresenceGetRequest
+	(*PresenceWatchRequest)(nil),             // 218: gamenode.plugin.v1.PresenceWatchRequest
+	(*PresenceRecord)(nil),                   // 219: gamenode.plugin.v1.PresenceRecord
+	(*PresenceListReply)(nil),                // 220: gamenode.plugin.v1.PresenceListReply
+	(*PresenceGetReply)(nil),                 // 221: gamenode.plugin.v1.PresenceGetReply
+	(*PresenceEvent)(nil),                    // 222: gamenode.plugin.v1.PresenceEvent
+	(*PerformanceListRequest)(nil),           // 223: gamenode.plugin.v1.PerformanceListRequest
+	(*PerformanceGetRequest)(nil),            // 224: gamenode.plugin.v1.PerformanceGetRequest
+	(*PerformanceWatchRequest)(nil),          // 225: gamenode.plugin.v1.PerformanceWatchRequest
+	(*PerformanceQuerySeriesRequest)(nil),    // 226: gamenode.plugin.v1.PerformanceQuerySeriesRequest
+	(*PerformanceAggregateRequest)(nil),      // 227: gamenode.plugin.v1.PerformanceAggregateRequest
+	(*PerformanceSeries)(nil),                // 228: gamenode.plugin.v1.PerformanceSeries
+	(*PerformanceListReply)(nil),             // 229: gamenode.plugin.v1.PerformanceListReply
+	(*PerformanceGetReply)(nil),              // 230: gamenode.plugin.v1.PerformanceGetReply
+	(*PerformanceEvent)(nil),                 // 231: gamenode.plugin.v1.PerformanceEvent
+	(*PerformanceQuerySeriesReply)(nil),      // 232: gamenode.plugin.v1.PerformanceQuerySeriesReply
+	(*PerformanceAggregateReply)(nil),        // 233: gamenode.plugin.v1.PerformanceAggregateReply
+	(*ResourceReply)(nil),                    // 234: gamenode.plugin.v1.ResourceReply
+	(*ResourceEvent)(nil),                    // 235: gamenode.plugin.v1.ResourceEvent
+	(*GameLaunchRequest)(nil),                // 236: gamenode.plugin.v1.GameLaunchRequest
+	(*GameLaunchReply)(nil),                  // 237: gamenode.plugin.v1.GameLaunchReply
+	(*CustomLaunchRequest)(nil),              // 238: gamenode.plugin.v1.CustomLaunchRequest
+	(*CustomLaunchReply)(nil),                // 239: gamenode.plugin.v1.CustomLaunchReply
+	(*ExtensionPayload)(nil),                 // 240: gamenode.plugin.v1.ExtensionPayload
+	(*ExtensionSchemaField)(nil),             // 241: gamenode.plugin.v1.ExtensionSchemaField
+	(*ExtensionSchemaDescriptor)(nil),        // 242: gamenode.plugin.v1.ExtensionSchemaDescriptor
+	(*ExtensionNamespacePatch)(nil),          // 243: gamenode.plugin.v1.ExtensionNamespacePatch
+	(*ExtensionPatch)(nil),                   // 244: gamenode.plugin.v1.ExtensionPatch
+	(*RuntimeArgumentTemplate)(nil),          // 245: gamenode.plugin.v1.RuntimeArgumentTemplate
+	(*ContentPathArgument)(nil),              // 246: gamenode.plugin.v1.ContentPathArgument
+	(*RuntimeRecord)(nil),                    // 247: gamenode.plugin.v1.RuntimeRecord
+	(*ServiceContext)(nil),                   // 248: gamenode.plugin.v1.ServiceContext
+	(*ProviderCommand)(nil),                  // 249: gamenode.plugin.v1.ProviderCommand
+	(*ProviderContext)(nil),                  // 250: gamenode.plugin.v1.ProviderContext
+	(*AccountIdentity)(nil),                  // 251: gamenode.plugin.v1.AccountIdentity
+	(*AccountStatus)(nil),                    // 252: gamenode.plugin.v1.AccountStatus
+	(*AccountRequest)(nil),                   // 253: gamenode.plugin.v1.AccountRequest
+	(*AccountReply)(nil),                     // 254: gamenode.plugin.v1.AccountReply
+	(*SecretRequest)(nil),                    // 255: gamenode.plugin.v1.SecretRequest
+	(*SecretReply)(nil),                      // 256: gamenode.plugin.v1.SecretReply
+	(*LoginRequest)(nil),                     // 257: gamenode.plugin.v1.LoginRequest
+	(*LoginCookie)(nil),                      // 258: gamenode.plugin.v1.LoginCookie
+	(*LoginReply)(nil),                       // 259: gamenode.plugin.v1.LoginReply
+	(*ActionDeclaration)(nil),                // 260: gamenode.plugin.v1.ActionDeclaration
+	(*ActionRequest)(nil),                    // 261: gamenode.plugin.v1.ActionRequest
+	(*ActionReply)(nil),                      // 262: gamenode.plugin.v1.ActionReply
+	(*CatalogGame)(nil),                      // 263: gamenode.plugin.v1.CatalogGame
+	(*CatalogChunk)(nil),                     // 264: gamenode.plugin.v1.CatalogChunk
+	(*CatalogCompletion)(nil),                // 265: gamenode.plugin.v1.CatalogCompletion
+	(*CounterObservation)(nil),               // 266: gamenode.plugin.v1.CounterObservation
+	(*OperationResult)(nil),                  // 267: gamenode.plugin.v1.OperationResult
+	(*AchievementsRequest)(nil),              // 268: gamenode.plugin.v1.AchievementsRequest
+	(*Achievement)(nil),                      // 269: gamenode.plugin.v1.Achievement
+	(*AchievementGame)(nil),                  // 270: gamenode.plugin.v1.AchievementGame
+	(*AchievementOutcome)(nil),               // 271: gamenode.plugin.v1.AchievementOutcome
+	(*ConfigurationResult)(nil),              // 272: gamenode.plugin.v1.ConfigurationResult
+	(*SettingsContext)(nil),                  // 273: gamenode.plugin.v1.SettingsContext
+	(*SettingsText)(nil),                     // 274: gamenode.plugin.v1.SettingsText
+	(*SettingsValue)(nil),                    // 275: gamenode.plugin.v1.SettingsValue
+	(*SettingsTextField)(nil),                // 276: gamenode.plugin.v1.SettingsTextField
+	(*SettingsNumberField)(nil),              // 277: gamenode.plugin.v1.SettingsNumberField
+	(*SettingsChoiceOption)(nil),             // 278: gamenode.plugin.v1.SettingsChoiceOption
+	(*SettingsChoiceField)(nil),              // 279: gamenode.plugin.v1.SettingsChoiceField
+	(*SettingsField)(nil),                    // 280: gamenode.plugin.v1.SettingsField
+	(*SettingsForm)(nil),                     // 281: gamenode.plugin.v1.SettingsForm
+	(*SettingsSubmission)(nil),               // 282: gamenode.plugin.v1.SettingsSubmission
+	(*SettingsRequest)(nil),                  // 283: gamenode.plugin.v1.SettingsRequest
+	(*SettingsView)(nil),                     // 284: gamenode.plugin.v1.SettingsView
+	(*SettingsApplied)(nil),                  // 285: gamenode.plugin.v1.SettingsApplied
+	(*SettingsFieldErrors)(nil),              // 286: gamenode.plugin.v1.SettingsFieldErrors
+	(*SettingsReply)(nil),                    // 287: gamenode.plugin.v1.SettingsReply
+	(*ProviderEvent)(nil),                    // 288: gamenode.plugin.v1.ProviderEvent
+	(*RuntimeSessionContextRequest)(nil),     // 289: gamenode.plugin.v1.RuntimeSessionContextRequest
+	(*RuntimeSessionContextResult)(nil),      // 290: gamenode.plugin.v1.RuntimeSessionContextResult
+	(*RuntimeSessionReport)(nil),             // 291: gamenode.plugin.v1.RuntimeSessionReport
+	(*RuntimeSessionResult)(nil),             // 292: gamenode.plugin.v1.RuntimeSessionResult
+	nil,                                      // 293: gamenode.plugin.v1.DiscoveryRecord.FieldsEntry
+	nil,                                      // 294: gamenode.plugin.v1.NetworkFetchRequest.HeadersEntry
+	nil,                                      // 295: gamenode.plugin.v1.NetworkFetchReply.HeadersEntry
+	nil,                                      // 296: gamenode.plugin.v1.BenchmarkReportRequest.MeasurementsEntry
+	nil,                                      // 297: gamenode.plugin.v1.BenchmarkReportRequest.MeasurementUnitsEntry
+	nil,                                      // 298: gamenode.plugin.v1.BenchmarkReportRequest.MeasurementStatesEntry
+	nil,                                      // 299: gamenode.plugin.v1.SmartReportRequest.AttributesEntry
+	nil,                                      // 300: gamenode.plugin.v1.SmartReportRequest.AttributeUnitsEntry
+	nil,                                      // 301: gamenode.plugin.v1.SmartReportRequest.AttributeStatesEntry
+	nil,                                      // 302: gamenode.plugin.v1.MetadataUpdateRequest.DisplayFieldsEntry
+	nil,                                      // 303: gamenode.plugin.v1.CustomLaunchRequest.EnvironmentSetEntry
+	nil,                                      // 304: gamenode.plugin.v1.RuntimeRecord.ExtensionsEntry
+	nil,                                      // 305: gamenode.plugin.v1.CatalogGame.FieldsEntry
+	nil,                                      // 306: gamenode.plugin.v1.SettingsText.TranslationsEntry
+	nil,                                      // 307: gamenode.plugin.v1.SettingsSubmission.ValuesEntry
+	nil,                                      // 308: gamenode.plugin.v1.SettingsView.ValuesEntry
+	nil,                                      // 309: gamenode.plugin.v1.SettingsFieldErrors.ErrorsEntry
+	(*structpb.Struct)(nil),                  // 310: google.protobuf.Struct
 }
 var file_plugin_proto_depIdxs = []int32{
-	27,  // 0: gamenode.plugin.v1.OpenSessionRequest.features:type_name -> gamenode.plugin.v1.FeatureRequest
+	34,  // 0: gamenode.plugin.v1.OpenSessionRequest.features:type_name -> gamenode.plugin.v1.FeatureRequest
 	0,   // 1: gamenode.plugin.v1.OpenSessionRequest.session_kind:type_name -> gamenode.plugin.v1.SessionKind
-	26,  // 2: gamenode.plugin.v1.OpenSessionRequest.target_game:type_name -> gamenode.plugin.v1.TargetGameContext
-	28,  // 3: gamenode.plugin.v1.OpenSessionReply.features:type_name -> gamenode.plugin.v1.FeatureStatus
-	29,  // 4: gamenode.plugin.v1.OpenSessionReply.support_window:type_name -> gamenode.plugin.v1.SupportWindow
-	241, // 5: gamenode.plugin.v1.OpenSessionReply.resource_context:type_name -> gamenode.plugin.v1.ServiceContext
+	33,  // 2: gamenode.plugin.v1.OpenSessionRequest.target_game:type_name -> gamenode.plugin.v1.TargetGameContext
+	35,  // 3: gamenode.plugin.v1.OpenSessionReply.features:type_name -> gamenode.plugin.v1.FeatureStatus
+	36,  // 4: gamenode.plugin.v1.OpenSessionReply.support_window:type_name -> gamenode.plugin.v1.SupportWindow
+	248, // 5: gamenode.plugin.v1.OpenSessionReply.resource_context:type_name -> gamenode.plugin.v1.ServiceContext
 	1,   // 6: gamenode.plugin.v1.FeatureStatus.availability:type_name -> gamenode.plugin.v1.FeatureAvailability
-	29,  // 7: gamenode.plugin.v1.DescribeApiReply.support_window:type_name -> gamenode.plugin.v1.SupportWindow
-	30,  // 8: gamenode.plugin.v1.DescribeApiReply.features:type_name -> gamenode.plugin.v1.ApiFeature
-	31,  // 9: gamenode.plugin.v1.DescribeApiReply.methods:type_name -> gamenode.plugin.v1.ApiMethod
-	35,  // 10: gamenode.plugin.v1.GetPermissionsReply.grants:type_name -> gamenode.plugin.v1.PermissionGrant
-	35,  // 11: gamenode.plugin.v1.PermissionChange.grants:type_name -> gamenode.plugin.v1.PermissionGrant
+	36,  // 7: gamenode.plugin.v1.DescribeApiReply.support_window:type_name -> gamenode.plugin.v1.SupportWindow
+	37,  // 8: gamenode.plugin.v1.DescribeApiReply.features:type_name -> gamenode.plugin.v1.ApiFeature
+	38,  // 9: gamenode.plugin.v1.DescribeApiReply.methods:type_name -> gamenode.plugin.v1.ApiMethod
+	42,  // 10: gamenode.plugin.v1.GetPermissionsReply.grants:type_name -> gamenode.plugin.v1.PermissionGrant
+	42,  // 11: gamenode.plugin.v1.PermissionChange.grants:type_name -> gamenode.plugin.v1.PermissionGrant
 	2,   // 12: gamenode.plugin.v1.DenialDetail.reason:type_name -> gamenode.plugin.v1.DenialReason
-	40,  // 13: gamenode.plugin.v1.DetectedTarget.executable:type_name -> gamenode.plugin.v1.DetectedExecutable
-	286, // 14: gamenode.plugin.v1.DiscoveryRecord.fields:type_name -> gamenode.plugin.v1.DiscoveryRecord.FieldsEntry
-	41,  // 15: gamenode.plugin.v1.DiscoveryRecord.target:type_name -> gamenode.plugin.v1.DetectedTarget
-	42,  // 16: gamenode.plugin.v1.DiscoveryResult.records:type_name -> gamenode.plugin.v1.DiscoveryRecord
-	43,  // 17: gamenode.plugin.v1.SubmitDiscoveryRequest.completed:type_name -> gamenode.plugin.v1.DiscoveryResult
-	44,  // 18: gamenode.plugin.v1.SubmitDiscoveryRequest.failed:type_name -> gamenode.plugin.v1.PluginFailure
-	140, // 19: gamenode.plugin.v1.CustomLaunchRemoveRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	241, // 20: gamenode.plugin.v1.GameInstallRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	241, // 21: gamenode.plugin.v1.StorageGetRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	140, // 22: gamenode.plugin.v1.StoragePutRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	47,  // 13: gamenode.plugin.v1.DetectedTarget.executable:type_name -> gamenode.plugin.v1.DetectedExecutable
+	293, // 14: gamenode.plugin.v1.DiscoveryRecord.fields:type_name -> gamenode.plugin.v1.DiscoveryRecord.FieldsEntry
+	48,  // 15: gamenode.plugin.v1.DiscoveryRecord.target:type_name -> gamenode.plugin.v1.DetectedTarget
+	49,  // 16: gamenode.plugin.v1.DiscoveryResult.records:type_name -> gamenode.plugin.v1.DiscoveryRecord
+	50,  // 17: gamenode.plugin.v1.SubmitDiscoveryRequest.completed:type_name -> gamenode.plugin.v1.DiscoveryResult
+	51,  // 18: gamenode.plugin.v1.SubmitDiscoveryRequest.failed:type_name -> gamenode.plugin.v1.PluginFailure
+	147, // 19: gamenode.plugin.v1.CustomLaunchRemoveRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	248, // 20: gamenode.plugin.v1.GameInstallRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	248, // 21: gamenode.plugin.v1.StorageGetRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	147, // 22: gamenode.plugin.v1.StoragePutRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
 	3,   // 23: gamenode.plugin.v1.StoragePutRequest.durability:type_name -> gamenode.plugin.v1.StorageDurability
-	140, // 24: gamenode.plugin.v1.StorageDeleteRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	147, // 24: gamenode.plugin.v1.StorageDeleteRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
 	3,   // 25: gamenode.plugin.v1.StorageGetReply.durability:type_name -> gamenode.plugin.v1.StorageDurability
-	5,   // 26: gamenode.plugin.v1.StorageMutationReply.outcome:type_name -> gamenode.plugin.v1.MutationOutcome
+	12,  // 26: gamenode.plugin.v1.StorageMutationReply.outcome:type_name -> gamenode.plugin.v1.MutationOutcome
 	3,   // 27: gamenode.plugin.v1.StorageMutationReply.durability:type_name -> gamenode.plugin.v1.StorageDurability
-	140, // 28: gamenode.plugin.v1.FilesRequestAccessRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	54,  // 29: gamenode.plugin.v1.FilesRequestAccessRequest.declared_locations:type_name -> gamenode.plugin.v1.DeclaredLocation
-	56,  // 30: gamenode.plugin.v1.FileAccessReply.handles:type_name -> gamenode.plugin.v1.FileHandle
-	241, // 31: gamenode.plugin.v1.FilesListRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	60,  // 32: gamenode.plugin.v1.FilesListReply.entries:type_name -> gamenode.plugin.v1.FileEntry
-	241, // 33: gamenode.plugin.v1.FilesReadRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	140, // 34: gamenode.plugin.v1.FilesWriteRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	140, // 35: gamenode.plugin.v1.FilesDeleteRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	241, // 36: gamenode.plugin.v1.NetworkFetchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	287, // 37: gamenode.plugin.v1.NetworkFetchRequest.headers:type_name -> gamenode.plugin.v1.NetworkFetchRequest.HeadersEntry
-	288, // 38: gamenode.plugin.v1.NetworkFetchReply.headers:type_name -> gamenode.plugin.v1.NetworkFetchReply.HeadersEntry
-	140, // 39: gamenode.plugin.v1.NotificationPublishRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	67,  // 40: gamenode.plugin.v1.NotificationPublishRequest.translations:type_name -> gamenode.plugin.v1.NotificationTranslation
-	141, // 41: gamenode.plugin.v1.BackupsListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
-	140, // 42: gamenode.plugin.v1.BackupCreateRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	140, // 43: gamenode.plugin.v1.BackupRestoreRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	73,  // 44: gamenode.plugin.v1.BackupsListReply.backups:type_name -> gamenode.plugin.v1.BackupRecord
+	147, // 28: gamenode.plugin.v1.FilesRequestAccessRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	61,  // 29: gamenode.plugin.v1.FilesRequestAccessRequest.declared_locations:type_name -> gamenode.plugin.v1.DeclaredLocation
+	63,  // 30: gamenode.plugin.v1.FileAccessReply.handles:type_name -> gamenode.plugin.v1.FileHandle
+	248, // 31: gamenode.plugin.v1.FilesListRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	67,  // 32: gamenode.plugin.v1.FilesListReply.entries:type_name -> gamenode.plugin.v1.FileEntry
+	248, // 33: gamenode.plugin.v1.FilesReadRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	147, // 34: gamenode.plugin.v1.FilesWriteRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	147, // 35: gamenode.plugin.v1.FilesDeleteRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	248, // 36: gamenode.plugin.v1.NetworkFetchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	294, // 37: gamenode.plugin.v1.NetworkFetchRequest.headers:type_name -> gamenode.plugin.v1.NetworkFetchRequest.HeadersEntry
+	295, // 38: gamenode.plugin.v1.NetworkFetchReply.headers:type_name -> gamenode.plugin.v1.NetworkFetchReply.HeadersEntry
+	147, // 39: gamenode.plugin.v1.NotificationPublishRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	74,  // 40: gamenode.plugin.v1.NotificationPublishRequest.translations:type_name -> gamenode.plugin.v1.NotificationTranslation
+	148, // 41: gamenode.plugin.v1.BackupsListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
+	147, // 42: gamenode.plugin.v1.BackupCreateRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	147, // 43: gamenode.plugin.v1.BackupRestoreRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	80,  // 44: gamenode.plugin.v1.BackupsListReply.backups:type_name -> gamenode.plugin.v1.BackupRecord
 	4,   // 45: gamenode.plugin.v1.JobReply.state:type_name -> gamenode.plugin.v1.JobState
-	141, // 46: gamenode.plugin.v1.DomainListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
-	241, // 47: gamenode.plugin.v1.DomainGetRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	164, // 48: gamenode.plugin.v1.DomainGetRequest.shared_records:type_name -> gamenode.plugin.v1.CommonDataSelector
-	241, // 49: gamenode.plugin.v1.DomainWatchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	164, // 50: gamenode.plugin.v1.DomainWatchRequest.shared_records:type_name -> gamenode.plugin.v1.CommonDataSelector
-	140, // 51: gamenode.plugin.v1.DomainRemoveRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	140, // 52: gamenode.plugin.v1.LibraryCreateRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	140, // 53: gamenode.plugin.v1.LibraryUpdateRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	140, // 54: gamenode.plugin.v1.LibraryRootAddRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	54,  // 55: gamenode.plugin.v1.LibraryRootAddRequest.declared_locations:type_name -> gamenode.plugin.v1.DeclaredLocation
-	140, // 56: gamenode.plugin.v1.LibraryRootUpdateRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	54,  // 57: gamenode.plugin.v1.LibraryRootUpdateRequest.declared_locations:type_name -> gamenode.plugin.v1.DeclaredLocation
-	140, // 58: gamenode.plugin.v1.LibraryRootRemoveRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	85,  // 59: gamenode.plugin.v1.LibraryRecord.roots:type_name -> gamenode.plugin.v1.LibraryRootRecord
-	7,   // 60: gamenode.plugin.v1.LibraryRootRecord.availability:type_name -> gamenode.plugin.v1.InspectionAvailability
-	84,  // 61: gamenode.plugin.v1.LibrariesListReply.libraries:type_name -> gamenode.plugin.v1.LibraryRecord
-	84,  // 62: gamenode.plugin.v1.LibraryRecordReply.library:type_name -> gamenode.plugin.v1.LibraryRecord
-	84,  // 63: gamenode.plugin.v1.LibraryRecordEvent.library:type_name -> gamenode.plugin.v1.LibraryRecord
-	5,   // 64: gamenode.plugin.v1.LibraryMutationReply.outcome:type_name -> gamenode.plugin.v1.MutationOutcome
-	140, // 65: gamenode.plugin.v1.RuntimeRegisterRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	240, // 66: gamenode.plugin.v1.RuntimeRegisterRequest.runtime:type_name -> gamenode.plugin.v1.RuntimeRecord
-	140, // 67: gamenode.plugin.v1.RuntimeUpdateRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	240, // 68: gamenode.plugin.v1.RuntimeUpdateRequest.runtime:type_name -> gamenode.plugin.v1.RuntimeRecord
-	240, // 69: gamenode.plugin.v1.RuntimeMutationReply.runtime:type_name -> gamenode.plugin.v1.RuntimeRecord
-	5,   // 70: gamenode.plugin.v1.RuntimeMutationReply.outcome:type_name -> gamenode.plugin.v1.MutationOutcome
-	240, // 71: gamenode.plugin.v1.RuntimeRecordReply.runtime:type_name -> gamenode.plugin.v1.RuntimeRecord
-	240, // 72: gamenode.plugin.v1.RuntimeRecordEvent.runtime:type_name -> gamenode.plugin.v1.RuntimeRecord
-	240, // 73: gamenode.plugin.v1.RuntimesListReply.runtimes:type_name -> gamenode.plugin.v1.RuntimeRecord
-	140, // 74: gamenode.plugin.v1.ContentRegistrationRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	5,   // 75: gamenode.plugin.v1.ReportMutationReply.outcome:type_name -> gamenode.plugin.v1.MutationOutcome
-	140, // 76: gamenode.plugin.v1.BenchmarkReportRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	289, // 77: gamenode.plugin.v1.BenchmarkReportRequest.measurements:type_name -> gamenode.plugin.v1.BenchmarkReportRequest.MeasurementsEntry
-	140, // 78: gamenode.plugin.v1.SmartReportRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	290, // 79: gamenode.plugin.v1.SmartReportRequest.attributes:type_name -> gamenode.plugin.v1.SmartReportRequest.AttributesEntry
-	140, // 80: gamenode.plugin.v1.HardwareReportRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	299, // 81: gamenode.plugin.v1.HardwareReportRequest.observations:type_name -> google.protobuf.Struct
-	140, // 82: gamenode.plugin.v1.PresencePublishRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	299, // 83: gamenode.plugin.v1.PresencePublishRequest.details:type_name -> google.protobuf.Struct
-	140, // 84: gamenode.plugin.v1.PresenceClearRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	140, // 85: gamenode.plugin.v1.PerformanceSamplesRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	103, // 86: gamenode.plugin.v1.PerformanceSamplesRequest.samples:type_name -> gamenode.plugin.v1.PerformanceSample
-	140, // 87: gamenode.plugin.v1.PerformanceEndSeriesRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	140, // 88: gamenode.plugin.v1.DataPublishRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	299, // 89: gamenode.plugin.v1.DataPublishRequest.value:type_name -> google.protobuf.Struct
-	3,   // 90: gamenode.plugin.v1.DataPublishRequest.durability:type_name -> gamenode.plugin.v1.StorageDurability
-	5,   // 91: gamenode.plugin.v1.DataMutationReply.outcome:type_name -> gamenode.plugin.v1.MutationOutcome
-	241, // 92: gamenode.plugin.v1.DataGetRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	164, // 93: gamenode.plugin.v1.DataGetRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
-	141, // 94: gamenode.plugin.v1.DataListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
-	164, // 95: gamenode.plugin.v1.DataListRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
-	241, // 96: gamenode.plugin.v1.DataWatchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	164, // 97: gamenode.plugin.v1.DataWatchRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
-	299, // 98: gamenode.plugin.v1.DataRecord.value:type_name -> google.protobuf.Struct
-	112, // 99: gamenode.plugin.v1.DataRecord.provenance:type_name -> gamenode.plugin.v1.DataProvenance
-	111, // 100: gamenode.plugin.v1.DataGetReply.record:type_name -> gamenode.plugin.v1.DataRecord
-	111, // 101: gamenode.plugin.v1.DataListReply.records:type_name -> gamenode.plugin.v1.DataRecord
-	111, // 102: gamenode.plugin.v1.DataEvent.record:type_name -> gamenode.plugin.v1.DataRecord
-	241, // 103: gamenode.plugin.v1.PersistenceUsageRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	141, // 104: gamenode.plugin.v1.PersistenceListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
-	120, // 105: gamenode.plugin.v1.PersistenceListReply.entries:type_name -> gamenode.plugin.v1.PersistenceEntry
-	140, // 106: gamenode.plugin.v1.PersistenceDeleteRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	140, // 107: gamenode.plugin.v1.PersistenceClearRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	140, // 108: gamenode.plugin.v1.RetentionPolicyRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	5,   // 109: gamenode.plugin.v1.PersistenceMutationReply.outcome:type_name -> gamenode.plugin.v1.MutationOutcome
-	141, // 110: gamenode.plugin.v1.ToolsListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
-	140, // 111: gamenode.plugin.v1.ToolApplyRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	140, // 112: gamenode.plugin.v1.ToolRemoveRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	129, // 113: gamenode.plugin.v1.ToolsListReply.tools:type_name -> gamenode.plugin.v1.ToolRecord
-	141, // 114: gamenode.plugin.v1.PortsListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
-	241, // 115: gamenode.plugin.v1.PortDetailRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	140, // 116: gamenode.plugin.v1.PortInstallRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	135, // 117: gamenode.plugin.v1.PortsListReply.ports:type_name -> gamenode.plugin.v1.PortRecord
-	135, // 118: gamenode.plugin.v1.PortDetailReply.port:type_name -> gamenode.plugin.v1.PortRecord
-	241, // 119: gamenode.plugin.v1.JobGetRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	241, // 120: gamenode.plugin.v1.JobWatchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	140, // 121: gamenode.plugin.v1.JobCancelRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	4,   // 122: gamenode.plugin.v1.JobEvent.state:type_name -> gamenode.plugin.v1.JobState
-	241, // 123: gamenode.plugin.v1.MutationContext.context:type_name -> gamenode.plugin.v1.ServiceContext
-	241, // 124: gamenode.plugin.v1.PageRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	164, // 125: gamenode.plugin.v1.PageRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
-	141, // 126: gamenode.plugin.v1.LibraryListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
-	241, // 127: gamenode.plugin.v1.LibraryGetRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	164, // 128: gamenode.plugin.v1.LibraryGetRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
-	241, // 129: gamenode.plugin.v1.LibraryWatchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	164, // 130: gamenode.plugin.v1.LibraryWatchRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
-	140, // 131: gamenode.plugin.v1.MetadataUpdateRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	291, // 132: gamenode.plugin.v1.MetadataUpdateRequest.display_fields:type_name -> gamenode.plugin.v1.MetadataUpdateRequest.DisplayFieldsEntry
-	141, // 133: gamenode.plugin.v1.FavoritesListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
-	140, // 134: gamenode.plugin.v1.FavoritesSetRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	241, // 135: gamenode.plugin.v1.MatchingSearchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	140, // 136: gamenode.plugin.v1.MatchingAssignRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	241, // 137: gamenode.plugin.v1.ArtworkReadRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	140, // 138: gamenode.plugin.v1.ArtworkSetRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	158, // 139: gamenode.plugin.v1.LibraryListReply.entries:type_name -> gamenode.plugin.v1.LibraryEntry
-	158, // 140: gamenode.plugin.v1.LibraryGetReply.entry:type_name -> gamenode.plugin.v1.LibraryEntry
-	160, // 141: gamenode.plugin.v1.FavoritesListReply.entries:type_name -> gamenode.plugin.v1.FavoriteEntry
-	161, // 142: gamenode.plugin.v1.MatchingSearchReply.candidates:type_name -> gamenode.plugin.v1.MatchCandidate
-	5,   // 143: gamenode.plugin.v1.MutationReply.outcome:type_name -> gamenode.plugin.v1.MutationOutcome
-	159, // 144: gamenode.plugin.v1.LibraryEntry.runtime_availability:type_name -> gamenode.plugin.v1.RuntimeAvailability
-	158, // 145: gamenode.plugin.v1.LibraryEvent.entry:type_name -> gamenode.plugin.v1.LibraryEntry
-	241, // 146: gamenode.plugin.v1.ResourceRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	164, // 147: gamenode.plugin.v1.ResourceRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
-	6,   // 148: gamenode.plugin.v1.CommonDataSelector.categories:type_name -> gamenode.plugin.v1.CommonDataCategory
-	241, // 149: gamenode.plugin.v1.SaveProfileListRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	164, // 150: gamenode.plugin.v1.SaveProfileListRequest.shared_records:type_name -> gamenode.plugin.v1.CommonDataSelector
-	241, // 151: gamenode.plugin.v1.SaveProfileGetRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	164, // 152: gamenode.plugin.v1.SaveProfileGetRequest.shared_records:type_name -> gamenode.plugin.v1.CommonDataSelector
-	140, // 153: gamenode.plugin.v1.SaveProfileCreateRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	171, // 154: gamenode.plugin.v1.SaveProfileCreateRequest.profile:type_name -> gamenode.plugin.v1.SaveProfile
-	140, // 155: gamenode.plugin.v1.SaveProfileUpdateRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	170, // 156: gamenode.plugin.v1.SaveProfileUpdateRequest.patch:type_name -> gamenode.plugin.v1.SaveProfilePatch
-	140, // 157: gamenode.plugin.v1.SaveProfileRemoveRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	171, // 158: gamenode.plugin.v1.SaveProfilePatch.profile:type_name -> gamenode.plugin.v1.SaveProfile
-	172, // 159: gamenode.plugin.v1.SaveProfile.directories:type_name -> gamenode.plugin.v1.SaveDirectory
-	299, // 160: gamenode.plugin.v1.SaveProfile.descriptive_metadata:type_name -> google.protobuf.Struct
-	171, // 161: gamenode.plugin.v1.SaveProfileListReply.profiles:type_name -> gamenode.plugin.v1.SaveProfile
-	171, // 162: gamenode.plugin.v1.SaveProfileReply.profile:type_name -> gamenode.plugin.v1.SaveProfile
-	5,   // 163: gamenode.plugin.v1.SaveProfileMutationReply.outcome:type_name -> gamenode.plugin.v1.MutationOutcome
-	241, // 164: gamenode.plugin.v1.LocationInspectRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	190, // 165: gamenode.plugin.v1.LocationInspectReply.location:type_name -> gamenode.plugin.v1.LocationDescription
-	191, // 166: gamenode.plugin.v1.LocationInspectReply.observations:type_name -> gamenode.plugin.v1.LocationObservation
-	190, // 167: gamenode.plugin.v1.LocationInspectReply.locations:type_name -> gamenode.plugin.v1.LocationDescription
-	241, // 168: gamenode.plugin.v1.LocationSizeRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	7,   // 169: gamenode.plugin.v1.LocationSizeReply.availability:type_name -> gamenode.plugin.v1.InspectionAvailability
-	241, // 170: gamenode.plugin.v1.LocationAccessRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	192, // 171: gamenode.plugin.v1.LocationAccessReply.entries:type_name -> gamenode.plugin.v1.LocationAccessEntry
-	7,   // 172: gamenode.plugin.v1.LocationAccessReply.availability:type_name -> gamenode.plugin.v1.InspectionAvailability
-	241, // 173: gamenode.plugin.v1.LocationLastModifiedRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	193, // 174: gamenode.plugin.v1.LocationLastModifiedReply.entries:type_name -> gamenode.plugin.v1.LocationTimestamp
-	7,   // 175: gamenode.plugin.v1.LocationLastModifiedReply.availability:type_name -> gamenode.plugin.v1.InspectionAvailability
-	241, // 176: gamenode.plugin.v1.LocationFingerprintRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	7,   // 177: gamenode.plugin.v1.LocationFingerprintReply.availability:type_name -> gamenode.plugin.v1.InspectionAvailability
-	241, // 178: gamenode.plugin.v1.LocationCompareRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	194, // 179: gamenode.plugin.v1.LocationCompareReply.changes:type_name -> gamenode.plugin.v1.LocationChange
-	241, // 180: gamenode.plugin.v1.LocationAvailabilityWatchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	7,   // 181: gamenode.plugin.v1.LocationAvailabilityEvent.availability:type_name -> gamenode.plugin.v1.InspectionAvailability
-	7,   // 182: gamenode.plugin.v1.LocationDescription.availability:type_name -> gamenode.plugin.v1.InspectionAvailability
-	7,   // 183: gamenode.plugin.v1.LocationObservation.availability:type_name -> gamenode.plugin.v1.InspectionAvailability
-	7,   // 184: gamenode.plugin.v1.LocationAccessEntry.availability:type_name -> gamenode.plugin.v1.InspectionAvailability
-	141, // 185: gamenode.plugin.v1.DiagnosticListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
-	241, // 186: gamenode.plugin.v1.DiagnosticGetRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	241, // 187: gamenode.plugin.v1.DiagnosticWatchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	299, // 188: gamenode.plugin.v1.DiagnosticReport.typed_measurements:type_name -> google.protobuf.Struct
-	299, // 189: gamenode.plugin.v1.DiagnosticReport.approved_extension:type_name -> google.protobuf.Struct
-	198, // 190: gamenode.plugin.v1.DiagnosticListReply.reports:type_name -> gamenode.plugin.v1.DiagnosticReport
-	198, // 191: gamenode.plugin.v1.DiagnosticGetReply.report:type_name -> gamenode.plugin.v1.DiagnosticReport
-	198, // 192: gamenode.plugin.v1.DiagnosticEvent.report:type_name -> gamenode.plugin.v1.DiagnosticReport
-	141, // 193: gamenode.plugin.v1.ComputerListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
-	241, // 194: gamenode.plugin.v1.ComputerGetRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	241, // 195: gamenode.plugin.v1.ComputerWatchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	299, // 196: gamenode.plugin.v1.ComputerReport.typed_observations:type_name -> google.protobuf.Struct
-	299, // 197: gamenode.plugin.v1.ComputerReport.approved_extension:type_name -> google.protobuf.Struct
-	205, // 198: gamenode.plugin.v1.ComputerListReply.reports:type_name -> gamenode.plugin.v1.ComputerReport
-	205, // 199: gamenode.plugin.v1.ComputerGetReply.report:type_name -> gamenode.plugin.v1.ComputerReport
-	205, // 200: gamenode.plugin.v1.ComputerEvent.report:type_name -> gamenode.plugin.v1.ComputerReport
-	141, // 201: gamenode.plugin.v1.PresenceListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
-	241, // 202: gamenode.plugin.v1.PresenceGetRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	241, // 203: gamenode.plugin.v1.PresenceWatchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	299, // 204: gamenode.plugin.v1.PresenceRecord.approved_details:type_name -> google.protobuf.Struct
-	212, // 205: gamenode.plugin.v1.PresenceListReply.records:type_name -> gamenode.plugin.v1.PresenceRecord
-	212, // 206: gamenode.plugin.v1.PresenceGetReply.record:type_name -> gamenode.plugin.v1.PresenceRecord
-	212, // 207: gamenode.plugin.v1.PresenceEvent.record:type_name -> gamenode.plugin.v1.PresenceRecord
-	141, // 208: gamenode.plugin.v1.PerformanceListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
-	241, // 209: gamenode.plugin.v1.PerformanceGetRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	164, // 210: gamenode.plugin.v1.PerformanceGetRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
-	241, // 211: gamenode.plugin.v1.PerformanceWatchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	164, // 212: gamenode.plugin.v1.PerformanceWatchRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
-	241, // 213: gamenode.plugin.v1.PerformanceQuerySeriesRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	141, // 214: gamenode.plugin.v1.PerformanceQuerySeriesRequest.page:type_name -> gamenode.plugin.v1.PageRequest
-	164, // 215: gamenode.plugin.v1.PerformanceQuerySeriesRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
-	241, // 216: gamenode.plugin.v1.PerformanceAggregateRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	164, // 217: gamenode.plugin.v1.PerformanceAggregateRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
-	103, // 218: gamenode.plugin.v1.PerformanceSeries.samples:type_name -> gamenode.plugin.v1.PerformanceSample
-	221, // 219: gamenode.plugin.v1.PerformanceListReply.series:type_name -> gamenode.plugin.v1.PerformanceSeries
-	221, // 220: gamenode.plugin.v1.PerformanceGetReply.series:type_name -> gamenode.plugin.v1.PerformanceSeries
-	221, // 221: gamenode.plugin.v1.PerformanceEvent.series:type_name -> gamenode.plugin.v1.PerformanceSeries
-	103, // 222: gamenode.plugin.v1.PerformanceQuerySeriesReply.samples:type_name -> gamenode.plugin.v1.PerformanceSample
-	241, // 223: gamenode.plugin.v1.GameLaunchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	4,   // 224: gamenode.plugin.v1.GameLaunchReply.state:type_name -> gamenode.plugin.v1.JobState
-	241, // 225: gamenode.plugin.v1.CustomLaunchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	292, // 226: gamenode.plugin.v1.CustomLaunchRequest.environment_set:type_name -> gamenode.plugin.v1.CustomLaunchRequest.EnvironmentSetEntry
-	4,   // 227: gamenode.plugin.v1.CustomLaunchReply.state:type_name -> gamenode.plugin.v1.JobState
-	299, // 228: gamenode.plugin.v1.ExtensionPayload.data:type_name -> google.protobuf.Struct
-	8,   // 229: gamenode.plugin.v1.ExtensionSchemaField.classification:type_name -> gamenode.plugin.v1.ExtensionFieldClassification
-	234, // 230: gamenode.plugin.v1.ExtensionSchemaDescriptor.fields:type_name -> gamenode.plugin.v1.ExtensionSchemaField
-	233, // 231: gamenode.plugin.v1.ExtensionNamespacePatch.set:type_name -> gamenode.plugin.v1.ExtensionPayload
-	236, // 232: gamenode.plugin.v1.ExtensionPatch.namespaces:type_name -> gamenode.plugin.v1.ExtensionNamespacePatch
-	239, // 233: gamenode.plugin.v1.RuntimeArgumentTemplate.content_path:type_name -> gamenode.plugin.v1.ContentPathArgument
-	293, // 234: gamenode.plugin.v1.RuntimeRecord.extensions:type_name -> gamenode.plugin.v1.RuntimeRecord.ExtensionsEntry
-	238, // 235: gamenode.plugin.v1.RuntimeRecord.argument_template:type_name -> gamenode.plugin.v1.RuntimeArgumentTemplate
-	112, // 236: gamenode.plugin.v1.RuntimeRecord.provenance:type_name -> gamenode.plugin.v1.DataProvenance
-	0,   // 237: gamenode.plugin.v1.ServiceContext.session_kind:type_name -> gamenode.plugin.v1.SessionKind
-	26,  // 238: gamenode.plugin.v1.ServiceContext.target_game:type_name -> gamenode.plugin.v1.TargetGameContext
-	241, // 239: gamenode.plugin.v1.ProviderCommand.context:type_name -> gamenode.plugin.v1.ServiceContext
-	9,   // 240: gamenode.plugin.v1.ProviderCommand.operation:type_name -> gamenode.plugin.v1.ProviderOperation
-	276, // 241: gamenode.plugin.v1.ProviderCommand.settings:type_name -> gamenode.plugin.v1.SettingsRequest
-	261, // 242: gamenode.plugin.v1.ProviderCommand.achievements:type_name -> gamenode.plugin.v1.AchievementsRequest
-	285, // 243: gamenode.plugin.v1.ProviderCommand.runtime_session_result:type_name -> gamenode.plugin.v1.RuntimeSessionResult
-	283, // 244: gamenode.plugin.v1.ProviderCommand.runtime_session_context_result:type_name -> gamenode.plugin.v1.RuntimeSessionContextResult
-	11,  // 245: gamenode.plugin.v1.ProviderContext.secret_storage:type_name -> gamenode.plugin.v1.SecretStorage
-	10,  // 246: gamenode.plugin.v1.AccountStatus.state:type_name -> gamenode.plugin.v1.AccountConnection
-	11,  // 247: gamenode.plugin.v1.AccountStatus.storage:type_name -> gamenode.plugin.v1.SecretStorage
-	12,  // 248: gamenode.plugin.v1.AccountStatus.catalog_error:type_name -> gamenode.plugin.v1.CatalogFailure
-	12,  // 249: gamenode.plugin.v1.AccountStatus.shared_error:type_name -> gamenode.plugin.v1.CatalogFailure
-	241, // 250: gamenode.plugin.v1.AccountRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	244, // 251: gamenode.plugin.v1.AccountRequest.save:type_name -> gamenode.plugin.v1.AccountIdentity
-	244, // 252: gamenode.plugin.v1.AccountReply.account:type_name -> gamenode.plugin.v1.AccountIdentity
-	241, // 253: gamenode.plugin.v1.SecretRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	13,  // 254: gamenode.plugin.v1.SecretRequest.operation:type_name -> gamenode.plugin.v1.SecretOperation
-	11,  // 255: gamenode.plugin.v1.SecretReply.storage:type_name -> gamenode.plugin.v1.SecretStorage
-	14,  // 256: gamenode.plugin.v1.SecretReply.failed:type_name -> gamenode.plugin.v1.ServiceFailure
-	241, // 257: gamenode.plugin.v1.LoginRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	15,  // 258: gamenode.plugin.v1.LoginRequest.operation:type_name -> gamenode.plugin.v1.LoginOperation
-	16,  // 259: gamenode.plugin.v1.LoginReply.state:type_name -> gamenode.plugin.v1.LoginState
-	251, // 260: gamenode.plugin.v1.LoginReply.cookies:type_name -> gamenode.plugin.v1.LoginCookie
-	241, // 261: gamenode.plugin.v1.ActionRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	253, // 262: gamenode.plugin.v1.ActionRequest.actions:type_name -> gamenode.plugin.v1.ActionDeclaration
-	294, // 263: gamenode.plugin.v1.CatalogGame.fields:type_name -> gamenode.plugin.v1.CatalogGame.FieldsEntry
-	17,  // 264: gamenode.plugin.v1.CatalogChunk.category:type_name -> gamenode.plugin.v1.CatalogCategory
-	256, // 265: gamenode.plugin.v1.CatalogChunk.games:type_name -> gamenode.plugin.v1.CatalogGame
-	17,  // 266: gamenode.plugin.v1.CatalogCompletion.category:type_name -> gamenode.plugin.v1.CatalogCategory
-	12,  // 267: gamenode.plugin.v1.CatalogCompletion.failed:type_name -> gamenode.plugin.v1.CatalogFailure
-	18,  // 268: gamenode.plugin.v1.OperationResult.disposition:type_name -> gamenode.plugin.v1.OperationDisposition
-	245, // 269: gamenode.plugin.v1.OperationResult.status:type_name -> gamenode.plugin.v1.AccountStatus
-	43,  // 270: gamenode.plugin.v1.OperationResult.discovery:type_name -> gamenode.plugin.v1.DiscoveryResult
-	259, // 271: gamenode.plugin.v1.OperationResult.counters:type_name -> gamenode.plugin.v1.CounterObservation
-	258, // 272: gamenode.plugin.v1.OperationResult.catalogs:type_name -> gamenode.plugin.v1.CatalogCompletion
-	44,  // 273: gamenode.plugin.v1.OperationResult.failure:type_name -> gamenode.plugin.v1.PluginFailure
-	19,  // 274: gamenode.plugin.v1.OperationResult.login_outcome:type_name -> gamenode.plugin.v1.AccountLoginOutcome
-	280, // 275: gamenode.plugin.v1.OperationResult.settings:type_name -> gamenode.plugin.v1.SettingsReply
-	264, // 276: gamenode.plugin.v1.OperationResult.achievements:type_name -> gamenode.plugin.v1.AchievementOutcome
-	265, // 277: gamenode.plugin.v1.OperationResult.configuration:type_name -> gamenode.plugin.v1.ConfigurationResult
-	262, // 278: gamenode.plugin.v1.AchievementGame.achievements:type_name -> gamenode.plugin.v1.Achievement
-	263, // 279: gamenode.plugin.v1.AchievementOutcome.ready:type_name -> gamenode.plugin.v1.AchievementGame
-	12,  // 280: gamenode.plugin.v1.AchievementOutcome.failed:type_name -> gamenode.plugin.v1.CatalogFailure
-	295, // 281: gamenode.plugin.v1.SettingsText.translations:type_name -> gamenode.plugin.v1.SettingsText.TranslationsEntry
-	267, // 282: gamenode.plugin.v1.SettingsChoiceOption.label:type_name -> gamenode.plugin.v1.SettingsText
-	271, // 283: gamenode.plugin.v1.SettingsChoiceField.options:type_name -> gamenode.plugin.v1.SettingsChoiceOption
-	267, // 284: gamenode.plugin.v1.SettingsField.label:type_name -> gamenode.plugin.v1.SettingsText
-	267, // 285: gamenode.plugin.v1.SettingsField.help:type_name -> gamenode.plugin.v1.SettingsText
-	268, // 286: gamenode.plugin.v1.SettingsField.default_value:type_name -> gamenode.plugin.v1.SettingsValue
-	269, // 287: gamenode.plugin.v1.SettingsField.text:type_name -> gamenode.plugin.v1.SettingsTextField
-	270, // 288: gamenode.plugin.v1.SettingsField.number:type_name -> gamenode.plugin.v1.SettingsNumberField
-	272, // 289: gamenode.plugin.v1.SettingsField.choice:type_name -> gamenode.plugin.v1.SettingsChoiceField
-	267, // 290: gamenode.plugin.v1.SettingsForm.title:type_name -> gamenode.plugin.v1.SettingsText
-	273, // 291: gamenode.plugin.v1.SettingsForm.fields:type_name -> gamenode.plugin.v1.SettingsField
-	296, // 292: gamenode.plugin.v1.SettingsSubmission.values:type_name -> gamenode.plugin.v1.SettingsSubmission.ValuesEntry
-	266, // 293: gamenode.plugin.v1.SettingsRequest.context:type_name -> gamenode.plugin.v1.SettingsContext
-	275, // 294: gamenode.plugin.v1.SettingsRequest.submit:type_name -> gamenode.plugin.v1.SettingsSubmission
-	274, // 295: gamenode.plugin.v1.SettingsView.form:type_name -> gamenode.plugin.v1.SettingsForm
-	297, // 296: gamenode.plugin.v1.SettingsView.values:type_name -> gamenode.plugin.v1.SettingsView.ValuesEntry
-	20,  // 297: gamenode.plugin.v1.SettingsApplied.persistence:type_name -> gamenode.plugin.v1.SettingsPersistence
-	298, // 298: gamenode.plugin.v1.SettingsFieldErrors.errors:type_name -> gamenode.plugin.v1.SettingsFieldErrors.ErrorsEntry
-	266, // 299: gamenode.plugin.v1.SettingsReply.context:type_name -> gamenode.plugin.v1.SettingsContext
-	277, // 300: gamenode.plugin.v1.SettingsReply.form:type_name -> gamenode.plugin.v1.SettingsView
-	278, // 301: gamenode.plugin.v1.SettingsReply.applied:type_name -> gamenode.plugin.v1.SettingsApplied
-	279, // 302: gamenode.plugin.v1.SettingsReply.field_errors:type_name -> gamenode.plugin.v1.SettingsFieldErrors
-	21,  // 303: gamenode.plugin.v1.SettingsReply.failed:type_name -> gamenode.plugin.v1.SettingsFailure
-	241, // 304: gamenode.plugin.v1.ProviderEvent.context:type_name -> gamenode.plugin.v1.ServiceContext
-	245, // 305: gamenode.plugin.v1.ProviderEvent.account_status:type_name -> gamenode.plugin.v1.AccountStatus
-	257, // 306: gamenode.plugin.v1.ProviderEvent.catalog_chunk:type_name -> gamenode.plugin.v1.CatalogChunk
-	260, // 307: gamenode.plugin.v1.ProviderEvent.result:type_name -> gamenode.plugin.v1.OperationResult
-	284, // 308: gamenode.plugin.v1.ProviderEvent.runtime_session:type_name -> gamenode.plugin.v1.RuntimeSessionReport
-	282, // 309: gamenode.plugin.v1.ProviderEvent.runtime_session_context:type_name -> gamenode.plugin.v1.RuntimeSessionContextRequest
-	23,  // 310: gamenode.plugin.v1.RuntimeSessionContextResult.outcome:type_name -> gamenode.plugin.v1.RuntimeSessionOutcome
-	39,  // 311: gamenode.plugin.v1.RuntimeSessionContextResult.denial:type_name -> gamenode.plugin.v1.DenialDetail
-	22,  // 312: gamenode.plugin.v1.RuntimeSessionReport.transition:type_name -> gamenode.plugin.v1.RuntimeSessionTransition
-	23,  // 313: gamenode.plugin.v1.RuntimeSessionResult.outcome:type_name -> gamenode.plugin.v1.RuntimeSessionOutcome
-	39,  // 314: gamenode.plugin.v1.RuntimeSessionResult.denial:type_name -> gamenode.plugin.v1.DenialDetail
-	233, // 315: gamenode.plugin.v1.RuntimeRecord.ExtensionsEntry.value:type_name -> gamenode.plugin.v1.ExtensionPayload
-	268, // 316: gamenode.plugin.v1.SettingsSubmission.ValuesEntry.value:type_name -> gamenode.plugin.v1.SettingsValue
-	268, // 317: gamenode.plugin.v1.SettingsView.ValuesEntry.value:type_name -> gamenode.plugin.v1.SettingsValue
-	267, // 318: gamenode.plugin.v1.SettingsFieldErrors.ErrorsEntry.value:type_name -> gamenode.plugin.v1.SettingsText
-	24,  // 319: gamenode.plugin.v1.PluginHost.OpenSession:input_type -> gamenode.plugin.v1.OpenSessionRequest
-	45,  // 320: gamenode.plugin.v1.PluginHost.SubmitDiscovery:input_type -> gamenode.plugin.v1.SubmitDiscoveryRequest
-	32,  // 321: gamenode.plugin.v1.PluginHost.DescribeApi:input_type -> gamenode.plugin.v1.DescribeApiRequest
-	34,  // 322: gamenode.plugin.v1.PluginHost.GetPermissions:input_type -> gamenode.plugin.v1.GetPermissionsRequest
-	37,  // 323: gamenode.plugin.v1.PluginHost.WatchPermissionChanges:input_type -> gamenode.plugin.v1.WatchPermissionChangesRequest
-	281, // 324: gamenode.plugin.v1.ProviderHost.Exchange:input_type -> gamenode.plugin.v1.ProviderEvent
-	241, // 325: gamenode.plugin.v1.ProviderHost.GetContext:input_type -> gamenode.plugin.v1.ServiceContext
-	246, // 326: gamenode.plugin.v1.ProviderHost.Account:input_type -> gamenode.plugin.v1.AccountRequest
-	248, // 327: gamenode.plugin.v1.ProviderHost.Secret:input_type -> gamenode.plugin.v1.SecretRequest
-	250, // 328: gamenode.plugin.v1.ProviderHost.Login:input_type -> gamenode.plugin.v1.LoginRequest
-	254, // 329: gamenode.plugin.v1.ProviderHost.DeclareActions:input_type -> gamenode.plugin.v1.ActionRequest
-	142, // 330: gamenode.plugin.v1.ResourceHost.LibraryList:input_type -> gamenode.plugin.v1.LibraryListRequest
-	143, // 331: gamenode.plugin.v1.ResourceHost.LibraryGet:input_type -> gamenode.plugin.v1.LibraryGetRequest
-	144, // 332: gamenode.plugin.v1.ResourceHost.LibraryWatch:input_type -> gamenode.plugin.v1.LibraryWatchRequest
-	145, // 333: gamenode.plugin.v1.ResourceHost.MetadataUpdate:input_type -> gamenode.plugin.v1.MetadataUpdateRequest
-	146, // 334: gamenode.plugin.v1.ResourceHost.FavoritesList:input_type -> gamenode.plugin.v1.FavoritesListRequest
-	147, // 335: gamenode.plugin.v1.ResourceHost.FavoritesSet:input_type -> gamenode.plugin.v1.FavoritesSetRequest
-	148, // 336: gamenode.plugin.v1.ResourceHost.MatchingSearch:input_type -> gamenode.plugin.v1.MatchingSearchRequest
-	149, // 337: gamenode.plugin.v1.ResourceHost.MatchingAssign:input_type -> gamenode.plugin.v1.MatchingAssignRequest
-	150, // 338: gamenode.plugin.v1.ResourceHost.ArtworkRead:input_type -> gamenode.plugin.v1.ArtworkReadRequest
-	151, // 339: gamenode.plugin.v1.ResourceHost.ArtworkSet:input_type -> gamenode.plugin.v1.ArtworkSetRequest
-	229, // 340: gamenode.plugin.v1.ResourceHost.GamesRequestLaunch:input_type -> gamenode.plugin.v1.GameLaunchRequest
-	231, // 341: gamenode.plugin.v1.ResourceHost.GamesProposeCustomLaunch:input_type -> gamenode.plugin.v1.CustomLaunchRequest
-	231, // 342: gamenode.plugin.v1.ResourceHost.GamesRequestCustomLaunch:input_type -> gamenode.plugin.v1.CustomLaunchRequest
-	47,  // 343: gamenode.plugin.v1.ResourceHost.GamesRemoveCustomLaunch:input_type -> gamenode.plugin.v1.CustomLaunchRemoveRequest
-	48,  // 344: gamenode.plugin.v1.ResourceHost.GamesRequestInstall:input_type -> gamenode.plugin.v1.GameInstallRequest
-	49,  // 345: gamenode.plugin.v1.ResourceHost.StorageGet:input_type -> gamenode.plugin.v1.StorageGetRequest
-	50,  // 346: gamenode.plugin.v1.ResourceHost.StoragePut:input_type -> gamenode.plugin.v1.StoragePutRequest
-	51,  // 347: gamenode.plugin.v1.ResourceHost.StorageDelete:input_type -> gamenode.plugin.v1.StorageDeleteRequest
-	55,  // 348: gamenode.plugin.v1.ResourceHost.FilesRequestAccess:input_type -> gamenode.plugin.v1.FilesRequestAccessRequest
-	58,  // 349: gamenode.plugin.v1.ResourceHost.FilesList:input_type -> gamenode.plugin.v1.FilesListRequest
-	61,  // 350: gamenode.plugin.v1.ResourceHost.FilesRead:input_type -> gamenode.plugin.v1.FilesReadRequest
-	63,  // 351: gamenode.plugin.v1.ResourceHost.FilesWrite:input_type -> gamenode.plugin.v1.FilesWriteRequest
-	64,  // 352: gamenode.plugin.v1.ResourceHost.FilesDelete:input_type -> gamenode.plugin.v1.FilesDeleteRequest
-	65,  // 353: gamenode.plugin.v1.ResourceHost.NetworkFetch:input_type -> gamenode.plugin.v1.NetworkFetchRequest
-	68,  // 354: gamenode.plugin.v1.ResourceHost.NotificationsPublish:input_type -> gamenode.plugin.v1.NotificationPublishRequest
-	69,  // 355: gamenode.plugin.v1.ResourceHost.BackupsList:input_type -> gamenode.plugin.v1.BackupsListRequest
-	70,  // 356: gamenode.plugin.v1.ResourceHost.BackupsRequestCreate:input_type -> gamenode.plugin.v1.BackupCreateRequest
-	71,  // 357: gamenode.plugin.v1.ResourceHost.BackupsRequestRestore:input_type -> gamenode.plugin.v1.BackupRestoreRequest
-	75,  // 358: gamenode.plugin.v1.ResourceHost.LibrariesList:input_type -> gamenode.plugin.v1.DomainListRequest
-	76,  // 359: gamenode.plugin.v1.ResourceHost.LibrariesGet:input_type -> gamenode.plugin.v1.DomainGetRequest
-	77,  // 360: gamenode.plugin.v1.ResourceHost.LibrariesWatch:input_type -> gamenode.plugin.v1.DomainWatchRequest
-	79,  // 361: gamenode.plugin.v1.ResourceHost.LibrariesCreate:input_type -> gamenode.plugin.v1.LibraryCreateRequest
-	80,  // 362: gamenode.plugin.v1.ResourceHost.LibrariesUpdate:input_type -> gamenode.plugin.v1.LibraryUpdateRequest
-	78,  // 363: gamenode.plugin.v1.ResourceHost.LibrariesRemove:input_type -> gamenode.plugin.v1.DomainRemoveRequest
-	81,  // 364: gamenode.plugin.v1.ResourceHost.LibrariesAddRoot:input_type -> gamenode.plugin.v1.LibraryRootAddRequest
-	82,  // 365: gamenode.plugin.v1.ResourceHost.LibrariesUpdateRoot:input_type -> gamenode.plugin.v1.LibraryRootUpdateRequest
-	83,  // 366: gamenode.plugin.v1.ResourceHost.LibrariesRemoveRoot:input_type -> gamenode.plugin.v1.LibraryRootRemoveRequest
-	75,  // 367: gamenode.plugin.v1.ResourceHost.RuntimesList:input_type -> gamenode.plugin.v1.DomainListRequest
-	76,  // 368: gamenode.plugin.v1.ResourceHost.RuntimesGet:input_type -> gamenode.plugin.v1.DomainGetRequest
-	77,  // 369: gamenode.plugin.v1.ResourceHost.RuntimesWatch:input_type -> gamenode.plugin.v1.DomainWatchRequest
-	90,  // 370: gamenode.plugin.v1.ResourceHost.RuntimesRegister:input_type -> gamenode.plugin.v1.RuntimeRegisterRequest
-	91,  // 371: gamenode.plugin.v1.ResourceHost.RuntimesUpdate:input_type -> gamenode.plugin.v1.RuntimeUpdateRequest
-	78,  // 372: gamenode.plugin.v1.ResourceHost.RuntimesRemove:input_type -> gamenode.plugin.v1.DomainRemoveRequest
-	96,  // 373: gamenode.plugin.v1.ResourceHost.GamesRegisterContent:input_type -> gamenode.plugin.v1.ContentRegistrationRequest
-	98,  // 374: gamenode.plugin.v1.ResourceHost.StorageDiagnosticsPublishBenchmark:input_type -> gamenode.plugin.v1.BenchmarkReportRequest
-	99,  // 375: gamenode.plugin.v1.ResourceHost.StorageDiagnosticsPublishSmart:input_type -> gamenode.plugin.v1.SmartReportRequest
-	100, // 376: gamenode.plugin.v1.ResourceHost.ComputerPublishHardware:input_type -> gamenode.plugin.v1.HardwareReportRequest
-	101, // 377: gamenode.plugin.v1.ResourceHost.GamePresencePublish:input_type -> gamenode.plugin.v1.PresencePublishRequest
-	102, // 378: gamenode.plugin.v1.ResourceHost.GamePresenceClear:input_type -> gamenode.plugin.v1.PresenceClearRequest
-	104, // 379: gamenode.plugin.v1.ResourceHost.GamePerformancePublishSamples:input_type -> gamenode.plugin.v1.PerformanceSamplesRequest
-	105, // 380: gamenode.plugin.v1.ResourceHost.GamePerformanceEndSeries:input_type -> gamenode.plugin.v1.PerformanceEndSeriesRequest
-	106, // 381: gamenode.plugin.v1.ResourceHost.DataPublish:input_type -> gamenode.plugin.v1.DataPublishRequest
-	108, // 382: gamenode.plugin.v1.ResourceHost.DataGet:input_type -> gamenode.plugin.v1.DataGetRequest
-	109, // 383: gamenode.plugin.v1.ResourceHost.DataList:input_type -> gamenode.plugin.v1.DataListRequest
-	110, // 384: gamenode.plugin.v1.ResourceHost.DataWatch:input_type -> gamenode.plugin.v1.DataWatchRequest
-	116, // 385: gamenode.plugin.v1.ResourceHost.PersistenceGetUsage:input_type -> gamenode.plugin.v1.PersistenceUsageRequest
-	118, // 386: gamenode.plugin.v1.ResourceHost.PersistenceListEntries:input_type -> gamenode.plugin.v1.PersistenceListRequest
-	121, // 387: gamenode.plugin.v1.ResourceHost.PersistenceDeleteEntries:input_type -> gamenode.plugin.v1.PersistenceDeleteRequest
-	122, // 388: gamenode.plugin.v1.ResourceHost.PersistenceClear:input_type -> gamenode.plugin.v1.PersistenceClearRequest
-	123, // 389: gamenode.plugin.v1.ResourceHost.PersistenceSetRetentionPolicy:input_type -> gamenode.plugin.v1.RetentionPolicyRequest
-	125, // 390: gamenode.plugin.v1.ResourceHost.ToolsList:input_type -> gamenode.plugin.v1.ToolsListRequest
-	126, // 391: gamenode.plugin.v1.ResourceHost.ToolsRequestApply:input_type -> gamenode.plugin.v1.ToolApplyRequest
-	127, // 392: gamenode.plugin.v1.ResourceHost.ToolsRequestRemove:input_type -> gamenode.plugin.v1.ToolRemoveRequest
-	130, // 393: gamenode.plugin.v1.ResourceHost.PortsList:input_type -> gamenode.plugin.v1.PortsListRequest
-	131, // 394: gamenode.plugin.v1.ResourceHost.PortsDetail:input_type -> gamenode.plugin.v1.PortDetailRequest
-	132, // 395: gamenode.plugin.v1.ResourceHost.PortsRequestInstall:input_type -> gamenode.plugin.v1.PortInstallRequest
-	136, // 396: gamenode.plugin.v1.ResourceHost.JobsGet:input_type -> gamenode.plugin.v1.JobGetRequest
-	137, // 397: gamenode.plugin.v1.ResourceHost.JobsWatch:input_type -> gamenode.plugin.v1.JobWatchRequest
-	138, // 398: gamenode.plugin.v1.ResourceHost.JobsCancel:input_type -> gamenode.plugin.v1.JobCancelRequest
-	165, // 399: gamenode.plugin.v1.Saves.ListProfiles:input_type -> gamenode.plugin.v1.SaveProfileListRequest
-	166, // 400: gamenode.plugin.v1.Saves.GetProfile:input_type -> gamenode.plugin.v1.SaveProfileGetRequest
-	167, // 401: gamenode.plugin.v1.Saves.CreateProfile:input_type -> gamenode.plugin.v1.SaveProfileCreateRequest
-	168, // 402: gamenode.plugin.v1.Saves.UpdateProfile:input_type -> gamenode.plugin.v1.SaveProfileUpdateRequest
-	169, // 403: gamenode.plugin.v1.Saves.RemoveProfile:input_type -> gamenode.plugin.v1.SaveProfileRemoveRequest
-	176, // 404: gamenode.plugin.v1.Locations.Inspect:input_type -> gamenode.plugin.v1.LocationInspectRequest
-	178, // 405: gamenode.plugin.v1.Locations.GetSize:input_type -> gamenode.plugin.v1.LocationSizeRequest
-	180, // 406: gamenode.plugin.v1.Locations.GetAccess:input_type -> gamenode.plugin.v1.LocationAccessRequest
-	182, // 407: gamenode.plugin.v1.Locations.GetLastModified:input_type -> gamenode.plugin.v1.LocationLastModifiedRequest
-	184, // 408: gamenode.plugin.v1.Locations.GetFingerprint:input_type -> gamenode.plugin.v1.LocationFingerprintRequest
-	186, // 409: gamenode.plugin.v1.Locations.Compare:input_type -> gamenode.plugin.v1.LocationCompareRequest
-	188, // 410: gamenode.plugin.v1.Locations.WatchAvailability:input_type -> gamenode.plugin.v1.LocationAvailabilityWatchRequest
-	195, // 411: gamenode.plugin.v1.StorageDiagnostics.List:input_type -> gamenode.plugin.v1.DiagnosticListRequest
-	196, // 412: gamenode.plugin.v1.StorageDiagnostics.Get:input_type -> gamenode.plugin.v1.DiagnosticGetRequest
-	197, // 413: gamenode.plugin.v1.StorageDiagnostics.Watch:input_type -> gamenode.plugin.v1.DiagnosticWatchRequest
-	202, // 414: gamenode.plugin.v1.Computer.List:input_type -> gamenode.plugin.v1.ComputerListRequest
-	203, // 415: gamenode.plugin.v1.Computer.Get:input_type -> gamenode.plugin.v1.ComputerGetRequest
-	204, // 416: gamenode.plugin.v1.Computer.Watch:input_type -> gamenode.plugin.v1.ComputerWatchRequest
-	209, // 417: gamenode.plugin.v1.GamePresence.List:input_type -> gamenode.plugin.v1.PresenceListRequest
-	210, // 418: gamenode.plugin.v1.GamePresence.Get:input_type -> gamenode.plugin.v1.PresenceGetRequest
-	211, // 419: gamenode.plugin.v1.GamePresence.Watch:input_type -> gamenode.plugin.v1.PresenceWatchRequest
-	216, // 420: gamenode.plugin.v1.GamePerformance.List:input_type -> gamenode.plugin.v1.PerformanceListRequest
-	217, // 421: gamenode.plugin.v1.GamePerformance.Get:input_type -> gamenode.plugin.v1.PerformanceGetRequest
-	218, // 422: gamenode.plugin.v1.GamePerformance.Watch:input_type -> gamenode.plugin.v1.PerformanceWatchRequest
-	219, // 423: gamenode.plugin.v1.GamePerformance.QuerySeries:input_type -> gamenode.plugin.v1.PerformanceQuerySeriesRequest
-	220, // 424: gamenode.plugin.v1.GamePerformance.Aggregate:input_type -> gamenode.plugin.v1.PerformanceAggregateRequest
-	25,  // 425: gamenode.plugin.v1.PluginHost.OpenSession:output_type -> gamenode.plugin.v1.OpenSessionReply
-	46,  // 426: gamenode.plugin.v1.PluginHost.SubmitDiscovery:output_type -> gamenode.plugin.v1.SubmitDiscoveryReply
-	33,  // 427: gamenode.plugin.v1.PluginHost.DescribeApi:output_type -> gamenode.plugin.v1.DescribeApiReply
-	36,  // 428: gamenode.plugin.v1.PluginHost.GetPermissions:output_type -> gamenode.plugin.v1.GetPermissionsReply
-	38,  // 429: gamenode.plugin.v1.PluginHost.WatchPermissionChanges:output_type -> gamenode.plugin.v1.PermissionChange
-	242, // 430: gamenode.plugin.v1.ProviderHost.Exchange:output_type -> gamenode.plugin.v1.ProviderCommand
-	243, // 431: gamenode.plugin.v1.ProviderHost.GetContext:output_type -> gamenode.plugin.v1.ProviderContext
-	247, // 432: gamenode.plugin.v1.ProviderHost.Account:output_type -> gamenode.plugin.v1.AccountReply
-	249, // 433: gamenode.plugin.v1.ProviderHost.Secret:output_type -> gamenode.plugin.v1.SecretReply
-	252, // 434: gamenode.plugin.v1.ProviderHost.Login:output_type -> gamenode.plugin.v1.LoginReply
-	255, // 435: gamenode.plugin.v1.ProviderHost.DeclareActions:output_type -> gamenode.plugin.v1.ActionReply
-	152, // 436: gamenode.plugin.v1.ResourceHost.LibraryList:output_type -> gamenode.plugin.v1.LibraryListReply
-	153, // 437: gamenode.plugin.v1.ResourceHost.LibraryGet:output_type -> gamenode.plugin.v1.LibraryGetReply
-	162, // 438: gamenode.plugin.v1.ResourceHost.LibraryWatch:output_type -> gamenode.plugin.v1.LibraryEvent
-	157, // 439: gamenode.plugin.v1.ResourceHost.MetadataUpdate:output_type -> gamenode.plugin.v1.MutationReply
-	154, // 440: gamenode.plugin.v1.ResourceHost.FavoritesList:output_type -> gamenode.plugin.v1.FavoritesListReply
-	157, // 441: gamenode.plugin.v1.ResourceHost.FavoritesSet:output_type -> gamenode.plugin.v1.MutationReply
-	155, // 442: gamenode.plugin.v1.ResourceHost.MatchingSearch:output_type -> gamenode.plugin.v1.MatchingSearchReply
-	157, // 443: gamenode.plugin.v1.ResourceHost.MatchingAssign:output_type -> gamenode.plugin.v1.MutationReply
-	156, // 444: gamenode.plugin.v1.ResourceHost.ArtworkRead:output_type -> gamenode.plugin.v1.ArtworkReadReply
-	157, // 445: gamenode.plugin.v1.ResourceHost.ArtworkSet:output_type -> gamenode.plugin.v1.MutationReply
-	230, // 446: gamenode.plugin.v1.ResourceHost.GamesRequestLaunch:output_type -> gamenode.plugin.v1.GameLaunchReply
-	232, // 447: gamenode.plugin.v1.ResourceHost.GamesProposeCustomLaunch:output_type -> gamenode.plugin.v1.CustomLaunchReply
-	232, // 448: gamenode.plugin.v1.ResourceHost.GamesRequestCustomLaunch:output_type -> gamenode.plugin.v1.CustomLaunchReply
-	157, // 449: gamenode.plugin.v1.ResourceHost.GamesRemoveCustomLaunch:output_type -> gamenode.plugin.v1.MutationReply
-	74,  // 450: gamenode.plugin.v1.ResourceHost.GamesRequestInstall:output_type -> gamenode.plugin.v1.JobReply
-	52,  // 451: gamenode.plugin.v1.ResourceHost.StorageGet:output_type -> gamenode.plugin.v1.StorageGetReply
-	53,  // 452: gamenode.plugin.v1.ResourceHost.StoragePut:output_type -> gamenode.plugin.v1.StorageMutationReply
-	157, // 453: gamenode.plugin.v1.ResourceHost.StorageDelete:output_type -> gamenode.plugin.v1.MutationReply
-	57,  // 454: gamenode.plugin.v1.ResourceHost.FilesRequestAccess:output_type -> gamenode.plugin.v1.FileAccessReply
-	59,  // 455: gamenode.plugin.v1.ResourceHost.FilesList:output_type -> gamenode.plugin.v1.FilesListReply
-	62,  // 456: gamenode.plugin.v1.ResourceHost.FilesRead:output_type -> gamenode.plugin.v1.FileReadReply
-	157, // 457: gamenode.plugin.v1.ResourceHost.FilesWrite:output_type -> gamenode.plugin.v1.MutationReply
-	157, // 458: gamenode.plugin.v1.ResourceHost.FilesDelete:output_type -> gamenode.plugin.v1.MutationReply
-	66,  // 459: gamenode.plugin.v1.ResourceHost.NetworkFetch:output_type -> gamenode.plugin.v1.NetworkFetchReply
-	157, // 460: gamenode.plugin.v1.ResourceHost.NotificationsPublish:output_type -> gamenode.plugin.v1.MutationReply
-	72,  // 461: gamenode.plugin.v1.ResourceHost.BackupsList:output_type -> gamenode.plugin.v1.BackupsListReply
-	74,  // 462: gamenode.plugin.v1.ResourceHost.BackupsRequestCreate:output_type -> gamenode.plugin.v1.JobReply
-	74,  // 463: gamenode.plugin.v1.ResourceHost.BackupsRequestRestore:output_type -> gamenode.plugin.v1.JobReply
-	86,  // 464: gamenode.plugin.v1.ResourceHost.LibrariesList:output_type -> gamenode.plugin.v1.LibrariesListReply
-	87,  // 465: gamenode.plugin.v1.ResourceHost.LibrariesGet:output_type -> gamenode.plugin.v1.LibraryRecordReply
-	88,  // 466: gamenode.plugin.v1.ResourceHost.LibrariesWatch:output_type -> gamenode.plugin.v1.LibraryRecordEvent
-	89,  // 467: gamenode.plugin.v1.ResourceHost.LibrariesCreate:output_type -> gamenode.plugin.v1.LibraryMutationReply
-	89,  // 468: gamenode.plugin.v1.ResourceHost.LibrariesUpdate:output_type -> gamenode.plugin.v1.LibraryMutationReply
-	157, // 469: gamenode.plugin.v1.ResourceHost.LibrariesRemove:output_type -> gamenode.plugin.v1.MutationReply
-	89,  // 470: gamenode.plugin.v1.ResourceHost.LibrariesAddRoot:output_type -> gamenode.plugin.v1.LibraryMutationReply
-	89,  // 471: gamenode.plugin.v1.ResourceHost.LibrariesUpdateRoot:output_type -> gamenode.plugin.v1.LibraryMutationReply
-	157, // 472: gamenode.plugin.v1.ResourceHost.LibrariesRemoveRoot:output_type -> gamenode.plugin.v1.MutationReply
-	95,  // 473: gamenode.plugin.v1.ResourceHost.RuntimesList:output_type -> gamenode.plugin.v1.RuntimesListReply
-	93,  // 474: gamenode.plugin.v1.ResourceHost.RuntimesGet:output_type -> gamenode.plugin.v1.RuntimeRecordReply
-	94,  // 475: gamenode.plugin.v1.ResourceHost.RuntimesWatch:output_type -> gamenode.plugin.v1.RuntimeRecordEvent
-	92,  // 476: gamenode.plugin.v1.ResourceHost.RuntimesRegister:output_type -> gamenode.plugin.v1.RuntimeMutationReply
-	92,  // 477: gamenode.plugin.v1.ResourceHost.RuntimesUpdate:output_type -> gamenode.plugin.v1.RuntimeMutationReply
-	157, // 478: gamenode.plugin.v1.ResourceHost.RuntimesRemove:output_type -> gamenode.plugin.v1.MutationReply
-	157, // 479: gamenode.plugin.v1.ResourceHost.GamesRegisterContent:output_type -> gamenode.plugin.v1.MutationReply
-	97,  // 480: gamenode.plugin.v1.ResourceHost.StorageDiagnosticsPublishBenchmark:output_type -> gamenode.plugin.v1.ReportMutationReply
-	97,  // 481: gamenode.plugin.v1.ResourceHost.StorageDiagnosticsPublishSmart:output_type -> gamenode.plugin.v1.ReportMutationReply
-	97,  // 482: gamenode.plugin.v1.ResourceHost.ComputerPublishHardware:output_type -> gamenode.plugin.v1.ReportMutationReply
-	97,  // 483: gamenode.plugin.v1.ResourceHost.GamePresencePublish:output_type -> gamenode.plugin.v1.ReportMutationReply
-	157, // 484: gamenode.plugin.v1.ResourceHost.GamePresenceClear:output_type -> gamenode.plugin.v1.MutationReply
-	97,  // 485: gamenode.plugin.v1.ResourceHost.GamePerformancePublishSamples:output_type -> gamenode.plugin.v1.ReportMutationReply
-	157, // 486: gamenode.plugin.v1.ResourceHost.GamePerformanceEndSeries:output_type -> gamenode.plugin.v1.MutationReply
-	107, // 487: gamenode.plugin.v1.ResourceHost.DataPublish:output_type -> gamenode.plugin.v1.DataMutationReply
-	113, // 488: gamenode.plugin.v1.ResourceHost.DataGet:output_type -> gamenode.plugin.v1.DataGetReply
-	114, // 489: gamenode.plugin.v1.ResourceHost.DataList:output_type -> gamenode.plugin.v1.DataListReply
-	115, // 490: gamenode.plugin.v1.ResourceHost.DataWatch:output_type -> gamenode.plugin.v1.DataEvent
-	117, // 491: gamenode.plugin.v1.ResourceHost.PersistenceGetUsage:output_type -> gamenode.plugin.v1.PersistenceUsageReply
-	119, // 492: gamenode.plugin.v1.ResourceHost.PersistenceListEntries:output_type -> gamenode.plugin.v1.PersistenceListReply
-	157, // 493: gamenode.plugin.v1.ResourceHost.PersistenceDeleteEntries:output_type -> gamenode.plugin.v1.MutationReply
-	157, // 494: gamenode.plugin.v1.ResourceHost.PersistenceClear:output_type -> gamenode.plugin.v1.MutationReply
-	157, // 495: gamenode.plugin.v1.ResourceHost.PersistenceSetRetentionPolicy:output_type -> gamenode.plugin.v1.MutationReply
-	128, // 496: gamenode.plugin.v1.ResourceHost.ToolsList:output_type -> gamenode.plugin.v1.ToolsListReply
-	74,  // 497: gamenode.plugin.v1.ResourceHost.ToolsRequestApply:output_type -> gamenode.plugin.v1.JobReply
-	74,  // 498: gamenode.plugin.v1.ResourceHost.ToolsRequestRemove:output_type -> gamenode.plugin.v1.JobReply
-	133, // 499: gamenode.plugin.v1.ResourceHost.PortsList:output_type -> gamenode.plugin.v1.PortsListReply
-	134, // 500: gamenode.plugin.v1.ResourceHost.PortsDetail:output_type -> gamenode.plugin.v1.PortDetailReply
-	74,  // 501: gamenode.plugin.v1.ResourceHost.PortsRequestInstall:output_type -> gamenode.plugin.v1.JobReply
-	74,  // 502: gamenode.plugin.v1.ResourceHost.JobsGet:output_type -> gamenode.plugin.v1.JobReply
-	139, // 503: gamenode.plugin.v1.ResourceHost.JobsWatch:output_type -> gamenode.plugin.v1.JobEvent
-	74,  // 504: gamenode.plugin.v1.ResourceHost.JobsCancel:output_type -> gamenode.plugin.v1.JobReply
-	173, // 505: gamenode.plugin.v1.Saves.ListProfiles:output_type -> gamenode.plugin.v1.SaveProfileListReply
-	174, // 506: gamenode.plugin.v1.Saves.GetProfile:output_type -> gamenode.plugin.v1.SaveProfileReply
-	175, // 507: gamenode.plugin.v1.Saves.CreateProfile:output_type -> gamenode.plugin.v1.SaveProfileMutationReply
-	175, // 508: gamenode.plugin.v1.Saves.UpdateProfile:output_type -> gamenode.plugin.v1.SaveProfileMutationReply
-	175, // 509: gamenode.plugin.v1.Saves.RemoveProfile:output_type -> gamenode.plugin.v1.SaveProfileMutationReply
-	177, // 510: gamenode.plugin.v1.Locations.Inspect:output_type -> gamenode.plugin.v1.LocationInspectReply
-	179, // 511: gamenode.plugin.v1.Locations.GetSize:output_type -> gamenode.plugin.v1.LocationSizeReply
-	181, // 512: gamenode.plugin.v1.Locations.GetAccess:output_type -> gamenode.plugin.v1.LocationAccessReply
-	183, // 513: gamenode.plugin.v1.Locations.GetLastModified:output_type -> gamenode.plugin.v1.LocationLastModifiedReply
-	185, // 514: gamenode.plugin.v1.Locations.GetFingerprint:output_type -> gamenode.plugin.v1.LocationFingerprintReply
-	187, // 515: gamenode.plugin.v1.Locations.Compare:output_type -> gamenode.plugin.v1.LocationCompareReply
-	189, // 516: gamenode.plugin.v1.Locations.WatchAvailability:output_type -> gamenode.plugin.v1.LocationAvailabilityEvent
-	199, // 517: gamenode.plugin.v1.StorageDiagnostics.List:output_type -> gamenode.plugin.v1.DiagnosticListReply
-	200, // 518: gamenode.plugin.v1.StorageDiagnostics.Get:output_type -> gamenode.plugin.v1.DiagnosticGetReply
-	201, // 519: gamenode.plugin.v1.StorageDiagnostics.Watch:output_type -> gamenode.plugin.v1.DiagnosticEvent
-	206, // 520: gamenode.plugin.v1.Computer.List:output_type -> gamenode.plugin.v1.ComputerListReply
-	207, // 521: gamenode.plugin.v1.Computer.Get:output_type -> gamenode.plugin.v1.ComputerGetReply
-	208, // 522: gamenode.plugin.v1.Computer.Watch:output_type -> gamenode.plugin.v1.ComputerEvent
-	213, // 523: gamenode.plugin.v1.GamePresence.List:output_type -> gamenode.plugin.v1.PresenceListReply
-	214, // 524: gamenode.plugin.v1.GamePresence.Get:output_type -> gamenode.plugin.v1.PresenceGetReply
-	215, // 525: gamenode.plugin.v1.GamePresence.Watch:output_type -> gamenode.plugin.v1.PresenceEvent
-	222, // 526: gamenode.plugin.v1.GamePerformance.List:output_type -> gamenode.plugin.v1.PerformanceListReply
-	223, // 527: gamenode.plugin.v1.GamePerformance.Get:output_type -> gamenode.plugin.v1.PerformanceGetReply
-	224, // 528: gamenode.plugin.v1.GamePerformance.Watch:output_type -> gamenode.plugin.v1.PerformanceEvent
-	225, // 529: gamenode.plugin.v1.GamePerformance.QuerySeries:output_type -> gamenode.plugin.v1.PerformanceQuerySeriesReply
-	226, // 530: gamenode.plugin.v1.GamePerformance.Aggregate:output_type -> gamenode.plugin.v1.PerformanceAggregateReply
-	425, // [425:531] is the sub-list for method output_type
-	319, // [319:425] is the sub-list for method input_type
-	319, // [319:319] is the sub-list for extension type_name
-	319, // [319:319] is the sub-list for extension extendee
-	0,   // [0:319] is the sub-list for field type_name
+	148, // 46: gamenode.plugin.v1.DomainListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
+	248, // 47: gamenode.plugin.v1.DomainGetRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	171, // 48: gamenode.plugin.v1.DomainGetRequest.shared_records:type_name -> gamenode.plugin.v1.CommonDataSelector
+	248, // 49: gamenode.plugin.v1.DomainWatchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	171, // 50: gamenode.plugin.v1.DomainWatchRequest.shared_records:type_name -> gamenode.plugin.v1.CommonDataSelector
+	147, // 51: gamenode.plugin.v1.DomainRemoveRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	147, // 52: gamenode.plugin.v1.LibraryCreateRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	147, // 53: gamenode.plugin.v1.LibraryUpdateRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	147, // 54: gamenode.plugin.v1.LibraryRootAddRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	61,  // 55: gamenode.plugin.v1.LibraryRootAddRequest.declared_locations:type_name -> gamenode.plugin.v1.DeclaredLocation
+	147, // 56: gamenode.plugin.v1.LibraryRootUpdateRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	61,  // 57: gamenode.plugin.v1.LibraryRootUpdateRequest.declared_locations:type_name -> gamenode.plugin.v1.DeclaredLocation
+	147, // 58: gamenode.plugin.v1.LibraryRootRemoveRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	92,  // 59: gamenode.plugin.v1.LibraryRecord.roots:type_name -> gamenode.plugin.v1.LibraryRootRecord
+	14,  // 60: gamenode.plugin.v1.LibraryRootRecord.availability:type_name -> gamenode.plugin.v1.InspectionAvailability
+	91,  // 61: gamenode.plugin.v1.LibrariesListReply.libraries:type_name -> gamenode.plugin.v1.LibraryRecord
+	91,  // 62: gamenode.plugin.v1.LibraryRecordReply.library:type_name -> gamenode.plugin.v1.LibraryRecord
+	91,  // 63: gamenode.plugin.v1.LibraryRecordEvent.library:type_name -> gamenode.plugin.v1.LibraryRecord
+	12,  // 64: gamenode.plugin.v1.LibraryMutationReply.outcome:type_name -> gamenode.plugin.v1.MutationOutcome
+	147, // 65: gamenode.plugin.v1.RuntimeRegisterRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	247, // 66: gamenode.plugin.v1.RuntimeRegisterRequest.runtime:type_name -> gamenode.plugin.v1.RuntimeRecord
+	147, // 67: gamenode.plugin.v1.RuntimeUpdateRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	247, // 68: gamenode.plugin.v1.RuntimeUpdateRequest.runtime:type_name -> gamenode.plugin.v1.RuntimeRecord
+	244, // 69: gamenode.plugin.v1.RuntimeUpdateRequest.extension_patch:type_name -> gamenode.plugin.v1.ExtensionPatch
+	247, // 70: gamenode.plugin.v1.RuntimeMutationReply.runtime:type_name -> gamenode.plugin.v1.RuntimeRecord
+	12,  // 71: gamenode.plugin.v1.RuntimeMutationReply.outcome:type_name -> gamenode.plugin.v1.MutationOutcome
+	247, // 72: gamenode.plugin.v1.RuntimeRecordReply.runtime:type_name -> gamenode.plugin.v1.RuntimeRecord
+	247, // 73: gamenode.plugin.v1.RuntimeRecordEvent.runtime:type_name -> gamenode.plugin.v1.RuntimeRecord
+	247, // 74: gamenode.plugin.v1.RuntimesListReply.runtimes:type_name -> gamenode.plugin.v1.RuntimeRecord
+	147, // 75: gamenode.plugin.v1.ContentRegistrationRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	12,  // 76: gamenode.plugin.v1.ReportMutationReply.outcome:type_name -> gamenode.plugin.v1.MutationOutcome
+	147, // 77: gamenode.plugin.v1.BenchmarkReportRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	296, // 78: gamenode.plugin.v1.BenchmarkReportRequest.measurements:type_name -> gamenode.plugin.v1.BenchmarkReportRequest.MeasurementsEntry
+	297, // 79: gamenode.plugin.v1.BenchmarkReportRequest.measurement_units:type_name -> gamenode.plugin.v1.BenchmarkReportRequest.MeasurementUnitsEntry
+	298, // 80: gamenode.plugin.v1.BenchmarkReportRequest.measurement_states:type_name -> gamenode.plugin.v1.BenchmarkReportRequest.MeasurementStatesEntry
+	310, // 81: gamenode.plugin.v1.BenchmarkReportRequest.conditions:type_name -> google.protobuf.Struct
+	147, // 82: gamenode.plugin.v1.SmartReportRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	299, // 83: gamenode.plugin.v1.SmartReportRequest.attributes:type_name -> gamenode.plugin.v1.SmartReportRequest.AttributesEntry
+	300, // 84: gamenode.plugin.v1.SmartReportRequest.attribute_units:type_name -> gamenode.plugin.v1.SmartReportRequest.AttributeUnitsEntry
+	301, // 85: gamenode.plugin.v1.SmartReportRequest.attribute_states:type_name -> gamenode.plugin.v1.SmartReportRequest.AttributeStatesEntry
+	310, // 86: gamenode.plugin.v1.SmartReportRequest.conditions:type_name -> google.protobuf.Struct
+	147, // 87: gamenode.plugin.v1.HardwareReportRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	310, // 88: gamenode.plugin.v1.HardwareReportRequest.observations:type_name -> google.protobuf.Struct
+	147, // 89: gamenode.plugin.v1.PresencePublishRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	310, // 90: gamenode.plugin.v1.PresencePublishRequest.details:type_name -> google.protobuf.Struct
+	147, // 91: gamenode.plugin.v1.PresenceClearRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	6,   // 92: gamenode.plugin.v1.PerformanceSample.fps_method:type_name -> gamenode.plugin.v1.PerformanceFpsMethod
+	7,   // 93: gamenode.plugin.v1.PerformanceSample.fps_statistic:type_name -> gamenode.plugin.v1.PerformanceFpsStatistic
+	8,   // 94: gamenode.plugin.v1.PerformanceSample.quality:type_name -> gamenode.plugin.v1.PerformanceMeasurementQuality
+	147, // 95: gamenode.plugin.v1.PerformanceSamplesRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	110, // 96: gamenode.plugin.v1.PerformanceSamplesRequest.samples:type_name -> gamenode.plugin.v1.PerformanceSample
+	9,   // 97: gamenode.plugin.v1.PerformanceSamplesRequest.cpu_scope:type_name -> gamenode.plugin.v1.PerformanceCpuScope
+	10,  // 98: gamenode.plugin.v1.PerformanceSamplesRequest.cpu_normalization:type_name -> gamenode.plugin.v1.PerformanceCpuNormalization
+	11,  // 99: gamenode.plugin.v1.PerformanceSamplesRequest.memory_kind:type_name -> gamenode.plugin.v1.PerformanceMemoryKind
+	147, // 100: gamenode.plugin.v1.PerformanceEndSeriesRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	147, // 101: gamenode.plugin.v1.DataPublishRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	310, // 102: gamenode.plugin.v1.DataPublishRequest.value:type_name -> google.protobuf.Struct
+	3,   // 103: gamenode.plugin.v1.DataPublishRequest.durability:type_name -> gamenode.plugin.v1.StorageDurability
+	12,  // 104: gamenode.plugin.v1.DataMutationReply.outcome:type_name -> gamenode.plugin.v1.MutationOutcome
+	248, // 105: gamenode.plugin.v1.DataGetRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	171, // 106: gamenode.plugin.v1.DataGetRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
+	148, // 107: gamenode.plugin.v1.DataListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
+	171, // 108: gamenode.plugin.v1.DataListRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
+	248, // 109: gamenode.plugin.v1.DataWatchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	171, // 110: gamenode.plugin.v1.DataWatchRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
+	310, // 111: gamenode.plugin.v1.DataRecord.value:type_name -> google.protobuf.Struct
+	119, // 112: gamenode.plugin.v1.DataRecord.provenance:type_name -> gamenode.plugin.v1.DataProvenance
+	118, // 113: gamenode.plugin.v1.DataGetReply.record:type_name -> gamenode.plugin.v1.DataRecord
+	118, // 114: gamenode.plugin.v1.DataListReply.records:type_name -> gamenode.plugin.v1.DataRecord
+	118, // 115: gamenode.plugin.v1.DataEvent.record:type_name -> gamenode.plugin.v1.DataRecord
+	248, // 116: gamenode.plugin.v1.PersistenceUsageRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	148, // 117: gamenode.plugin.v1.PersistenceListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
+	127, // 118: gamenode.plugin.v1.PersistenceListReply.entries:type_name -> gamenode.plugin.v1.PersistenceEntry
+	147, // 119: gamenode.plugin.v1.PersistenceDeleteRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	147, // 120: gamenode.plugin.v1.PersistenceClearRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	147, // 121: gamenode.plugin.v1.RetentionPolicyRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	12,  // 122: gamenode.plugin.v1.PersistenceMutationReply.outcome:type_name -> gamenode.plugin.v1.MutationOutcome
+	148, // 123: gamenode.plugin.v1.ToolsListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
+	147, // 124: gamenode.plugin.v1.ToolApplyRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	147, // 125: gamenode.plugin.v1.ToolRemoveRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	136, // 126: gamenode.plugin.v1.ToolsListReply.tools:type_name -> gamenode.plugin.v1.ToolRecord
+	148, // 127: gamenode.plugin.v1.PortsListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
+	248, // 128: gamenode.plugin.v1.PortDetailRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	147, // 129: gamenode.plugin.v1.PortInstallRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	142, // 130: gamenode.plugin.v1.PortsListReply.ports:type_name -> gamenode.plugin.v1.PortRecord
+	142, // 131: gamenode.plugin.v1.PortDetailReply.port:type_name -> gamenode.plugin.v1.PortRecord
+	248, // 132: gamenode.plugin.v1.JobGetRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	248, // 133: gamenode.plugin.v1.JobWatchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	147, // 134: gamenode.plugin.v1.JobCancelRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	4,   // 135: gamenode.plugin.v1.JobEvent.state:type_name -> gamenode.plugin.v1.JobState
+	248, // 136: gamenode.plugin.v1.MutationContext.context:type_name -> gamenode.plugin.v1.ServiceContext
+	248, // 137: gamenode.plugin.v1.PageRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	171, // 138: gamenode.plugin.v1.PageRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
+	148, // 139: gamenode.plugin.v1.LibraryListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
+	248, // 140: gamenode.plugin.v1.LibraryGetRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	171, // 141: gamenode.plugin.v1.LibraryGetRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
+	248, // 142: gamenode.plugin.v1.LibraryWatchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	171, // 143: gamenode.plugin.v1.LibraryWatchRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
+	147, // 144: gamenode.plugin.v1.MetadataUpdateRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	302, // 145: gamenode.plugin.v1.MetadataUpdateRequest.display_fields:type_name -> gamenode.plugin.v1.MetadataUpdateRequest.DisplayFieldsEntry
+	148, // 146: gamenode.plugin.v1.FavoritesListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
+	147, // 147: gamenode.plugin.v1.FavoritesSetRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	248, // 148: gamenode.plugin.v1.MatchingSearchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	147, // 149: gamenode.plugin.v1.MatchingAssignRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	248, // 150: gamenode.plugin.v1.ArtworkReadRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	147, // 151: gamenode.plugin.v1.ArtworkSetRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	165, // 152: gamenode.plugin.v1.LibraryListReply.entries:type_name -> gamenode.plugin.v1.LibraryEntry
+	165, // 153: gamenode.plugin.v1.LibraryGetReply.entry:type_name -> gamenode.plugin.v1.LibraryEntry
+	167, // 154: gamenode.plugin.v1.FavoritesListReply.entries:type_name -> gamenode.plugin.v1.FavoriteEntry
+	168, // 155: gamenode.plugin.v1.MatchingSearchReply.candidates:type_name -> gamenode.plugin.v1.MatchCandidate
+	12,  // 156: gamenode.plugin.v1.MutationReply.outcome:type_name -> gamenode.plugin.v1.MutationOutcome
+	166, // 157: gamenode.plugin.v1.LibraryEntry.runtime_availability:type_name -> gamenode.plugin.v1.RuntimeAvailability
+	165, // 158: gamenode.plugin.v1.LibraryEvent.entry:type_name -> gamenode.plugin.v1.LibraryEntry
+	248, // 159: gamenode.plugin.v1.ResourceRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	171, // 160: gamenode.plugin.v1.ResourceRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
+	13,  // 161: gamenode.plugin.v1.CommonDataSelector.categories:type_name -> gamenode.plugin.v1.CommonDataCategory
+	248, // 162: gamenode.plugin.v1.SaveProfileListRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	171, // 163: gamenode.plugin.v1.SaveProfileListRequest.shared_records:type_name -> gamenode.plugin.v1.CommonDataSelector
+	248, // 164: gamenode.plugin.v1.SaveProfileGetRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	171, // 165: gamenode.plugin.v1.SaveProfileGetRequest.shared_records:type_name -> gamenode.plugin.v1.CommonDataSelector
+	147, // 166: gamenode.plugin.v1.SaveProfileCreateRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	178, // 167: gamenode.plugin.v1.SaveProfileCreateRequest.profile:type_name -> gamenode.plugin.v1.SaveProfile
+	147, // 168: gamenode.plugin.v1.SaveProfileUpdateRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	177, // 169: gamenode.plugin.v1.SaveProfileUpdateRequest.patch:type_name -> gamenode.plugin.v1.SaveProfilePatch
+	147, // 170: gamenode.plugin.v1.SaveProfileRemoveRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	178, // 171: gamenode.plugin.v1.SaveProfilePatch.profile:type_name -> gamenode.plugin.v1.SaveProfile
+	179, // 172: gamenode.plugin.v1.SaveProfile.directories:type_name -> gamenode.plugin.v1.SaveDirectory
+	310, // 173: gamenode.plugin.v1.SaveProfile.descriptive_metadata:type_name -> google.protobuf.Struct
+	178, // 174: gamenode.plugin.v1.SaveProfileListReply.profiles:type_name -> gamenode.plugin.v1.SaveProfile
+	178, // 175: gamenode.plugin.v1.SaveProfileReply.profile:type_name -> gamenode.plugin.v1.SaveProfile
+	12,  // 176: gamenode.plugin.v1.SaveProfileMutationReply.outcome:type_name -> gamenode.plugin.v1.MutationOutcome
+	248, // 177: gamenode.plugin.v1.LocationInspectRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	197, // 178: gamenode.plugin.v1.LocationInspectReply.location:type_name -> gamenode.plugin.v1.LocationDescription
+	198, // 179: gamenode.plugin.v1.LocationInspectReply.observations:type_name -> gamenode.plugin.v1.LocationObservation
+	197, // 180: gamenode.plugin.v1.LocationInspectReply.locations:type_name -> gamenode.plugin.v1.LocationDescription
+	248, // 181: gamenode.plugin.v1.LocationSizeRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	14,  // 182: gamenode.plugin.v1.LocationSizeReply.availability:type_name -> gamenode.plugin.v1.InspectionAvailability
+	248, // 183: gamenode.plugin.v1.LocationAccessRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	199, // 184: gamenode.plugin.v1.LocationAccessReply.entries:type_name -> gamenode.plugin.v1.LocationAccessEntry
+	14,  // 185: gamenode.plugin.v1.LocationAccessReply.availability:type_name -> gamenode.plugin.v1.InspectionAvailability
+	248, // 186: gamenode.plugin.v1.LocationLastModifiedRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	200, // 187: gamenode.plugin.v1.LocationLastModifiedReply.entries:type_name -> gamenode.plugin.v1.LocationTimestamp
+	14,  // 188: gamenode.plugin.v1.LocationLastModifiedReply.availability:type_name -> gamenode.plugin.v1.InspectionAvailability
+	248, // 189: gamenode.plugin.v1.LocationFingerprintRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	14,  // 190: gamenode.plugin.v1.LocationFingerprintReply.availability:type_name -> gamenode.plugin.v1.InspectionAvailability
+	248, // 191: gamenode.plugin.v1.LocationCompareRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	201, // 192: gamenode.plugin.v1.LocationCompareReply.changes:type_name -> gamenode.plugin.v1.LocationChange
+	248, // 193: gamenode.plugin.v1.LocationAvailabilityWatchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	14,  // 194: gamenode.plugin.v1.LocationAvailabilityEvent.availability:type_name -> gamenode.plugin.v1.InspectionAvailability
+	14,  // 195: gamenode.plugin.v1.LocationDescription.availability:type_name -> gamenode.plugin.v1.InspectionAvailability
+	14,  // 196: gamenode.plugin.v1.LocationObservation.availability:type_name -> gamenode.plugin.v1.InspectionAvailability
+	14,  // 197: gamenode.plugin.v1.LocationAccessEntry.availability:type_name -> gamenode.plugin.v1.InspectionAvailability
+	148, // 198: gamenode.plugin.v1.DiagnosticListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
+	248, // 199: gamenode.plugin.v1.DiagnosticGetRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	248, // 200: gamenode.plugin.v1.DiagnosticWatchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	310, // 201: gamenode.plugin.v1.DiagnosticReport.typed_measurements:type_name -> google.protobuf.Struct
+	310, // 202: gamenode.plugin.v1.DiagnosticReport.approved_extension:type_name -> google.protobuf.Struct
+	205, // 203: gamenode.plugin.v1.DiagnosticListReply.reports:type_name -> gamenode.plugin.v1.DiagnosticReport
+	205, // 204: gamenode.plugin.v1.DiagnosticGetReply.report:type_name -> gamenode.plugin.v1.DiagnosticReport
+	205, // 205: gamenode.plugin.v1.DiagnosticEvent.report:type_name -> gamenode.plugin.v1.DiagnosticReport
+	148, // 206: gamenode.plugin.v1.ComputerListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
+	248, // 207: gamenode.plugin.v1.ComputerGetRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	248, // 208: gamenode.plugin.v1.ComputerWatchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	310, // 209: gamenode.plugin.v1.ComputerReport.typed_observations:type_name -> google.protobuf.Struct
+	310, // 210: gamenode.plugin.v1.ComputerReport.approved_extension:type_name -> google.protobuf.Struct
+	212, // 211: gamenode.plugin.v1.ComputerListReply.reports:type_name -> gamenode.plugin.v1.ComputerReport
+	212, // 212: gamenode.plugin.v1.ComputerGetReply.report:type_name -> gamenode.plugin.v1.ComputerReport
+	212, // 213: gamenode.plugin.v1.ComputerEvent.report:type_name -> gamenode.plugin.v1.ComputerReport
+	148, // 214: gamenode.plugin.v1.PresenceListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
+	248, // 215: gamenode.plugin.v1.PresenceGetRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	248, // 216: gamenode.plugin.v1.PresenceWatchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	310, // 217: gamenode.plugin.v1.PresenceRecord.approved_details:type_name -> google.protobuf.Struct
+	219, // 218: gamenode.plugin.v1.PresenceListReply.records:type_name -> gamenode.plugin.v1.PresenceRecord
+	219, // 219: gamenode.plugin.v1.PresenceGetReply.record:type_name -> gamenode.plugin.v1.PresenceRecord
+	219, // 220: gamenode.plugin.v1.PresenceEvent.record:type_name -> gamenode.plugin.v1.PresenceRecord
+	148, // 221: gamenode.plugin.v1.PerformanceListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
+	248, // 222: gamenode.plugin.v1.PerformanceGetRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	171, // 223: gamenode.plugin.v1.PerformanceGetRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
+	248, // 224: gamenode.plugin.v1.PerformanceWatchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	171, // 225: gamenode.plugin.v1.PerformanceWatchRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
+	248, // 226: gamenode.plugin.v1.PerformanceQuerySeriesRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	148, // 227: gamenode.plugin.v1.PerformanceQuerySeriesRequest.page:type_name -> gamenode.plugin.v1.PageRequest
+	171, // 228: gamenode.plugin.v1.PerformanceQuerySeriesRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
+	248, // 229: gamenode.plugin.v1.PerformanceAggregateRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	171, // 230: gamenode.plugin.v1.PerformanceAggregateRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
+	110, // 231: gamenode.plugin.v1.PerformanceSeries.samples:type_name -> gamenode.plugin.v1.PerformanceSample
+	9,   // 232: gamenode.plugin.v1.PerformanceSeries.cpu_scope:type_name -> gamenode.plugin.v1.PerformanceCpuScope
+	10,  // 233: gamenode.plugin.v1.PerformanceSeries.cpu_normalization:type_name -> gamenode.plugin.v1.PerformanceCpuNormalization
+	11,  // 234: gamenode.plugin.v1.PerformanceSeries.memory_kind:type_name -> gamenode.plugin.v1.PerformanceMemoryKind
+	228, // 235: gamenode.plugin.v1.PerformanceListReply.series:type_name -> gamenode.plugin.v1.PerformanceSeries
+	228, // 236: gamenode.plugin.v1.PerformanceGetReply.series:type_name -> gamenode.plugin.v1.PerformanceSeries
+	228, // 237: gamenode.plugin.v1.PerformanceEvent.series:type_name -> gamenode.plugin.v1.PerformanceSeries
+	110, // 238: gamenode.plugin.v1.PerformanceQuerySeriesReply.samples:type_name -> gamenode.plugin.v1.PerformanceSample
+	248, // 239: gamenode.plugin.v1.GameLaunchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	4,   // 240: gamenode.plugin.v1.GameLaunchReply.state:type_name -> gamenode.plugin.v1.JobState
+	248, // 241: gamenode.plugin.v1.CustomLaunchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	303, // 242: gamenode.plugin.v1.CustomLaunchRequest.environment_set:type_name -> gamenode.plugin.v1.CustomLaunchRequest.EnvironmentSetEntry
+	4,   // 243: gamenode.plugin.v1.CustomLaunchReply.state:type_name -> gamenode.plugin.v1.JobState
+	310, // 244: gamenode.plugin.v1.ExtensionPayload.data:type_name -> google.protobuf.Struct
+	15,  // 245: gamenode.plugin.v1.ExtensionSchemaField.classification:type_name -> gamenode.plugin.v1.ExtensionFieldClassification
+	241, // 246: gamenode.plugin.v1.ExtensionSchemaDescriptor.fields:type_name -> gamenode.plugin.v1.ExtensionSchemaField
+	240, // 247: gamenode.plugin.v1.ExtensionNamespacePatch.set:type_name -> gamenode.plugin.v1.ExtensionPayload
+	243, // 248: gamenode.plugin.v1.ExtensionPatch.namespaces:type_name -> gamenode.plugin.v1.ExtensionNamespacePatch
+	246, // 249: gamenode.plugin.v1.RuntimeArgumentTemplate.content_path:type_name -> gamenode.plugin.v1.ContentPathArgument
+	304, // 250: gamenode.plugin.v1.RuntimeRecord.extensions:type_name -> gamenode.plugin.v1.RuntimeRecord.ExtensionsEntry
+	245, // 251: gamenode.plugin.v1.RuntimeRecord.argument_template:type_name -> gamenode.plugin.v1.RuntimeArgumentTemplate
+	119, // 252: gamenode.plugin.v1.RuntimeRecord.provenance:type_name -> gamenode.plugin.v1.DataProvenance
+	0,   // 253: gamenode.plugin.v1.ServiceContext.session_kind:type_name -> gamenode.plugin.v1.SessionKind
+	33,  // 254: gamenode.plugin.v1.ServiceContext.target_game:type_name -> gamenode.plugin.v1.TargetGameContext
+	248, // 255: gamenode.plugin.v1.ProviderCommand.context:type_name -> gamenode.plugin.v1.ServiceContext
+	16,  // 256: gamenode.plugin.v1.ProviderCommand.operation:type_name -> gamenode.plugin.v1.ProviderOperation
+	283, // 257: gamenode.plugin.v1.ProviderCommand.settings:type_name -> gamenode.plugin.v1.SettingsRequest
+	268, // 258: gamenode.plugin.v1.ProviderCommand.achievements:type_name -> gamenode.plugin.v1.AchievementsRequest
+	292, // 259: gamenode.plugin.v1.ProviderCommand.runtime_session_result:type_name -> gamenode.plugin.v1.RuntimeSessionResult
+	290, // 260: gamenode.plugin.v1.ProviderCommand.runtime_session_context_result:type_name -> gamenode.plugin.v1.RuntimeSessionContextResult
+	18,  // 261: gamenode.plugin.v1.ProviderContext.secret_storage:type_name -> gamenode.plugin.v1.SecretStorage
+	17,  // 262: gamenode.plugin.v1.AccountStatus.state:type_name -> gamenode.plugin.v1.AccountConnection
+	18,  // 263: gamenode.plugin.v1.AccountStatus.storage:type_name -> gamenode.plugin.v1.SecretStorage
+	19,  // 264: gamenode.plugin.v1.AccountStatus.catalog_error:type_name -> gamenode.plugin.v1.CatalogFailure
+	19,  // 265: gamenode.plugin.v1.AccountStatus.shared_error:type_name -> gamenode.plugin.v1.CatalogFailure
+	248, // 266: gamenode.plugin.v1.AccountRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	251, // 267: gamenode.plugin.v1.AccountRequest.save:type_name -> gamenode.plugin.v1.AccountIdentity
+	251, // 268: gamenode.plugin.v1.AccountReply.account:type_name -> gamenode.plugin.v1.AccountIdentity
+	248, // 269: gamenode.plugin.v1.SecretRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	20,  // 270: gamenode.plugin.v1.SecretRequest.operation:type_name -> gamenode.plugin.v1.SecretOperation
+	18,  // 271: gamenode.plugin.v1.SecretReply.storage:type_name -> gamenode.plugin.v1.SecretStorage
+	21,  // 272: gamenode.plugin.v1.SecretReply.failed:type_name -> gamenode.plugin.v1.ServiceFailure
+	248, // 273: gamenode.plugin.v1.LoginRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	22,  // 274: gamenode.plugin.v1.LoginRequest.operation:type_name -> gamenode.plugin.v1.LoginOperation
+	23,  // 275: gamenode.plugin.v1.LoginReply.state:type_name -> gamenode.plugin.v1.LoginState
+	258, // 276: gamenode.plugin.v1.LoginReply.cookies:type_name -> gamenode.plugin.v1.LoginCookie
+	248, // 277: gamenode.plugin.v1.ActionRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	260, // 278: gamenode.plugin.v1.ActionRequest.actions:type_name -> gamenode.plugin.v1.ActionDeclaration
+	305, // 279: gamenode.plugin.v1.CatalogGame.fields:type_name -> gamenode.plugin.v1.CatalogGame.FieldsEntry
+	24,  // 280: gamenode.plugin.v1.CatalogChunk.category:type_name -> gamenode.plugin.v1.CatalogCategory
+	263, // 281: gamenode.plugin.v1.CatalogChunk.games:type_name -> gamenode.plugin.v1.CatalogGame
+	24,  // 282: gamenode.plugin.v1.CatalogCompletion.category:type_name -> gamenode.plugin.v1.CatalogCategory
+	19,  // 283: gamenode.plugin.v1.CatalogCompletion.failed:type_name -> gamenode.plugin.v1.CatalogFailure
+	25,  // 284: gamenode.plugin.v1.OperationResult.disposition:type_name -> gamenode.plugin.v1.OperationDisposition
+	252, // 285: gamenode.plugin.v1.OperationResult.status:type_name -> gamenode.plugin.v1.AccountStatus
+	50,  // 286: gamenode.plugin.v1.OperationResult.discovery:type_name -> gamenode.plugin.v1.DiscoveryResult
+	266, // 287: gamenode.plugin.v1.OperationResult.counters:type_name -> gamenode.plugin.v1.CounterObservation
+	265, // 288: gamenode.plugin.v1.OperationResult.catalogs:type_name -> gamenode.plugin.v1.CatalogCompletion
+	51,  // 289: gamenode.plugin.v1.OperationResult.failure:type_name -> gamenode.plugin.v1.PluginFailure
+	26,  // 290: gamenode.plugin.v1.OperationResult.login_outcome:type_name -> gamenode.plugin.v1.AccountLoginOutcome
+	287, // 291: gamenode.plugin.v1.OperationResult.settings:type_name -> gamenode.plugin.v1.SettingsReply
+	271, // 292: gamenode.plugin.v1.OperationResult.achievements:type_name -> gamenode.plugin.v1.AchievementOutcome
+	272, // 293: gamenode.plugin.v1.OperationResult.configuration:type_name -> gamenode.plugin.v1.ConfigurationResult
+	269, // 294: gamenode.plugin.v1.AchievementGame.achievements:type_name -> gamenode.plugin.v1.Achievement
+	270, // 295: gamenode.plugin.v1.AchievementOutcome.ready:type_name -> gamenode.plugin.v1.AchievementGame
+	19,  // 296: gamenode.plugin.v1.AchievementOutcome.failed:type_name -> gamenode.plugin.v1.CatalogFailure
+	306, // 297: gamenode.plugin.v1.SettingsText.translations:type_name -> gamenode.plugin.v1.SettingsText.TranslationsEntry
+	274, // 298: gamenode.plugin.v1.SettingsChoiceOption.label:type_name -> gamenode.plugin.v1.SettingsText
+	278, // 299: gamenode.plugin.v1.SettingsChoiceField.options:type_name -> gamenode.plugin.v1.SettingsChoiceOption
+	274, // 300: gamenode.plugin.v1.SettingsField.label:type_name -> gamenode.plugin.v1.SettingsText
+	274, // 301: gamenode.plugin.v1.SettingsField.help:type_name -> gamenode.plugin.v1.SettingsText
+	275, // 302: gamenode.plugin.v1.SettingsField.default_value:type_name -> gamenode.plugin.v1.SettingsValue
+	276, // 303: gamenode.plugin.v1.SettingsField.text:type_name -> gamenode.plugin.v1.SettingsTextField
+	277, // 304: gamenode.plugin.v1.SettingsField.number:type_name -> gamenode.plugin.v1.SettingsNumberField
+	279, // 305: gamenode.plugin.v1.SettingsField.choice:type_name -> gamenode.plugin.v1.SettingsChoiceField
+	274, // 306: gamenode.plugin.v1.SettingsForm.title:type_name -> gamenode.plugin.v1.SettingsText
+	280, // 307: gamenode.plugin.v1.SettingsForm.fields:type_name -> gamenode.plugin.v1.SettingsField
+	307, // 308: gamenode.plugin.v1.SettingsSubmission.values:type_name -> gamenode.plugin.v1.SettingsSubmission.ValuesEntry
+	273, // 309: gamenode.plugin.v1.SettingsRequest.context:type_name -> gamenode.plugin.v1.SettingsContext
+	282, // 310: gamenode.plugin.v1.SettingsRequest.submit:type_name -> gamenode.plugin.v1.SettingsSubmission
+	281, // 311: gamenode.plugin.v1.SettingsView.form:type_name -> gamenode.plugin.v1.SettingsForm
+	308, // 312: gamenode.plugin.v1.SettingsView.values:type_name -> gamenode.plugin.v1.SettingsView.ValuesEntry
+	27,  // 313: gamenode.plugin.v1.SettingsApplied.persistence:type_name -> gamenode.plugin.v1.SettingsPersistence
+	309, // 314: gamenode.plugin.v1.SettingsFieldErrors.errors:type_name -> gamenode.plugin.v1.SettingsFieldErrors.ErrorsEntry
+	273, // 315: gamenode.plugin.v1.SettingsReply.context:type_name -> gamenode.plugin.v1.SettingsContext
+	284, // 316: gamenode.plugin.v1.SettingsReply.form:type_name -> gamenode.plugin.v1.SettingsView
+	285, // 317: gamenode.plugin.v1.SettingsReply.applied:type_name -> gamenode.plugin.v1.SettingsApplied
+	286, // 318: gamenode.plugin.v1.SettingsReply.field_errors:type_name -> gamenode.plugin.v1.SettingsFieldErrors
+	28,  // 319: gamenode.plugin.v1.SettingsReply.failed:type_name -> gamenode.plugin.v1.SettingsFailure
+	248, // 320: gamenode.plugin.v1.ProviderEvent.context:type_name -> gamenode.plugin.v1.ServiceContext
+	252, // 321: gamenode.plugin.v1.ProviderEvent.account_status:type_name -> gamenode.plugin.v1.AccountStatus
+	264, // 322: gamenode.plugin.v1.ProviderEvent.catalog_chunk:type_name -> gamenode.plugin.v1.CatalogChunk
+	267, // 323: gamenode.plugin.v1.ProviderEvent.result:type_name -> gamenode.plugin.v1.OperationResult
+	291, // 324: gamenode.plugin.v1.ProviderEvent.runtime_session:type_name -> gamenode.plugin.v1.RuntimeSessionReport
+	289, // 325: gamenode.plugin.v1.ProviderEvent.runtime_session_context:type_name -> gamenode.plugin.v1.RuntimeSessionContextRequest
+	30,  // 326: gamenode.plugin.v1.RuntimeSessionContextResult.outcome:type_name -> gamenode.plugin.v1.RuntimeSessionOutcome
+	46,  // 327: gamenode.plugin.v1.RuntimeSessionContextResult.denial:type_name -> gamenode.plugin.v1.DenialDetail
+	29,  // 328: gamenode.plugin.v1.RuntimeSessionReport.transition:type_name -> gamenode.plugin.v1.RuntimeSessionTransition
+	30,  // 329: gamenode.plugin.v1.RuntimeSessionResult.outcome:type_name -> gamenode.plugin.v1.RuntimeSessionOutcome
+	46,  // 330: gamenode.plugin.v1.RuntimeSessionResult.denial:type_name -> gamenode.plugin.v1.DenialDetail
+	5,   // 331: gamenode.plugin.v1.BenchmarkReportRequest.MeasurementStatesEntry.value:type_name -> gamenode.plugin.v1.DiagnosticValueState
+	5,   // 332: gamenode.plugin.v1.SmartReportRequest.AttributeStatesEntry.value:type_name -> gamenode.plugin.v1.DiagnosticValueState
+	240, // 333: gamenode.plugin.v1.RuntimeRecord.ExtensionsEntry.value:type_name -> gamenode.plugin.v1.ExtensionPayload
+	275, // 334: gamenode.plugin.v1.SettingsSubmission.ValuesEntry.value:type_name -> gamenode.plugin.v1.SettingsValue
+	275, // 335: gamenode.plugin.v1.SettingsView.ValuesEntry.value:type_name -> gamenode.plugin.v1.SettingsValue
+	274, // 336: gamenode.plugin.v1.SettingsFieldErrors.ErrorsEntry.value:type_name -> gamenode.plugin.v1.SettingsText
+	31,  // 337: gamenode.plugin.v1.PluginHost.OpenSession:input_type -> gamenode.plugin.v1.OpenSessionRequest
+	52,  // 338: gamenode.plugin.v1.PluginHost.SubmitDiscovery:input_type -> gamenode.plugin.v1.SubmitDiscoveryRequest
+	39,  // 339: gamenode.plugin.v1.PluginHost.DescribeApi:input_type -> gamenode.plugin.v1.DescribeApiRequest
+	41,  // 340: gamenode.plugin.v1.PluginHost.GetPermissions:input_type -> gamenode.plugin.v1.GetPermissionsRequest
+	44,  // 341: gamenode.plugin.v1.PluginHost.WatchPermissionChanges:input_type -> gamenode.plugin.v1.WatchPermissionChangesRequest
+	288, // 342: gamenode.plugin.v1.ProviderHost.Exchange:input_type -> gamenode.plugin.v1.ProviderEvent
+	248, // 343: gamenode.plugin.v1.ProviderHost.GetContext:input_type -> gamenode.plugin.v1.ServiceContext
+	253, // 344: gamenode.plugin.v1.ProviderHost.Account:input_type -> gamenode.plugin.v1.AccountRequest
+	255, // 345: gamenode.plugin.v1.ProviderHost.Secret:input_type -> gamenode.plugin.v1.SecretRequest
+	257, // 346: gamenode.plugin.v1.ProviderHost.Login:input_type -> gamenode.plugin.v1.LoginRequest
+	261, // 347: gamenode.plugin.v1.ProviderHost.DeclareActions:input_type -> gamenode.plugin.v1.ActionRequest
+	149, // 348: gamenode.plugin.v1.ResourceHost.LibraryList:input_type -> gamenode.plugin.v1.LibraryListRequest
+	150, // 349: gamenode.plugin.v1.ResourceHost.LibraryGet:input_type -> gamenode.plugin.v1.LibraryGetRequest
+	151, // 350: gamenode.plugin.v1.ResourceHost.LibraryWatch:input_type -> gamenode.plugin.v1.LibraryWatchRequest
+	152, // 351: gamenode.plugin.v1.ResourceHost.MetadataUpdate:input_type -> gamenode.plugin.v1.MetadataUpdateRequest
+	153, // 352: gamenode.plugin.v1.ResourceHost.FavoritesList:input_type -> gamenode.plugin.v1.FavoritesListRequest
+	154, // 353: gamenode.plugin.v1.ResourceHost.FavoritesSet:input_type -> gamenode.plugin.v1.FavoritesSetRequest
+	155, // 354: gamenode.plugin.v1.ResourceHost.MatchingSearch:input_type -> gamenode.plugin.v1.MatchingSearchRequest
+	156, // 355: gamenode.plugin.v1.ResourceHost.MatchingAssign:input_type -> gamenode.plugin.v1.MatchingAssignRequest
+	157, // 356: gamenode.plugin.v1.ResourceHost.ArtworkRead:input_type -> gamenode.plugin.v1.ArtworkReadRequest
+	158, // 357: gamenode.plugin.v1.ResourceHost.ArtworkSet:input_type -> gamenode.plugin.v1.ArtworkSetRequest
+	236, // 358: gamenode.plugin.v1.ResourceHost.GamesRequestLaunch:input_type -> gamenode.plugin.v1.GameLaunchRequest
+	238, // 359: gamenode.plugin.v1.ResourceHost.GamesProposeCustomLaunch:input_type -> gamenode.plugin.v1.CustomLaunchRequest
+	238, // 360: gamenode.plugin.v1.ResourceHost.GamesRequestCustomLaunch:input_type -> gamenode.plugin.v1.CustomLaunchRequest
+	54,  // 361: gamenode.plugin.v1.ResourceHost.GamesRemoveCustomLaunch:input_type -> gamenode.plugin.v1.CustomLaunchRemoveRequest
+	55,  // 362: gamenode.plugin.v1.ResourceHost.GamesRequestInstall:input_type -> gamenode.plugin.v1.GameInstallRequest
+	56,  // 363: gamenode.plugin.v1.ResourceHost.StorageGet:input_type -> gamenode.plugin.v1.StorageGetRequest
+	57,  // 364: gamenode.plugin.v1.ResourceHost.StoragePut:input_type -> gamenode.plugin.v1.StoragePutRequest
+	58,  // 365: gamenode.plugin.v1.ResourceHost.StorageDelete:input_type -> gamenode.plugin.v1.StorageDeleteRequest
+	62,  // 366: gamenode.plugin.v1.ResourceHost.FilesRequestAccess:input_type -> gamenode.plugin.v1.FilesRequestAccessRequest
+	65,  // 367: gamenode.plugin.v1.ResourceHost.FilesList:input_type -> gamenode.plugin.v1.FilesListRequest
+	68,  // 368: gamenode.plugin.v1.ResourceHost.FilesRead:input_type -> gamenode.plugin.v1.FilesReadRequest
+	70,  // 369: gamenode.plugin.v1.ResourceHost.FilesWrite:input_type -> gamenode.plugin.v1.FilesWriteRequest
+	71,  // 370: gamenode.plugin.v1.ResourceHost.FilesDelete:input_type -> gamenode.plugin.v1.FilesDeleteRequest
+	72,  // 371: gamenode.plugin.v1.ResourceHost.NetworkFetch:input_type -> gamenode.plugin.v1.NetworkFetchRequest
+	75,  // 372: gamenode.plugin.v1.ResourceHost.NotificationsPublish:input_type -> gamenode.plugin.v1.NotificationPublishRequest
+	76,  // 373: gamenode.plugin.v1.ResourceHost.BackupsList:input_type -> gamenode.plugin.v1.BackupsListRequest
+	77,  // 374: gamenode.plugin.v1.ResourceHost.BackupsRequestCreate:input_type -> gamenode.plugin.v1.BackupCreateRequest
+	78,  // 375: gamenode.plugin.v1.ResourceHost.BackupsRequestRestore:input_type -> gamenode.plugin.v1.BackupRestoreRequest
+	82,  // 376: gamenode.plugin.v1.ResourceHost.LibrariesList:input_type -> gamenode.plugin.v1.DomainListRequest
+	83,  // 377: gamenode.plugin.v1.ResourceHost.LibrariesGet:input_type -> gamenode.plugin.v1.DomainGetRequest
+	84,  // 378: gamenode.plugin.v1.ResourceHost.LibrariesWatch:input_type -> gamenode.plugin.v1.DomainWatchRequest
+	86,  // 379: gamenode.plugin.v1.ResourceHost.LibrariesCreate:input_type -> gamenode.plugin.v1.LibraryCreateRequest
+	87,  // 380: gamenode.plugin.v1.ResourceHost.LibrariesUpdate:input_type -> gamenode.plugin.v1.LibraryUpdateRequest
+	85,  // 381: gamenode.plugin.v1.ResourceHost.LibrariesRemove:input_type -> gamenode.plugin.v1.DomainRemoveRequest
+	88,  // 382: gamenode.plugin.v1.ResourceHost.LibrariesAddRoot:input_type -> gamenode.plugin.v1.LibraryRootAddRequest
+	89,  // 383: gamenode.plugin.v1.ResourceHost.LibrariesUpdateRoot:input_type -> gamenode.plugin.v1.LibraryRootUpdateRequest
+	90,  // 384: gamenode.plugin.v1.ResourceHost.LibrariesRemoveRoot:input_type -> gamenode.plugin.v1.LibraryRootRemoveRequest
+	82,  // 385: gamenode.plugin.v1.ResourceHost.RuntimesList:input_type -> gamenode.plugin.v1.DomainListRequest
+	83,  // 386: gamenode.plugin.v1.ResourceHost.RuntimesGet:input_type -> gamenode.plugin.v1.DomainGetRequest
+	84,  // 387: gamenode.plugin.v1.ResourceHost.RuntimesWatch:input_type -> gamenode.plugin.v1.DomainWatchRequest
+	97,  // 388: gamenode.plugin.v1.ResourceHost.RuntimesRegister:input_type -> gamenode.plugin.v1.RuntimeRegisterRequest
+	98,  // 389: gamenode.plugin.v1.ResourceHost.RuntimesUpdate:input_type -> gamenode.plugin.v1.RuntimeUpdateRequest
+	85,  // 390: gamenode.plugin.v1.ResourceHost.RuntimesRemove:input_type -> gamenode.plugin.v1.DomainRemoveRequest
+	103, // 391: gamenode.plugin.v1.ResourceHost.GamesRegisterContent:input_type -> gamenode.plugin.v1.ContentRegistrationRequest
+	105, // 392: gamenode.plugin.v1.ResourceHost.StorageDiagnosticsPublishBenchmark:input_type -> gamenode.plugin.v1.BenchmarkReportRequest
+	106, // 393: gamenode.plugin.v1.ResourceHost.StorageDiagnosticsPublishSmart:input_type -> gamenode.plugin.v1.SmartReportRequest
+	107, // 394: gamenode.plugin.v1.ResourceHost.ComputerPublishHardware:input_type -> gamenode.plugin.v1.HardwareReportRequest
+	108, // 395: gamenode.plugin.v1.ResourceHost.GamePresencePublish:input_type -> gamenode.plugin.v1.PresencePublishRequest
+	109, // 396: gamenode.plugin.v1.ResourceHost.GamePresenceClear:input_type -> gamenode.plugin.v1.PresenceClearRequest
+	111, // 397: gamenode.plugin.v1.ResourceHost.GamePerformancePublishSamples:input_type -> gamenode.plugin.v1.PerformanceSamplesRequest
+	112, // 398: gamenode.plugin.v1.ResourceHost.GamePerformanceEndSeries:input_type -> gamenode.plugin.v1.PerformanceEndSeriesRequest
+	113, // 399: gamenode.plugin.v1.ResourceHost.DataPublish:input_type -> gamenode.plugin.v1.DataPublishRequest
+	115, // 400: gamenode.plugin.v1.ResourceHost.DataGet:input_type -> gamenode.plugin.v1.DataGetRequest
+	116, // 401: gamenode.plugin.v1.ResourceHost.DataList:input_type -> gamenode.plugin.v1.DataListRequest
+	117, // 402: gamenode.plugin.v1.ResourceHost.DataWatch:input_type -> gamenode.plugin.v1.DataWatchRequest
+	123, // 403: gamenode.plugin.v1.ResourceHost.PersistenceGetUsage:input_type -> gamenode.plugin.v1.PersistenceUsageRequest
+	125, // 404: gamenode.plugin.v1.ResourceHost.PersistenceListEntries:input_type -> gamenode.plugin.v1.PersistenceListRequest
+	128, // 405: gamenode.plugin.v1.ResourceHost.PersistenceDeleteEntries:input_type -> gamenode.plugin.v1.PersistenceDeleteRequest
+	129, // 406: gamenode.plugin.v1.ResourceHost.PersistenceClear:input_type -> gamenode.plugin.v1.PersistenceClearRequest
+	130, // 407: gamenode.plugin.v1.ResourceHost.PersistenceSetRetentionPolicy:input_type -> gamenode.plugin.v1.RetentionPolicyRequest
+	132, // 408: gamenode.plugin.v1.ResourceHost.ToolsList:input_type -> gamenode.plugin.v1.ToolsListRequest
+	133, // 409: gamenode.plugin.v1.ResourceHost.ToolsRequestApply:input_type -> gamenode.plugin.v1.ToolApplyRequest
+	134, // 410: gamenode.plugin.v1.ResourceHost.ToolsRequestRemove:input_type -> gamenode.plugin.v1.ToolRemoveRequest
+	137, // 411: gamenode.plugin.v1.ResourceHost.PortsList:input_type -> gamenode.plugin.v1.PortsListRequest
+	138, // 412: gamenode.plugin.v1.ResourceHost.PortsDetail:input_type -> gamenode.plugin.v1.PortDetailRequest
+	139, // 413: gamenode.plugin.v1.ResourceHost.PortsRequestInstall:input_type -> gamenode.plugin.v1.PortInstallRequest
+	143, // 414: gamenode.plugin.v1.ResourceHost.JobsGet:input_type -> gamenode.plugin.v1.JobGetRequest
+	144, // 415: gamenode.plugin.v1.ResourceHost.JobsWatch:input_type -> gamenode.plugin.v1.JobWatchRequest
+	145, // 416: gamenode.plugin.v1.ResourceHost.JobsCancel:input_type -> gamenode.plugin.v1.JobCancelRequest
+	172, // 417: gamenode.plugin.v1.Saves.ListProfiles:input_type -> gamenode.plugin.v1.SaveProfileListRequest
+	173, // 418: gamenode.plugin.v1.Saves.GetProfile:input_type -> gamenode.plugin.v1.SaveProfileGetRequest
+	174, // 419: gamenode.plugin.v1.Saves.CreateProfile:input_type -> gamenode.plugin.v1.SaveProfileCreateRequest
+	175, // 420: gamenode.plugin.v1.Saves.UpdateProfile:input_type -> gamenode.plugin.v1.SaveProfileUpdateRequest
+	176, // 421: gamenode.plugin.v1.Saves.RemoveProfile:input_type -> gamenode.plugin.v1.SaveProfileRemoveRequest
+	183, // 422: gamenode.plugin.v1.Locations.Inspect:input_type -> gamenode.plugin.v1.LocationInspectRequest
+	185, // 423: gamenode.plugin.v1.Locations.GetSize:input_type -> gamenode.plugin.v1.LocationSizeRequest
+	187, // 424: gamenode.plugin.v1.Locations.GetAccess:input_type -> gamenode.plugin.v1.LocationAccessRequest
+	189, // 425: gamenode.plugin.v1.Locations.GetLastModified:input_type -> gamenode.plugin.v1.LocationLastModifiedRequest
+	191, // 426: gamenode.plugin.v1.Locations.GetFingerprint:input_type -> gamenode.plugin.v1.LocationFingerprintRequest
+	193, // 427: gamenode.plugin.v1.Locations.Compare:input_type -> gamenode.plugin.v1.LocationCompareRequest
+	195, // 428: gamenode.plugin.v1.Locations.WatchAvailability:input_type -> gamenode.plugin.v1.LocationAvailabilityWatchRequest
+	202, // 429: gamenode.plugin.v1.StorageDiagnostics.List:input_type -> gamenode.plugin.v1.DiagnosticListRequest
+	203, // 430: gamenode.plugin.v1.StorageDiagnostics.Get:input_type -> gamenode.plugin.v1.DiagnosticGetRequest
+	204, // 431: gamenode.plugin.v1.StorageDiagnostics.Watch:input_type -> gamenode.plugin.v1.DiagnosticWatchRequest
+	209, // 432: gamenode.plugin.v1.Computer.List:input_type -> gamenode.plugin.v1.ComputerListRequest
+	210, // 433: gamenode.plugin.v1.Computer.Get:input_type -> gamenode.plugin.v1.ComputerGetRequest
+	211, // 434: gamenode.plugin.v1.Computer.Watch:input_type -> gamenode.plugin.v1.ComputerWatchRequest
+	216, // 435: gamenode.plugin.v1.GamePresence.List:input_type -> gamenode.plugin.v1.PresenceListRequest
+	217, // 436: gamenode.plugin.v1.GamePresence.Get:input_type -> gamenode.plugin.v1.PresenceGetRequest
+	218, // 437: gamenode.plugin.v1.GamePresence.Watch:input_type -> gamenode.plugin.v1.PresenceWatchRequest
+	223, // 438: gamenode.plugin.v1.GamePerformance.List:input_type -> gamenode.plugin.v1.PerformanceListRequest
+	224, // 439: gamenode.plugin.v1.GamePerformance.Get:input_type -> gamenode.plugin.v1.PerformanceGetRequest
+	225, // 440: gamenode.plugin.v1.GamePerformance.Watch:input_type -> gamenode.plugin.v1.PerformanceWatchRequest
+	226, // 441: gamenode.plugin.v1.GamePerformance.QuerySeries:input_type -> gamenode.plugin.v1.PerformanceQuerySeriesRequest
+	227, // 442: gamenode.plugin.v1.GamePerformance.Aggregate:input_type -> gamenode.plugin.v1.PerformanceAggregateRequest
+	32,  // 443: gamenode.plugin.v1.PluginHost.OpenSession:output_type -> gamenode.plugin.v1.OpenSessionReply
+	53,  // 444: gamenode.plugin.v1.PluginHost.SubmitDiscovery:output_type -> gamenode.plugin.v1.SubmitDiscoveryReply
+	40,  // 445: gamenode.plugin.v1.PluginHost.DescribeApi:output_type -> gamenode.plugin.v1.DescribeApiReply
+	43,  // 446: gamenode.plugin.v1.PluginHost.GetPermissions:output_type -> gamenode.plugin.v1.GetPermissionsReply
+	45,  // 447: gamenode.plugin.v1.PluginHost.WatchPermissionChanges:output_type -> gamenode.plugin.v1.PermissionChange
+	249, // 448: gamenode.plugin.v1.ProviderHost.Exchange:output_type -> gamenode.plugin.v1.ProviderCommand
+	250, // 449: gamenode.plugin.v1.ProviderHost.GetContext:output_type -> gamenode.plugin.v1.ProviderContext
+	254, // 450: gamenode.plugin.v1.ProviderHost.Account:output_type -> gamenode.plugin.v1.AccountReply
+	256, // 451: gamenode.plugin.v1.ProviderHost.Secret:output_type -> gamenode.plugin.v1.SecretReply
+	259, // 452: gamenode.plugin.v1.ProviderHost.Login:output_type -> gamenode.plugin.v1.LoginReply
+	262, // 453: gamenode.plugin.v1.ProviderHost.DeclareActions:output_type -> gamenode.plugin.v1.ActionReply
+	159, // 454: gamenode.plugin.v1.ResourceHost.LibraryList:output_type -> gamenode.plugin.v1.LibraryListReply
+	160, // 455: gamenode.plugin.v1.ResourceHost.LibraryGet:output_type -> gamenode.plugin.v1.LibraryGetReply
+	169, // 456: gamenode.plugin.v1.ResourceHost.LibraryWatch:output_type -> gamenode.plugin.v1.LibraryEvent
+	164, // 457: gamenode.plugin.v1.ResourceHost.MetadataUpdate:output_type -> gamenode.plugin.v1.MutationReply
+	161, // 458: gamenode.plugin.v1.ResourceHost.FavoritesList:output_type -> gamenode.plugin.v1.FavoritesListReply
+	164, // 459: gamenode.plugin.v1.ResourceHost.FavoritesSet:output_type -> gamenode.plugin.v1.MutationReply
+	162, // 460: gamenode.plugin.v1.ResourceHost.MatchingSearch:output_type -> gamenode.plugin.v1.MatchingSearchReply
+	164, // 461: gamenode.plugin.v1.ResourceHost.MatchingAssign:output_type -> gamenode.plugin.v1.MutationReply
+	163, // 462: gamenode.plugin.v1.ResourceHost.ArtworkRead:output_type -> gamenode.plugin.v1.ArtworkReadReply
+	164, // 463: gamenode.plugin.v1.ResourceHost.ArtworkSet:output_type -> gamenode.plugin.v1.MutationReply
+	237, // 464: gamenode.plugin.v1.ResourceHost.GamesRequestLaunch:output_type -> gamenode.plugin.v1.GameLaunchReply
+	239, // 465: gamenode.plugin.v1.ResourceHost.GamesProposeCustomLaunch:output_type -> gamenode.plugin.v1.CustomLaunchReply
+	239, // 466: gamenode.plugin.v1.ResourceHost.GamesRequestCustomLaunch:output_type -> gamenode.plugin.v1.CustomLaunchReply
+	164, // 467: gamenode.plugin.v1.ResourceHost.GamesRemoveCustomLaunch:output_type -> gamenode.plugin.v1.MutationReply
+	81,  // 468: gamenode.plugin.v1.ResourceHost.GamesRequestInstall:output_type -> gamenode.plugin.v1.JobReply
+	59,  // 469: gamenode.plugin.v1.ResourceHost.StorageGet:output_type -> gamenode.plugin.v1.StorageGetReply
+	60,  // 470: gamenode.plugin.v1.ResourceHost.StoragePut:output_type -> gamenode.plugin.v1.StorageMutationReply
+	164, // 471: gamenode.plugin.v1.ResourceHost.StorageDelete:output_type -> gamenode.plugin.v1.MutationReply
+	64,  // 472: gamenode.plugin.v1.ResourceHost.FilesRequestAccess:output_type -> gamenode.plugin.v1.FileAccessReply
+	66,  // 473: gamenode.plugin.v1.ResourceHost.FilesList:output_type -> gamenode.plugin.v1.FilesListReply
+	69,  // 474: gamenode.plugin.v1.ResourceHost.FilesRead:output_type -> gamenode.plugin.v1.FileReadReply
+	164, // 475: gamenode.plugin.v1.ResourceHost.FilesWrite:output_type -> gamenode.plugin.v1.MutationReply
+	164, // 476: gamenode.plugin.v1.ResourceHost.FilesDelete:output_type -> gamenode.plugin.v1.MutationReply
+	73,  // 477: gamenode.plugin.v1.ResourceHost.NetworkFetch:output_type -> gamenode.plugin.v1.NetworkFetchReply
+	164, // 478: gamenode.plugin.v1.ResourceHost.NotificationsPublish:output_type -> gamenode.plugin.v1.MutationReply
+	79,  // 479: gamenode.plugin.v1.ResourceHost.BackupsList:output_type -> gamenode.plugin.v1.BackupsListReply
+	81,  // 480: gamenode.plugin.v1.ResourceHost.BackupsRequestCreate:output_type -> gamenode.plugin.v1.JobReply
+	81,  // 481: gamenode.plugin.v1.ResourceHost.BackupsRequestRestore:output_type -> gamenode.plugin.v1.JobReply
+	93,  // 482: gamenode.plugin.v1.ResourceHost.LibrariesList:output_type -> gamenode.plugin.v1.LibrariesListReply
+	94,  // 483: gamenode.plugin.v1.ResourceHost.LibrariesGet:output_type -> gamenode.plugin.v1.LibraryRecordReply
+	95,  // 484: gamenode.plugin.v1.ResourceHost.LibrariesWatch:output_type -> gamenode.plugin.v1.LibraryRecordEvent
+	96,  // 485: gamenode.plugin.v1.ResourceHost.LibrariesCreate:output_type -> gamenode.plugin.v1.LibraryMutationReply
+	96,  // 486: gamenode.plugin.v1.ResourceHost.LibrariesUpdate:output_type -> gamenode.plugin.v1.LibraryMutationReply
+	164, // 487: gamenode.plugin.v1.ResourceHost.LibrariesRemove:output_type -> gamenode.plugin.v1.MutationReply
+	96,  // 488: gamenode.plugin.v1.ResourceHost.LibrariesAddRoot:output_type -> gamenode.plugin.v1.LibraryMutationReply
+	96,  // 489: gamenode.plugin.v1.ResourceHost.LibrariesUpdateRoot:output_type -> gamenode.plugin.v1.LibraryMutationReply
+	164, // 490: gamenode.plugin.v1.ResourceHost.LibrariesRemoveRoot:output_type -> gamenode.plugin.v1.MutationReply
+	102, // 491: gamenode.plugin.v1.ResourceHost.RuntimesList:output_type -> gamenode.plugin.v1.RuntimesListReply
+	100, // 492: gamenode.plugin.v1.ResourceHost.RuntimesGet:output_type -> gamenode.plugin.v1.RuntimeRecordReply
+	101, // 493: gamenode.plugin.v1.ResourceHost.RuntimesWatch:output_type -> gamenode.plugin.v1.RuntimeRecordEvent
+	99,  // 494: gamenode.plugin.v1.ResourceHost.RuntimesRegister:output_type -> gamenode.plugin.v1.RuntimeMutationReply
+	99,  // 495: gamenode.plugin.v1.ResourceHost.RuntimesUpdate:output_type -> gamenode.plugin.v1.RuntimeMutationReply
+	164, // 496: gamenode.plugin.v1.ResourceHost.RuntimesRemove:output_type -> gamenode.plugin.v1.MutationReply
+	164, // 497: gamenode.plugin.v1.ResourceHost.GamesRegisterContent:output_type -> gamenode.plugin.v1.MutationReply
+	104, // 498: gamenode.plugin.v1.ResourceHost.StorageDiagnosticsPublishBenchmark:output_type -> gamenode.plugin.v1.ReportMutationReply
+	104, // 499: gamenode.plugin.v1.ResourceHost.StorageDiagnosticsPublishSmart:output_type -> gamenode.plugin.v1.ReportMutationReply
+	104, // 500: gamenode.plugin.v1.ResourceHost.ComputerPublishHardware:output_type -> gamenode.plugin.v1.ReportMutationReply
+	104, // 501: gamenode.plugin.v1.ResourceHost.GamePresencePublish:output_type -> gamenode.plugin.v1.ReportMutationReply
+	164, // 502: gamenode.plugin.v1.ResourceHost.GamePresenceClear:output_type -> gamenode.plugin.v1.MutationReply
+	104, // 503: gamenode.plugin.v1.ResourceHost.GamePerformancePublishSamples:output_type -> gamenode.plugin.v1.ReportMutationReply
+	164, // 504: gamenode.plugin.v1.ResourceHost.GamePerformanceEndSeries:output_type -> gamenode.plugin.v1.MutationReply
+	114, // 505: gamenode.plugin.v1.ResourceHost.DataPublish:output_type -> gamenode.plugin.v1.DataMutationReply
+	120, // 506: gamenode.plugin.v1.ResourceHost.DataGet:output_type -> gamenode.plugin.v1.DataGetReply
+	121, // 507: gamenode.plugin.v1.ResourceHost.DataList:output_type -> gamenode.plugin.v1.DataListReply
+	122, // 508: gamenode.plugin.v1.ResourceHost.DataWatch:output_type -> gamenode.plugin.v1.DataEvent
+	124, // 509: gamenode.plugin.v1.ResourceHost.PersistenceGetUsage:output_type -> gamenode.plugin.v1.PersistenceUsageReply
+	126, // 510: gamenode.plugin.v1.ResourceHost.PersistenceListEntries:output_type -> gamenode.plugin.v1.PersistenceListReply
+	164, // 511: gamenode.plugin.v1.ResourceHost.PersistenceDeleteEntries:output_type -> gamenode.plugin.v1.MutationReply
+	164, // 512: gamenode.plugin.v1.ResourceHost.PersistenceClear:output_type -> gamenode.plugin.v1.MutationReply
+	164, // 513: gamenode.plugin.v1.ResourceHost.PersistenceSetRetentionPolicy:output_type -> gamenode.plugin.v1.MutationReply
+	135, // 514: gamenode.plugin.v1.ResourceHost.ToolsList:output_type -> gamenode.plugin.v1.ToolsListReply
+	81,  // 515: gamenode.plugin.v1.ResourceHost.ToolsRequestApply:output_type -> gamenode.plugin.v1.JobReply
+	81,  // 516: gamenode.plugin.v1.ResourceHost.ToolsRequestRemove:output_type -> gamenode.plugin.v1.JobReply
+	140, // 517: gamenode.plugin.v1.ResourceHost.PortsList:output_type -> gamenode.plugin.v1.PortsListReply
+	141, // 518: gamenode.plugin.v1.ResourceHost.PortsDetail:output_type -> gamenode.plugin.v1.PortDetailReply
+	81,  // 519: gamenode.plugin.v1.ResourceHost.PortsRequestInstall:output_type -> gamenode.plugin.v1.JobReply
+	81,  // 520: gamenode.plugin.v1.ResourceHost.JobsGet:output_type -> gamenode.plugin.v1.JobReply
+	146, // 521: gamenode.plugin.v1.ResourceHost.JobsWatch:output_type -> gamenode.plugin.v1.JobEvent
+	81,  // 522: gamenode.plugin.v1.ResourceHost.JobsCancel:output_type -> gamenode.plugin.v1.JobReply
+	180, // 523: gamenode.plugin.v1.Saves.ListProfiles:output_type -> gamenode.plugin.v1.SaveProfileListReply
+	181, // 524: gamenode.plugin.v1.Saves.GetProfile:output_type -> gamenode.plugin.v1.SaveProfileReply
+	182, // 525: gamenode.plugin.v1.Saves.CreateProfile:output_type -> gamenode.plugin.v1.SaveProfileMutationReply
+	182, // 526: gamenode.plugin.v1.Saves.UpdateProfile:output_type -> gamenode.plugin.v1.SaveProfileMutationReply
+	182, // 527: gamenode.plugin.v1.Saves.RemoveProfile:output_type -> gamenode.plugin.v1.SaveProfileMutationReply
+	184, // 528: gamenode.plugin.v1.Locations.Inspect:output_type -> gamenode.plugin.v1.LocationInspectReply
+	186, // 529: gamenode.plugin.v1.Locations.GetSize:output_type -> gamenode.plugin.v1.LocationSizeReply
+	188, // 530: gamenode.plugin.v1.Locations.GetAccess:output_type -> gamenode.plugin.v1.LocationAccessReply
+	190, // 531: gamenode.plugin.v1.Locations.GetLastModified:output_type -> gamenode.plugin.v1.LocationLastModifiedReply
+	192, // 532: gamenode.plugin.v1.Locations.GetFingerprint:output_type -> gamenode.plugin.v1.LocationFingerprintReply
+	194, // 533: gamenode.plugin.v1.Locations.Compare:output_type -> gamenode.plugin.v1.LocationCompareReply
+	196, // 534: gamenode.plugin.v1.Locations.WatchAvailability:output_type -> gamenode.plugin.v1.LocationAvailabilityEvent
+	206, // 535: gamenode.plugin.v1.StorageDiagnostics.List:output_type -> gamenode.plugin.v1.DiagnosticListReply
+	207, // 536: gamenode.plugin.v1.StorageDiagnostics.Get:output_type -> gamenode.plugin.v1.DiagnosticGetReply
+	208, // 537: gamenode.plugin.v1.StorageDiagnostics.Watch:output_type -> gamenode.plugin.v1.DiagnosticEvent
+	213, // 538: gamenode.plugin.v1.Computer.List:output_type -> gamenode.plugin.v1.ComputerListReply
+	214, // 539: gamenode.plugin.v1.Computer.Get:output_type -> gamenode.plugin.v1.ComputerGetReply
+	215, // 540: gamenode.plugin.v1.Computer.Watch:output_type -> gamenode.plugin.v1.ComputerEvent
+	220, // 541: gamenode.plugin.v1.GamePresence.List:output_type -> gamenode.plugin.v1.PresenceListReply
+	221, // 542: gamenode.plugin.v1.GamePresence.Get:output_type -> gamenode.plugin.v1.PresenceGetReply
+	222, // 543: gamenode.plugin.v1.GamePresence.Watch:output_type -> gamenode.plugin.v1.PresenceEvent
+	229, // 544: gamenode.plugin.v1.GamePerformance.List:output_type -> gamenode.plugin.v1.PerformanceListReply
+	230, // 545: gamenode.plugin.v1.GamePerformance.Get:output_type -> gamenode.plugin.v1.PerformanceGetReply
+	231, // 546: gamenode.plugin.v1.GamePerformance.Watch:output_type -> gamenode.plugin.v1.PerformanceEvent
+	232, // 547: gamenode.plugin.v1.GamePerformance.QuerySeries:output_type -> gamenode.plugin.v1.PerformanceQuerySeriesReply
+	233, // 548: gamenode.plugin.v1.GamePerformance.Aggregate:output_type -> gamenode.plugin.v1.PerformanceAggregateReply
+	443, // [443:549] is the sub-list for method output_type
+	337, // [337:443] is the sub-list for method input_type
+	337, // [337:337] is the sub-list for extension type_name
+	337, // [337:337] is the sub-list for extension extendee
+	0,   // [0:337] is the sub-list for field type_name
 }
 
 func init() { file_plugin_proto_init() }
@@ -23356,6 +24300,7 @@ func file_plugin_proto_init() {
 		(*SubmitDiscoveryRequest_Completed)(nil),
 		(*SubmitDiscoveryRequest_Failed)(nil),
 	}
+	file_plugin_proto_msgTypes[79].OneofWrappers = []any{}
 	file_plugin_proto_msgTypes[159].OneofWrappers = []any{}
 	file_plugin_proto_msgTypes[212].OneofWrappers = []any{
 		(*ExtensionNamespacePatch_Set)(nil),
@@ -23434,8 +24379,8 @@ func file_plugin_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_plugin_proto_rawDesc), len(file_plugin_proto_rawDesc)),
-			NumEnums:      24,
-			NumMessages:   275,
+			NumEnums:      31,
+			NumMessages:   279,
 			NumExtensions: 0,
 			NumServices:   9,
 		},

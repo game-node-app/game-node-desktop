@@ -87,6 +87,7 @@ impl LaunchSupervisor {
         Ok(supervisor)
     }
     /// Acquires the complete lease set before invoking the platform spawn operation.
+    #[cfg(test)]
     pub(crate) fn start(
         &self,
         coordinator: &dyn ResourceLeaseCoordinator,
@@ -144,6 +145,7 @@ impl LaunchSupervisor {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn refresh(&self, id: u64) -> Result<TreeState, ResourceLeaseError> {
         let mut launches = self
             .launches

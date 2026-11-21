@@ -495,11 +495,17 @@ message PerformanceSamplesRequest {
 }
 message PerformanceEndSeriesRequest { MutationContext mutation = 1; string series_id = 2; int64 ended_at = 3; uint64 expected_last_sequence = 4; }
 message DataPublishRequest { MutationContext mutation = 1; string dataset_id = 2; string schema_id = 3; uint32 schema_version = 4; google.protobuf.Struct value = 5; StorageDurability durability = 6; uint64 ttl_seconds = 7; bytes opaque_payload = 8; string resource_id = 9; int64 observed_at = 10; uint64 sequence = 11; string source_observation_id = 12; }
-message DataMutationReply { string record_id = 1; uint64 revision = 2; int64 expires_at = 3; MutationOutcome outcome = 4; }
+// `durability` reports the mode the host actually used; a reply never names a mode the record
+// does not have, and a durable mode is never a session-only downgrade. `expires_at` is the
+// record's Unix-seconds expiry (0 when it does not expire).
+message DataMutationReply { string record_id = 1; uint64 revision = 2; int64 expires_at = 3; MutationOutcome outcome = 4; StorageDurability durability = 5; }
 message DataGetRequest { ServiceContext context = 1; string dataset_id = 2; string record_id = 3; CommonDataSelector common_data_categories = 4; }
 message DataListRequest { PageRequest page = 1; string dataset_id = 2; string filter = 3; CommonDataSelector common_data_categories = 4; }
 message DataWatchRequest { ServiceContext context = 1; string dataset_id = 2; uint64 after_revision = 3; CommonDataSelector common_data_categories = 4; }
-message DataRecord { string record_id = 1; string dataset_id = 2; string publisher_id = 3; uint64 revision = 4; google.protobuf.Struct value = 5; string schema_id = 6; uint32 schema_version = 7; bytes opaque_payload = 8; DataProvenance provenance = 9; string resource_id = 10; int64 observed_at = 11; int64 received_at = 12; int64 expires_at = 13; uint64 sequence = 14; string source_observation_id = 15; }
+// `durability` is additive: older readers ignore it and read the rest of the record unchanged,
+// while a newer reader reports the mode the record actually has. Session-retained records keep
+// the value session-only.
+message DataRecord { string record_id = 1; string dataset_id = 2; string publisher_id = 3; uint64 revision = 4; google.protobuf.Struct value = 5; string schema_id = 6; uint32 schema_version = 7; bytes opaque_payload = 8; DataProvenance provenance = 9; string resource_id = 10; int64 observed_at = 11; int64 received_at = 12; int64 expires_at = 13; uint64 sequence = 14; string source_observation_id = 15; StorageDurability durability = 16; }
 // Host-assigned provenance for published data and common domain projections.
 message DataProvenance { string producer_plugin_id = 1; string declared_developer = 2; string origin = 3; string publisher_fingerprint = 4; string package_version = 5; bytes package_digest = 6; string resource_id = 7; int64 observed_at = 8; int64 received_at = 9; repeated string source_record_ids = 10; }
 message DataGetReply { DataRecord record = 1; }

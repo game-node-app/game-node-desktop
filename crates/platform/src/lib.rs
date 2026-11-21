@@ -32,6 +32,7 @@ pub mod plugin_network;
 pub mod plugin_packages;
 pub mod plugin_persistence;
 pub mod plugin_registry;
+pub mod plugin_shared_data;
 pub mod plugin_storage;
 pub mod plugin_telemetry;
 pub mod plugin_updates;

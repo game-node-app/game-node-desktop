@@ -129,6 +129,12 @@ impl DataPaths {
         self.data_dir.join("plugin-data")
     }
 
+    /// The host-owned durable public shared-data pool. Separate from the settings database and
+    /// from private plugin storage; only the host reads or reveals its location.
+    pub fn plugin_shared_data_file(&self) -> PathBuf {
+        self.data_dir.join(crate::plugin_shared_data::FILE_NAME)
+    }
+
     pub fn private_dir(&self) -> PathBuf {
         self.data_dir.join(PRIVATE_DIR)
     }
@@ -237,8 +243,17 @@ mod tests {
             paths.tool_backups_dir(),
             paths.private_dir().join("tool-backups")
         );
+        assert_eq!(
+            paths.plugin_shared_data_file(),
+            paths.data_dir().join("plugin-shared-data.sqlite3")
+        );
         assert!(paths.tools_cache_dir().starts_with(paths.data_dir()));
         assert!(paths.tool_backups_dir().starts_with(paths.data_dir()));
+        assert!(
+            paths
+                .plugin_shared_data_file()
+                .starts_with(paths.data_dir())
+        );
     }
 
     #[test]

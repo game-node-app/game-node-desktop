@@ -26,7 +26,7 @@ use tonic::Status;
 use crate::proto::*;
 use crate::resources::{Resources, Written, timed};
 
-/// How long a stored value is kept and where.
+/// How long a stored or shared value is kept and where.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Durability {
     /// Kept in GameNode's memory until the plugin's last session ends. Needs only
@@ -38,14 +38,17 @@ pub enum Durability {
 }
 
 impl Durability {
-    fn to_proto(self) -> i32 {
+    /// The wire value to send or compare, shared by storage and shared-data replies.
+    pub fn to_proto(self) -> i32 {
         match self {
             Self::SessionOnly => StorageDurability::SessionOnly as i32,
             Self::Persistent => StorageDurability::Persistent as i32,
         }
     }
 
-    fn from_proto(value: i32) -> Option<Self> {
+    /// Reads a wire value. `None` means the field was absent (an older host or client) or the
+    /// value is unknown, so the caller never assumes a mode the host did not report.
+    pub fn from_proto(value: i32) -> Option<Self> {
         match StorageDurability::try_from(value) {
             Ok(StorageDurability::SessionOnly) => Some(Self::SessionOnly),
             Ok(StorageDurability::Persistent) => Some(Self::Persistent),

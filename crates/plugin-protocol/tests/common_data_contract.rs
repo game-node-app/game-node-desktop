@@ -2,7 +2,9 @@ use gamenode_plugin_protocol::{
     common_data,
     prost::Message,
     prost_types::FileDescriptorSet,
-    proto::{CommonDataCategory, CommonDataSelector},
+    proto::{
+        CommonDataCategory, CommonDataSelector, DataMutationReply, DataRecord, StorageDurability,
+    },
 };
 use serde_json::Value;
 
@@ -304,4 +306,58 @@ fn generated_descriptor_keeps_typed_data_extensions_and_byte_envelopes_stable() 
             .as_deref(),
         Some(".google.protobuf.Struct")
     );
+}
+
+#[test]
+fn data_durability_is_additive_on_the_publish_reply_and_record() {
+    let descriptor = FileDescriptorSet::decode(DESCRIPTOR).unwrap();
+    let message = |name: &str| {
+        descriptor
+            .file
+            .iter()
+            .flat_map(|file| &file.message_type)
+            .find(|message| message.name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("{name} descriptor"))
+    };
+    let field = |name: &str, field_name: &str| {
+        message(name)
+            .field
+            .iter()
+            .find(|field| field.name.as_deref() == Some(field_name))
+            .unwrap_or_else(|| panic!("{name}.{field_name} descriptor"))
+    };
+
+    for (name, number) in [("DataMutationReply", 5), ("DataRecord", 16)] {
+        let durability = field(name, "durability");
+        assert_eq!(
+            durability.number,
+            Some(number),
+            "{name}.durability keeps its additive number"
+        );
+        assert_eq!(
+            durability.type_name.as_deref(),
+            Some(".gamenode.plugin.v1.StorageDurability"),
+            "{name}.durability carries the shared mode enum"
+        );
+    }
+
+    // A reader that predates the field sees no mode; a current reader sees the actual one.
+    let absent = DataMutationReply::decode([].as_slice()).unwrap();
+    assert_eq!(
+        absent.durability,
+        StorageDurability::Unspecified as i32,
+        "an old or absent value decodes as unspecified"
+    );
+    let durable = DataMutationReply {
+        durability: StorageDurability::Persistent as i32,
+        ..Default::default()
+    };
+    let restored = DataMutationReply::decode(durable.encode_to_vec().as_slice()).unwrap();
+    assert_eq!(restored.durability, StorageDurability::Persistent as i32);
+    let record = DataRecord {
+        durability: StorageDurability::SessionOnly as i32,
+        ..Default::default()
+    };
+    let restored = DataRecord::decode(record.encode_to_vec().as_slice()).unwrap();
+    assert_eq!(restored.durability, StorageDurability::SessionOnly as i32);
 }

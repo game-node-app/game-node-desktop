@@ -985,6 +985,9 @@ fn data_record(record: &ProjectedRecord) -> DataRecord {
         expires_at: record.expires_at().unwrap_or_default(),
         sequence: record.sequence(),
         source_observation_id: record.source_observation_id().to_owned(),
+        // Every record projected today is retired with its producer session; durable rows are
+        // merged by the durable-read work and carry their stored mode.
+        durability: StorageDurability::SessionOnly as i32,
     }
 }
 

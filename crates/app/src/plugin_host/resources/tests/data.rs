@@ -186,6 +186,61 @@ async fn data_publish_requires_exactly_one_nonempty_payload() {
     server.abort();
 }
 
+/// A custom Struct carries data only. Top-level keys shaped like host authority are refused before
+/// the record reaches the broker, so a payload can never shadow identity, provenance or execution.
+#[tokio::test]
+async fn authority_shaped_struct_fields_are_rejected_on_the_public_publish_route() {
+    let fixture = Fixture::new(&[cap::DATA_PUBLISH]).await;
+    let broker = Arc::new(DataBroker::new());
+    let authorizer: Arc<dyn Authorizer> = Arc::new(SharingPolicies::default());
+    let (mut client, server) = local_client(service(&fixture, broker.clone(), authorizer)).await;
+
+    for field in [
+        "owner",
+        "provenance",
+        "permissions",
+        "executable_handle",
+        "path",
+    ] {
+        let request = data_publish(
+            &fixture,
+            &format!("authority-{field}"),
+            value(&[(field, text("plugin-supplied"))]),
+        );
+        let error = client.data_publish(request).await.unwrap_err();
+        assert_eq!(error.code(), tonic::Code::InvalidArgument, "{field}");
+    }
+    assert_eq!(broker.revision(), 0, "a rejected payload changes nothing");
+    assert!(
+        client
+            .data_list(DataListRequest {
+                page: Some(PageRequest {
+                    context: Some(fixture.context()),
+                    page_size: 10,
+                    ..Default::default()
+                }),
+                dataset_id: "org.example.metrics.v1".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .into_inner()
+            .records
+            .is_empty()
+    );
+
+    // An ordinary observation still lands after the refusals.
+    client
+        .data_publish(data_publish(
+            &fixture,
+            "authority-ordinary",
+            value(&[("fps", number(60.0))]),
+        ))
+        .await
+        .unwrap();
+    server.abort();
+}
+
 #[tokio::test]
 async fn data_publish_preserves_observation_metadata_and_host_provenance() {
     let fixture = Fixture::new(&[cap::DATA_PUBLISH]).await;

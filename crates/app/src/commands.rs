@@ -665,6 +665,33 @@ pub async fn plugin_import_license_text(
 }
 
 #[tauri::command]
+pub async fn plugin_bundle_import_review(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    archive_path: String,
+) -> Result<crate::plugin_host::updates::BundleImportReview, String> {
+    updates.bundle_import_review(archive_path.into()).await
+}
+
+#[tauri::command]
+pub async fn plugin_bundle_import_confirm_publisher(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    token: String,
+    confirmed_fingerprint: String,
+) -> Result<crate::plugin_host::updates::BundleImportReview, String> {
+    updates
+        .bundle_import_confirm_publisher(&token, &confirmed_fingerprint)
+        .await
+}
+
+#[tauri::command]
+pub async fn plugin_bundle_permissions_replace(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    submissions: Vec<crate::plugin_host::updates::BundleComponentPermissionSubmission>,
+) -> Result<crate::plugin_host::updates::BundlePermissionResult, String> {
+    updates.apply_bundle_permissions(submissions).await
+}
+
+#[tauri::command]
 pub async fn plugin_permission_snapshot(
     updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
     plugin_id: String,

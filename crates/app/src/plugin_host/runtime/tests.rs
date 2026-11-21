@@ -264,10 +264,10 @@ async fn imported_signed_provider_runs_from_registry_and_profile_fences_after_pe
     importer.set_lifecycle(preliminary);
     let archive = signed_provider_archive(&directory.path().join("package"));
     let review = importer.import_review(archive).await.unwrap();
-    assert_eq!(review.trust, "untrusted");
-    assert_eq!(review.compatibility, "compatible");
+    assert_eq!(review.package.trust, "untrusted");
+    assert_eq!(review.package.compatibility, "compatible");
     importer
-        .import_confirm_publisher(&review.token, &review.publisher_fingerprint)
+        .import_confirm_publisher(&review.token, &review.package.publisher_fingerprint)
         .await
         .unwrap();
     assert_eq!(
@@ -450,9 +450,9 @@ async fn official_linux_providers_remain_composed_across_managed_registry_states
                 importer.set_lifecycle(preliminary);
                 let archive = signed_provider_archive(&directory.path().join("package"));
                 let review = importer.import_review(archive).await.unwrap();
-                assert_eq!(review.compatibility, "compatible", "{state_name}");
+                assert_eq!(review.package.compatibility, "compatible", "{state_name}");
                 importer
-                    .import_confirm_publisher(&review.token, &review.publisher_fingerprint)
+                    .import_confirm_publisher(&review.token, &review.package.publisher_fingerprint)
                     .await
                     .unwrap();
                 assert_eq!(

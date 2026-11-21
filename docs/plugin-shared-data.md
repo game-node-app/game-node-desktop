@@ -213,16 +213,30 @@ when it closes; this does not grant durable storage.
 
 `PersistenceGetUsage` reports the caller's durable logical and quota bytes plus an
 estimated physical allocation; `PersistenceListEntries` pages the caller's
-persistent entries by opaque entry ID and logical key, category, size and last
-use. `PersistenceDeleteEntries`, `PersistenceClear` and
+persistent entries by opaque entry ID and logical key, category, size, last
+use and user-protection state. `PersistenceDeleteEntries`, `PersistenceClear` and
 `PersistenceSetRetentionPolicy` require the exact current namespace revision and
 apply atomically. Session-only values are not listed or counted. A retention
 policy (private category, maximum age and maximum bytes) removes entries beyond
 the selected bounds immediately, oldest use first. The namespace, identity,
 profile and cursors come from the authenticated session; values, physical paths
-and request-supplied plugin or path selectors are never exposed. Further
-per-category accounting, host cleanup and uninstall retention remain tasks
-1.15–1.17.
+and request-supplied plugin or path selectors are never exposed.
+
+Usage also carries a per-category breakdown: record count, logical bytes and how
+many records the user protected. The live private store exposes the `private`
+category today, the only category charged against `quota_bytes`. The physical
+figure is the SQLite page allocation of the whole namespace database and is
+labelled namespace-wide, because SQLite metadata and free pages are shared across
+categories and cannot be attributed per category.
+
+User protection is a host-only decision; no plugin request field can set or
+clear it. A protected record survives age/byte retention, cleanup, plugin
+overwrites, `StorageDelete` and `PersistenceClear`. Naming a protected record in
+`PersistenceDeleteEntries` fails with `FAILED_PRECONDITION` instead of deleting
+part of the selection. Host cleanup (`PluginStorage::cleanup_persistence`) also
+reclaims only the named owner's expired and policy-exceeding records and advances
+that namespace's revision so stale cursors cannot resume across the change.
+Further host-wide cleanup and uninstall retention remain tasks 1.16–1.17.
 
 ### Other reserved routes
 

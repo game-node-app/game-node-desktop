@@ -129,11 +129,13 @@ fn persistence_entries_are_logical_ordered_and_track_last_use() {
                 key: "alpha".into(),
                 size_bytes: 3,
                 last_used_at: 150,
+                user_protected: false,
             },
             PersistenceEntry {
                 key: "beta".into(),
                 size_bytes: 3,
                 last_used_at: 160,
+                user_protected: false,
             },
         ]
     );
@@ -194,6 +196,133 @@ fn retention_policy_prunes_by_age_and_size_without_touching_the_newest_entry() {
         }
     );
     assert!(store.get("newest", 300).unwrap().is_some());
+}
+
+#[test]
+fn usage_reports_category_records_and_a_namespace_wide_page_estimate() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = store(temp.path());
+    store
+        .put("alpha", b"one", 1, None, 100, QUOTA_BYTES)
+        .unwrap();
+    store
+        .put("beta", b"two", 2, None, 100, QUOTA_BYTES)
+        .unwrap();
+    store
+        .put("expired", b"gone", 3, Some(150), 100, QUOTA_BYTES)
+        .unwrap();
+    assert!(store.set_user_protected("beta", true).unwrap());
+
+    let usage = store.store_usage(200).unwrap();
+    let expected = charge("alpha", 3) + charge("beta", 3);
+    assert_eq!(usage.logical_bytes, expected);
+    assert_eq!(usage.categories.len(), 1);
+    assert_eq!(
+        usage.categories[0],
+        CategoryUsage {
+            category: "private".into(),
+            records: 2,
+            logical_bytes: expected,
+            protected_records: 1,
+        }
+    );
+    // The physical estimate covers the whole namespace file, not one category.
+    assert_eq!(
+        usage.physical_bytes_estimate,
+        store.physical_bytes().unwrap()
+    );
+    assert!(usage.physical_bytes_estimate > 0);
+}
+
+#[test]
+fn protected_records_survive_plugin_deletion_retention_and_cleanup() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = store(temp.path());
+    store
+        .put("protected", b"keep", 1, None, 100, QUOTA_BYTES)
+        .unwrap();
+    store
+        .put("unprotected", b"old", 2, None, 100, QUOTA_BYTES)
+        .unwrap();
+    assert!(store.set_user_protected("protected", true).unwrap());
+
+    // A plugin cannot overwrite, remove, or bulk-delete a protected record.
+    assert!(matches!(
+        store.put("protected", b"new", 3, None, 100, QUOTA_BYTES),
+        Err(PluginStorageError::Protected)
+    ));
+    assert!(matches!(
+        store.remove("protected"),
+        Err(PluginStorageError::Protected)
+    ));
+    assert!(matches!(
+        store.delete_persistence_entries(&["protected".to_owned()], 100, 3),
+        Err(PluginStorageError::Protected)
+    ));
+    assert_eq!(store.get("protected", 100).unwrap().unwrap().value, b"keep");
+
+    // Age retention removes the old unprotected record and leaves the protected one.
+    store
+        .set_retention_policy(
+            "private",
+            RetentionPolicy {
+                max_age_seconds: 50,
+                max_bytes: 0,
+            },
+            200,
+            4,
+        )
+        .unwrap();
+    assert!(store.get("unprotected", 200).unwrap().is_none());
+    assert!(store.get("protected", 200).unwrap().is_some());
+
+    // Cleanup reclaims the unprotected, expired record only.
+    store
+        .put("expiring", b"x", 5, Some(210), 200, QUOTA_BYTES)
+        .unwrap();
+    let cleanup = store.cleanup(220).unwrap();
+    assert_eq!(cleanup.removed_records, 1);
+    assert_eq!(cleanup.reclaimed_bytes, charge("expiring", 1));
+    assert!(store.get("expiring", 220).unwrap().is_none());
+    assert!(store.get("protected", 220).unwrap().is_some());
+
+    // Only the host can lift protection; then the normal delete path works again.
+    assert!(store.set_user_protected("protected", false).unwrap());
+    assert_eq!(store.remove("protected").unwrap(), Some(1));
+}
+
+#[test]
+fn a_version_twelve_store_gains_host_only_user_protection() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("ns");
+    fs::create_dir_all(&dir).unwrap();
+    let conn = Connection::open(dir.join(STORE_FILE)).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE meta (id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL) STRICT;
+         INSERT INTO meta (id, revision) VALUES (1, 7);
+         CREATE TABLE entries (
+             key TEXT PRIMARY KEY,
+             value BLOB NOT NULL,
+             revision INTEGER NOT NULL CHECK (revision >= 1),
+             expires_at INTEGER,
+             last_used_at INTEGER NOT NULL DEFAULT 0
+         ) STRICT;
+         INSERT INTO entries (key, value, revision, expires_at, last_used_at)
+         VALUES ('legacy', X'00', 7, NULL, 50);
+         PRAGMA user_version = 12;",
+    )
+    .unwrap();
+    drop(conn);
+
+    let mut upgraded = store(&dir);
+    let entry = &upgraded.persistence_entries(100).unwrap()[0];
+    assert_eq!(entry.key, "legacy");
+    assert!(!entry.user_protected);
+    assert!(upgraded.set_user_protected("legacy", true).unwrap());
+    drop(upgraded);
+
+    let reopened = store(&dir);
+    assert!(reopened.persistence_entries(100).unwrap()[0].user_protected);
 }
 
 #[test]

@@ -5098,6 +5098,8 @@ mod tests {
         let profile = "fixture-profile";
         let profile_data = namespace_dir(&data_root, &publisher, "org.example.dolphin", profile);
         DurableStore::open(&profile_data).unwrap();
+        let private_persistence = profile_data.join("plugin-persistence.sqlite3");
+        fs::write(&private_persistence, b"private persistence").unwrap();
         let other_profile = namespace_dir(
             &data_root,
             &publisher,
@@ -5105,6 +5107,19 @@ mod tests {
             "other-profile",
         );
         DurableStore::open(&other_profile).unwrap();
+        fs::write(
+            other_profile.join("plugin-persistence.sqlite3"),
+            b"other profile persistence",
+        )
+        .unwrap();
+        // Another plugin of the same publisher has its own private namespaces.
+        let foreign_plugin = namespace_dir(&data_root, &publisher, "org.example.other", profile);
+        DurableStore::open(&foreign_plugin).unwrap();
+        fs::write(
+            foreign_plugin.join("plugin-persistence.sqlite3"),
+            b"foreign persistence",
+        )
+        .unwrap();
 
         // Keep: the packages and mapping are removed, but the private namespace stays.
         let stopper = RecordingStopper::default();
@@ -5163,6 +5178,19 @@ mod tests {
         assert!(
             other_profile.is_dir(),
             "another signed-in profile's private data is not part of this choice"
+        );
+        assert!(other_profile.join("storage.sqlite3").is_file());
+        assert_eq!(
+            fs::read(other_profile.join("plugin-persistence.sqlite3")).unwrap(),
+            b"other profile persistence"
+        );
+        assert!(
+            foreign_plugin.join("storage.sqlite3").is_file(),
+            "another plugin's private store is not reclaimed"
+        );
+        assert_eq!(
+            fs::read(foreign_plugin.join("plugin-persistence.sqlite3")).unwrap(),
+            b"foreign persistence"
         );
         assert!(
             registry

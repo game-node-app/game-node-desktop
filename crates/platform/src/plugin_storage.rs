@@ -29,7 +29,7 @@ pub const ENTRY_OVERHEAD_BYTES: u64 = 64;
 /// The longest an entry may live before it expires (30 days).
 pub const MAX_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
 
-const SCHEMA_VERSION: i64 = 12;
+const SCHEMA_VERSION: i64 = 13;
 const STORE_FILE: &str = "storage.sqlite3";
 /// Longest directory name derived from an identity before it is replaced by a digest.
 const MAX_COMPONENT_BYTES: usize = 120;
@@ -43,6 +43,8 @@ pub enum PluginStorageError {
     Database(#[source] rusqlite::Error),
     #[error("the plugin storage was written by a newer version of GameNode")]
     NewerVersion,
+    #[error("the entry is protected by the user")]
+    Protected,
 }
 
 impl From<rusqlite::Error> for PluginStorageError {
@@ -101,6 +103,38 @@ pub struct PersistenceEntry {
     pub key: String,
     pub size_bytes: u64,
     pub last_used_at: i64,
+    /// Set only by host administration. A plugin can neither set nor clear it.
+    pub user_protected: bool,
+}
+
+/// Logical usage of one persistence category; never includes a value or a filesystem path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CategoryUsage {
+    pub category: String,
+    pub records: u64,
+    pub logical_bytes: u64,
+    /// Records in this category the user protected from plugin and retention deletion.
+    pub protected_records: u64,
+}
+
+/// Logical accounting of one plugin's durable private store.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoreUsage {
+    /// The persistence categories the store currently exposes. Only the `private` category
+    /// counts against the plugin quota; the list is shaped for future categories.
+    pub categories: Vec<CategoryUsage>,
+    /// The quota-charged logical bytes: the sum of `categories`.
+    pub logical_bytes: u64,
+    /// SQLite page allocation for the complete namespace database. SQLite metadata and free
+    /// pages are shared across categories, so this is never a per-category physical figure.
+    pub physical_bytes_estimate: u64,
+}
+
+/// The result of a host cleanup of expired and policy-exceeding records.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CleanupOutcome {
+    pub removed_records: u64,
+    pub reclaimed_bytes: u64,
 }
 
 /// User-approved retention limits for a logical storage category.
@@ -332,6 +366,27 @@ impl DurableStore {
                  COMMIT;"
             ))?;
         }
+        if version < 13 {
+            // Host-only user protection. Plugins can neither set nor clear it, and retention,
+            // explicit deletion and cleanup must keep a protected record.
+            let has_user_protected = conn
+                .prepare("PRAGMA table_info(entries)")?
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<Vec<_>, _>>()?
+                .iter()
+                .any(|name| name == "user_protected");
+            let add_column = if has_user_protected {
+                ""
+            } else {
+                "ALTER TABLE entries ADD COLUMN user_protected INTEGER NOT NULL DEFAULT 0 CHECK (user_protected IN (0, 1));"
+            };
+            conn.execute_batch(&format!(
+                "BEGIN IMMEDIATE;
+                 {add_column}
+                 PRAGMA user_version = 13;
+                 COMMIT;"
+            ))?;
+        }
         Ok(Self { conn })
     }
 
@@ -377,7 +432,7 @@ impl DurableStore {
         now: i64,
     ) -> Result<Vec<PersistenceEntry>, PluginStorageError> {
         let mut statement = self.conn.prepare(
-            "SELECT key, length(value), last_used_at FROM entries
+            "SELECT key, length(value), last_used_at, user_protected FROM entries
              WHERE expires_at IS NULL OR expires_at > ?1 ORDER BY key",
         )?;
         let rows = statement.query_map([now], |row| {
@@ -385,6 +440,7 @@ impl DurableStore {
                 key: row.get(0)?,
                 size_bytes: row.get::<_, i64>(1)? as u64,
                 last_used_at: row.get(2)?,
+                user_protected: row.get::<_, i64>(3)? != 0,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -444,6 +500,8 @@ impl DurableStore {
     }
 
     /// Deletes selected logical keys in one transaction and advances the namespace revision.
+    /// A user-protected key refuses the set, so a plugin cannot delete protected data by naming
+    /// it in a bulk deletion.
     pub fn delete_persistence_entries(
         &mut self,
         keys: &[String],
@@ -453,6 +511,19 @@ impl DurableStore {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for key in keys {
+            let protected: Option<i64> = tx
+                .query_row(
+                    "SELECT user_protected FROM entries WHERE key = ?1
+                     AND (expires_at IS NULL OR expires_at > ?2)",
+                    params![key, now],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if protected == Some(1) {
+                return Err(PluginStorageError::Protected);
+            }
+        }
         let mut reclaimed = 0_u64;
         for key in keys {
             let size: Option<i64> = tx
@@ -476,7 +547,8 @@ impl DurableStore {
         Ok(reclaimed)
     }
 
-    /// Approximate database page allocation without disclosing its path.
+    /// Approximate database page allocation without disclosing its path. Metadata and free pages
+    /// are shared by every category in the same file.
     pub fn physical_bytes(&self) -> Result<u64, PluginStorageError> {
         let page_count: i64 = self
             .conn
@@ -490,6 +562,82 @@ impl DurableStore {
     /// The logical bytes held at `now`, expired entries not counted.
     pub fn usage(&self, now: i64) -> Result<u64, PluginStorageError> {
         usage_of(&self.conn, now, None)
+    }
+
+    /// Per-category logical accounting plus the namespace-wide physical estimate. Values and
+    /// paths never leave the store.
+    pub fn store_usage(&self, now: i64) -> Result<StoreUsage, PluginStorageError> {
+        let (records, logical_bytes, protected_records): (i64, i64, i64) = self.conn.query_row(
+            "SELECT COUNT(*),
+                        COALESCE(SUM(length(CAST(key AS BLOB)) + length(value) + ?1), 0),
+                        COALESCE(SUM(user_protected), 0)
+                 FROM entries
+                 WHERE expires_at IS NULL OR expires_at > ?2",
+            params![ENTRY_OVERHEAD_BYTES as i64, now],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        let category = CategoryUsage {
+            category: "private".to_owned(),
+            records: records.max(0) as u64,
+            logical_bytes: logical_bytes.max(0) as u64,
+            protected_records: protected_records.max(0) as u64,
+        };
+        Ok(StoreUsage {
+            logical_bytes: category.logical_bytes,
+            categories: vec![category],
+            physical_bytes_estimate: self.physical_bytes()?,
+        })
+    }
+
+    /// Applies the host-only user protection decision. A plugin RPC has no way to reach this.
+    pub fn set_user_protected(
+        &mut self,
+        key: &str,
+        protected: bool,
+    ) -> Result<bool, PluginStorageError> {
+        let changed = self.conn.execute(
+            "UPDATE entries SET user_protected = ?2 WHERE key = ?1",
+            params![key, i64::from(protected as u8)],
+        )?;
+        Ok(changed != 0)
+    }
+
+    /// Removes expired records and applies the stored retention policy while keeping every
+    /// user-protected record. This is a host cleanup, separate from a plugin mutation.
+    pub fn cleanup(&mut self, now: i64) -> Result<CleanupOutcome, PluginStorageError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let before_records: i64 =
+            tx.query_row("SELECT COUNT(*) FROM entries", [], |row| row.get(0))?;
+        let before_bytes = usage_of(&tx, i64::MIN, None)?;
+        tx.execute(
+            "DELETE FROM entries WHERE user_protected = 0
+               AND expires_at IS NOT NULL AND expires_at <= ?1",
+            [now],
+        )?;
+        let policy = tx
+            .query_row(
+                "SELECT max_age_seconds, max_bytes FROM retention_policies WHERE category = 'private'",
+                [],
+                |row| {
+                    Ok(RetentionPolicy {
+                        max_age_seconds: row.get::<_, i64>(0)? as u64,
+                        max_bytes: row.get::<_, i64>(1)? as u64,
+                    })
+                },
+            )
+            .optional()?
+            .unwrap_or_default();
+        prune_to_policy(&tx, "private", policy, now, None)?;
+        let after_records: i64 =
+            tx.query_row("SELECT COUNT(*) FROM entries", [], |row| row.get(0))?;
+        let after_bytes = usage_of(&tx, i64::MIN, None)?;
+        tx.commit()?;
+        Ok(CleanupOutcome {
+            removed_records: before_records.saturating_sub(after_records).max(0) as u64,
+            reclaimed_bytes: before_bytes.saturating_sub(after_bytes),
+        })
     }
 
     /// Stores `value` under `key` with `revision`, replacing any entry, unless the namespace
@@ -508,9 +656,20 @@ impl DurableStore {
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute(
-            "DELETE FROM entries WHERE expires_at IS NOT NULL AND expires_at <= ?1",
+            "DELETE FROM entries WHERE user_protected = 0
+               AND expires_at IS NOT NULL AND expires_at <= ?1",
             [now],
         )?;
+        let protected: Option<i64> = tx
+            .query_row(
+                "SELECT user_protected FROM entries WHERE key = ?1",
+                [key],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if protected == Some(1) {
+            return Err(PluginStorageError::Protected);
+        }
         let policy = tx
             .query_row(
                 "SELECT max_age_seconds, max_bytes FROM retention_policies WHERE category = 'private'",
@@ -549,21 +708,28 @@ impl DurableStore {
         })
     }
 
-    /// Deletes `key`. Returns the revision it had, or `None` when there was no such entry.
+    /// Deletes `key`. Returns the revision it had, or `None` when there was no such entry. A
+    /// user-protected key is refused.
     pub fn remove(&mut self, key: &str) -> Result<Option<u64>, PluginStorageError> {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let revision: Option<i64> = tx
+        let entry: Option<(i64, i64)> = tx
             .query_row(
-                "SELECT revision FROM entries WHERE key = ?1",
+                "SELECT revision, user_protected FROM entries WHERE key = ?1",
                 [key],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
+        let Some((revision, protected)) = entry else {
+            return Ok(None);
+        };
+        if protected != 0 {
+            return Err(PluginStorageError::Protected);
+        }
         tx.execute("DELETE FROM entries WHERE key = ?1", [key])?;
         tx.commit()?;
-        Ok(revision.map(|revision| revision as u64))
+        Ok(Some(revision as u64))
     }
 }
 
@@ -581,8 +747,8 @@ fn prune_to_policy(
     if policy.max_age_seconds > 0 {
         let cutoff = now.saturating_sub(policy.max_age_seconds.min(i64::MAX as u64) as i64);
         let mut statement = tx.prepare(
-            "SELECT key, length(value) FROM entries WHERE last_used_at <= ?1
-             AND (?2 IS NULL OR key != ?2)",
+            "SELECT key, length(value) FROM entries WHERE user_protected = 0
+             AND last_used_at <= ?1 AND (?2 IS NULL OR key != ?2)",
         )?;
         let old = statement
             .query_map(params![cutoff, keep_key], |row| {
@@ -601,7 +767,8 @@ fn prune_to_policy(
             let oldest = tx
                 .query_row(
                     "SELECT key, length(value) FROM entries
-                     WHERE (?1 IS NULL OR key != ?1)
+                     WHERE user_protected = 0
+                       AND (?1 IS NULL OR key != ?1)
                        AND (expires_at IS NULL OR expires_at > ?2)
                      ORDER BY last_used_at ASC, key ASC LIMIT 1",
                     params![keep_key, now],

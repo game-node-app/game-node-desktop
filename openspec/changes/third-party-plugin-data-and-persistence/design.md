@@ -46,6 +46,10 @@ Register/Update and Get/List/Watch use the same validation and catalog resolutio
 
 Durable records use a logical owner namespace and explicit retention choice. Quotas, cleanup and uninstall retention operate only on the authenticated owner's data. Host administration may report physical usage, but plugin IPC never receives physical paths. Diagnostics and gameplay observations remain plugin-produced data; Core does not add collectors or dashboards here.
 
+Private persistence accounting is per category and includes record counts, logical bytes and protected-record counts. The live private store exposes only the `private` category today; it is the category charged against the plugin quota. The physical figure is the SQLite page allocation of the entire namespace database and is reported as namespace-wide, because SQLite metadata and free pages are shared across categories and cannot be attributed to one. Usage never includes a value or a path.
+
+User protection is a persisted host-only flag on a durable private record. Plugins cannot set or clear it, and a protected record survives plugin overwrite/delete, `PersistenceClear`, age/byte retention and host cleanup. Explicit deletion that names a protected record fails instead of partially deleting the selection. Host cleanup removes only expired and policy-exceeding unprotected records in the named owner namespace; it advances that namespace revision so pagination cursors cannot resume across the change. Host-wide cleanup and uninstall retention build on this accounting but remain separate reviewed operations.
+
 ## Updates, downgrades and private data
 
 An update feed cannot select a release below the active version. A user-requested downgrade uses the same signature, integrity, target and API verification path as an update, shows the active and target versions with a downgrade warning, and changes the active package only after explicit confirmation. A publisher-key change requires a separate re-trust review bound to the exact new fingerprint; approving a package update does not substitute for that review.

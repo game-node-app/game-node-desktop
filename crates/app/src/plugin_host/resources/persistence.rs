@@ -85,20 +85,27 @@ impl ResourceApi {
         let caller = self
             .providers
             .authorize_resource(request.context.as_ref(), cap::STORAGE_PERSIST)?;
-        let (logical, physical) = self
-            .in_namespace(&caller, |namespace| {
-                Ok((
-                    namespace.usage(crate::plugin_host::storage::Durability::Persistent)?,
-                    namespace.physical_bytes()?,
-                ))
-            })
+        let usage = self
+            .in_namespace(&caller, |namespace| namespace.store_usage())
             .await?;
         self.providers
             .authorize_resource(request.context.as_ref(), cap::STORAGE_PERSIST)?;
         Ok(Response::new(PersistenceUsageReply {
-            logical_bytes: logical,
-            physical_bytes: physical,
+            logical_bytes: usage.logical_bytes,
+            physical_bytes: usage.physical_bytes_estimate,
             quota_bytes: QUOTA_BYTES,
+            categories: usage
+                .categories
+                .into_iter()
+                .map(|category| PersistenceCategoryUsage {
+                    category: category.category,
+                    records: category.records,
+                    logical_bytes: category.logical_bytes,
+                    protected_records: category.protected_records,
+                })
+                .collect(),
+            // SQLite metadata and free pages belong to the whole namespace database.
+            physical_bytes_namespace_wide: true,
         }))
     }
 
@@ -162,6 +169,7 @@ impl ResourceApi {
                     logical_key: entry.key,
                     size_bytes: entry.size_bytes,
                     last_used_at: entry.last_used_at,
+                    user_protected: entry.user_protected,
                 })
             })
             .collect::<Result<Vec<_>, Status>>()?;
@@ -293,7 +301,13 @@ impl ResourceApi {
                     return Ok(reply("private", current, MutationOutcome::RevisionConflict));
                 }
                 let entries = namespace.persistence_entries()?;
-                let keys: Vec<_> = entries.into_iter().map(|entry| entry.key).collect();
+                // A plugin clear never removes user-protected records; an explicit delete of a
+                // protected entry fails below instead.
+                let keys: Vec<_> = entries
+                    .into_iter()
+                    .filter(|entry| !entry.user_protected)
+                    .map(|entry| entry.key)
+                    .collect();
                 let (reclaimed, revision) = namespace.delete_persistence_entries(&keys, &guard)?;
                 let answer = reply(
                     "private",

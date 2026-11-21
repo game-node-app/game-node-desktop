@@ -1,6 +1,7 @@
 //! Logical Persistence administration stays in the authenticated private namespace.
 
 use super::*;
+use crate::plugin_host::storage::MAX_VALUE_BYTES;
 
 const STORAGE: &[&str] = &[
     cap::STORAGE_READ,
@@ -32,6 +33,15 @@ async fn persistence_admin_is_logical_paged_and_bound_to_authenticated_owner() {
     assert_eq!(usage.logical_bytes, (5 + 3 + 64) + (4 + 3 + 64));
     assert_eq!(usage.quota_bytes, crate::plugin_host::storage::QUOTA_BYTES);
     assert!(usage.physical_bytes > 0);
+    assert!(usage.physical_bytes_namespace_wide);
+    assert_eq!(usage.categories.len(), 1);
+    assert_eq!(usage.categories[0].category, "private");
+    assert_eq!(usage.categories[0].records, 2);
+    assert_eq!(
+        usage.categories[0].logical_bytes,
+        (5 + 3 + 64) + (4 + 3 + 64)
+    );
+    assert_eq!(usage.categories[0].protected_records, 0);
 
     let first_page = client
         .persistence_list_entries(PersistenceListRequest {
@@ -265,6 +275,197 @@ async fn persistence_admin_rejects_a_stale_revision_and_replays_the_answer() {
         .into_inner();
     assert_eq!(deleted.outcome, MutationOutcome::Applied as i32);
     assert!(!fixture.load("alpha").await.unwrap().found);
+}
+
+#[tokio::test]
+async fn host_protection_is_not_reachable_from_plugin_rpcs() {
+    let fixture = Fixture::new(STORAGE).await;
+    let alpha = fixture
+        .store("alpha", b"one", StorageDurability::Persistent, 0)
+        .await
+        .unwrap();
+    let beta = fixture
+        .store("beta", b"two", StorageDurability::Persistent, 0)
+        .await
+        .unwrap();
+    let resolver = fixture
+        .api
+        .profiles()
+        .resolver("fixture.plugin", &"ab".repeat(32), None)
+        .unwrap();
+    let epoch = fixture.api.profiles().epoch();
+    assert!(
+        fixture
+            .storage
+            .set_persistence_protected(&resolver, epoch, "alpha", true)
+            .await
+            .unwrap()
+    );
+    let mut client = fixture.client();
+
+    let usage = client
+        .persistence_get_usage(PersistenceUsageRequest {
+            context: Some(fixture.context()),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(usage.categories[0].protected_records, 1);
+    assert_eq!(usage.categories[0].records, 2);
+
+    let page = client
+        .persistence_list_entries(PersistenceListRequest {
+            page: Some(PageRequest {
+                context: Some(fixture.context()),
+                ..Default::default()
+            }),
+            category: "private".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let protected = page
+        .entries
+        .iter()
+        .find(|entry| entry.logical_key == "alpha")
+        .unwrap();
+    assert!(protected.user_protected);
+
+    // A plugin cannot overwrite, delete, or bulk-delete the protected record.
+    let status = fixture
+        .store(
+            "alpha",
+            b"changed",
+            StorageDurability::Persistent,
+            alpha.revision,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::FailedPrecondition);
+    let status = fixture
+        .remove("alpha", alpha.revision, "protected")
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::FailedPrecondition);
+    let status = client
+        .persistence_delete_entries(PersistenceDeleteRequest {
+            mutation: Some(fixture.mutation("protected", beta.revision)),
+            entry_ids: vec![protected.entry_id.clone()],
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::FailedPrecondition);
+
+    // A clear removes the unprotected entries and reports the protected one as retained.
+    let cleared = client
+        .persistence_clear(PersistenceClearRequest {
+            mutation: Some(fixture.mutation("clear-unprotected", beta.revision)),
+            category: "private".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(cleared.outcome, MutationOutcome::Applied as i32);
+    assert!(fixture.load("alpha").await.unwrap().found);
+    assert!(!fixture.load("beta").await.unwrap().found);
+
+    // Only the host can release protection; then the plugin delete succeeds.
+    assert!(
+        fixture
+            .storage
+            .set_persistence_protected(&resolver, epoch, "alpha", false)
+            .await
+            .unwrap()
+    );
+    let removed = fixture
+        .remove("alpha", alpha.revision, "protected-again")
+        .await
+        .unwrap();
+    assert_eq!(removed.outcome, MutationOutcome::Applied as i32);
+    assert!(!fixture.load("alpha").await.unwrap().found);
+}
+
+#[tokio::test]
+async fn quota_exhaustion_preserves_previously_persisted_entries() {
+    let fixture = Fixture::new(STORAGE).await;
+    let big = vec![7u8; MAX_VALUE_BYTES];
+    let mut stored = 0_u64;
+    loop {
+        let key = format!("big-{stored}");
+        match fixture
+            .store(&key, &big, StorageDurability::Persistent, 0)
+            .await
+        {
+            Ok(_) => stored += 1,
+            Err(status) => {
+                assert_eq!(status.code(), Code::ResourceExhausted);
+                break;
+            }
+        }
+    }
+    assert!(
+        (14..=15).contains(&stored),
+        "{stored} values of 1 MiB fit in the quota"
+    );
+
+    let expected: u64 = (0..stored)
+        .map(|index| {
+            let key = format!("big-{index}");
+            key.len() as u64 + MAX_VALUE_BYTES as u64 + 64
+        })
+        .sum();
+    let mut client = fixture.client();
+    let before = client
+        .persistence_get_usage(PersistenceUsageRequest {
+            context: Some(fixture.context()),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(before.logical_bytes, expected);
+    assert_eq!(before.categories[0].records, stored);
+    assert_eq!(before.categories[0].logical_bytes, expected);
+
+    // The refused write changes neither accounting nor any earlier entry.
+    let status = fixture
+        .store("one-more", &big, StorageDurability::Persistent, 0)
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::ResourceExhausted);
+    let after = client
+        .persistence_get_usage(PersistenceUsageRequest {
+            context: Some(fixture.context()),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(after, before);
+
+    let page = client
+        .persistence_list_entries(PersistenceListRequest {
+            page: Some(PageRequest {
+                context: Some(fixture.context()),
+                page_size: 200,
+                ..Default::default()
+            }),
+            category: "private".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(page.entries.len() as u64, stored);
+    for index in 0..stored {
+        assert!(
+            page.entries
+                .iter()
+                .any(|entry| entry.logical_key == format!("big-{index}"))
+        );
+    }
+    assert_eq!(
+        fixture.load("big-0").await.unwrap().value,
+        big,
+        "the prior value is byte-for-byte intact"
+    );
 }
 
 #[tokio::test]

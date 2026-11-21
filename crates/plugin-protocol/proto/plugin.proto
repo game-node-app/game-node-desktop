@@ -512,10 +512,14 @@ message DataGetReply { DataRecord record = 1; }
 message DataListReply { repeated DataRecord records = 1; string next_cursor = 2; uint64 revision = 3; }
 message DataEvent { uint64 revision = 1; string event_type = 2; DataRecord record = 3; }
 message PersistenceUsageRequest { ServiceContext context = 1; }
-message PersistenceUsageReply { uint64 logical_bytes = 1; uint64 physical_bytes = 2; uint64 quota_bytes = 3; }
+// `categories` and `physical_bytes_namespace_wide` are additive accounting detail. Only the
+// `private` category counts against `quota_bytes`; `physical_bytes` is the SQLite page allocation
+// of the whole namespace database, whose metadata and free pages are shared across categories.
+message PersistenceCategoryUsage { string category = 1; uint64 records = 2; uint64 logical_bytes = 3; uint64 protected_records = 4; }
+message PersistenceUsageReply { uint64 logical_bytes = 1; uint64 physical_bytes = 2; uint64 quota_bytes = 3; repeated PersistenceCategoryUsage categories = 4; bool physical_bytes_namespace_wide = 5; }
 message PersistenceListRequest { PageRequest page = 1; string category = 2; }
 message PersistenceListReply { repeated PersistenceEntry entries = 1; string next_cursor = 2; }
-message PersistenceEntry { string entry_id = 1; string category = 2; string logical_key = 3; uint64 size_bytes = 4; int64 last_used_at = 5; }
+message PersistenceEntry { string entry_id = 1; string category = 2; string logical_key = 3; uint64 size_bytes = 4; int64 last_used_at = 5; bool user_protected = 6; }
 message PersistenceDeleteRequest { MutationContext mutation = 1; repeated string entry_ids = 2; }
 message PersistenceClearRequest { MutationContext mutation = 1; string category = 2; }
 message RetentionPolicyRequest { MutationContext mutation = 1; string category = 2; uint64 max_age_seconds = 3; uint64 max_bytes = 4; }

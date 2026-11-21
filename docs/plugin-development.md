@@ -854,8 +854,8 @@ Contribution expectations: regenerate bindings with the pinned tools and include
 change as the proto edit; never import Core, platform or application crates into an example; keep a
 manifest in step with its identity and API constants; implement a route before adding it to a
 `SERVED` table, and remove it from `DescribeApi` if it becomes unavailable. On the host side,
-`deferred_resource_routes_are_unadvertised_and_unimplemented` and the exact `DescribeApi` route
-test in `plugin_host::resources::tests` enforce the same boundary.
+`deferred_plugin_routes_are_unadvertised_and_unimplemented` and the exact `DescribeApi`
+route test in `plugin_host::resources::tests` enforce the same boundary.
 
 ## Implementation rules for store plugins
 

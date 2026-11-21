@@ -122,19 +122,34 @@ impl DurableSharedPool {
         durable_record(record).map(Some)
     }
 
-    /// Every producer's unexpired records of one dataset in stable receipt order.
+    /// Every producer's unexpired records of one dataset in stable receipt order, together with
+    /// the persisted pool sequence the page was read at. Both come from one worker call, so a list
+    /// revision can seed the broker before the page is authorized and projected.
     pub(crate) async fn list_dataset_any(
         self: &Arc<Self>,
         dataset_id: String,
         now: i64,
-    ) -> Result<Vec<DurableRecord>, Status> {
-        let Some(records) = self
-            .read(move |store| store.list_dataset_any(&dataset_id, now))
+    ) -> Result<(Vec<DurableRecord>, u64), Status> {
+        let Some((records, pool_revision)) = self
+            .read(move |store| {
+                let records = store.list_dataset_any(&dataset_id, now)?;
+                Ok((records, store.pool_revision()?))
+            })
             .await?
         else {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), 0));
         };
-        records.into_iter().map(durable_record).collect()
+        let records = records
+            .into_iter()
+            .map(durable_record)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((records, pool_revision))
+    }
+
+    /// The persisted pool sequence, or zero when this host never persisted a record. Reads never
+    /// create the pool file.
+    pub(crate) async fn pool_revision(self: &Arc<Self>) -> Result<u64, Status> {
+        Ok(self.read(|store| store.pool_revision()).await?.unwrap_or(0))
     }
 
     /// Runs one blocking pool read on the storage worker. `None` means this host has no pool
@@ -216,6 +231,7 @@ fn durable_record(record: SharedRecord) -> Result<DurableRecord, Status> {
         source_observation_id: record.source_observation_id,
         expires_at: record.expires_at,
         revision: record.revision,
+        pool_revision: record.pool_revision,
         provenance: Provenance {
             source,
             forwarded_by: Vec::new(),

@@ -177,6 +177,10 @@ pub(crate) struct DurableRecord {
     pub source_observation_id: String,
     pub expires_at: Option<i64>,
     pub revision: u64,
+    /// Persisted pool sequence of the write that produced this row. The broker uses it as the
+    /// floor for its own revision so a publication accepted before the first read still lands
+    /// above a sequence persisted by an earlier host run.
+    pub pool_revision: u64,
     pub provenance: Provenance,
 }
 
@@ -969,11 +973,16 @@ impl DataBroker {
     /// retained here: the pool remains its source of truth and reads load it from there. The
     /// broker revision still advances, so a `DataList` revision can hand off to `DataWatch` across
     /// both sources, and current watchers receive the new revision as a published event.
+    ///
+    /// The position is lifted to the persisted pool sequence of the write. A host that restarted
+    /// with an empty broker therefore never dispatches a durable event below a sequence an earlier
+    /// run already published.
     pub(crate) fn note_durable(&self, record: DurableRecord, now: i64) -> u64 {
+        let pool_revision = record.pool_revision;
         let record = StoredRecord::from(record);
         let (record, subscribers, position) = {
             let mut state = self.lock();
-            state.revision = state.revision.saturating_add(1);
+            state.revision = state.revision.saturating_add(1).max(pool_revision);
             let position = state.revision;
             (
                 StoredRecord { position, ..record },
@@ -983,6 +992,16 @@ impl DataBroker {
         };
         self.dispatch(&record, subscribers, now);
         position
+    }
+
+    /// Raises the broker revision to a persisted durable-pool sequence and returns the revision
+    /// that lists and watches must use from now on. Called before a read or a subscription so a
+    /// restarted host resumes the durable handoff instead of restarting at zero; it only ever
+    /// moves forward, so a session publication that already advanced it is preserved.
+    pub fn observe_pool_revision(&self, revision: u64) -> u64 {
+        let mut state = self.lock();
+        state.revision = state.revision.max(revision);
+        state.revision
     }
 
     /// Returns only host-owned dataset and field names needed to review sharing. No plugin
@@ -2334,6 +2353,84 @@ mod tests {
         assert_eq!(
             broker.publish(forged_execution, 100),
             Err(BrokerError::ReservedField)
+        );
+    }
+
+    fn durable_row(owner: &PluginIdentity, record_id: &str, pool_revision: u64) -> DurableRecord {
+        DurableRecord {
+            record_id: record_id.into(),
+            owner: owner.clone(),
+            dataset_id: "org.example.metrics.v1".into(),
+            category: None,
+            class: SharingClass::Custom,
+            schema_id: "org.example.metrics.v1".into(),
+            schema_version: 1,
+            fields: [("fps".to_owned(), serde_json::json!(60))]
+                .into_iter()
+                .collect(),
+            opaque_payload: Vec::new(),
+            resource_id: String::new(),
+            observed_at: 1_700_000_000,
+            received_at: 1_700_000_000,
+            published_at: 1_700_000_000,
+            sequence: 0,
+            source_observation_id: String::new(),
+            expires_at: None,
+            revision: 1,
+            pool_revision,
+            provenance: Provenance {
+                source: owner.clone(),
+                forwarded_by: Vec::new(),
+                declared_developer: String::new(),
+                origin: String::new(),
+                package_version: String::new(),
+                package_digest: Vec::new(),
+                source_record_ids: Vec::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn a_restarted_broker_resumes_the_persisted_pool_revision_for_watches() {
+        let broker = DataBroker::new();
+        let consumer = identity("consumer");
+        assert_eq!(broker.revision(), 0, "a new broker starts empty");
+        assert_eq!(broker.observe_pool_revision(7), 7);
+        // Only ever forward: a later list of an older page keeps the higher revision.
+        assert_eq!(broker.observe_pool_revision(3), 7);
+
+        let request = request(&consumer, None, Delivery::Live, 10, None);
+        let authorizer: Arc<dyn Authorizer> =
+            authorizer([], [], [], Vec::<String>::new(), false, false);
+        // The revision a post-restart list returned is a valid watch position.
+        broker
+            .subscribe(request.clone(), 7, 10, authorizer.clone())
+            .unwrap();
+        // A position older than the persisted sequence cannot silently resume.
+        assert!(matches!(
+            broker.subscribe(request, 6, 10, authorizer),
+            Err(BrokerError::StaleSubscription)
+        ));
+    }
+
+    #[test]
+    fn a_durable_publication_never_dispatches_below_its_pool_revision() {
+        let broker = DataBroker::new();
+        let producer = identity("producer");
+        // A restarted host whose broker is still empty accepts a write the pool sequenced at 5.
+        assert_eq!(
+            broker.note_durable(durable_row(&producer, "durable-1", 5), 1_000),
+            5
+        );
+        // Once ahead, the broker keeps its own monotonic order rather than moving backwards.
+        assert_eq!(
+            broker.note_durable(durable_row(&producer, "durable-2", 3), 1_001),
+            6
+        );
+        assert_eq!(broker.revision(), 6);
+        assert_eq!(
+            broker.note_durable(durable_row(&producer, "durable-3", 9), 1_002),
+            9
         );
     }
 }

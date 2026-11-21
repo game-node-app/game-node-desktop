@@ -5,6 +5,7 @@ use crate::plugin_host::{
     grants::PluginIdentity,
     resources::ResourceApi,
     shared_data::{DataBroker, Publication},
+    shared_pool::DurableSharedPool,
     sharing_policy::{
         ActivationReadGrant, Authorizer, SharedSharingPolicies, SharingClass, SharingPolicies,
         SourceRecipientPolicy,
@@ -85,6 +86,13 @@ fn service(
     )
     .with_shared_data(data, authorizer)
     .with_shared_pool(fixture.shared_pool.clone())
+}
+
+/// A restarted host: a fresh in-memory broker over the durable pool reopened from the fixture's
+/// data folder, so the persisted pool sequence survives while the broker starts at zero.
+fn restarted_service(fixture: &Fixture, broker: Arc<DataBroker>) -> ResourceApi {
+    service(fixture, broker, fixture.shared_policies.clone())
+        .with_shared_pool(Arc::new(DurableSharedPool::new(&fixture.data_dir)))
 }
 
 async fn local_client(service: ResourceApi) -> (ResourceHostClient<Channel>, JoinHandle<()>) {
@@ -1777,4 +1785,370 @@ async fn durable_watch_reports_replacements_without_replaying_old_revisions() {
             .is_err(),
         "restarting a watch does not replay durable rows"
     );
+}
+
+#[tokio::test]
+async fn durable_list_revision_hands_off_to_watch_after_a_real_host_restart() {
+    use futures_util::StreamExt;
+
+    let fixture = Fixture::new(&[]).await;
+    let producer =
+        consumer_session_with_grants(&fixture, &[cap::DATA_PUBLISH, cap::STORAGE_PERSIST]).await;
+    let producer_context = producer.host.resource_context().unwrap().clone();
+    let source = authenticated_identity(&fixture, &producer_context);
+    let recipient = authenticated_identity(&fixture, &fixture.context());
+    grant_durable_dataset(&fixture, &source, &recipient, true, true);
+
+    let mut producer_rpc = producer.host.resource_client();
+    let first = producer_rpc
+        .data_publish(durable_request(
+            &producer_context,
+            "restart-first",
+            "runtime-first",
+            60.0,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    let second = producer_rpc
+        .data_publish(durable_request(
+            &producer_context,
+            "restart-second",
+            "runtime-second",
+            61.0,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    fixture.api.disconnect("consumer").await;
+    drop(producer);
+
+    // The pool kept a sequence across the producer session; the reopened store must agree.
+    let persisted = SharedDataStore::open(&fixture.data_dir)
+        .unwrap()
+        .pool_revision()
+        .unwrap();
+    assert_eq!(persisted, 2, "two durable publications advanced the pool");
+
+    // Restart: the in-memory broker is empty while the pool kept its sequence.
+    let broker = Arc::new(DataBroker::new());
+    assert_eq!(broker.revision(), 0);
+    let (mut client, server) = local_client(restarted_service(&fixture, broker.clone())).await;
+
+    let listed = client
+        .data_list(list_request(&fixture.context(), "org.example.metrics.v1"))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(listed.records.len(), 2);
+    let ids: Vec<_> = listed
+        .records
+        .iter()
+        .map(|record| record.record_id.clone())
+        .collect();
+    assert!(ids.contains(&first.record_id) && ids.contains(&second.record_id));
+    assert_eq!(
+        listed.revision, persisted,
+        "the list resumes the persisted pool sequence instead of zero"
+    );
+    assert_eq!(broker.revision(), persisted);
+
+    // The revision the restarted list returned is a valid watch position, with no replay.
+    let mut watch = client
+        .data_watch(DataWatchRequest {
+            context: Some(fixture.context()),
+            dataset_id: "org.example.metrics.v1".into(),
+            after_revision: listed.revision,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(
+        tokio::time::timeout(Duration::ZERO, watch.next())
+            .await
+            .is_err(),
+        "a post-restart handoff starts live-only"
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn stale_watch_position_and_cursor_are_rejected_after_a_real_host_restart() {
+    let fixture = Fixture::new(&[]).await;
+    let producer =
+        consumer_session_with_grants(&fixture, &[cap::DATA_PUBLISH, cap::STORAGE_PERSIST]).await;
+    let producer_context = producer.host.resource_context().unwrap().clone();
+    let source = authenticated_identity(&fixture, &producer_context);
+    let recipient = authenticated_identity(&fixture, &fixture.context());
+    grant_durable_dataset(&fixture, &source, &recipient, true, true);
+    let mut producer_rpc = producer.host.resource_client();
+
+    let first = producer_rpc
+        .data_publish(durable_request(
+            &producer_context,
+            "stale-first",
+            "runtime-first",
+            60.0,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    producer_rpc
+        .data_publish(durable_request(
+            &producer_context,
+            "stale-second",
+            "runtime-second",
+            61.0,
+        ))
+        .await
+        .unwrap();
+    // A first page at pool revision 2 yields both a cursor and a watch position.
+    let mut page = list_request(&fixture.context(), "org.example.metrics.v1");
+    page.page.as_mut().unwrap().page_size = 1;
+    let first_page = fixture
+        .client()
+        .data_list(page.clone())
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(first_page.records[0].record_id, first.record_id);
+    assert_eq!(first_page.revision, 2);
+    assert!(!first_page.next_cursor.is_empty());
+
+    // A later durable publication moves the persisted sequence past both positions.
+    producer_rpc
+        .data_publish(durable_request(
+            &producer_context,
+            "stale-third",
+            "runtime-third",
+            62.0,
+        ))
+        .await
+        .unwrap();
+    fixture.api.disconnect("consumer").await;
+    drop(producer);
+
+    let broker = Arc::new(DataBroker::new());
+    let (mut client, server) = local_client(restarted_service(&fixture, broker.clone())).await;
+
+    // The watch position predates the persisted sequence: resume is refused, not skipped.
+    let error = client
+        .data_watch(DataWatchRequest {
+            context: Some(fixture.context()),
+            dataset_id: "org.example.metrics.v1".into(),
+            after_revision: first_page.revision,
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), Code::FailedPrecondition);
+
+    // The in-process cursor did not survive the restart and cannot silently skip records.
+    let mut stale = page.clone();
+    stale.page.as_mut().unwrap().cursor = first_page.next_cursor.clone();
+    let error = client.data_list(stale).await.unwrap_err();
+    assert_eq!(error.code(), Code::FailedPrecondition);
+    assert!(
+        error.message().contains("cursor is stale"),
+        "unexpected message: {}",
+        error.message()
+    );
+
+    // A fresh list re-anchors at the persisted sequence and pages every record.
+    let listed = client
+        .data_list(list_request(&fixture.context(), "org.example.metrics.v1"))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(listed.records.len(), 3);
+    assert_eq!(listed.revision, 3);
+    server.abort();
+}
+
+#[tokio::test]
+async fn revocation_fences_durable_reads_and_watch_with_the_producer_stopped() {
+    use futures_util::StreamExt;
+
+    let fixture = Fixture::new(&[]).await;
+    let producer =
+        consumer_session_with_grants(&fixture, &[cap::DATA_PUBLISH, cap::STORAGE_PERSIST]).await;
+    let producer_context = producer.host.resource_context().unwrap().clone();
+    let source = authenticated_identity(&fixture, &producer_context);
+    let recipient = authenticated_identity(&fixture, &fixture.context());
+    grant_durable_dataset(&fixture, &source, &recipient, true, true);
+
+    let published = producer
+        .host
+        .resource_client()
+        .data_publish(durable_request(
+            &producer_context,
+            "revoked-offline",
+            "runtime-primary",
+            60.0,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    // The producer stops before the revocation: no publication or reconnection can fence us.
+    fixture.api.disconnect("consumer").await;
+    drop(producer);
+
+    let listed = fixture
+        .client()
+        .data_list(list_request(&fixture.context(), "org.example.metrics.v1"))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(listed.records.len(), 1);
+    let mut watch = fixture
+        .client()
+        .data_watch(DataWatchRequest {
+            context: Some(fixture.context()),
+            dataset_id: "org.example.metrics.v1".into(),
+            after_revision: listed.revision,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+
+    let revision = fixture
+        .shared_policies
+        .recipient_snapshot(&recipient)
+        .unwrap()
+        .revision;
+    fixture
+        .shared_policies
+        .replace_recipient_policies(&recipient, revision, ActivationReadGrant::default(), vec![])
+        .unwrap();
+
+    // Reads are fenced immediately, straight from the persisted row.
+    let listed = fixture
+        .client()
+        .data_list(list_request(&fixture.context(), "org.example.metrics.v1"))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(listed.records.is_empty(), "revocation fences the list");
+    let error = fixture
+        .client()
+        .data_get(DataGetRequest {
+            context: Some(fixture.context()),
+            dataset_id: "org.example.metrics.v1".into(),
+            record_id: published.record_id,
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), Code::NotFound);
+
+    // The open watch ends at its next policy recheck without any producer event.
+    let error = tokio::time::timeout(Duration::from_secs(10), watch.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(error.code(), Code::FailedPrecondition);
+}
+
+#[tokio::test]
+async fn a_profile_change_fences_durable_reads_and_watch_with_the_producer_stopped() {
+    use futures_util::StreamExt;
+
+    let mut fixture = Fixture::new(&[]).await;
+    let producer =
+        consumer_session_with_grants(&fixture, &[cap::DATA_PUBLISH, cap::STORAGE_PERSIST]).await;
+    let producer_context = producer.host.resource_context().unwrap().clone();
+    let source = authenticated_identity(&fixture, &producer_context);
+    let recipient = authenticated_identity(&fixture, &fixture.context());
+    grant_durable_dataset(&fixture, &source, &recipient, true, true);
+
+    let published = producer
+        .host
+        .resource_client()
+        .data_publish(durable_request(
+            &producer_context,
+            "profile-durable",
+            "runtime-primary",
+            60.0,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    fixture.api.disconnect("consumer").await;
+    drop(producer);
+
+    let listed = fixture
+        .client()
+        .data_list(list_request(&fixture.context(), "org.example.metrics.v1"))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(listed.records.len(), 1);
+    let mut watch = fixture
+        .client()
+        .data_watch(DataWatchRequest {
+            context: Some(fixture.context()),
+            dataset_id: "org.example.metrics.v1".into(),
+            after_revision: listed.revision,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let stale_context = fixture.context();
+
+    // Another account signs in. The producer stays stopped; the session and its watches are
+    // fenced while the durable row remains under the previous profile's owner.
+    fixture.api.profiles().update(Some("b"), true);
+    fixture.api.fence_third_party_sessions().await;
+    let error = tokio::time::timeout(Duration::from_secs(10), watch.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert!(
+        matches!(
+            error.code(),
+            Code::FailedPrecondition | Code::Unauthenticated
+        ),
+        "the previous profile's watch must not deliver a record: {error:?}"
+    );
+    let error = fixture
+        .client()
+        .data_list(list_request(&stale_context, "org.example.metrics.v1"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            error.code(),
+            Code::FailedPrecondition | Code::Unauthenticated
+        ),
+        "a stale profile context must be fenced: {error:?}"
+    );
+
+    // Reconnecting into the new profile cannot reach the previous profile's durable record.
+    fixture.reconnect().await;
+    let listed = fixture
+        .client()
+        .data_list(list_request(&fixture.context(), "org.example.metrics.v1"))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(
+        listed.records.is_empty(),
+        "another profile never sees this owner's durable row"
+    );
+    let error = fixture
+        .client()
+        .data_get(DataGetRequest {
+            context: Some(fixture.context()),
+            dataset_id: "org.example.metrics.v1".into(),
+            record_id: published.record_id,
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), Code::NotFound);
 }

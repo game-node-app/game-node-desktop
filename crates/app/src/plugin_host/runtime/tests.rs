@@ -1165,6 +1165,35 @@ async fn uninstall_delete_removes_only_the_selected_private_namespace() {
     fixture.write_private(fixture.plugin_id, "kept", b"private value");
     fixture.write_private_at(fixture.plugin_id, "account-two", "kept", b"other profile");
     fixture.write_private("org.example.other", "kept", b"other plugin");
+    let other_owner = OwnerScope::new([9; 32], 1).unwrap();
+    fixture
+        .root
+        .shared_pool
+        .persist(crate::plugin_host::shared_pool::DurableWrite {
+            owner: other_owner,
+            dataset_id: "org.example.catalog".to_owned(),
+            schema_id: "org.example.catalog.v1".to_owned(),
+            schema_version: 1,
+            fields_json: r#"{"title":"Other owner"}"#.to_owned(),
+            opaque_payload: Vec::new(),
+            resource_id: Some("disc-other".to_owned()),
+            observed_at: 1_700_000_000,
+            sequence: 1,
+            source_observation_id: "observation-other".to_owned(),
+            expires_at: None,
+            now: 1_700_000_000,
+            provenance: gamenode_platform::plugin_shared_data::RecordProvenance {
+                source_plugin_id: "org.example.other".to_owned(),
+                source_publisher_fingerprint: "cd".repeat(32),
+                source_profile_id: "account-one".to_owned(),
+                declared_developer: "Other".to_owned(),
+                origin: "registry".to_owned(),
+                package_version: "1.0.0".to_owned(),
+                package_digest: vec![8; 32],
+            },
+        })
+        .await
+        .unwrap();
     let save = fixture.dir.path().join("saves/slot-1.sav");
     std::fs::create_dir_all(save.parent().unwrap()).unwrap();
     std::fs::write(&save, b"game save").unwrap();
@@ -1196,4 +1225,16 @@ async fn uninstall_delete_removes_only_the_selected_private_namespace() {
         Some(&b"other plugin"[..])
     );
     assert_eq!(std::fs::read(&save).unwrap(), b"game save");
+    assert_eq!(
+        fixture
+            .root
+            .shared_pool
+            .usage(other_owner, 1_700_000_100)
+            .await
+            .unwrap()
+            .unwrap()
+            .records,
+        1,
+        "another owner's durable pool row is untouched"
+    );
 }

@@ -208,6 +208,17 @@ describe('bundle inventory', () => {
     expect(extensionItem.getByRole('button', { name: 'Enable' })).toBeDisabled();
   });
 
+  it('selects a bundle row from the keyboard', async () => {
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([official, bundle]);
+    renderInventory('en', 'account-one');
+
+    const row = await screen.findByRole('button', { name: /Dolphin GameCube and Wii/ });
+    row.focus();
+    expect(row).toHaveFocus();
+    await userEvent.setup().keyboard('{Enter}');
+    expect(await screen.findByRole('article', { name: 'Bundle details' })).toBeInTheDocument();
+  });
+
   it('keeps activation per component in the bundle details', async () => {
     let enabled = false;
     vi.spyOn(commands, 'pluginInventory').mockImplementation(async () => [{

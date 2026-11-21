@@ -959,9 +959,11 @@ pub async fn uninstall_bundle(
             Err(error) => return Err(BundleUninstallError::Removal(error)),
         };
 
+    let mut applied_retention = BundleDataRetention::Keep;
     if retention == BundleDataRetention::Delete
         && let Some(private_data) = private_data
     {
+        applied_retention = BundleDataRetention::Delete;
         let root = private_data.root.to_owned();
         let publisher = record.publisher_fingerprint.clone();
         let profile = private_data.profile_id.to_owned();
@@ -993,7 +995,7 @@ pub async fn uninstall_bundle(
         bundle_id,
         removed,
         failures,
-        data_retention: retention.as_str().to_owned(),
+        data_retention: applied_retention.as_str().to_owned(),
     })
 }
 

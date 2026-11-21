@@ -163,6 +163,40 @@ reopen, durable settings, ordered upgrade (including from a step 1 database),
 rollback and unchanged newer-schema files, and for rescans, uninstalls, failed
 scans, per-account matches, the layout and sign-out.
 
+## Durable shared data pool
+
+Public shared-data records a plugin publishes with `storage.persist` are stored outside the
+application database, in `plugin-shared-data.sqlite3` below the application data directory. The
+file is separate from `gamenode.sqlite3` and from the private plugin stores, so a durable
+publication can outlive its producer session without making private storage public. It is created
+the first time a durable publication is accepted; a session-only publication is never written to
+disk.
+
+The host derives an opaque owner key from the signed plugin identity and the active account
+profile, and records the profile generation that last wrote. A plugin request never supplies or
+sees that key, a path or a physical location.
+
+| Table | Holds |
+| --- | --- |
+| `shared_records` | One published record: host record id, owner key, dataset and optional resource id, optional category, sharing class, schema id and version, structured JSON fields or opaque payload (exactly one), host-assigned provenance (plugin id, publisher fingerprint, profile id, declared developer, origin, package version and digest), observed and received times, update and optional expiry times, producer sequence and observation id, record revision, pool revision and the logical bytes it is charged. `(owner_key, dataset_id, resource_id)` is unique: a publish with that resource id replaces the previous record in place and keeps its record id, while a publish without one appends a new record with a new host id. |
+| `shared_state` | The persisted monotonic pool revision shared by lists and watches; it only grows and survives restarts. |
+| `shared_owners` | The opaque owner key and the profile generation it last accepted. A write from an older profile generation fails closed. |
+| `shared_retention` | Per-owner age and byte limits chosen by the user. Missing values mean no age limit and the host default size ceiling. |
+
+A record is charged its identifiers, provenance, payload and a small fixed overhead. Expiry is
+bounded by the producer's requested time-to-live and the existing maximum. Retention pruning
+removes expired rows first and then, when the owner crosses its age or byte limit, the oldest
+unprotected rows up to a bounded number per pass. Protection is host-only and never set by a
+plugin, and pruning one owner never removes another owner's rows. Usage (record count, logical
+bytes, effective limits) is available to the host for settings; the plugin API exposes neither a
+stored value nor a physical path.
+
+A session-only publication keeps today's behavior: it stays in the in-memory broker and ends with
+the producer's session. A durable publication requires both `data.publish` and `storage.persist`;
+a missing `storage.persist` is an explicit failure, never a session-only downgrade. Schema
+upgrades run in order and keep existing records, a database written by a newer build is refused
+and left untouched, and a damaged file is reported as unavailable rather than replaced.
+
 ## Playtime (migration `0003_playtime.sql`)
 
 `playtime_sessions` holds `id`, `account_id`, `entry_key`, nullable `game_id`,

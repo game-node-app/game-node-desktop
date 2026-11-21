@@ -224,6 +224,52 @@ describe('PluginInventory', () => {
     expect(await screen.findByText('The configuration request timed out. Try again.')).toBeInTheDocument();
   });
 
+  it('keeps plugin navigation usable while a durable usage read is slow', async () => {
+    const fingerprint = `SHA256:${'c'.repeat(64)}`;
+    const first: PluginInfo = { ...plugin, publisherFingerprint: fingerprint };
+    const second: PluginInfo = {
+      ...plugin,
+      providerId: 'second-provider',
+      pluginId: 'org.example.second',
+      name: 'Second plugin',
+      publisherFingerprint: fingerprint,
+    };
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([first, second]);
+    vi.spyOn(commands, 'pluginPermissionSnapshot').mockImplementation(async (pluginId: string) => ({
+      pluginId,
+      publisherFingerprint: fingerprint,
+      profileId: 'a',
+      grantRevision: 0,
+      requestedPermissions: [],
+      effectiveGrants: [],
+    }));
+    vi.spyOn(commands, 'pluginSharedDataSnapshot').mockImplementation(async (pluginId: string) => ({
+      pluginId,
+      publisherFingerprint: fingerprint,
+      profileId: 'a',
+      policyRevision: 0,
+      commonCategories: [],
+      selectedRecordIds: [],
+      catalog: [],
+      sourcePolicies: [],
+    }));
+    vi.spyOn(commands, 'pluginConfigurationState').mockImplementation(async (pluginId: string) => ({
+      pluginId, available: false, revision: null,
+    }));
+    vi.spyOn(commands, 'pluginConfigurationModes').mockResolvedValue({
+      externalDeclared: false, externalAuthorized: false,
+      declarativeDeclared: false, declarativeAuthorized: false,
+    });
+    vi.spyOn(commands, 'pluginDurableUsage').mockReturnValue(new Promise(() => undefined));
+
+    renderInventory('en', 'a');
+    expect(await screen.findByText('Reading retained shared data…')).toBeInTheDocument();
+
+    fireEvent.click(within(await screen.findByRole('group', { name: 'Installed plugins' })).getByRole('button', { name: /Second plugin/ }));
+    expect(screen.getByRole('article', { name: 'Plugin details' })).toHaveTextContent('org.example.second');
+    expect(screen.getByText('Reading retained shared data…')).toBeInTheDocument();
+  });
+
   it('reports disabled and unavailable modes without issuing Configure requests', async () => {
     const disabledConfigure = vi.spyOn(commands, 'pluginConfigurationOpen');
     const disabledModes = vi.spyOn(commands, 'pluginConfigurationModes');

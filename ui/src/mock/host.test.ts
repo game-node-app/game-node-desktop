@@ -15,6 +15,8 @@ import {
   type AppInfo,
   type LibraryFilters,
   type LibraryLayout,
+  type PluginDurableDeletion,
+  type PluginDurableUsage,
   type PluginInfo,
   type Row,
   type Snapshot,
@@ -2582,5 +2584,38 @@ describe('UI mock host settings data', () => {
     expect(usage.totalBytes).toBe(7_100_000 + 7_000_000 + 6_800_000 + 6_800_000);
     expect(usage.games[0].title).toBe('Brasa');
     expect(usage.games[0].versions).toBe(4);
+  });
+
+  it('provides a fictional durable producer and deletes only its retained records', async () => {
+    const host = createMockHost();
+    const profileId = 'mock-profile';
+    const pluginId = 'dev.prateleira.local';
+    const usage = await host.invoke('plugin_durable_usage', {
+      pluginId,
+      expectedProfileId: profileId,
+    }) as PluginDurableUsage;
+    expect(usage).toMatchObject({
+      pluginId,
+      profileId,
+      recordCount: 12,
+      logicalBytes: 153_600,
+      maxBytes: 16 * 1024 * 1024,
+    });
+
+    const deleted = await host.invoke('plugin_durable_delete', {
+      pluginId,
+      expectedProfileId: profileId,
+      confirmed: true,
+    }) as PluginDurableDeletion;
+    expect(deleted.removedRecords).toBe(12);
+    expect(deleted.reclaimedBytes).toBe(153_600);
+    expect(deleted.usage.recordCount).toBe(0);
+
+    const other = await host.invoke('plugin_durable_usage', {
+      pluginId: 'community.example.save-sync',
+      expectedProfileId: profileId,
+    }) as PluginDurableUsage;
+    expect(other.recordCount).toBe(0);
+    expect(other.logicalBytes).toBe(0);
   });
 });

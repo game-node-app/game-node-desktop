@@ -18,6 +18,8 @@ import type {
   PluginPermissionDecision,
   PluginSharedDataSnapshot,
   PluginSharedDataPolicyUpdate,
+  PluginDurableUsage,
+  PluginDurableDeletion,
   PluginImportReview,
   PluginConfigurationState,
   PluginPlaytimeInfo,
@@ -268,6 +270,26 @@ export const commands = {
     ),
   pluginSharedDataReplace: (pluginId: string, update: PluginSharedDataPolicyUpdate) =>
     safeInvoke<PluginSharedDataSnapshot>('plugin_shared_data_replace', { pluginId, update }),
+  pluginDurableUsage: (pluginId: string, expectedProfileId: string) =>
+    safeInvoke<PluginDurableUsage>(
+      'plugin_durable_usage',
+      { pluginId, expectedProfileId },
+      () => ({
+        pluginId,
+        profileId: expectedProfileId,
+        recordCount: 0,
+        logicalBytes: 0,
+        maxBytes: 0,
+        maxAgeSeconds: null,
+        oldestUpdatedAt: null,
+      }),
+    ),
+  pluginDurableDelete: (pluginId: string, expectedProfileId: string, confirmed: boolean) =>
+    safeInvoke<PluginDurableDeletion>('plugin_durable_delete', {
+      pluginId,
+      expectedProfileId,
+      confirmed,
+    }),
   pluginEnable: (pluginId: string) => safeInvoke<void>('plugin_enable', { pluginId }),
   pluginDisable: (pluginId: string) => safeInvoke<void>('plugin_disable', { pluginId }),
   pluginRemove: (pluginId: string) => safeInvoke<void>('plugin_remove', { pluginId }),

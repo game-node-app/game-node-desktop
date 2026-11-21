@@ -18,6 +18,7 @@ use super::{
     },
 };
 use gamenode_platform::plugin_registry::{InstalledPluginVersion, PluginPackageRegistry};
+use gamenode_platform::plugin_shared_data::OwnerScope;
 use gamenode_plugin_protocol::{
     capability as cap, models,
     proto::{OperationDisposition, ProviderContext, ProviderOperation},
@@ -476,6 +477,27 @@ impl ThirdPartyPluginLifecycle {
             .await?;
         validate_sharing_profile(&self.api.profiles(), &observation)?;
         Ok(observation.identity)
+    }
+
+    /// The host-resolved durable shared-data owner of one installed plugin in the expected
+    /// profile. Settings use it to read retained usage and to delete it without uninstalling; the
+    /// publisher is verified exactly as for a policy review.
+    pub(crate) async fn durable_owner(
+        &self,
+        plugin_id: String,
+        expected_profile_id: &str,
+    ) -> Result<OwnerScope, Status> {
+        let observation = self
+            .observe_sharing_identity(plugin_id, expected_profile_id)
+            .await?;
+        validate_sharing_profile(&self.api.profiles(), &observation)?;
+        let resolver = self.api.profiles().resolver(
+            &observation.identity.plugin_id,
+            &observation.identity.publisher_fingerprint,
+            None,
+        )?;
+        OwnerScope::new(*resolver.storage_owner().key(), observation.profile_epoch)
+            .map_err(|_| Status::failed_precondition("plugin profile is invalid"))
     }
 
     pub(crate) async fn replace_sharing_policy(

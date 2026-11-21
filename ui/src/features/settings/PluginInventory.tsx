@@ -10,6 +10,7 @@ import { useI18n } from '../../i18n';
 import { RememberedConfirmations } from './RememberedConfirmations';
 import { PluginFolderApprovals } from './PluginFolderApprovals';
 import { PluginSharedResources } from './PluginSharedResources';
+import { PluginDurableUsage } from './PluginDurableUsage';
 import { PluginCompatibilityReview } from './PluginCompatibilityReview';
 import { selectPluginConfiguration } from '../../api/pluginSettings';
 import { PluginConfigurationSurface } from './PluginConfigurationSurface';
@@ -186,6 +187,7 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
       if (profileId) {
         refreshes.push(queryClient.invalidateQueries({ queryKey: pluginQueryKeys.permissions(pluginId, profileId) }));
         refreshes.push(queryClient.invalidateQueries({ queryKey: pluginQueryKeys.sharedData(pluginId, profileId) }));
+        refreshes.push(queryClient.invalidateQueries({ queryKey: pluginQueryKeys.durableUsage(pluginId, profileId) }));
       }
       refreshes.push(queryClient.invalidateQueries({ queryKey: pluginQueryKeys.configuration(pluginId) }));
     }
@@ -523,6 +525,12 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
       </section>
       {selectedPlugin.publisherFingerprint && (
         <>
+          {selectedPlugin.pluginKind === 'provider' && (
+            <PluginDurableUsage
+              pluginId={selectedPlugin.pluginId}
+              profileId={profileId}
+            />
+          )}
           <RememberedConfirmations
             pluginId={selectedPlugin.pluginId}
             publisherFingerprint={selectedPlugin.publisherFingerprint}

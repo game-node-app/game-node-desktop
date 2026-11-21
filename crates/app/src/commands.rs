@@ -943,6 +943,121 @@ fn plugin_shared_data_snapshot_for(
     }
 }
 
+/// Logical durable-pool usage of one producer. Contains no physical path.
+#[derive(Clone, Debug, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginDurableUsage {
+    pub plugin_id: String,
+    pub profile_id: String,
+    pub record_count: u64,
+    pub logical_bytes: u64,
+    pub max_bytes: u64,
+    pub max_age_seconds: Option<u64>,
+    pub oldest_updated_at: Option<i64>,
+}
+
+/// The outcome of deleting one producer's retained durable records. The plugin stays installed.
+#[derive(Clone, Debug, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginDurableDeletion {
+    pub plugin_id: String,
+    pub profile_id: String,
+    pub removed_records: u64,
+    pub reclaimed_bytes: u64,
+    pub usage: PluginDurableUsage,
+}
+
+fn plugin_durable_usage_for(
+    plugin_id: &str,
+    profile_id: &str,
+    usage: Option<gamenode_platform::plugin_shared_data::OwnerUsage>,
+) -> PluginDurableUsage {
+    let usage = usage.unwrap_or(gamenode_platform::plugin_shared_data::OwnerUsage {
+        records: 0,
+        logical_bytes: 0,
+        max_bytes: gamenode_platform::plugin_shared_data::MAX_OWNER_LOGICAL_BYTES,
+        max_age_seconds: None,
+        oldest_updated_at: None,
+        physical_bytes_estimate: 0,
+    });
+    PluginDurableUsage {
+        plugin_id: plugin_id.to_owned(),
+        profile_id: profile_id.to_owned(),
+        record_count: usage.records,
+        logical_bytes: usage.logical_bytes,
+        max_bytes: usage.max_bytes,
+        max_age_seconds: usage.max_age_seconds,
+        oldest_updated_at: usage.oldest_updated_at,
+    }
+}
+
+/// Reads the durable-pool usage of one producer on the blocking storage worker. Never creates
+/// the pool file.
+#[tauri::command]
+pub async fn plugin_durable_usage(
+    lifecycle: tauri::State<'_, Arc<crate::plugin_host::runtime::ThirdPartyPluginLifecycle>>,
+    pool: tauri::State<'_, Arc<crate::plugin_host::shared_pool::DurableSharedPool>>,
+    plugin_id: String,
+    expected_profile_id: String,
+) -> Result<PluginDurableUsage, String> {
+    let owner = lifecycle
+        .durable_owner(plugin_id.clone(), &expected_profile_id)
+        .await
+        .map_err(|status| status.message().to_owned())?;
+    let now = unix_timestamp()?;
+    let usage = pool
+        .usage(owner, now)
+        .await
+        .map_err(|status| status.message().to_owned())?;
+    Ok(plugin_durable_usage_for(
+        &plugin_id,
+        &expected_profile_id,
+        usage,
+    ))
+}
+
+/// Rejects a host deletion that the user did not confirm in the settings surface.
+fn durable_delete_confirmation(confirmed: bool) -> Result<(), String> {
+    if confirmed {
+        Ok(())
+    } else {
+        Err("deleting retained shared data requires confirmation".into())
+    }
+}
+
+/// Deletes only this producer's retained durable records and reports the bytes actually
+/// reclaimed. It never uninstalls the plugin and never touches another owner or private storage.
+#[tauri::command]
+pub async fn plugin_durable_delete(
+    lifecycle: tauri::State<'_, Arc<crate::plugin_host::runtime::ThirdPartyPluginLifecycle>>,
+    pool: tauri::State<'_, Arc<crate::plugin_host::shared_pool::DurableSharedPool>>,
+    plugin_id: String,
+    expected_profile_id: String,
+    confirmed: bool,
+) -> Result<PluginDurableDeletion, String> {
+    durable_delete_confirmation(confirmed)?;
+    let owner = lifecycle
+        .durable_owner(plugin_id.clone(), &expected_profile_id)
+        .await
+        .map_err(|status| status.message().to_owned())?;
+    let now = unix_timestamp()?;
+    let outcome = pool
+        .delete_owner(owner, now)
+        .await
+        .map_err(|status| status.message().to_owned())?;
+    let usage = pool
+        .usage(owner, now)
+        .await
+        .map_err(|status| status.message().to_owned())?;
+    Ok(PluginDurableDeletion {
+        plugin_id: plugin_id.clone(),
+        profile_id: expected_profile_id.clone(),
+        removed_records: outcome.map_or(0, |outcome| outcome.removed_records),
+        reclaimed_bytes: outcome.map_or(0, |outcome| outcome.reclaimed_bytes),
+        usage: plugin_durable_usage_for(&plugin_id, &expected_profile_id, usage),
+    })
+}
+
 #[tauri::command]
 pub async fn plugin_shared_data_replace(
     lifecycle: tauri::State<'_, Arc<crate::plugin_host::runtime::ThirdPartyPluginLifecycle>>,
@@ -2818,5 +2933,68 @@ mod tests {
             .unwrap();
         }
         assert_eq!(*called.lock().unwrap(), ["steam", "epic"]);
+    }
+
+    #[test]
+    fn durable_deletion_requires_explicit_confirmation() {
+        assert!(durable_delete_confirmation(true).is_ok());
+        assert_eq!(
+            durable_delete_confirmation(false).unwrap_err(),
+            "deleting retained shared data requires confirmation"
+        );
+    }
+
+    #[test]
+    fn durable_usage_and_deletion_disclose_no_physical_path() {
+        let usage = PluginDurableUsage {
+            plugin_id: "org.example.producer".into(),
+            profile_id: "profile-a".into(),
+            record_count: 3,
+            logical_bytes: 4096,
+            max_bytes: 65_536,
+            max_age_seconds: Some(86_400),
+            oldest_updated_at: Some(1_700_000_000),
+        };
+        let json = serde_json::to_value(&usage).unwrap();
+        let object = json.as_object().unwrap();
+        assert_eq!(
+            object
+                .keys()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>(),
+            [
+                "logicalBytes",
+                "maxAgeSeconds",
+                "maxBytes",
+                "oldestUpdatedAt",
+                "pluginId",
+                "profileId",
+                "recordCount",
+            ]
+            .map(str::to_owned)
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
+        );
+        let text = json.to_string();
+        for forbidden in ["path", "sqlite", "/home", "\\\\"] {
+            assert!(!text.to_ascii_lowercase().contains(forbidden), "{text}");
+        }
+
+        let deleted = serde_json::to_value(&PluginDurableDeletion {
+            plugin_id: "org.example.producer".into(),
+            profile_id: "profile-a".into(),
+            removed_records: 3,
+            reclaimed_bytes: 4096,
+            usage: PluginDurableUsage {
+                record_count: 0,
+                logical_bytes: 0,
+                ..usage
+            },
+        })
+        .unwrap();
+        assert_eq!(deleted["removedRecords"], 3);
+        assert_eq!(deleted["reclaimedBytes"], 4096);
+        assert_eq!(deleted["usage"]["recordCount"], 0);
+        assert!(!deleted.to_string().to_ascii_lowercase().contains("path"));
     }
 }

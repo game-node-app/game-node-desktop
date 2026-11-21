@@ -22,6 +22,7 @@ import {
   type MatchOption,
   type PaletteEntry,
   type PluginCompatibilityDetails,
+  type PluginDurableUsage,
   type PluginInfo,
   type PluginUpdateReview,
   type Provider,
@@ -1748,6 +1749,28 @@ export function createMockHost(options: {
   const openRootConfirmations = new Map<string, RootConfirmationPrompt>();
   const remembered = new Map<string, RememberedConfirmation[]>();
   const mockPublisher = 'cd'.repeat(32);
+  /** A fictional producer with retained durable records so the cleanup surface is exercisable. */
+  const durableUsage = new Map<string, PluginDurableUsage>([[
+    'dev.prateleira.local',
+    {
+      pluginId: 'dev.prateleira.local',
+      profileId: 'mock-profile',
+      recordCount: 12,
+      logicalBytes: 153_600,
+      maxBytes: 16 * 1024 * 1024,
+      maxAgeSeconds: 30 * 24 * 60 * 60,
+      oldestUpdatedAt: Math.floor(Date.now() / 1000) - 86_400,
+    },
+  ]]);
+  const emptyDurableUsage = (pluginId: string, profileId: string): PluginDurableUsage => ({
+    pluginId,
+    profileId,
+    recordCount: 0,
+    logicalBytes: 0,
+    maxBytes: 16 * 1024 * 1024,
+    maxAgeSeconds: null,
+    oldestUpdatedAt: null,
+  });
   const folderApprovals = new Map<string, PluginFolderApproval[]>([[
     'community.example.save-sync',
     [
@@ -4197,6 +4220,29 @@ export function createMockHost(options: {
           return [steamPlugin, packageManagerPlugin, communityPlugin, communitySaveSyncPlugin];
         }
         return [steamPlugin, epicPlugin, communityPlugin, communitySaveSyncPlugin];
+      }
+      if (cmd === 'plugin_durable_usage') {
+        const pluginId = String(args.pluginId ?? '');
+        const profileId = String(args.expectedProfileId ?? '');
+        const usage = durableUsage.get(pluginId) ?? emptyDurableUsage(pluginId, profileId);
+        return structuredClone({ ...usage, profileId });
+      }
+      if (cmd === 'plugin_durable_delete') {
+        if (args.confirmed !== true) {
+          throw new Error('deleting retained shared data requires confirmation');
+        }
+        const pluginId = String(args.pluginId ?? '');
+        const profileId = String(args.expectedProfileId ?? '');
+        const before = durableUsage.get(pluginId) ?? emptyDurableUsage(pluginId, profileId);
+        const after = { ...before, profileId, recordCount: 0, logicalBytes: 0 };
+        durableUsage.set(pluginId, after);
+        return structuredClone({
+          pluginId,
+          profileId,
+          removedRecords: before.recordCount,
+          reclaimedBytes: before.logicalBytes,
+          usage: after,
+        });
       }
       if (cmd === 'custom_launch_ids') return [];
       if (cmd === 'custom_launch_stop') return undefined;

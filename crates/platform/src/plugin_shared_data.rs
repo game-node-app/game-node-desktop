@@ -719,6 +719,50 @@ impl SharedDataStore {
         })
     }
 
+    /// Removes every durable record of one owner and reports the bytes actually reclaimed.
+    ///
+    /// This is the host's user-initiated cleanup: it removes retained public records without
+    /// uninstalling the producer, including protected and expired rows. Another owner's records,
+    /// the owner's retention policy and the private `plugin-data` stores are untouched. Blocking:
+    /// call this on the storage worker.
+    pub fn delete_owner(
+        &mut self,
+        owner: &OwnerScope,
+        now: i64,
+    ) -> Result<PruneOutcome, SharedDataError> {
+        validate_now(now)?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        check_owner(&tx, owner, now, false)?;
+        let (records, bytes): (i64, i64) = tx.query_row(
+            "SELECT COUNT(*), COALESCE(SUM(logical_bytes), 0) FROM shared_records
+             WHERE owner_key = ?1",
+            [owner.key()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        if records > 0 {
+            tx.execute(
+                "DELETE FROM shared_records WHERE owner_key = ?1",
+                [owner.key()],
+            )?;
+            let pool_revision = advance_pool(&tx)?;
+            tx.commit()?;
+            return Ok(PruneOutcome {
+                removed_records: records.max(0) as u64,
+                reclaimed_bytes: bytes.max(0) as u64,
+                pool_revision,
+            });
+        }
+        let pool_revision = current_pool_revision(&tx)?;
+        tx.commit()?;
+        Ok(PruneOutcome {
+            removed_records: 0,
+            reclaimed_bytes: 0,
+            pool_revision,
+        })
+    }
+
     /// Marks a record as protected from retention pruning, or releases it. Host-only: no plugin
     /// request reaches this method. It never changes the payload or the record revision.
     pub fn set_user_protected(

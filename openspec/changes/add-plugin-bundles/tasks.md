@@ -14,7 +14,7 @@
 
 ## 3. Registry and atomic install
 
-- [ ] 3.1 Add the `plugin_bundles` and `plugin_bundle_components` migration after the current latest version; verify a fresh database and an upgrade preserve existing packages and rows and that the schema hash fixture is updated.
+- [x] 3.1 Add the `plugin_bundles` and `plugin_bundle_components` migration after the current latest version; verify a fresh database and an upgrade preserve existing packages and rows and that the schema hash fixture is updated. Added migration `0025_plugin_bundles` (schema 25), `SqlitePluginBundleStore` (`record_bundle`, `bundle`, `bundle_for_plugin`, `remove_bundle`) on the shared connection, the `docs/local-state.md` table entries, a schema-24 upgrade test and store tests; verified with `cargo test --locked -p gamenode-platform` (552 passed), `cargo clippy --locked -p gamenode-platform --all-targets -- -D warnings`, `cargo fmt --all -- --check` and `git diff --check`.
 - [ ] 3.2 Implement staged bundle installation: write payloads, install each component through the existing registry path, write the bundle mapping in one transaction and clean staging on failure. Verify failure injection leaves no bundle mapping, no partial package and the previous installation usable.
 - [ ] 3.3 Implement publisher-checked adoption of an already installed component and an explicit conflict when identity or publisher differs. Verify both cases with fixtures and confirm no silent overwrite.
 - [ ] 3.4 Verify bundle removal deletes the mapping and component packages while preserving library history and grants policy; cover an active provider plus an unavailable extension.

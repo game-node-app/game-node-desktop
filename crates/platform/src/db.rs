@@ -16,7 +16,7 @@ pub struct Migration {
 }
 
 /// The latest supported schema version.
-pub const CURRENT_SCHEMA_VERSION: u32 = 24;
+pub const CURRENT_SCHEMA_VERSION: u32 = 25;
 
 /// Every migration this build knows. Append new ones; never edit or reorder released ones.
 pub const MIGRATIONS: &[Migration] = &[
@@ -139,6 +139,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 24,
         name: "library_launch_recipe_selection",
         sql: include_str!("../migrations/0024_library_launch_recipe_selection.sql"),
+    },
+    Migration {
+        version: 25,
+        name: "plugin_bundles",
+        sql: include_str!("../migrations/0025_plugin_bundles.sql"),
     },
 ];
 
@@ -455,6 +460,11 @@ impl SqliteSettingsStore {
     /// The achievement cache on the same serialized connection.
     pub fn achievement_store(&self) -> crate::achievement_db::SqliteAchievementStore {
         crate::achievement_db::SqliteAchievementStore::new(Arc::clone(&self.conn))
+    }
+
+    /// The plugin bundle mapping on the same serialized connection.
+    pub fn bundle_store(&self) -> crate::plugin_bundle_db::SqlitePluginBundleStore {
+        crate::plugin_bundle_db::SqlitePluginBundleStore::new(Arc::clone(&self.conn))
     }
 
     /// Opens and migrates the database at `path`.
@@ -832,6 +842,11 @@ mod tests {
                 "library_launch_recipe_selection",
                 "134c3902d5f4919cde7ab9d86370045b30674f0bb99d56c910c60af2c120b820",
             ),
+            (
+                25,
+                "plugin_bundles",
+                "f5c58f3128a9561e4c129565be57b5f40fba7269108bc66dfad03efd7541c22c",
+            ),
         ];
         assert_eq!(MIGRATIONS.len(), expected.len());
         for (migration, (version, name, digest)) in MIGRATIONS.iter().zip(expected) {
@@ -927,7 +942,7 @@ mod tests {
         let conn = store.conn();
         assert_eq!(
             versions(&conn).last(),
-            Some(&(24, "library_launch_recipe_selection".to_owned()))
+            Some(&(25, "plugin_bundles".to_owned()))
         );
         let payload: String = conn
             .query_row(
@@ -970,7 +985,7 @@ mod tests {
         let conn = store.conn();
         assert_eq!(
             versions(&conn).last(),
-            Some(&(24, "library_launch_recipe_selection".to_owned()))
+            Some(&(25, "plugin_bundles".to_owned()))
         );
         let kind: String = conn
             .query_row(
@@ -1067,7 +1082,7 @@ mod tests {
         let store = SqliteSettingsStore::open(&path).unwrap();
         assert_eq!(
             versions(&store.conn()).last(),
-            Some(&(24, "library_launch_recipe_selection".to_owned()))
+            Some(&(25, "plugin_bundles".to_owned()))
         );
         assert_eq!(store.load().unwrap().preferences, AppPreferences::default());
 
@@ -2293,10 +2308,10 @@ mod tests {
 
         let store = SqliteSettingsStore::open(&path).unwrap();
         let conn = store.conn();
-        assert_eq!(CURRENT_SCHEMA_VERSION, 24);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 25);
         assert_eq!(
             versions(&conn).last(),
-            Some(&(24, "library_launch_recipe_selection".to_owned()))
+            Some(&(25, "plugin_bundles".to_owned()))
         );
         let steam: (String, String, i64, i64, i64) = conn
             .query_row(
@@ -2396,10 +2411,10 @@ mod tests {
 
         let reopened = SqliteSettingsStore::open(&path).unwrap();
         let conn = reopened.conn();
-        assert_eq!(CURRENT_SCHEMA_VERSION, 24);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 25);
         assert_eq!(
             versions(&conn).last(),
-            Some(&(24, "library_launch_recipe_selection".to_owned()))
+            Some(&(25, "plugin_bundles".to_owned()))
         );
         assert_eq!(
             conn.query_row(
@@ -2574,10 +2589,10 @@ mod tests {
 
         let store = SqliteSettingsStore::open(&path).unwrap();
         let conn = store.conn();
-        assert_eq!(CURRENT_SCHEMA_VERSION, 24);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 25);
         assert_eq!(
             versions(&conn).last(),
-            Some(&(24, "library_launch_recipe_selection".to_owned()))
+            Some(&(25, "plugin_bundles".to_owned()))
         );
 
         // Every table that existed at schema 9 keeps its row.
@@ -2808,10 +2823,10 @@ mod tests {
 
         let store = SqliteSettingsStore::open(&path).unwrap();
         let conn = store.conn();
-        assert_eq!(CURRENT_SCHEMA_VERSION, 24);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 25);
         assert_eq!(
             versions(&conn).last(),
-            Some(&(24, "library_launch_recipe_selection".to_owned()))
+            Some(&(25, "plugin_bundles".to_owned()))
         );
         let (name, rarity): (String, Option<i64>) = conn
             .query_row(
@@ -2835,6 +2850,87 @@ mod tests {
             )
             .unwrap();
         assert_eq!(rarity, 420);
+    }
+
+    #[test]
+    fn a_populated_schema24_profile_upgrades_to_schema25_with_empty_bundle_tables() {
+        let dir = TempDir::new().unwrap();
+        let path = db_path(&dir);
+        {
+            let conn = open_with(&path, &MIGRATIONS[..24]).unwrap();
+            conn.execute_batch(
+                r#"
+                INSERT INTO settings (key, value) VALUES ('window.width', '1280');
+                INSERT INTO library_entries
+                    (key, provider, store_id, name, install_dir, fields_json, installed,
+                     first_seen, last_seen, owned, family_shared)
+                VALUES ('steam:620', 'steam', '620', 'Portal 2', 'D:/Steam/Portal 2',
+                        '{}', 1, 100, 200, 1, 0);
+                INSERT INTO plugin_custom_launch_recipes
+                    (owner_key, recipe_id, installation_id, revision, recipe_json)
+                VALUES ('owner', 'recipe', 'installation', 1, '{"recipe_id":"recipe"}');
+                "#,
+            )
+            .unwrap();
+            assert_eq!(
+                versions(&conn).last(),
+                Some(&(24, "library_launch_recipe_selection".to_owned()))
+            );
+        }
+
+        let store = SqliteSettingsStore::open(&path).unwrap();
+        let conn = store.conn();
+        assert_eq!(CURRENT_SCHEMA_VERSION, 25);
+        assert_eq!(
+            versions(&conn).last(),
+            Some(&(25, "plugin_bundles".to_owned()))
+        );
+        for table in ["plugin_bundles", "plugin_bundle_components"] {
+            let (rows, strict): (i64, i64) = conn
+                .query_row(
+                    &format!("SELECT COUNT(*), (SELECT strict FROM pragma_table_list WHERE name = '{table}') FROM {table}"),
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(rows, 0, "{table} starts empty");
+            assert_eq!(strict, 1, "{table} is STRICT");
+        }
+        let foreign_key: String = conn
+            .query_row(
+                "SELECT \"table\" FROM pragma_foreign_key_list('plugin_bundle_components')
+                 WHERE \"from\" = 'bundle_id'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(foreign_key, "plugin_bundles");
+
+        // The rows that existed before the upgrade are untouched.
+        let width: String = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'window.width'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(width, "1280");
+        let entry: String = conn
+            .query_row(
+                "SELECT name FROM library_entries WHERE key = 'steam:620'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(entry, "Portal 2");
+        let recipe: String = conn
+            .query_row(
+                "SELECT recipe_json FROM plugin_custom_launch_recipes WHERE recipe_id = 'recipe'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(recipe, "{\"recipe_id\":\"recipe\"}");
     }
 
     #[test]
@@ -2885,6 +2981,8 @@ mod tests {
                 "manual_registrations",
                 "playtime_sessions",
                 "playtime_totals",
+                "plugin_bundle_components",
+                "plugin_bundles",
                 "plugin_custom_launch_recipes",
                 "plugin_runtime_catalog_state",
                 "plugin_runtime_content_bindings",

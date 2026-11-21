@@ -8,6 +8,16 @@
 use base64::Engine as _;
 use ring::signature::{ED25519, UnparsedPublicKey};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::{Cursor, Read, Seek};
+use std::path::Path;
+use zip::ZipArchive;
+
+use crate::plugin_packages::{
+    MAX_COMPRESSED_BYTES, MAX_ENTRIES, MAX_EXPANDED_BYTES, MAX_METADATA_BYTES,
+    parse_integrity_json, verify_integrity_signature, verify_payload_hashes,
+};
 
 /// ASCII domain label followed by one NUL byte; signed before the raw `bundle.json` bytes.
 pub const BUNDLE_SIGNATURE_DOMAIN_PREFIX: &[u8] = b"GameNode/plugin-bundle/v1\0";
@@ -42,6 +52,30 @@ pub enum BundleError {
     TooManyComponents,
     #[error("bundle component kind must be \"provider\" or \"extension\"")]
     UnsupportedComponentKind,
+    #[error("bundle archive is malformed or contains an unexpected entry")]
+    InvalidArchive,
+    #[error("bundle or component exceeds an archive size or entry limit")]
+    ArchiveLimit,
+    #[error("bundle component is not a valid signed package")]
+    InvalidComponent,
+    #[error("bundle component identity does not match the bundle manifest")]
+    ComponentMismatch,
+}
+
+/// A verified bundle: the signed manifest plus the identity of every component package.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VerifiedBundle {
+    pub manifest: BundleManifest,
+    pub components: Vec<VerifiedBundleComponent>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VerifiedBundleComponent {
+    pub path: String,
+    pub plugin_id: String,
+    pub kind: String,
+    pub version: String,
+    pub sha256: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -197,6 +231,229 @@ pub fn verify_bundle_manifest(
         return Err(BundleError::InvalidSignature);
     }
     Ok(manifest)
+}
+
+/// The optional development-key marker at the bundle root.
+pub const DEVELOPMENT_KEY: &str = "DEVELOPMENT-KEY.txt";
+
+/// Verify a bundle archive from disk without extracting or executing it.
+pub fn verify_bundle_archive(path: &Path) -> Result<VerifiedBundle, BundleError> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| BundleError::InvalidArchive)?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.len() > MAX_BUNDLE_ARCHIVE_BYTES
+    {
+        return Err(BundleError::ArchiveLimit);
+    }
+    let file = std::fs::File::open(path).map_err(|_| BundleError::InvalidArchive)?;
+    verify_bundle_reader(std::io::BufReader::new(file))
+}
+
+/// Verify a bundle held in memory; used by fixtures and import staging.
+pub fn verify_bundle_bytes(bytes: &[u8]) -> Result<VerifiedBundle, BundleError> {
+    if bytes.len() as u64 > MAX_BUNDLE_ARCHIVE_BYTES {
+        return Err(BundleError::ArchiveLimit);
+    }
+    verify_bundle_reader(Cursor::new(bytes))
+}
+
+fn read_bounded<R: Read>(mut reader: R, limit: usize) -> Result<Vec<u8>, BundleError> {
+    let mut bytes = Vec::with_capacity(limit.min(64 * 1024));
+    reader
+        .read_to_end(&mut bytes)
+        .map_err(|_| BundleError::InvalidArchive)?;
+    if bytes.len() > limit {
+        return Err(BundleError::ArchiveLimit);
+    }
+    Ok(bytes)
+}
+
+fn safe_relative(name: &str) -> bool {
+    !name.is_empty()
+        && !name.contains('\\')
+        && !name.contains('\0')
+        && !name.starts_with('/')
+        && !name.chars().any(char::is_control)
+        && name
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != ".." && !part.contains(':'))
+}
+
+fn valid_outer_name(name: &str) -> bool {
+    name == BUNDLE_MANIFEST_NAME
+        || name == "signature.ed25519"
+        || name == DEVELOPMENT_KEY
+        || valid_component_path(name)
+}
+
+fn verify_bundle_reader<R: Read + Seek>(reader: R) -> Result<VerifiedBundle, BundleError> {
+    let mut archive = ZipArchive::new(reader).map_err(|_| BundleError::InvalidArchive)?;
+    if archive.len() > MAX_BUNDLE_COMPONENTS + 3 {
+        return Err(BundleError::ArchiveLimit);
+    }
+    let mut files = BTreeMap::new();
+    let mut folded = BTreeSet::new();
+    let mut expanded = 0u64;
+    for index in 0..archive.len() {
+        let entry = archive
+            .by_index(index)
+            .map_err(|_| BundleError::InvalidArchive)?;
+        if entry.is_dir() {
+            return Err(BundleError::InvalidArchive);
+        }
+        let name = entry.name().to_owned();
+        if !valid_outer_name(&name) || !folded.insert(name.to_ascii_lowercase()) {
+            return Err(BundleError::InvalidArchive);
+        }
+        expanded = expanded
+            .checked_add(entry.size())
+            .ok_or(BundleError::ArchiveLimit)?;
+        if expanded > MAX_BUNDLE_EXPANDED_BYTES {
+            return Err(BundleError::ArchiveLimit);
+        }
+        let limit = match name.as_str() {
+            BUNDLE_MANIFEST_NAME => MAX_BUNDLE_MANIFEST_BYTES as usize,
+            "signature.ed25519" => 64,
+            DEVELOPMENT_KEY => 64 * 1024,
+            _ => MAX_COMPRESSED_BYTES as usize,
+        };
+        let data = read_bounded(entry.take(limit as u64 + 1), limit)?;
+        files.insert(name, data);
+    }
+
+    let raw_manifest = files.remove(BUNDLE_MANIFEST_NAME).ok_or(BundleError::InvalidManifest)?;
+    let signature = files
+        .remove("signature.ed25519")
+        .ok_or(BundleError::InvalidKeyOrSignature)?;
+    let manifest = parse_bundle_manifest(&raw_manifest)?;
+    let publisher_key = manifest.publisher_key()?;
+    verify_bundle_signature(&publisher_key, &raw_manifest, &signature)?;
+
+    let mut components = Vec::with_capacity(manifest.components.len());
+    for component in &manifest.components {
+        let bytes = files
+            .remove(&component.path)
+            .ok_or(BundleError::InvalidComponent)?;
+        if format!("{:x}", Sha256::digest(&bytes)) != component.sha256 {
+            return Err(BundleError::InvalidComponent);
+        }
+        let identity = verify_component(&bytes, &publisher_key)?;
+        if identity.id != component.plugin_id || identity.kind != component.kind {
+            return Err(BundleError::ComponentMismatch);
+        }
+        components.push(VerifiedBundleComponent {
+            path: component.path.clone(),
+            plugin_id: identity.id,
+            kind: identity.kind,
+            version: identity.version,
+            sha256: component.sha256.clone(),
+        });
+    }
+    files.remove(DEVELOPMENT_KEY);
+    if !files.is_empty() {
+        return Err(BundleError::InvalidArchive);
+    }
+    Ok(VerifiedBundle {
+        manifest,
+        components,
+    })
+}
+
+#[derive(Deserialize)]
+struct ComponentManifest {
+    id: String,
+    kind: String,
+    version: String,
+    publisher: ComponentPublisher,
+}
+
+#[derive(Deserialize)]
+struct ComponentPublisher {
+    public_key: String,
+}
+
+struct ComponentIdentity {
+    id: String,
+    kind: String,
+    version: String,
+}
+
+fn verify_component(bytes: &[u8], publisher_key: &[u8; 32]) -> Result<ComponentIdentity, BundleError> {
+    let mut archive =
+        ZipArchive::new(Cursor::new(bytes)).map_err(|_| BundleError::InvalidComponent)?;
+    if archive.len() > MAX_ENTRIES {
+        return Err(BundleError::ArchiveLimit);
+    }
+    let mut payload = BTreeMap::new();
+    let mut integrity = None;
+    let mut signature = None;
+    let mut folded = BTreeSet::new();
+    let mut expanded = 0u64;
+    for index in 0..archive.len() {
+        let entry = archive
+            .by_index(index)
+            .map_err(|_| BundleError::InvalidComponent)?;
+        if entry.is_dir() {
+            return Err(BundleError::InvalidComponent);
+        }
+        let name = entry.name().to_owned();
+        if !safe_relative(&name) || !folded.insert(name.to_ascii_lowercase()) {
+            return Err(BundleError::InvalidComponent);
+        }
+        expanded = expanded
+            .checked_add(entry.size())
+            .ok_or(BundleError::ArchiveLimit)?;
+        if expanded > MAX_EXPANDED_BYTES {
+            return Err(BundleError::ArchiveLimit);
+        }
+        let limit = if name == "integrity.json"
+            || name == "signature.ed25519"
+            || name == "plugin.json"
+            || name.starts_with("licenses/")
+        {
+            MAX_METADATA_BYTES as usize
+        } else {
+            MAX_COMPRESSED_BYTES as usize
+        };
+        let data = read_bounded(entry.take(limit as u64 + 1), limit)?;
+        match name.as_str() {
+            "integrity.json" => integrity = Some(data),
+            "signature.ed25519" => signature = Some(data),
+            _ => {
+                payload.insert(name, data);
+            }
+        }
+    }
+    let integrity = integrity.ok_or(BundleError::InvalidComponent)?;
+    let signature = signature.ok_or(BundleError::InvalidComponent)?;
+    verify_integrity_signature(publisher_key, &integrity, &signature)
+        .map_err(|_| BundleError::InvalidComponent)?;
+    let manifest =
+        parse_integrity_json(&integrity).map_err(|_| BundleError::InvalidComponent)?;
+    verify_payload_hashes(&manifest.files.0, &payload)
+        .map_err(|_| BundleError::InvalidComponent)?;
+    let plugin = payload
+        .get("plugin.json")
+        .ok_or(BundleError::InvalidComponent)?;
+    let identity: ComponentManifest =
+        serde_json::from_slice(plugin).map_err(|_| BundleError::InvalidComponent)?;
+    let declared = base64::engine::general_purpose::STANDARD
+        .decode(identity.publisher.public_key.as_bytes())
+        .map_err(|_| BundleError::InvalidComponent)?;
+    if declared.as_slice() != publisher_key {
+        return Err(BundleError::ComponentMismatch);
+    }
+    if !valid_identifier(&identity.id) || semver::Version::parse(&identity.version).is_err() {
+        return Err(BundleError::InvalidComponent);
+    }
+    if !matches!(identity.kind.as_str(), "provider" | "extension") {
+        return Err(BundleError::UnsupportedComponentKind);
+    }
+    Ok(ComponentIdentity {
+        id: identity.id,
+        kind: identity.kind,
+        version: identity.version,
+    })
 }
 
 #[cfg(test)]
@@ -368,6 +625,278 @@ mod tests {
         );
         assert!(
             parse_bundle_manifest(&vec![b' '; MAX_BUNDLE_MANIFEST_BYTES as usize + 1]).is_err()
+        );
+    }
+
+    use std::io::{Cursor, Read, Write};
+
+    use zip::{ZipWriter, write::SimpleFileOptions};
+
+    fn component_archive(
+        plugin_id: &str,
+        kind: &str,
+        version: &str,
+        key: &Ed25519KeyPair,
+        declared_key: Option<&[u8]>,
+    ) -> Vec<u8> {
+        let declared = declared_key.unwrap_or(key.public_key().as_ref());
+        let public = base64::engine::general_purpose::STANDARD.encode(declared);
+        let manifest = serde_json::to_vec(&serde_json::json!({
+            "schema": 1,
+            "id": plugin_id,
+            "kind": kind,
+            "name": "Component",
+            "version": version,
+            "api": { "min": "1.6.0", "max": "1.6.0" },
+            "permissions": [],
+            "targets": [{ "os": "linux", "arch": "x86_64", "abi": "gnu", "entrypoint": "bin/plugin" }],
+            "publisher": { "key_id": "bundle-dev", "public_key": public },
+            "license": { "expression": "MIT", "files": ["licenses/LICENSE"] }
+        }))
+        .unwrap();
+        let files = BTreeMap::from([
+            ("bin/plugin".to_owned(), b"fixture executable".to_vec()),
+            ("licenses/LICENSE".to_owned(), b"fixture license".to_vec()),
+            ("plugin.json".to_owned(), manifest),
+        ]);
+        let hashes = files
+            .iter()
+            .map(|(path, bytes)| (path.clone(), format!("{:x}", Sha256::digest(bytes))))
+            .collect::<BTreeMap<_, _>>();
+        let integrity = serde_json::to_vec(&serde_json::json!({ "schema": 1, "files": hashes }))
+            .unwrap();
+        let mut signed = crate::plugin_packages::SIGNATURE_DOMAIN_PREFIX.to_vec();
+        signed.extend_from_slice(&integrity);
+        let signature = key.sign(&signed).as_ref().to_vec();
+        let mut entries: Vec<(&str, &[u8])> = files
+            .iter()
+            .map(|(path, bytes)| (path.as_str(), bytes.as_slice()))
+            .collect();
+        entries.push(("integrity.json", &integrity));
+        entries.push(("signature.ed25519", &signature));
+        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+        for (name, data) in entries {
+            writer
+                .start_file(name, SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(data).unwrap();
+        }
+        writer.finish().unwrap().into_inner()
+    }
+
+    fn bundle_archive(
+        key: &Ed25519KeyPair,
+        components: &[(&str, &str, &str, Vec<u8>)],
+        development: bool,
+    ) -> Vec<u8> {
+        let public = base64::engine::general_purpose::STANDARD.encode(key.public_key().as_ref());
+        let declared = components
+            .iter()
+            .map(|(file, plugin_id, kind, bytes)| {
+                serde_json::json!({
+                    "path": format!("components/{file}"),
+                    "sha256": format!("{:x}", Sha256::digest(bytes)),
+                    "plugin_id": plugin_id,
+                    "kind": kind
+                })
+            })
+            .collect::<Vec<_>>();
+        let manifest = serde_json::to_vec(&serde_json::json!({
+            "schema": 1,
+            "id": "org.example.bundle",
+            "name": "Bundle",
+            "version": "0.1.0",
+            "publisher": { "key_id": "bundle-dev", "public_key": public },
+            "components": declared
+        }))
+        .unwrap();
+        let mut payload = BUNDLE_SIGNATURE_DOMAIN_PREFIX.to_vec();
+        payload.extend_from_slice(&manifest);
+        let signature = key.sign(&payload).as_ref().to_vec();
+        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+        writer
+            .start_file(BUNDLE_MANIFEST_NAME, SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(&manifest).unwrap();
+        for (file, _, _, bytes) in components {
+            writer
+                .start_file(format!("components/{file}"), SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(bytes).unwrap();
+        }
+        writer
+            .start_file("signature.ed25519", SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(&signature).unwrap();
+        if development {
+            writer
+                .start_file(DEVELOPMENT_KEY, SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(b"DEVELOPMENT KEY ONLY").unwrap();
+        }
+        writer.finish().unwrap().into_inner()
+    }
+
+    fn sample_components(
+        key: &Ed25519KeyPair,
+    ) -> Vec<(&'static str, &'static str, &'static str, Vec<u8>)> {
+        vec![
+            (
+                "provider.gnplugin",
+                "org.example.provider",
+                "provider",
+                component_archive("org.example.provider", "provider", "0.1.0", key, None),
+            ),
+            (
+                "launch.gnplugin",
+                "org.example.launch",
+                "extension",
+                component_archive("org.example.launch", "extension", "0.1.0", key, None),
+            ),
+        ]
+    }
+
+    #[test]
+    fn a_valid_bundle_verifies_every_component() {
+        let key = Ed25519KeyPair::from_seed_unchecked(&[21; 32]).unwrap();
+        let components = sample_components(&key);
+        let bytes = bundle_archive(&key, &components, true);
+        let verified = verify_bundle_bytes(&bytes).unwrap();
+        assert_eq!(verified.manifest.id, "org.example.bundle");
+        assert_eq!(verified.manifest.version, "0.1.0");
+        assert_eq!(verified.components.len(), 2);
+        assert_eq!(verified.components[0].plugin_id, "org.example.provider");
+        assert_eq!(verified.components[0].kind, "provider");
+        assert_eq!(verified.components[1].plugin_id, "org.example.launch");
+        assert_eq!(verified.components[1].kind, "extension");
+        assert_eq!(verified.components[0].version, "0.1.0");
+    }
+
+    #[test]
+    fn tampered_and_missing_components_are_rejected() {
+        let key = Ed25519KeyPair::from_seed_unchecked(&[22; 32]).unwrap();
+        let components = sample_components(&key);
+        let valid = bundle_archive(&key, &components, false);
+
+        let tampered = {
+            let mut source = ZipArchive::new(Cursor::new(valid.clone())).unwrap();
+            let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+            for index in 0..source.len() {
+                let mut entry = source.by_index(index).unwrap();
+                let name = entry.name().to_owned();
+                let mut data = Vec::new();
+                entry.read_to_end(&mut data).unwrap();
+                if name == "components/provider.gnplugin" {
+                    data.extend_from_slice(b"tampered");
+                }
+                writer.start_file(name, SimpleFileOptions::default()).unwrap();
+                writer.write_all(&data).unwrap();
+            }
+            writer.finish().unwrap().into_inner()
+        };
+        assert_eq!(
+            verify_bundle_bytes(&tampered),
+            Err(BundleError::InvalidComponent)
+        );
+
+        let missing = {
+            let mut source = ZipArchive::new(Cursor::new(valid)).unwrap();
+            let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+            for index in 0..source.len() {
+                let mut entry = source.by_index(index).unwrap();
+                let name = entry.name().to_owned();
+                if name == "components/launch.gnplugin" {
+                    continue;
+                }
+                let mut data = Vec::new();
+                entry.read_to_end(&mut data).unwrap();
+                writer.start_file(name, SimpleFileOptions::default()).unwrap();
+                writer.write_all(&data).unwrap();
+            }
+            writer.finish().unwrap().into_inner()
+        };
+        assert_eq!(
+            verify_bundle_bytes(&missing),
+            Err(BundleError::InvalidComponent)
+        );
+    }
+
+    #[test]
+    fn mixed_publishers_duplicate_ids_and_identity_mismatches_are_rejected() {
+        let key = Ed25519KeyPair::from_seed_unchecked(&[23; 32]).unwrap();
+        let other = Ed25519KeyPair::from_seed_unchecked(&[24; 32]).unwrap();
+        let foreign = vec![(
+            "foreign.gnplugin",
+            "org.example.foreign",
+            "provider",
+            component_archive("org.example.foreign", "provider", "0.1.0", &other, None),
+        )];
+        assert_eq!(
+            verify_bundle_bytes(&bundle_archive(&key, &foreign, false)),
+            Err(BundleError::InvalidComponent)
+        );
+
+        let mut duplicate = sample_components(&key);
+        duplicate[1].1 = "org.example.provider";
+        assert_eq!(
+            verify_bundle_bytes(&bundle_archive(&key, &duplicate, false)),
+            Err(BundleError::DuplicateComponent)
+        );
+
+        let mut mismatch = sample_components(&key);
+        mismatch[0].1 = "org.example.other";
+        assert_eq!(
+            verify_bundle_bytes(&bundle_archive(&key, &mismatch, false)),
+            Err(BundleError::ComponentMismatch)
+        );
+    }
+
+    #[test]
+    fn unexpected_entries_and_nested_bundles_are_rejected() {
+        let key = Ed25519KeyPair::from_seed_unchecked(&[25; 32]).unwrap();
+        let valid = bundle_archive(&key, &sample_components(&key), false);
+        for extra in ["extra.txt", "components/nested.gnbundle"] {
+            let mut source = ZipArchive::new(Cursor::new(valid.clone())).unwrap();
+            let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+            for index in 0..source.len() {
+                let mut entry = source.by_index(index).unwrap();
+                let name = entry.name().to_owned();
+                let mut data = Vec::new();
+                entry.read_to_end(&mut data).unwrap();
+                writer.start_file(name, SimpleFileOptions::default()).unwrap();
+                writer.write_all(&data).unwrap();
+            }
+            writer.start_file(extra, SimpleFileOptions::default()).unwrap();
+            writer.write_all(b"not allowed").unwrap();
+            let bytes = writer.finish().unwrap().into_inner();
+            assert_eq!(
+                verify_bundle_bytes(&bytes),
+                Err(BundleError::InvalidArchive),
+                "{extra}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_component_declaring_another_publisher_is_rejected() {
+        let key = Ed25519KeyPair::from_seed_unchecked(&[26; 32]).unwrap();
+        let other = Ed25519KeyPair::from_seed_unchecked(&[27; 32]).unwrap();
+        let component = component_archive(
+            "org.example.provider",
+            "provider",
+            "0.1.0",
+            &key,
+            Some(other.public_key().as_ref()),
+        );
+        let components = vec![(
+            "provider.gnplugin",
+            "org.example.provider",
+            "provider",
+            component,
+        )];
+        assert_eq!(
+            verify_bundle_bytes(&bundle_archive(&key, &components, false)),
+            Err(BundleError::ComponentMismatch)
         );
     }
 }

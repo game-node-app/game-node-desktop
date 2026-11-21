@@ -8,7 +8,8 @@
 
 ## 2. Host bundle validation
 
-- [ ] 2.1 Implement the bundle verifier: ZIP bounds, `bundle.json` parsing, outer signature, component path/hash checks, nested-bundle rejection and component-publisher equality. Verify tamper, missing component, traversal, duplicate id and mixed-publisher fixtures all fail before registry writes.
+- [x] 2.1 Implement the bundle verifier: ZIP bounds, `bundle.json` parsing, outer signature, component path/hash checks, nested-bundle rejection and component-publisher equality. Verify tamper, missing component, traversal, duplicate id and mixed-publisher fixtures all fail before registry writes.
+  - Completion: `verify_bundle_archive`/`verify_bundle_bytes` in `crates/platform/src/plugin_bundles.rs` validate the outer ZIP entries and bounds, exact metadata names, nested/unlisted rejection, canonical `bundle.json`, the outer signature, every component SHA-256 and each component's signed integrity (same publisher key, matching plugin id and kind). Tests cover a valid bundle, tampered and missing components, duplicate ids, mixed publishers, identity mismatch, a component declaring another key, unexpected entries and a nested bundle. 10 module tests pass; platform Clippy is clean.
 - [ ] 2.2 Enforce the bundle limits (component count, outer/expanded size, one nested level, case collisions) in the verifier and tooling. Verify an oversized or zip-bomb fixture is rejected with an actionable error.
 - [ ] 2.3 Verify each component with the existing package validator and compatibility evaluator instead of a parallel implementation, and record per-component verdicts in the bundle review. Verify a corrupt component and a platform-incompatible component produce different outcomes.
 

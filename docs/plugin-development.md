@@ -206,6 +206,9 @@ Each name above maps to exactly one typed request/response pair in the protobuf 
 catalog. `GamesRequestLaunch` takes `GameLaunchRequest` and has no target/argument override;
 `GamesProposeCustomLaunch` and `GamesRequestCustomLaunch` take `CustomLaunchRequest` and require
 the independent `game.custom_launch` grant. Their approvals and effects are not interchangeable.
+A proposal may declare ordered mod layers (`CustomLaunchModLayer`); their argv and environment
+changes are part of the host review. An execution request may reference only the stored recipe
+revision and cannot supply or add layers or parameters.
 
 ## Library resource helpers and recipes (Rust SDK)
 

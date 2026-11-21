@@ -898,6 +898,8 @@ struct FakeHost {
         Mutex<HashMap<(String, String), gamenode_core::library::CustomLaunchRecipe>>,
     launch_recipe_selections: Mutex<HashMap<String, gamenode_core::library::LaunchRecipeSelection>>,
     custom_launch_dispatches: Mutex<Vec<crate::plugin_host::library::CustomLaunchDispatch>>,
+    /// The approved detected executable a parameter-only or mod-layer overlay starts.
+    detected_launch_command: Mutex<Option<gamenode_core::drm_free::CustomLaunchCommand>>,
     custom_launch_gate: Mutex<Option<Arc<tokio::sync::Notify>>>,
     custom_launch_entered: tokio::sync::Notify,
     runtime_resources: Mutex<HashMap<(String, String), gamenode_core::library::RuntimeResource>>,
@@ -1299,6 +1301,20 @@ impl LibraryHost for FakeHost {
         Ok(LaunchRecipeSelectionWrite::Applied)
     }
 
+    async fn detected_launch(
+        &self,
+        _entry_key: String,
+        _expected_revision: u64,
+    ) -> Result<gamenode_core::drm_free::CustomLaunchCommand, Status> {
+        self.detected_launch_command
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| {
+                Status::failed_precondition("the fixture has no detected executable target")
+            })
+    }
+
     async fn prepare_custom_launch(
         &self,
         recipe: gamenode_core::library::CustomLaunchRecipe,
@@ -1308,11 +1324,11 @@ impl LibraryHost for FakeHost {
     ) -> Result<crate::plugin_host::library::CustomLaunchDispatch, Status> {
         use crate::plugin_host::library::CustomLaunchDispatch;
         if !recipe.uri.is_empty() {
-            let environment = recipe.environment();
+            let environment = recipe.effective_environment();
             return Ok(CustomLaunchDispatch::Uri {
                 uri: url::Url::parse(&recipe.uri)
                     .map_err(|_| Status::invalid_argument("invalid launch URI"))?,
-                arguments: recipe.arguments,
+                arguments: recipe.effective_arguments(),
                 working_directory: working_directory_path.unwrap_or_default(),
                 environment,
             });
@@ -1320,7 +1336,7 @@ impl LibraryHost for FakeHost {
         if let Some(runtime) = runtime {
             use gamenode_core::library::RuntimeArgumentTemplate;
 
-            let environment = recipe.environment();
+            let environment = recipe.effective_environment();
             let mut arguments = runtime
                 .arguments
                 .iter()
@@ -1332,7 +1348,7 @@ impl LibraryHost for FakeHost {
                         .ok_or_else(|| Status::failed_precondition("content path is unavailable")),
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            arguments.extend(recipe.arguments);
+            arguments.extend(recipe.effective_arguments());
             return Ok(CustomLaunchDispatch::Runtime {
                 command: gamenode_core::drm_free::CustomLaunchCommand {
                     executable: runtime.executable,

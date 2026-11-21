@@ -2901,6 +2901,19 @@ impl crate::plugin_host::library::LibraryHost for PluginLibraryHost {
         .map_err(|_| tonic::Status::internal("could not remember launch plan"))
     }
 
+    async fn detected_launch(
+        &self,
+        entry_key: String,
+        expected_revision: u64,
+    ) -> Result<gamenode_core::drm_free::CustomLaunchCommand, tonic::Status> {
+        let engine = self.engine()?;
+        tokio::task::spawn_blocking(move || {
+            detected_target::resolved_command(&engine, &entry_key, expected_revision)
+        })
+        .await
+        .map_err(|_| tonic::Status::unavailable("detected launch worker stopped"))?
+    }
+
     async fn prepare_custom_launch(
         &self,
         recipe: gamenode_core::library::CustomLaunchRecipe,
@@ -2921,10 +2934,10 @@ impl crate::plugin_host::library::LibraryHost for PluginLibraryHost {
             if !recipe.uri.is_empty() {
                 let uri = url::Url::parse(&recipe.uri)
                     .map_err(|_| tonic::Status::invalid_argument("invalid launch URI"))?;
-                let environment = recipe.environment();
+                let environment = recipe.effective_environment();
                 return Ok(CustomLaunchDispatch::Uri {
                     uri,
-                    arguments: recipe.arguments,
+                    arguments: recipe.effective_arguments(),
                     working_directory: working_directory_path.unwrap_or_default(),
                     environment,
                 });
@@ -2975,7 +2988,7 @@ impl crate::plugin_host::library::LibraryHost for PluginLibraryHost {
                         }
                     }
                 }
-                arguments.extend(recipe.arguments.iter().cloned());
+                arguments.extend(recipe.effective_arguments());
                 let working_directory = working_directory_path
                     .unwrap_or_else(|| registration.working_directory.clone());
                 let command = CustomLaunchCommand {
@@ -2983,7 +2996,7 @@ impl crate::plugin_host::library::LibraryHost for PluginLibraryHost {
                     file_identity: registration.file_identity,
                     arguments,
                     working_directory,
-                    environment: recipe.environment(),
+                    environment: recipe.effective_environment(),
                 };
                 return Ok(CustomLaunchDispatch::Runtime {
                     command,
@@ -3021,11 +3034,11 @@ impl crate::plugin_host::library::LibraryHost for PluginLibraryHost {
                 })?;
             let working_directory =
                 working_directory_path.unwrap_or_else(|| registration.working_directory.clone());
-            let environment = recipe.environment();
+            let environment = recipe.effective_environment();
             let command = CustomLaunchCommand {
                 executable: registration.executable,
                 file_identity: registration.file_identity,
-                arguments: recipe.arguments,
+                arguments: recipe.effective_arguments(),
                 working_directory,
                 environment,
             };
@@ -3042,7 +3055,8 @@ impl crate::plugin_host::library::LibraryHost for PluginLibraryHost {
         let engine = self.engine()?;
         #[cfg(any(target_os = "linux", windows))]
         let dispatch = match dispatch {
-            crate::plugin_host::library::CustomLaunchDispatch::Executable(command) => {
+            crate::plugin_host::library::CustomLaunchDispatch::Executable(command)
+            | crate::plugin_host::library::CustomLaunchDispatch::Detected { command } => {
                 return engine
                     .start_supervised_custom_launch(command, Vec::new(), None, None)
                     .await
@@ -3082,7 +3096,8 @@ impl crate::plugin_host::library::LibraryHost for PluginLibraryHost {
                         ),
                         UriError::Failed => tonic::Status::unavailable("the launch URI failed"),
                     }),
-                CustomLaunchDispatch::Executable(command) => {
+                CustomLaunchDispatch::Executable(command)
+                | CustomLaunchDispatch::Detected { command } => {
                     let installations = ports.installations.ok_or_else(|| {
                         tonic::Status::unimplemented("custom executable launch is unavailable")
                     })?;
@@ -3139,7 +3154,8 @@ impl crate::plugin_host::library::LibraryHost for PluginLibraryHost {
         {
             let engine = self.engine()?;
             match dispatch {
-                crate::plugin_host::library::CustomLaunchDispatch::Executable(command) => {
+                crate::plugin_host::library::CustomLaunchDispatch::Executable(command)
+                | crate::plugin_host::library::CustomLaunchDispatch::Detected { command } => {
                     return engine
                         .start_supervised_custom_launch(command, Vec::new(), Some(entry_key), None)
                         .await
@@ -3174,7 +3190,8 @@ impl crate::plugin_host::library::LibraryHost for PluginLibraryHost {
         let engine = self.engine()?;
         match dispatch {
             #[cfg(any(target_os = "linux", windows))]
-            crate::plugin_host::library::CustomLaunchDispatch::Executable(command) => engine
+            crate::plugin_host::library::CustomLaunchDispatch::Executable(command)
+            | crate::plugin_host::library::CustomLaunchDispatch::Detected { command } => engine
                 .start_supervised_custom_launch(
                     command,
                     Vec::new(),

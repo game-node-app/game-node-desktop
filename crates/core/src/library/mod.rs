@@ -40,7 +40,8 @@ pub use add_run::{
 pub use batch::{CollectionRunView, StatusRunView, UndoAddView, UndoState};
 pub use catalog::{CatalogResult, CatalogStatus, CatalogView};
 pub use custom_launch::{
-    CustomLaunchMutation, CustomLaunchRecipe, LaunchRecipeSelection, LaunchRecipeSelectionWrite,
+    CustomLaunchModLayer, CustomLaunchMutation, CustomLaunchRecipe, LaunchRecipeSelection,
+    LaunchRecipeSelectionWrite,
 };
 pub use launch::{
     LaunchError, LaunchKind, LaunchState, LaunchStateView, LaunchStatus, open_action,

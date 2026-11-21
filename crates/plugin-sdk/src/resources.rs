@@ -90,6 +90,21 @@ pub struct CustomLaunchRecipe {
     pub environment_set: std::collections::BTreeMap<String, String>,
     pub environment_unset: Vec<String>,
     pub runtime_handle: String,
+    /// Declared launch-time layers; each contributes ordered argv/environment changes and is
+    /// disclosed in the host review. Execution references only the stored recipe revision.
+    pub mod_layers: Vec<CustomLaunchModLayer>,
+}
+
+/// A declared launch-time mod layer, kept as typed fields rather than a free-form description.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CustomLaunchModLayer {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub revision: u64,
+    pub argv: Vec<String>,
+    pub environment_set: std::collections::BTreeMap<String, String>,
+    pub environment_unset: Vec<String>,
 }
 
 /// A runtime executable approved on the host and shared by games that use the same interpreter.
@@ -451,6 +466,19 @@ impl Resources {
             recipe_id: String::new(),
             recipe_revision: 0,
             uri: recipe.uri.clone(),
+            mod_layers: recipe
+                .mod_layers
+                .iter()
+                .map(|layer| crate::proto::CustomLaunchModLayer {
+                    id: layer.id.clone(),
+                    name: layer.name.clone(),
+                    version: layer.version.clone(),
+                    revision: layer.revision,
+                    argv: layer.argv.clone(),
+                    environment_set: layer.environment_set.clone().into_iter().collect(),
+                    environment_unset: layer.environment_unset.clone(),
+                })
+                .collect(),
         }
     }
 
@@ -477,6 +505,7 @@ impl Resources {
             recipe_id: approved.recipe_id.to_owned(),
             recipe_revision: approved.recipe_revision,
             uri: String::new(),
+            mod_layers: Vec::new(),
         }
     }
 
@@ -1134,6 +1163,7 @@ mod custom_launch_tests {
             environment_set: [("A".into(), "value with spaces".into())].into(),
             environment_unset: vec!["B".into()],
             runtime_handle: String::new(),
+            mod_layers: Vec::new(),
         };
 
         let request = Resources::custom_launch_proposal(&context, &recipe, "intent", "key");
@@ -1176,6 +1206,7 @@ mod custom_launch_tests {
             environment_set: [("A".into(), "value with spaces".into())].into(),
             environment_unset: vec!["B".into()],
             runtime_handle: "runtime-handle".into(),
+            mod_layers: Vec::new(),
         };
 
         let request = Resources::custom_launch_proposal(&context, &recipe, "intent", "key");
@@ -1212,6 +1243,52 @@ mod custom_launch_tests {
         assert_eq!(request.executable_handle, "opaque-executable");
         assert_eq!(request.argv, ["--profile", "fixture"]);
         assert_eq!(request.expected_revision, 7);
+    }
+
+    #[test]
+    fn declared_mod_layers_keep_identity_revision_and_ordered_contributions_typed() {
+        let context = ServiceContext::default();
+        let recipe = CustomLaunchRecipe {
+            game_id: "fixture-game".into(),
+            installation_id: "fixture-install".into(),
+            expected_revision: 7,
+            argv: vec!["--windowed".into()],
+            mod_layers: vec![
+                CustomLaunchModLayer {
+                    id: "texture-hd".into(),
+                    name: "HD texture layer".into(),
+                    version: "1.2".into(),
+                    revision: 3,
+                    argv: vec!["--mod=texture-hd".into()],
+                    environment_set: [("MOD_LAYER".into(), "texture-hd".into())].into(),
+                    environment_unset: vec!["VANILLA".into()],
+                },
+                CustomLaunchModLayer {
+                    id: "second".into(),
+                    revision: 1,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        let request = Resources::custom_launch_proposal(&context, &recipe, "intent", "key");
+
+        assert_eq!(request.argv, ["--windowed"]);
+        assert_eq!(request.mod_layers.len(), 2);
+        assert_eq!(request.mod_layers[0].id, "texture-hd");
+        assert_eq!(request.mod_layers[0].name, "HD texture layer");
+        assert_eq!(request.mod_layers[0].revision, 3);
+        assert_eq!(request.mod_layers[0].argv, ["--mod=texture-hd"]);
+        assert_eq!(
+            request.mod_layers[0]
+                .environment_set
+                .get("MOD_LAYER")
+                .map(String::as_str),
+            Some("texture-hd")
+        );
+        assert_eq!(request.mod_layers[0].environment_unset, ["VANILLA"]);
+        assert_eq!(request.mod_layers[1].id, "second");
     }
 
     #[test]

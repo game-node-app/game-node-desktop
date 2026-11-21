@@ -791,6 +791,19 @@ message GameLaunchRequest {
   string idempotency_key = 6;
 }
 message GameLaunchReply { string job_id = 1; JobState state = 2; string refusal_code = 3; string message = 4; }
+// A declared launch-time mod layer. The host cannot inspect mod files, so `id`, `name` and
+// `version` are plugin-provided data shown in the reviewed plan; `revision` and the ordered
+// argv/environment contributions are host-validated. Execution requests may reference only the
+// recipe revision, never replace or add layers.
+message CustomLaunchModLayer {
+  string id = 1;
+  string name = 2;
+  string version = 3;
+  uint64 revision = 4;
+  repeated string argv = 5;
+  map<string, string> environment_set = 6;
+  repeated string environment_unset = 7;
+}
 message CustomLaunchRequest {
   ServiceContext context = 1;
   string game_id = 2;
@@ -808,6 +821,9 @@ message CustomLaunchRequest {
   uint64 recipe_revision = 14;
   string uri = 15;
   string content_id = 16;
+  // Proposal-only declared layers, applied after `argv`/`environment_*` in order. Empty on
+  // execution requests; the host resolves them from the stored reviewed recipe.
+  repeated CustomLaunchModLayer mod_layers = 17;
 }
 message CustomLaunchReply { string recipe_id = 1; uint64 recipe_revision = 2; string job_id = 3; JobState state = 4; string refusal_code = 5; string message = 6; }
 

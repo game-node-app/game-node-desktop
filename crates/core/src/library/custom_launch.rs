@@ -8,6 +8,53 @@ use std::collections::BTreeSet;
 pub const MAX_RECIPE_ARGUMENTS: usize = 128;
 pub const MAX_RECIPE_ARGUMENT_BYTES: usize = 4096;
 pub const MAX_RECIPE_TEXT_BYTES: usize = 128;
+pub const MAX_RECIPE_MOD_LAYERS: usize = 32;
+
+/// A declared launch-time mod layer. The host cannot inspect mod files, so the identity and
+/// version are plugin-provided text covered by the reviewed plan; the layer's argument and
+/// environment contributions are host-validated and applied in declaration order.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomLaunchModLayer {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    pub version: String,
+    /// Changes whenever the plugin replaces this layer; a changed value requires new review.
+    pub revision: u64,
+    pub arguments: Vec<String>,
+    pub environment_set: LaunchEnvironment,
+    pub environment_unset: BTreeSet<String>,
+}
+
+impl CustomLaunchModLayer {
+    pub fn environment(&self) -> LaunchEnvironmentDelta {
+        LaunchEnvironmentDelta {
+            set: self.environment_set.clone(),
+            unset: self.environment_unset.clone(),
+        }
+    }
+
+    pub fn validate(&self) -> bool {
+        let text_ok = |value: &str| {
+            value.len() <= MAX_RECIPE_TEXT_BYTES && !value.chars().any(char::is_control)
+        };
+        !self.id.is_empty()
+            && text_ok(&self.id)
+            && text_ok(&self.name)
+            && text_ok(&self.version)
+            && self.revision > 0
+            && arguments_ok(&self.arguments)
+            && self.environment().validate()
+    }
+}
+
+fn arguments_ok(arguments: &[String]) -> bool {
+    arguments.len() <= MAX_RECIPE_ARGUMENTS
+        && arguments
+            .iter()
+            .all(|argument| argument.len() <= MAX_RECIPE_ARGUMENT_BYTES && !argument.contains('\0'))
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -44,6 +91,10 @@ pub struct CustomLaunchRecipe {
     pub content_id: String,
     pub environment_set: LaunchEnvironment,
     pub environment_unset: BTreeSet<String>,
+    /// Declared mod layers applied after the recipe arguments, in order. They are reviewed as
+    /// components and contribute their arguments/environment changes to the effective plan.
+    #[serde(default)]
+    pub mod_layers: Vec<CustomLaunchModLayer>,
 }
 
 impl CustomLaunchRecipe {
@@ -54,6 +105,33 @@ impl CustomLaunchRecipe {
         }
     }
 
+    /// The exact argument vector after applying declared mod layers in order.
+    pub fn effective_arguments(&self) -> Vec<String> {
+        let mut arguments = self.arguments.clone();
+        for layer in &self.mod_layers {
+            arguments.extend(layer.arguments.iter().cloned());
+        }
+        arguments
+    }
+
+    /// The exact environment delta after applying declared mod layers in order. A later layer
+    /// replaces an earlier `set` for the same key and removes a key it `unset`s.
+    pub fn effective_environment(&self) -> LaunchEnvironmentDelta {
+        let mut environment = self.environment();
+        for layer in &self.mod_layers {
+            let layer = layer.environment();
+            for (key, value) in layer.set {
+                environment.unset.remove(&key);
+                environment.set.insert(key, value);
+            }
+            for key in layer.unset {
+                environment.set.remove(&key);
+                environment.unset.insert(key);
+            }
+        }
+        environment
+    }
+
     pub fn validate(&self) -> bool {
         let handle_ok = |value: &str| {
             value.len() <= MAX_RECIPE_TEXT_BYTES
@@ -61,6 +139,12 @@ impl CustomLaunchRecipe {
         };
         let has_executable = !self.executable_handle.is_empty() || self.executable.is_some();
         let has_uri = !self.uri.is_empty();
+        let effective_arguments = self.effective_arguments();
+        let effective_environment = self.effective_environment();
+        let parameter_overlay = !effective_arguments.is_empty()
+            || !effective_environment.is_empty()
+            || (!self.working_directory_handle.is_empty() || self.working_directory.is_some());
+        let mut layer_ids = BTreeSet::new();
         if !handle_ok(&self.recipe_id)
             || self.recipe_id.is_empty()
             || self.revision == 0
@@ -75,11 +159,15 @@ impl CustomLaunchRecipe {
             || !handle_ok(&self.working_directory_handle)
             || !handle_ok(&self.runtime_handle)
             || !handle_ok(&self.content_id)
-            || self.arguments.len() > MAX_RECIPE_ARGUMENTS
-            || self.arguments.iter().any(|argument| {
-                argument.len() > MAX_RECIPE_ARGUMENT_BYTES || argument.chars().any(|ch| ch == '\0')
-            })
-            || !self.environment().validate()
+            || !arguments_ok(&self.arguments)
+            || self.mod_layers.len() > MAX_RECIPE_MOD_LAYERS
+            || self
+                .mod_layers
+                .iter()
+                .any(|layer| !layer.validate() || !layer_ids.insert(layer.id.as_str()))
+            || !arguments_ok(&effective_arguments)
+            || !effective_environment.validate()
+            || (!has_executable && !has_uri && self.runtime_handle.is_empty() && !parameter_overlay)
             || (has_executable && has_uri)
             || (!self.runtime_handle.is_empty() && has_executable)
             || (!self.executable_handle.is_empty() && self.executable.is_some())
@@ -104,7 +192,7 @@ impl CustomLaunchRecipe {
             // Unsupported when it cannot. A runtime wrapper has no meaning for a URI target.
             return target.validate_shape() && self.runtime_handle.is_empty();
         }
-        has_executable || !self.runtime_handle.is_empty()
+        has_executable || !self.runtime_handle.is_empty() || parameter_overlay
     }
 }
 
@@ -131,6 +219,19 @@ mod tests {
             content_id: String::new(),
             environment_set: [("CUSTOM_VALUE".into(), "value".into())].into(),
             environment_unset: ["REMOVE_VALUE".into()].into(),
+            mod_layers: Vec::new(),
+        }
+    }
+
+    fn mod_layer() -> CustomLaunchModLayer {
+        CustomLaunchModLayer {
+            id: "texture-hd".into(),
+            name: "HD texture layer".into(),
+            version: "1.2".into(),
+            revision: 3,
+            arguments: vec!["--mod=texture-hd".into()],
+            environment_set: [("MOD_LAYER".into(), "texture-hd".into())].into(),
+            environment_unset: ["VANILLA".into()].into(),
         }
     }
 
@@ -168,6 +269,7 @@ mod tests {
             content_id: String::new(),
             environment_set: Default::default(),
             environment_unset: Default::default(),
+            mod_layers: Vec::new(),
         };
         assert!(recipe.validate());
         let serialized = serde_json::to_string(&recipe).unwrap();
@@ -197,6 +299,102 @@ mod tests {
         let mut recipe = uri_recipe();
         recipe.executable_handle = "executable-handle".into();
         assert!(!recipe.validate());
+    }
+
+    #[test]
+    fn parameter_only_recipe_uses_the_detected_target_without_a_target_field() {
+        let mut recipe = CustomLaunchRecipe {
+            arguments: vec!["--windowed".into()],
+            environment_set: [("GAME_PROFILE".into(), "fixture".into())].into(),
+            ..CustomLaunchRecipe::default()
+        };
+        recipe.recipe_id = "recipe-1".into();
+        recipe.revision = 1;
+        recipe.game_id = 620;
+        recipe.installation_id = "install-1".into();
+        recipe.base_target_revision = 3;
+        recipe.base_launch_fingerprint = 9;
+        assert!(recipe.validate());
+
+        recipe.arguments.clear();
+        recipe.environment_set.clear();
+        assert!(
+            !recipe.validate(),
+            "an empty overlay is not a customization"
+        );
+    }
+
+    #[test]
+    fn mod_layers_apply_in_order_and_bind_their_own_revision() {
+        let mut recipe = CustomLaunchRecipe {
+            arguments: vec!["--game".into()],
+            environment_set: [("MODE".into(), "base".into()), ("DROP".into(), "1".into())].into(),
+            mod_layers: vec![
+                mod_layer(),
+                CustomLaunchModLayer {
+                    id: "second".into(),
+                    name: String::new(),
+                    version: "0.1".into(),
+                    revision: 1,
+                    arguments: vec!["--second".into()],
+                    environment_set: [("MODE".into(), "layered".into())].into(),
+                    environment_unset: ["DROP".into()].into(),
+                },
+            ],
+            ..CustomLaunchRecipe::default()
+        };
+        recipe.recipe_id = "recipe-1".into();
+        recipe.revision = 1;
+        recipe.game_id = 620;
+        recipe.installation_id = "install-1".into();
+        recipe.base_target_revision = 3;
+        recipe.base_launch_fingerprint = 9;
+        assert!(recipe.validate());
+        assert_eq!(
+            recipe.effective_arguments(),
+            ["--game", "--mod=texture-hd", "--second"]
+        );
+        let environment = recipe.effective_environment();
+        assert_eq!(environment.set["MODE"], "layered");
+        assert_eq!(environment.set["MOD_LAYER"], "texture-hd");
+        assert!(!environment.set.contains_key("DROP"));
+        assert!(environment.unset.contains("VANILLA"));
+        assert!(environment.unset.contains("DROP"));
+        assert!(environment.validate());
+
+        let mut changed = recipe.clone();
+        changed.mod_layers[0].revision += 1;
+        assert!(changed.validate());
+        assert_eq!(changed.effective_arguments(), recipe.effective_arguments());
+    }
+
+    #[test]
+    fn mod_layer_validation_rejects_duplicates_and_target_conflicts() {
+        let mut recipe = CustomLaunchRecipe {
+            mod_layers: vec![mod_layer(), mod_layer()],
+            ..CustomLaunchRecipe::default()
+        };
+        recipe.recipe_id = "recipe-1".into();
+        recipe.revision = 1;
+        recipe.game_id = 620;
+        recipe.installation_id = "install-1".into();
+        recipe.base_target_revision = 3;
+        recipe.base_launch_fingerprint = 9;
+        assert!(!recipe.validate());
+
+        recipe.mod_layers = vec![mod_layer()];
+        recipe.uri = "steam://rungameid/620".into();
+        assert!(recipe.validate());
+        recipe.runtime_handle = "runtime-handle".into();
+        assert!(!recipe.validate());
+    }
+
+    #[test]
+    fn recipes_without_mod_layers_remain_compatible() {
+        let mut value = serde_json::to_value(uri_recipe()).unwrap();
+        value.as_object_mut().unwrap().remove("modLayers");
+        let recipe: CustomLaunchRecipe = serde_json::from_value(value).unwrap();
+        assert!(recipe.mod_layers.is_empty());
     }
 }
 

@@ -484,7 +484,7 @@ impl ResourceApi {
                 return Outcome::failed("unavailable", "the custom launch recipe is unavailable");
             };
             let current_resources = match self
-                .revalidate_custom_handles(caller, &context, recipe, dispatch)
+                .revalidate_custom_handles(caller, &context, &entry_key, recipe, dispatch)
                 .await
             {
                 Ok(resources) => resources,

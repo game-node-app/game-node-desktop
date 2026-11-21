@@ -3071,6 +3071,7 @@ mod tests {
         assert_eq!(kept.data_retention, "kept");
         assert!(kept.failures.is_empty(), "{:?}", kept.failures);
         assert_eq!(kept.removed.len(), 2);
+        assert_eq!(stopper.stopped().len(), 2);
         assert!(profile_data.is_dir());
         assert!(
             settings

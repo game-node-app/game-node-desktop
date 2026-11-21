@@ -3,11 +3,12 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { useAuth } from '../../api/useSnapshot';
-import { commands, isTauriRuntime, type AvailablePluginUpdate, type ExtensionReadinessSelection, type PluginImportReview, type PluginInfo, type PluginPermissionSnapshot, type PluginPlaytimeInfo, type PluginSharedDataSnapshot, type PluginUpdateReview } from '../../api';
+import { commands, isTauriRuntime, type AvailablePluginUpdate, type BundleUninstallOutcome, type ExtensionReadinessSelection, type PluginBundleImportReview, type PluginImportReview, type PluginInfo, type PluginPermissionSnapshot, type PluginPlaytimeInfo, type PluginSharedDataSnapshot, type PluginUpdateReview } from '../../api';
 import { AppModal } from '../../components/AppModal';
 import { pluginQueryKeys } from '../../api/pluginQueryKeys';
 import { useI18n } from '../../i18n';
 import { RememberedConfirmations } from './RememberedConfirmations';
+import { PluginBundleDetails } from './PluginBundleDetails';
 import { PluginFolderApprovals } from './PluginFolderApprovals';
 import { PluginSharedResources } from './PluginSharedResources';
 import { PluginCompatibilityReview } from './PluginCompatibilityReview';
@@ -48,11 +49,16 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
   const [selectedPluginId, setSelectedPluginId] = useState<string | null>(null);
   const [review, setReview] = useState<PluginUpdateReview | null>(null);
   const [importReview, setImportReview] = useState<PluginImportReview | null>(null);
+  const [bundleReview, setBundleReview] = useState<PluginBundleImportReview | null>(null);
+  const [bundleUninstallOutcome, setBundleUninstallOutcome] = useState<BundleUninstallOutcome | null>(null);
+  const [bundleUninstallError, setBundleUninstallError] = useState(false);
   const [nativeCodeConsent, setNativeCodeConsent] = useState(false);
   const [licenseText, setLicenseText] = useState<Record<string, string>>({});
   const [archivePath, setArchivePath] = useState('');
   const [scopeChoices, setScopeChoices] = useState<Record<string, boolean>>({});
   const [confirmRemove, setConfirmRemove] = useState(false);
+  const [confirmRemoveBundle, setConfirmRemoveBundle] = useState(false);
+  const [deleteBundleData, setDeleteBundleData] = useState(false);
   const [busy, setBusy] = useState(false);
   const [updateError, setUpdateError] = useState(false);
   const [updateOperation, setUpdateOperation] = useState<'check' | 'review' | 'trust' | 'approve' | 'decline' | null>(null);
@@ -105,6 +111,7 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
     staleTime: 30_000,
   });
   const selectedPlugin = data.find((plugin) => plugin.pluginId === selectedPluginId) ?? (renderCards ? undefined : data[0]);
+  const isBundle = selectedPlugin?.pluginKind === 'bundle';
   const { data: rollbackPackages = [], refetch: refetchRollbacks } = useQuery({
     queryKey: ['plugin-rollback-available'],
     queryFn: commands.pluginRollbackAvailable,
@@ -138,13 +145,13 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
     enabled: managedPluginId !== null && profileId !== null && selectedPlugin?.pluginKind === 'provider',
   });
   const periodicChecks = updatePreferences?.periodicChecks ?? false;
-  const managed = Boolean(selectedPlugin?.publisherFingerprint);
+  const managed = Boolean(selectedPlugin?.publisherFingerprint) && !isBundle;
   const canManageRuntime = managed && selectedPlugin?.runtimeAvailable === true && profileId !== null;
   const canManageAccount = managed && profileId !== null;
   const configurationQuery = useQuery({
     queryKey: ['plugin-configuration-modes', selectedPlugin?.providerId],
     queryFn: () => commands.pluginConfigurationModes(selectedPlugin!.providerId),
-    enabled: Boolean(selectedPlugin && selectedPlugin.status === 'installed' && selectedPlugin.session === 'active'),
+    enabled: Boolean(selectedPlugin && !isBundle && selectedPlugin.status === 'installed' && selectedPlugin.session === 'active'),
     staleTime: 5_000,
   });
   const configurationModes = configurationQuery.data;
@@ -305,11 +312,52 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
     setBusy(true);
     setManagementError(false);
     setImportReview(null);
+    setBundleReview(null);
     setNativeCodeConsent(false);
     setLicenseText({});
-    try { setImportReview(await commands.pluginImportReview(archivePath.trim())); }
+    try {
+      const path = archivePath.trim();
+      if (path.toLowerCase().endsWith('.gnbundle')) {
+        setBundleReview(await commands.pluginBundleImportReview(path));
+      } else {
+        setImportReview(await commands.pluginImportReview(path));
+      }
+    }
     catch { setManagementError(true); }
     finally { setBusy(false); }
+  };
+
+  const confirmBundlePublisher = async () => {
+    if (!bundleReview) return;
+    setBusy(true);
+    setManagementError(false);
+    try {
+      setBundleReview(await commands.pluginBundleImportConfirmPublisher(
+        bundleReview.token,
+        bundleReview.bundle.publisherFingerprint,
+      ));
+    } catch { setManagementError(true); }
+    finally { setBusy(false); }
+  };
+
+  const uninstallBundle = async () => {
+    if (!selectedPlugin?.bundleId) return;
+    setBusy(true);
+    setManagementError(false);
+    setBundleUninstallError(false);
+    setBundleUninstallOutcome(null);
+    try {
+      const outcome = await commands.pluginBundleUninstall(selectedPlugin.bundleId, deleteBundleData);
+      setBundleUninstallOutcome(outcome);
+      setConfirmRemoveBundle(false);
+      setDeleteBundleData(false);
+      if (outcome.failures.length === 0) setSelectedPluginId(null);
+      await refreshPluginHostState();
+    } catch {
+      setBundleUninstallError(true);
+      setConfirmRemoveBundle(false);
+      await refreshPluginHostState();
+    } finally { setBusy(false); }
   };
 
   const installImport = async () => {
@@ -423,7 +471,22 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
     setSelectedPluginId(pluginId);
   };
 
-  const details = selectedPlugin && (
+  const details = selectedPlugin && (isBundle ? (
+    <PluginBundleDetails
+      bundle={selectedPlugin}
+      profileId={profileId}
+      busy={busy}
+      onToggleEnabled={setPluginEnabled}
+      onRequestUninstall={() => {
+        setBundleUninstallOutcome(null);
+        setBundleUninstallError(false);
+        setDeleteBundleData(false);
+        setConfirmRemoveBundle(true);
+      }}
+      uninstallOutcome={bundleUninstallOutcome}
+      uninstallError={bundleUninstallError}
+    />
+  ) : (
     <article className={renderCards ? "flex flex-col gap-sm" : `${settingsCard} self-start`} aria-label={t('plugins.details')}>
       {!renderCards && <>
       <div className="flex flex-wrap items-center gap-compact">
@@ -538,7 +601,7 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
         </>
       )}
     </article>
-  );
+  ));
 
   return (
     <section className="flex flex-col gap-sm" aria-label={t('plugins.inventoryTitle')}>
@@ -604,6 +667,80 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
             void commands.pluginImportConfirmPublisher(importReview.token, importReview.publisherFingerprint).then(setImportReview).catch(() => setManagementError(true)).finally(() => setBusy(false));
           }}>{importReview.trust === 'changed' ? t('plugins.import.retrust') : t('plugins.import.trust')}</button> : null}
           <button type="button" className="ml-compact mt-compact rounded-sm border border-brand bg-brand px-sm py-1 text-sm text-white" disabled={busy || profileId === null || importReview.trust !== 'trusted' || importReview.compatibility !== 'compatible' || (importReview.nativeAccess.length > 0 && !nativeCodeConsent)} onClick={() => void installImport()}>{t('plugins.import.install')}</button>
+        </article>}
+        {bundleReview && <article className="mt-compact border-t border-border-subtle pt-compact" aria-label={t('plugins.bundle.reviewTitle')}>
+          <h3 className={settingsRowTitle}>
+            {bundleReview.bundle.name} {bundleReview.bundle.version}
+          </h3>
+          <p className={settingsRowDescription}>{t('plugins.bundle.identifier')}: {bundleReview.bundle.id}</p>
+          <p className={`${settingsRowDescription} break-all`}>
+            {t('plugins.import.fingerprint')}: {bundleReview.bundle.publisherFingerprint}
+          </p>
+          {bundleReview.pinnedFingerprint && (
+            <p className={settingsRowDescription}>
+              {t('plugins.import.previousFingerprint')}: {bundleReview.pinnedFingerprint}
+            </p>
+          )}
+          <p className={settingsRowDescription}>
+            {t('plugins.import.license')}: {bundleReview.license.expressions.join(', ') || '—'}
+          </p>
+          <p className={settingsRowDescription}>{t('plugins.bundle.reviewDescription')}</p>
+          <ul className="mt-compact flex flex-col gap-compact" aria-label={t('plugins.bundle.components')}>
+            {bundleReview.components.map((component) => (
+              <li key={component.review.pluginId} className="border-t border-border-subtle pt-compact">
+                <div className="flex flex-wrap items-center gap-compact">
+                  <h4 className={settingsRowTitle}>{component.review.name}</h4>
+                  <span className={settingsPill}>{t(`plugins.bundle.kind.${component.kind}`)}</span>
+                  <span className={settingsPill}>{component.review.version}</span>
+                  <span className={component.availability.status === 'available' ? settingsPillSuccess : settingsPillWarning}>
+                    {t(`plugins.bundle.availability.${component.availability.status}`)}
+                  </span>
+                </div>
+                <p className={settingsRowDescription}>{t('plugins.identifier')}: {component.review.pluginId}</p>
+                {component.availability.status === 'unavailable' && (
+                  <p className={settingsRowDescription} role="status">
+                    {t(`plugins.bundle.unavailable.${component.availability.reason}`)}
+                  </p>
+                )}
+                <p className={settingsRowDescription}>
+                  {t('plugins.import.compatibility')}: {t(`plugins.import.${component.review.compatibility}`)}
+                  {component.review.compatibilityReason ? ` ${component.review.compatibilityReason}` : ''}
+                </p>
+                {component.review.compatibilityDetails && (
+                  <PluginCompatibilityReview details={component.review.compatibilityDetails} />
+                )}
+                <div className={`${settingsRowDescription} mt-compact`}>
+                  <p>{t('plugins.bundle.permissionsFor', { name: component.review.name })}:</p>
+                  {component.review.requestedPermissions.length > 0 ? (
+                    <ul className="ml-4 list-disc">
+                      {component.review.requestedPermissions.map((permission) => (
+                        <li key={permission.id}>
+                          {permission.id} · {permission.scope} · {permission.required ? t('plugins.import.required') : t('plugins.import.optional')} · {permission.reason}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : <p>{t('plugins.bundle.noPermissions')}</p>}
+                </div>
+                <p className={settingsRowDescription}>
+                  {t('plugins.import.license')}: {component.review.license}
+                </p>
+              </li>
+            ))}
+          </ul>
+          {bundleReview.trust !== 'trusted' ? (
+            <button
+              type="button"
+              className="mt-compact rounded-sm border border-border-subtle px-sm py-1 text-sm disabled:opacity-50"
+              disabled={busy || profileId === null}
+              onClick={() => void confirmBundlePublisher()}
+            >
+              {bundleReview.trust === 'changed' ? t('plugins.import.retrust') : t('plugins.import.trust')}
+            </button>
+          ) : (
+            <p className={`${settingsRowDescription} mt-compact`} role="status">
+              {t('plugins.bundle.publisherConfirmed')}
+            </p>
+          )}
         </article>}
       </div>
       <div className={`${settingsCard} mb-compact`}>
@@ -741,15 +878,27 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
               <button
                 key={plugin.pluginId}
                 type="button"
+                data-plugin-id={plugin.pluginId}
+                data-plugin-bundle={plugin.pluginKind === 'bundle' ? 'true' : undefined}
                 aria-pressed={selectedPlugin?.pluginId === plugin.pluginId}
                 className={`flex w-full flex-col items-start gap-1 rounded-sm border px-sm py-compact text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${selectedPlugin?.pluginId === plugin.pluginId ? 'border-brand bg-accent-subtle' : 'border-border-subtle bg-raised hover:bg-[#2e2e2e]'}`}
                 onClick={() => selectPlugin(plugin.pluginId)}
               >
-                <span className={settingsRowTitle}>{providerLabel(plugin.providerId, plugin.name, t)}</span>
+                <span className={settingsRowTitle}>{plugin.bundleName ?? providerLabel(plugin.providerId, plugin.name, t)}</span>
                 <span className="flex flex-wrap gap-1">
                   <span className={settingsPill}>{plugin.source === 'official' ? t('plugins.official') : t('plugins.community')}</span>
                   <span className={stateClass(plugin.status)}>{statusLabel(plugin.status, t)}</span>
+                  {plugin.bundleVersion && <span className={settingsPill}>{t('plugins.bundle.version')}: {plugin.bundleVersion}</span>}
                 </span>
+                {plugin.bundleComponents && (
+                  <span className="flex flex-wrap gap-1">
+                    {plugin.bundleComponents.map((component) => (
+                      <span key={component.pluginId} className={component.status === 'installed' ? settingsPillSuccess : settingsPillWarning}>
+                        {component.name}: {statusLabel(component.status, t)}
+                      </span>
+                    ))}
+                  </span>
+                )}
               </button>
             ))}
           </div>
@@ -807,8 +956,44 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
           </AppModal.Body>
         </AppModal.Content>
       </AppModal.Root>
+      <AppModal.Root opened={confirmRemoveBundle} onClose={() => setConfirmRemoveBundle(false)}>
+        <AppModal.Overlay />
+        <AppModal.Content className="max-w-md bg-[var(--settings-bg-base)] p-md">
+          <AppModal.Header>
+            <AppModal.Title>{t('plugins.bundle.uninstall')}</AppModal.Title>
+            <AppModal.CloseButton aria-label={t('plugins.cancel')} />
+          </AppModal.Header>
+          <AppModal.Body>
+            <p className={settingsRowDescription}>{t('plugins.bundle.uninstallConfirm')}</p>
+            <fieldset className="mt-compact flex flex-col gap-1">
+              <legend className={settingsRowTitle}>{t('plugins.bundle.retention.title')}</legend>
+              <label className="flex items-start gap-compact text-sm">
+                <input
+                  type="radio"
+                  name="bundle-data-retention"
+                  checked={!deleteBundleData}
+                  onChange={() => setDeleteBundleData(false)}
+                />
+                <span>{t('plugins.bundle.retention.keepChoice')}</span>
+              </label>
+              <label className="flex items-start gap-compact text-sm">
+                <input
+                  type="radio"
+                  name="bundle-data-retention"
+                  checked={deleteBundleData}
+                  onChange={() => setDeleteBundleData(true)}
+                />
+                <span>{t('plugins.bundle.retention.deleteChoice')}</span>
+              </label>
+            </fieldset>
+            <div className="mt-compact flex justify-end gap-compact">
+              <button type="button" className="rounded-sm border border-border-subtle px-sm py-1 text-sm" onClick={() => setConfirmRemoveBundle(false)}>{t('plugins.cancel')}</button>
+              <button type="button" className="rounded-sm border border-warning px-sm py-1 text-sm" disabled={busy} onClick={() => void uninstallBundle()}>{t('plugins.bundle.uninstall')}</button>
+            </div>
+          </AppModal.Body>
+        </AppModal.Content>
+      </AppModal.Root>
       <section className="mt-md" aria-label={t('plugins.playtime.title')}>
-        <h3 className={settingsRowTitle}>{t('plugins.playtime.title')}</h3>
         <p className={`${settingsRowDescription} mb-compact`}>{t('plugins.playtime.description')}</p>
         {playtimePending ? (
           <p className={settingsRowDescription} role="status">{t('plugins.loading')}</p>

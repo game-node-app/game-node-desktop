@@ -1,0 +1,50 @@
+# Tasks
+
+## 1. Bundle format and tooling
+
+- [ ] 1.1 Define the bundle schema and signature domain (`GameNode/plugin-bundle/v1\0` plus the exact `bundle.json` bytes) in the platform/package code, and verify a fixture bundle parses with the expected id, version, publisher and component hashes.
+- [ ] 1.2 Extend `scripts/plugin-package.py` (or add a sibling tool) with `bundle`/`bundle-verify`: canonical `bundle.json`, sorted deterministic ZIP entries, component SHA-256, outer signature and the development-key marker. Verify a round trip succeeds and a one-byte component change fails.
+- [ ] 1.3 Add bundle format docs to `docs/plugin-package-manifest.md` and `docs/plugin-package-registry.md` with the file layout, signature domain, component paths and limits, and verify every documented command runs as written.
+
+## 2. Host bundle validation
+
+- [ ] 2.1 Implement the bundle verifier: ZIP bounds, `bundle.json` parsing, outer signature, component path/hash checks, nested-bundle rejection and component-publisher equality. Verify tamper, missing component, traversal, duplicate id and mixed-publisher fixtures all fail before registry writes.
+- [ ] 2.2 Enforce the bundle limits (component count, outer/expanded size, one nested level, case collisions) in the verifier and tooling. Verify an oversized or zip-bomb fixture is rejected with an actionable error.
+- [ ] 2.3 Verify each component with the existing package validator and compatibility evaluator instead of a parallel implementation, and record per-component verdicts in the bundle review. Verify a corrupt component and a platform-incompatible component produce different outcomes.
+
+## 3. Registry and atomic install
+
+- [ ] 3.1 Add the `plugin_bundles` and `plugin_bundle_components` migration after the current latest version; verify a fresh database and an upgrade preserve existing packages and rows and that the schema hash fixture is updated.
+- [ ] 3.2 Implement staged bundle installation: write payloads, install each component through the existing registry path, write the bundle mapping in one transaction and clean staging on failure. Verify failure injection leaves no bundle mapping, no partial package and the previous installation usable.
+- [ ] 3.3 Implement publisher-checked adoption of an already installed component and an explicit conflict when identity or publisher differs. Verify both cases with fixtures and confirm no silent overwrite.
+- [ ] 3.4 Verify bundle removal deletes the mapping and component packages while preserving library history and grants policy; cover an active provider plus an unavailable extension.
+
+## 4. Import review and consent
+
+- [ ] 4.1 Build the aggregated import review DTO (bundle identity, publisher fingerprint, trust, license aggregate and embedded per-component reviews) and its Tauri command. Verify it is produced without executing package code and that a single fingerprint confirmation pins the bundle publisher.
+- [ ] 4.2 Submit per-component permission decisions from one grouped review through the existing grant APIs; verify approving the bundle grants nothing, denying one component leaves the others usable, and each component keeps its own revision.
+- [ ] 4.3 Add the grouped review UI with en/pt-BR labels, permission reasons per component and compatibility details; verify with component tests and mocks that a denied component is clearly scoped and that the review remains usable while signed out (read-only inventory, sign-in prompt).
+
+## 5. Inventory and uninstall
+
+- [ ] 5.1 Add optional bundle fields to `PluginInfo` and aggregate components by bundle in the host inventory. Verify an installed bundle returns one bundle entry with both component statuses and unchanged standalone packages.
+- [ ] 5.2 Render one Stores entry per bundle with bundle name, version, publisher and per-component status; keep enable/disable per component in the details. Verify keyboard behavior, unavailable extension state and official-plugin isolation in component tests.
+- [ ] 5.3 Implement one bundle uninstall action: stop every component with the bounded grace, remove packages and mapping, and apply one persistence-retention choice. Verify no process survives, data retention behaves as chosen and a partial failure reports rather than silently claiming success.
+
+## 6. Update and rollback
+
+- [ ] 6.1 Extend the update index and review to carry a bundle hash and per-component old/new versions and permission diffs. Verify an index without the bundle field still updates standalone packages and a mixed-bundle update is rejected.
+- [ ] 6.2 Implement atomic bundle activation and rollback: stage every component, activate all or none, and revalidate grants without widening. Verify a failed staging/activation keeps the previous set active and rollback restores it with the same grants.
+- [ ] 6.3 Add bundle update/rollback UI states and localized errors. Verify a slow update leaves unrelated UI usable and a persistence error restores the displayed controls to the saved state.
+
+## 7. Integration and acceptance
+
+- [ ] 7.1 Package the Dolphin plugin (`richmont/gamenode-plugin-dolphin-emu`) provider and launch packages into one bundle; verify import, one review, one inventory row and one uninstall on Linux with the production validators.
+- [ ] 7.2 Record the Linux acceptance evidence: provider lists games, extension status is correct, uninstall removes both and data retention follows the chosen option. Cross-build the Windows bundle and record native Windows acceptance separately.
+- [ ] 7.3 Update `docs/plugin-development.md`, the plugin example READMEs and the Dolphin repository `README`/`TASKS` with the bundle flow. Verify the documented commands and links resolve and OpenSpec strict validation passes.
+
+## Workflow follow-up
+
+- Archive this change after the review and native acceptance requirements are satisfied.
+- Synchronize the modified main specs (`desktop-external-plugins`, `desktop-settings`) when archiving.
+- Add the bundle artifact to the release notes and the plugin publication guide.

@@ -351,11 +351,17 @@ pub(crate) fn no_profile() -> Status {
 #[derive(Clone, Debug)]
 pub struct PluginStateLayout {
     root: PathBuf,
+    /// The OS-user `plugin-data` folder of the private durable stores. Only the managed layout
+    /// knows it; a layout built with [`Self::new`] keeps private data out of reach.
+    data_root: Option<PathBuf>,
 }
 
 impl PluginStateLayout {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            data_root: None,
+        }
     }
 
     /// Refuse the development-only plugin state layouts instead of silently ignoring them or
@@ -387,7 +393,16 @@ impl PluginStateLayout {
 
     /// The desktop runtime's existing state directory for managed plugins.
     pub fn managed(paths: &gamenode_platform::paths::DataPaths) -> Self {
-        Self::new(paths.plugin_data_dir().join("state"))
+        Self {
+            root: paths.plugin_data_dir().join("state"),
+            data_root: Some(paths.plugin_data_dir()),
+        }
+    }
+
+    /// The OS-user `plugin-data` root of private plugin namespaces, when this layout came from
+    /// [`Self::managed`]. A bundle uninstall uses it to apply the delete-data retention choice.
+    pub fn plugin_data_root(&self) -> Option<&Path> {
+        self.data_root.as_deref()
     }
 
     pub(super) fn prepare_managed(paths: &gamenode_platform::paths::DataPaths) -> io::Result<Self> {

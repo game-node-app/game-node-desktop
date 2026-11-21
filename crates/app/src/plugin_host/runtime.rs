@@ -1289,6 +1289,85 @@ impl ThirdPartyPluginLifecycle {
             .map_err(|error| Status::internal(format!("plugin account state: {error}")))
     }
 
+    /// Uninstalls one installed bundle: the shared removal primitive stops every active component
+    /// with the bounded grace and deletes the mapped package versions and mapping, then this
+    /// wrapper unregisters the removed components, clears their activation and grants for the
+    /// active account, and applies one private-data retention choice.
+    ///
+    /// A partial failure is returned in the outcome, never dropped: each component that could not
+    /// be removed (or whose account state or data could not be cleared) is listed by plugin id.
+    pub async fn remove_bundle(
+        &self,
+        bundle_id: String,
+        bundles: gamenode_platform::plugin_bundle_db::SqlitePluginBundleStore,
+        delete_data: bool,
+    ) -> Result<super::bundles::BundleUninstallOutcome, super::bundles::BundleUninstallError> {
+        let _mutation = self.mutation.lock().await;
+        let profile = self
+            .api
+            .profiles()
+            .require()
+            .map_err(|_| super::bundles::BundleUninstallError::SignInRequired)?;
+        let retention = if delete_data {
+            super::bundles::BundleDataRetention::Delete
+        } else {
+            super::bundles::BundleDataRetention::Keep
+        };
+        let data_root = self.state.plugin_data_root().map(Path::to_path_buf);
+        let private_data = data_root
+            .as_deref()
+            .map(|root| super::bundles::BundlePrivateData {
+                root,
+                profile_id: profile.profile_id(),
+            });
+        let mut outcome = super::bundles::uninstall_bundle(
+            bundle_id,
+            self.registry.clone(),
+            bundles,
+            &self.processes,
+            retention,
+            private_data,
+        )
+        .await?;
+
+        let state = self.state.clone();
+        let removed = outcome.removed.clone();
+        let mut failures = Vec::new();
+        for component in &removed {
+            // Packages are gone, so the runtime must not keep a registration that could start
+            // them again. A failure here is reported instead of aborting the other components.
+            if let Err(error) = self
+                .api
+                .unregister_third_party_plugin(&component.plugin_id)
+                .await
+            {
+                failures.push(super::bundles::BundleRemovalFailure {
+                    plugin_id: component.plugin_id.clone(),
+                    version: component.version.clone(),
+                    error: format!("runtime registration: {}", error.message()),
+                });
+            }
+        }
+        let account_failures = tokio::task::spawn_blocking(move || {
+            let mut problems = Vec::new();
+            for component in removed {
+                if let Err(error) = state.remove_plugin_account_state(&component.plugin_id) {
+                    problems.push(super::bundles::BundleRemovalFailure {
+                        plugin_id: component.plugin_id,
+                        version: component.version,
+                        error: format!("account state: {error}"),
+                    });
+                }
+            }
+            problems
+        })
+        .await
+        .map_err(|_| super::bundles::BundleUninstallError::WorkerFailed)?;
+        failures.extend(account_failures);
+        outcome.failures.extend(failures);
+        Ok(outcome)
+    }
+
     fn process_ids(&self, plugin_id: &str) -> Result<Vec<String>, Status> {
         let registered = self.api.third_party_provider_ids_for_plugin(plugin_id);
         if registered.is_empty() {
@@ -1593,6 +1672,12 @@ impl HostedProviders {
                 enabled: None,
                 runtime_available: None,
                 compatibility_details: Some(report.compatibility_review()),
+                bundle_id: None,
+                bundle_name: None,
+                bundle_version: None,
+                bundle_component_kind: None,
+                bundle_publisher_fingerprint: None,
+                bundle_components: None,
             };
             let services = if report.manifest.kind == super::package::PluginKind::Provider {
                 // ProviderServices validates the host context as a provider TOML manifest. A

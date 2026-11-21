@@ -193,6 +193,27 @@ impl SqlitePluginBundleStore {
         read(&self.conn(), bundle_id)
     }
 
+    /// Every stored bundle and its components, ordered by bundle id. The inventory groups
+    /// installed components by this mapping; a package without a row stays standalone.
+    pub fn bundles(&self) -> Result<Vec<BundleRecord>, StorageError> {
+        let conn = self.conn();
+        let mut statement = conn
+            .prepare("SELECT bundle_id FROM plugin_bundles ORDER BY bundle_id")
+            .map_err(failed)?;
+        let ids = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(failed)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(failed)?;
+        let mut bundles = Vec::with_capacity(ids.len());
+        for bundle_id in ids {
+            if let Some(bundle) = read(&conn, &bundle_id)? {
+                bundles.push(bundle);
+            }
+        }
+        Ok(bundles)
+    }
+
     /// The bundle that contains `plugin_id`, or `None` for an ungrouped standalone package.
     pub fn bundle_for_plugin(&self, plugin_id: &str) -> Result<Option<BundleRecord>, StorageError> {
         let conn = self.conn();
@@ -337,6 +358,7 @@ mod tests {
             Some(expected.clone())
         );
         assert_eq!(store.bundle("org.example.missing").unwrap(), None);
+        assert_eq!(store.bundles().unwrap(), vec![expected.clone()]);
         assert_eq!(expected.components[0].package_version, "0.2.0");
         assert_eq!(expected.components[1].kind, "extension");
     }

@@ -12,6 +12,7 @@ use super::{
     profile::{PluginProfiles, PluginStateLayout},
 };
 use gamenode_platform::{
+    plugin_bundle_db::{BundleRecord, SqlitePluginBundleStore},
     plugin_environment::EmulationPolicy,
     plugin_network::FetchClient,
     plugin_packages::stage_package_archive,
@@ -589,6 +590,9 @@ pub struct PluginUpdateService {
     pending: std::sync::Arc<AsyncMutex<HashMap<String, PendingCandidate>>>,
     imports: std::sync::Arc<AsyncMutex<HashMap<String, PendingImport>>>,
     bundle_imports: std::sync::Arc<AsyncMutex<HashMap<String, PendingBundleImport>>>,
+    /// The bundle mapping on the application database connection. It is set at startup; when it is
+    /// absent (tests of standalone packages), the inventory never groups components.
+    bundles: std::sync::Arc<std::sync::Mutex<Option<SqlitePluginBundleStore>>>,
     lifecycle: std::sync::Arc<
         std::sync::RwLock<Option<std::sync::Arc<super::runtime::ThirdPartyPluginLifecycle>>>,
     >,
@@ -630,8 +634,25 @@ impl PluginUpdateService {
             pending: Default::default(),
             imports: Default::default(),
             bundle_imports: Default::default(),
+            bundles: Default::default(),
             lifecycle: Default::default(),
         })
+    }
+
+    /// Shares the application's bundle mapping with the inventory. Startup calls this once the
+    /// settings store is open, so the inventory and uninstall observe the same connection.
+    pub fn set_bundle_store(&self, bundles: SqlitePluginBundleStore) {
+        *self
+            .bundles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(bundles);
+    }
+
+    fn bundle_store(&self) -> Option<SqlitePluginBundleStore> {
+        self.bundles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     pub fn set_lifecycle(
@@ -1169,6 +1190,10 @@ impl PluginUpdateService {
 
     /// Returns inert metadata for installed, publisher-pinned packages. Signature and compatibility
     /// inspection use the package lifecycle worker; this inventory never starts plugin code.
+    ///
+    /// Installed bundles are aggregated: their components become one `bundle` entry that carries
+    /// each component's own status, while standalone packages keep one entry each. Grouping comes
+    /// from the registry mapping, never from matching names or publishers.
     pub async fn managed_inventory(&self) -> Result<Vec<super::PluginInfo>, String> {
         let registry = self.registry.clone();
         let trust_dir = self.trust_dir.clone();
@@ -1179,6 +1204,14 @@ impl PluginUpdateService {
         })
         .await
         .map_err(|_| "plugin registry worker failed".to_owned())??;
+        let bundles: Vec<BundleRecord> = match self.bundle_store() {
+            Some(store) => tokio::task::spawn_blocking(move || {
+                store.bundles().map_err(|error| error.to_string())
+            })
+            .await
+            .map_err(|_| "plugin bundle mapping worker failed".to_owned())??,
+            None => Vec::new(),
+        };
         let trust = tokio::task::spawn_blocking(move || {
             super::publisher_trust::PublisherTrustStore::open(trust_dir)
                 .map_err(|error| error.to_string())
@@ -1190,8 +1223,16 @@ impl PluginUpdateService {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
+        let bundled: BTreeSet<&str> = bundles
+            .iter()
+            .flat_map(|bundle| bundle.components.iter())
+            .map(|component| component.plugin_id.as_str())
+            .collect();
         let mut inventory = Vec::new();
         for package in installed {
+            if bundled.contains(package.plugin_id.as_str()) {
+                continue;
+            }
             let key = match package_key(&package.package_path) {
                 Ok(key) => key,
                 Err(_) => continue,
@@ -1244,9 +1285,194 @@ impl PluginUpdateService {
                 runtime_available: Some(runtime_available),
                 compatibility_details: Some(report.compatibility_review()),
                 publisher_fingerprint: Some(super::publisher_trust::key_fingerprint(&key)),
+                bundle_id: None,
+                bundle_name: None,
+                bundle_version: None,
+                bundle_component_kind: None,
+                bundle_publisher_fingerprint: None,
+                bundle_components: None,
             });
         }
+        for bundle in bundles {
+            inventory.push(self.bundle_entry(&bundle, &trust, lifecycle.as_ref()).await);
+        }
         Ok(inventory)
+    }
+
+    /// Builds the single inventory entry for one installed bundle from its mapping. Each component
+    /// is inspected at the exact version the mapping recorded, so an installed-but-inactive
+    /// component (for example an unavailable extension) is reported with its real status instead
+    /// of disappearing from the inventory.
+    async fn bundle_entry(
+        &self,
+        bundle: &BundleRecord,
+        trust: &super::publisher_trust::PublisherTrustStore,
+        lifecycle: Option<&std::sync::Arc<super::runtime::ThirdPartyPluginLifecycle>>,
+    ) -> super::PluginInfo {
+        let mut components = Vec::with_capacity(bundle.components.len());
+        for component in &bundle.components {
+            components.push(
+                self.bundle_component_entry(component, trust, lifecycle)
+                    .await,
+            );
+        }
+        let status = if components
+            .iter()
+            .any(|component| component.status == "installed")
+        {
+            "installed"
+        } else if components
+            .iter()
+            .any(|component| component.status == "failed")
+        {
+            "failed"
+        } else if components
+            .iter()
+            .any(|component| component.status == "unavailable")
+        {
+            "unavailable"
+        } else if components
+            .iter()
+            .any(|component| component.status == "incompatible")
+        {
+            "incompatible"
+        } else {
+            "missing"
+        };
+        let session = if components
+            .iter()
+            .any(|component| component.session == "active")
+        {
+            "active"
+        } else {
+            "stopped"
+        };
+        let mut native_access = Vec::new();
+        for component in &components {
+            for access in &component.native_access {
+                if !native_access.contains(access) {
+                    native_access.push(access.clone());
+                }
+            }
+        }
+        super::PluginInfo {
+            provider_id: String::new(),
+            plugin_id: bundle.bundle_id.clone(),
+            plugin_kind: "bundle".to_owned(),
+            name: bundle.name.clone(),
+            version: bundle.version.clone(),
+            source: "community".to_owned(),
+            status: status.to_owned(),
+            capabilities: Vec::new(),
+            session: session.to_owned(),
+            native_access,
+            enabled: None,
+            runtime_available: None,
+            publisher_fingerprint: None,
+            compatibility_details: None,
+            bundle_id: Some(bundle.bundle_id.clone()),
+            bundle_name: Some(bundle.name.clone()),
+            bundle_version: Some(bundle.version.clone()),
+            bundle_component_kind: None,
+            bundle_publisher_fingerprint: Some(bundle.publisher_fingerprint.clone()),
+            bundle_components: Some(components),
+        }
+    }
+
+    async fn bundle_component_entry(
+        &self,
+        component: &gamenode_platform::plugin_bundle_db::BundleComponentRecord,
+        trust: &super::publisher_trust::PublisherTrustStore,
+        lifecycle: Option<&std::sync::Arc<super::runtime::ThirdPartyPluginLifecycle>>,
+    ) -> super::PluginBundleComponent {
+        let missing = |status: &str| super::PluginBundleComponent {
+            plugin_id: component.plugin_id.clone(),
+            plugin_kind: component.kind.clone(),
+            name: component.plugin_id.clone(),
+            version: component.package_version.clone(),
+            status: status.to_owned(),
+            session: "stopped".to_owned(),
+            enabled: None,
+            runtime_available: None,
+            publisher_fingerprint: None,
+            compatibility_details: None,
+            native_access: Vec::new(),
+        };
+        let registry = self.registry.clone();
+        let lookup_id = component.plugin_id.clone();
+        let lookup_version = component.package_version.clone();
+        let installed = tokio::task::spawn_blocking(move || registry.versions(&lookup_id))
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .and_then(|versions| {
+                versions
+                    .into_iter()
+                    .find(|installed| installed.version == lookup_version)
+            });
+        let Some(installed) = installed else {
+            return missing("missing");
+        };
+        let Ok(key) = package_key(&installed.package_path) else {
+            return missing("failed");
+        };
+        if !trust.is_pinned(&installed.plugin_id, &key).unwrap_or(false) {
+            return missing("failed");
+        }
+        let Ok(report) = self
+            .packages
+            .inspect_candidate(&installed.package_path, key, EmulationPolicy::RequireNative)
+            .await
+        else {
+            return missing("failed");
+        };
+        if report.manifest.id != installed.plugin_id
+            || report.manifest.version != installed.version
+            || !matches!(
+                (report.manifest.kind, component.kind.as_str()),
+                (super::package::PluginKind::Provider, "provider")
+                    | (super::package::PluginKind::Extension, "extension")
+            )
+        {
+            return missing("failed");
+        }
+        let plugin_kind = match report.manifest.kind {
+            super::package::PluginKind::Provider => "provider",
+            super::package::PluginKind::Extension => "extension",
+        };
+        let compatible = report.selected_target().is_ok();
+        let runtime_available = compatible
+            && (plugin_kind == "provider"
+                || lifecycle.is_some_and(|lifecycle| {
+                    lifecycle.extension_runtime_available(&installed.plugin_id)
+                }));
+        let status = if !compatible {
+            "incompatible"
+        } else if plugin_kind == "extension" && !runtime_available {
+            "unavailable"
+        } else {
+            "installed"
+        };
+        let enabled = match lifecycle {
+            Some(lifecycle) if plugin_kind == "extension" => lifecycle
+                .enabled(installed.plugin_id.clone())
+                .await
+                .unwrap_or(false),
+            _ => false,
+        };
+        super::PluginBundleComponent {
+            plugin_id: installed.plugin_id.clone(),
+            plugin_kind: plugin_kind.to_owned(),
+            name: report.manifest.name.clone(),
+            version: installed.version,
+            status: status.to_owned(),
+            session: "stopped".to_owned(),
+            enabled: Some(enabled),
+            runtime_available: Some(runtime_available),
+            publisher_fingerprint: Some(super::publisher_trust::key_fingerprint(&key)),
+            compatibility_details: Some(report.compatibility_review()),
+            native_access: report.manifest.native_access.clone(),
+        }
     }
 
     /// Returns signed declarations for currently active, publisher-pinned third-party packages.

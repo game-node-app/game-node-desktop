@@ -745,6 +745,7 @@ fn commands_preserve_operation_and_account_profile_fences() {
         target_operation_id: "login-6".into(),
         settings: None,
         runtime_session_result: None,
+        runtime_session_context_result: None,
         achievements: None,
     };
     assert_eq!(

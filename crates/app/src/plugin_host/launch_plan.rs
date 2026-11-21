@@ -142,6 +142,14 @@ pub(super) fn resolve(
             command.working_directory.clone(),
             command.environment.clone(),
         ),
+        Some(CustomLaunchDispatch::Detected { command }) => (
+            LaunchPlanTarget::Detected {
+                fingerprint: target_revision,
+            },
+            command.arguments.clone(),
+            command.working_directory.clone(),
+            command.environment.clone(),
+        ),
         Some(CustomLaunchDispatch::Runtime {
             command,
             runtime_id,
@@ -180,6 +188,7 @@ pub(super) fn resolve(
                     revision: *revision,
                 });
             }
+            components.extend(mod_layer_components(identity, recipe));
             return make(
                 caller,
                 identity,
@@ -198,7 +207,7 @@ pub(super) fn resolve(
             );
         }
     };
-    let components = Vec::new();
+    let components = mod_layer_components(identity, recipe);
     make(
         caller,
         identity,
@@ -212,6 +221,28 @@ pub(super) fn resolve(
         components,
         resources.to_vec(),
     )
+}
+
+fn mod_layer_components(
+    identity: &crate::plugin_host::grants::PluginIdentity,
+    recipe: Option<&CustomLaunchRecipe>,
+) -> Vec<LaunchPlanComponent> {
+    recipe
+        .map(|recipe| {
+            recipe
+                .mod_layers
+                .iter()
+                .map(|layer| LaunchPlanComponent {
+                    kind: "mod-layer".into(),
+                    id: layer.id.clone(),
+                    owner_plugin_id: identity.plugin_id.clone(),
+                    owner_publisher: identity.publisher_fingerprint.clone(),
+                    version: layer.version.clone(),
+                    revision: layer.revision,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[allow(clippy::too_many_arguments)]

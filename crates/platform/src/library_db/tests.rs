@@ -2185,6 +2185,7 @@ fn custom_launch_recipes_are_plugin_scoped_revision_checked_and_persistent() {
         content_id: String::new(),
         environment_set: BTreeMap::from([("GAME_MODE".into(), "custom".into())]),
         environment_unset: Default::default(),
+        mod_layers: Vec::new(),
     };
     assert_eq!(
         store
@@ -2296,6 +2297,7 @@ fn selected_launch_recipe_is_revision_checked_persistent_and_never_falls_back_si
         content_id: String::new(),
         environment_set: Default::default(),
         environment_unset: Default::default(),
+        mod_layers: Vec::new(),
     };
     assert_eq!(
         store

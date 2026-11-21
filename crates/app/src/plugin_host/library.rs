@@ -661,6 +661,10 @@ pub struct BackupHostContext {
 #[derive(Clone, Debug)]
 pub enum CustomLaunchDispatch {
     Executable(gamenode_core::drm_free::CustomLaunchCommand),
+    /// The entry's detected executable with only reviewed parameter/mod-layer contributions.
+    Detected {
+        command: gamenode_core::drm_free::CustomLaunchCommand,
+    },
     Runtime {
         command: gamenode_core::drm_free::CustomLaunchCommand,
         runtime_id: String,
@@ -835,6 +839,17 @@ pub trait LibraryHost: Send + Sync {
     ) -> Result<gamenode_core::library::LaunchRecipeSelectionWrite, Status> {
         Err(Status::unavailable(
             "launch recipe selections are unavailable",
+        ))
+    }
+    /// Resolves the entry's approved detected executable for a parameter-only or mod-layer
+    /// overlay. URI targets and unavailable/replaced executables fail explicitly.
+    async fn detected_launch(
+        &self,
+        _entry_key: String,
+        _expected_revision: u64,
+    ) -> Result<gamenode_core::drm_free::CustomLaunchCommand, Status> {
+        Err(Status::unimplemented(
+            "detected launch customization is unavailable on this platform",
         ))
     }
     async fn prepare_custom_launch(

@@ -45,6 +45,70 @@ const APPROVE_AND_REMEMBER: Answer = Answer {
     approved: true,
     remember: true,
 };
+const DECLINE: Answer = Answer {
+    approved: false,
+    remember: false,
+};
+
+/// A profile the user-Play path can resolve for the fixture plugin, with a fresh state layout.
+async fn selected_recipe_profile(
+    fixture: &Fixture,
+    layout_name: &str,
+    permissions: &[&'static str],
+) -> (
+    crate::plugin_host::profile::PluginStateLayout,
+    crate::plugin_host::grants::PluginIdentity,
+    String,
+) {
+    use crate::plugin_host::grants::{
+        GrantScope, PermissionDecision, PermissionRequest, PluginIdentity,
+    };
+    use crate::plugin_host::profile::PluginStateLayout;
+
+    let profiles = fixture.api.profiles();
+    let layout = PluginStateLayout::new(fixture.plugin_data.join(layout_name));
+    profiles.set_state_layout(layout.clone());
+    let profile = profiles.current().unwrap();
+    let identity = PluginIdentity {
+        plugin_id: "fixture.plugin".into(),
+        publisher_fingerprint: "ab".repeat(32),
+        profile_id: profile.profile_id().to_owned(),
+    };
+    let scope = GrantScope::Declared {
+        value: "host-selected-game".into(),
+    };
+    let requests = permissions
+        .iter()
+        .map(|permission_id| PermissionRequest {
+            permission_id: (*permission_id).into(),
+            required: false,
+            allowed_scopes: [scope.clone()].into(),
+        })
+        .collect::<Vec<_>>();
+    let decisions = permissions
+        .iter()
+        .map(|permission_id| PermissionDecision {
+            permission_id: (*permission_id).into(),
+            scope: scope.clone(),
+            granted: true,
+        })
+        .collect::<Vec<_>>();
+    layout
+        .open_grants(&profile)
+        .unwrap()
+        .replace_grants(identity.clone(), &requests, &decisions)
+        .unwrap();
+    layout
+        .open_activation(&profile)
+        .unwrap()
+        .set_enabled(&identity.plugin_id, true)
+        .unwrap();
+    let owner = profiles
+        .resolver(&identity.plugin_id, &identity.publisher_fingerprint, None)
+        .unwrap()
+        .library_recipe_owner_key();
+    (layout, identity, owner)
+}
 
 impl Fixture {
     /// A fixture with one own entry, a fake engine side and (when `dialog` is given) a dialog.
@@ -927,6 +991,391 @@ async fn user_play_reviews_runtime_overlay_and_reprompts_when_runtime_revision_c
         .cloned()
         .unwrap();
     assert!(stored.validate());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn user_play_reviews_mod_layer_overlay_and_never_accepts_an_unreviewed_layer() {
+    use gamenode_core::drm_free::CustomLaunchCommand;
+    use gamenode_plugin_protocol::proto::CustomLaunchModLayer;
+
+    let target = TargetGameContext {
+        game_id: "5".into(),
+        installation_id: "id-steam:1".into(),
+        profile_id: "account-a".into(),
+        revision: "1".into(),
+    };
+    let (fixture, host, dialog) = Fixture::extension_game(
+        &[cap::DISCOVERY, cap::GAME_CUSTOM_LAUNCH],
+        target,
+        Some(answering(&[APPROVE_AND_REMEMBER, DECLINE, DECLINE])),
+    )
+    .await;
+    let dialog = dialog.unwrap();
+    host.launch_target.store(1, Ordering::SeqCst);
+    *host.detected_launch_command.lock().unwrap() = Some(CustomLaunchCommand {
+        executable: "/fixture/detected-game".into(),
+        file_identity: "fixture-detected-identity".into(),
+        arguments: vec!["--detected-base".into()],
+        working_directory: "/fixture/detected-game".into(),
+        environment: Default::default(),
+    });
+
+    let revision = fixture.feed.revision_of("steam:1").unwrap();
+    let recipe = fixture
+        .client()
+        .games_propose_custom_launch(CustomLaunchRequest {
+            context: Some(fixture.context()),
+            game_id: "5".into(),
+            installation_id: "id-steam:1".into(),
+            expected_revision: revision,
+            idempotency_key: "mod-layer-for-play".into(),
+            mod_layers: vec![CustomLaunchModLayer {
+                id: "texture-hd".into(),
+                name: "HD texture layer".into(),
+                version: "1.2".into(),
+                revision: 3,
+                argv: vec!["--mod=texture-hd".into()],
+                environment_set: [("MOD_LAYER".into(), "texture-hd".into())].into(),
+                environment_unset: vec!["VANILLA".into()],
+            }],
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let (_layout, identity, owner_key) = selected_recipe_profile(
+        &fixture,
+        "mod-layer-play-profile",
+        &[cap::GAME_CUSTOM_LAUNCH],
+    )
+    .await;
+    let stored = host
+        .custom_launch_recipe(owner_key.clone(), recipe.recipe_id.clone())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.mod_layers.len(), 1);
+    host.launch_recipe_selections.lock().unwrap().insert(
+        "steam:1".into(),
+        gamenode_core::library::LaunchRecipeSelection {
+            entry_key: "steam:1".into(),
+            owner_key: owner_key.clone(),
+            plugin_id: identity.plugin_id,
+            publisher_fingerprint: identity.publisher_fingerprint,
+            recipe_id: stored.recipe_id.clone(),
+            recipe_revision: stored.revision,
+            base_target_revision: stored.base_target_revision,
+            approved_plan_fingerprint: String::new(),
+        },
+    );
+
+    let api = fixture._server.resource_api();
+    assert!(api.launch_selected_recipe("steam:1".into()).await.unwrap());
+    let first_review = dialog.shown.lock().unwrap()[0].launch_plan.clone().unwrap();
+    assert_eq!(first_review.target, "Detected target (revision 1)");
+    assert_eq!(
+        first_review.arguments,
+        ["--detected-base", "--mod=texture-hd"]
+    );
+    assert_eq!(first_review.environment_set["MOD_LAYER"], "texture-hd");
+    assert_eq!(first_review.environment_unset, ["VANILLA"]);
+    assert_eq!(first_review.components.len(), 1);
+    assert_eq!(first_review.components[0].kind, "mod-layer");
+    assert_eq!(first_review.components[0].id, "texture-hd");
+    assert_eq!(first_review.components[0].version, "1.2");
+    assert_eq!(first_review.components[0].revision, 3);
+    assert_eq!(first_review.components[0].owner_plugin_id, "fixture.plugin");
+    assert!(
+        first_review
+            .differences
+            .contains(&"known-components".into())
+    );
+    assert!(
+        first_review
+            .differences
+            .contains(&"custom-arguments".into())
+    );
+    assert!(
+        first_review
+            .differences
+            .contains(&"environment-changes".into())
+    );
+    assert!(!first_review.differences.contains(&"custom-target".into()));
+    assert!(matches!(
+        host.custom_launch_dispatches.lock().unwrap().as_slice(),
+        [crate::plugin_host::library::CustomLaunchDispatch::Detected { command }]
+            if command.executable == "/fixture/detected-game"
+                && command.file_identity == "fixture-detected-identity"
+                && command.arguments == ["--detected-base", "--mod=texture-hd"]
+                && command.environment.set.get("MOD_LAYER").map(String::as_str) == Some("texture-hd")
+                && command.environment.unset.contains("VANILLA")
+    ));
+
+    // The unchanged reviewed plan makes no second dialog.
+    assert!(api.launch_selected_recipe("steam:1".into()).await.unwrap());
+    assert_eq!(dialog.shown.lock().unwrap().len(), 1);
+    assert_eq!(host.custom_launch_dispatches.lock().unwrap().len(), 2);
+
+    // A changed layer is a new plan: the user is asked again, and refusing dispatches nothing.
+    let mut changed = stored.clone();
+    changed.revision += 1;
+    changed.mod_layers[0].revision += 1;
+    changed.mod_layers[0].arguments = vec!["--mod=unreviewed".into()];
+    host.custom_launch_recipes.lock().unwrap().insert(
+        (owner_key.clone(), changed.recipe_id.clone()),
+        changed.clone(),
+    );
+    {
+        let mut selections = host.launch_recipe_selections.lock().unwrap();
+        let selection = selections.get_mut("steam:1").unwrap();
+        selection.recipe_revision = changed.revision;
+    }
+    let approved = host
+        .launch_recipe_selections
+        .lock()
+        .unwrap()
+        .get("steam:1")
+        .unwrap()
+        .approved_plan_fingerprint
+        .clone();
+    assert!(!api.launch_selected_recipe("steam:1".into()).await.unwrap());
+    assert_eq!(dialog.shown.lock().unwrap().len(), 2);
+    assert_eq!(host.custom_launch_dispatches.lock().unwrap().len(), 2);
+    assert_eq!(
+        host.launch_recipe_selections
+            .lock()
+            .unwrap()
+            .get("steam:1")
+            .unwrap()
+            .approved_plan_fingerprint,
+        approved
+    );
+
+    // A selection that is stale against the stored layer revision refuses without a dialog.
+    changed.revision += 1;
+    host.custom_launch_recipes
+        .lock()
+        .unwrap()
+        .insert((owner_key.clone(), changed.recipe_id.clone()), changed);
+    assert_eq!(
+        api.launch_selected_recipe("steam:1".into())
+            .await
+            .unwrap_err()
+            .code(),
+        Code::FailedPrecondition
+    );
+    assert_eq!(dialog.shown.lock().unwrap().len(), 2);
+    assert_eq!(host.custom_launch_dispatches.lock().unwrap().len(), 2);
+
+    // Restoring the reviewed recipe reuses the approval the refusal preserved.
+    host.custom_launch_recipes.lock().unwrap().insert(
+        (owner_key.clone(), stored.recipe_id.clone()),
+        stored.clone(),
+    );
+    host.launch_recipe_selections
+        .lock()
+        .unwrap()
+        .get_mut("steam:1")
+        .unwrap()
+        .recipe_revision = stored.revision;
+    assert!(api.launch_selected_recipe("steam:1".into()).await.unwrap());
+    assert_eq!(dialog.shown.lock().unwrap().len(), 2);
+    assert_eq!(host.custom_launch_dispatches.lock().unwrap().len(), 3);
+
+    // Execution can reference only the stored recipe revision; layers cannot be added on the wire.
+    let err = fixture
+        .client()
+        .games_request_custom_launch(CustomLaunchRequest {
+            context: Some(fixture.context()),
+            game_id: "5".into(),
+            installation_id: "id-steam:1".into(),
+            expected_revision: revision,
+            idempotency_key: "unreviewed-layer-on-wire".into(),
+            recipe_id: stored.recipe_id.clone(),
+            recipe_revision: stored.revision,
+            mod_layers: vec![CustomLaunchModLayer {
+                id: "unreviewed".into(),
+                revision: 1,
+                argv: vec!["--unreviewed".into()],
+                ..Default::default()
+            }],
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::InvalidArgument);
+    assert_eq!(host.custom_launch_dispatches.lock().unwrap().len(), 3);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn user_play_reviews_parameter_only_overlay_and_preserves_approval_on_refusal() {
+    use gamenode_core::drm_free::CustomLaunchCommand;
+
+    let target = TargetGameContext {
+        game_id: "5".into(),
+        installation_id: "id-steam:1".into(),
+        profile_id: "account-a".into(),
+        revision: "1".into(),
+    };
+    let (fixture, host, dialog) = Fixture::extension_game(
+        &[cap::DISCOVERY, cap::GAME_CUSTOM_LAUNCH],
+        target,
+        Some(answering(&[APPROVE_AND_REMEMBER, DECLINE])),
+    )
+    .await;
+    let dialog = dialog.unwrap();
+    host.launch_target.store(1, Ordering::SeqCst);
+    *host.detected_launch_command.lock().unwrap() = Some(CustomLaunchCommand {
+        executable: "/fixture/detected-game".into(),
+        file_identity: "fixture-detected-identity".into(),
+        arguments: vec!["--detected-base".into()],
+        working_directory: "/fixture/detected-game".into(),
+        environment: Default::default(),
+    });
+
+    let revision = fixture.feed.revision_of("steam:1").unwrap();
+    let recipe = fixture
+        .client()
+        .games_propose_custom_launch(CustomLaunchRequest {
+            context: Some(fixture.context()),
+            game_id: "5".into(),
+            installation_id: "id-steam:1".into(),
+            expected_revision: revision,
+            idempotency_key: "parameter-only-for-play".into(),
+            argv: vec!["--windowed".into()],
+            environment_set: [("GAME_PROFILE".into(), "consent-fixture".into())].into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let (_layout, identity, owner_key) = selected_recipe_profile(
+        &fixture,
+        "parameter-overlay-play-profile",
+        &[cap::GAME_CUSTOM_LAUNCH],
+    )
+    .await;
+    let stored = host
+        .custom_launch_recipe(owner_key.clone(), recipe.recipe_id.clone())
+        .await
+        .unwrap()
+        .unwrap();
+    host.launch_recipe_selections.lock().unwrap().insert(
+        "steam:1".into(),
+        gamenode_core::library::LaunchRecipeSelection {
+            entry_key: "steam:1".into(),
+            owner_key: owner_key.clone(),
+            plugin_id: identity.plugin_id,
+            publisher_fingerprint: identity.publisher_fingerprint,
+            recipe_id: stored.recipe_id.clone(),
+            recipe_revision: stored.revision,
+            base_target_revision: stored.base_target_revision,
+            approved_plan_fingerprint: String::new(),
+        },
+    );
+
+    let api = fixture._server.resource_api();
+    assert!(api.launch_selected_recipe("steam:1".into()).await.unwrap());
+    let first_review = dialog.shown.lock().unwrap()[0].launch_plan.clone().unwrap();
+    assert_eq!(first_review.target, "Detected target (revision 1)");
+    assert_eq!(first_review.arguments, ["--detected-base", "--windowed"]);
+    assert_eq!(
+        first_review.environment_set["GAME_PROFILE"],
+        "consent-fixture"
+    );
+    assert!(first_review.components.is_empty());
+    assert!(
+        first_review
+            .differences
+            .contains(&"custom-arguments".into())
+    );
+    assert!(
+        first_review
+            .differences
+            .contains(&"environment-changes".into())
+    );
+    assert!(!first_review.differences.contains(&"custom-target".into()));
+    assert!(matches!(
+        host.custom_launch_dispatches.lock().unwrap().as_slice(),
+        [crate::plugin_host::library::CustomLaunchDispatch::Detected { command }]
+            if command.arguments == ["--detected-base", "--windowed"]
+                && command.executable == "/fixture/detected-game"
+                && command.environment.set.get("GAME_PROFILE").map(String::as_str) == Some("consent-fixture")
+    ));
+
+    // The unchanged approved plan reuses its approval.
+    assert!(api.launch_selected_recipe("steam:1".into()).await.unwrap());
+    assert_eq!(dialog.shown.lock().unwrap().len(), 1);
+    assert_eq!(host.custom_launch_dispatches.lock().unwrap().len(), 2);
+
+    // A changed parameter is a new revision-bound plan; refusing keeps the earlier approval.
+    let mut changed = stored.clone();
+    changed.revision += 1;
+    changed.arguments.push("--unreviewed-parameter".into());
+    host.custom_launch_recipes.lock().unwrap().insert(
+        (owner_key.clone(), changed.recipe_id.clone()),
+        changed.clone(),
+    );
+    host.launch_recipe_selections
+        .lock()
+        .unwrap()
+        .get_mut("steam:1")
+        .unwrap()
+        .recipe_revision = changed.revision;
+    let approved = host
+        .launch_recipe_selections
+        .lock()
+        .unwrap()
+        .get("steam:1")
+        .unwrap()
+        .approved_plan_fingerprint
+        .clone();
+    assert!(!api.launch_selected_recipe("steam:1".into()).await.unwrap());
+    assert_eq!(dialog.shown.lock().unwrap().len(), 2);
+    assert_eq!(host.custom_launch_dispatches.lock().unwrap().len(), 2);
+    assert_eq!(
+        host.launch_recipe_selections
+            .lock()
+            .unwrap()
+            .get("steam:1")
+            .unwrap()
+            .approved_plan_fingerprint,
+        approved
+    );
+
+    // Returning to the reviewed parameters reuses that preserved approval without a dialog.
+    host.custom_launch_recipes.lock().unwrap().insert(
+        (owner_key.clone(), stored.recipe_id.clone()),
+        stored.clone(),
+    );
+    host.launch_recipe_selections
+        .lock()
+        .unwrap()
+        .get_mut("steam:1")
+        .unwrap()
+        .recipe_revision = stored.revision;
+    assert!(api.launch_selected_recipe("steam:1".into()).await.unwrap());
+    assert_eq!(dialog.shown.lock().unwrap().len(), 2);
+    assert_eq!(host.custom_launch_dispatches.lock().unwrap().len(), 3);
+
+    // Execution parameters cannot be supplied outside the stored recipe.
+    let err = fixture
+        .client()
+        .games_request_custom_launch(CustomLaunchRequest {
+            context: Some(fixture.context()),
+            game_id: "5".into(),
+            installation_id: "id-steam:1".into(),
+            expected_revision: revision,
+            idempotency_key: "unreviewed-parameter-on-wire".into(),
+            recipe_id: stored.recipe_id,
+            recipe_revision: stored.revision,
+            argv: vec!["--unreviewed-parameter".into()],
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::InvalidArgument);
+    assert_eq!(host.custom_launch_dispatches.lock().unwrap().len(), 3);
 }
 
 #[tokio::test(flavor = "multi_thread")]

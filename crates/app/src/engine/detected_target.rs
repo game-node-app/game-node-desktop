@@ -227,6 +227,77 @@ pub(super) fn launch(
     }
 }
 
+/// Resolves the approved detected executable for a parameter-only or declared mod-layer overlay.
+/// The target revision is checked again, and a URI target is refused rather than silently
+/// dropping the reviewed arguments or environment changes.
+pub(super) fn resolved_command(
+    engine: &Engine,
+    entry_key: &str,
+    expected_revision: u64,
+) -> Result<gamenode_core::drm_free::CustomLaunchCommand, tonic::Status> {
+    let entry = {
+        let state = engine.lock();
+        state
+            .library
+            .entry(entry_key)
+            .cloned()
+            .ok_or_else(|| tonic::Status::not_found("library entry not found"))?
+    };
+    let target = entry
+        .target
+        .as_ref()
+        .filter(|target| target.revision == expected_revision)
+        .ok_or_else(|| {
+            tonic::Status::failed_precondition(
+                "the detected target changed; review the launch choice",
+            )
+        })?;
+    if !target.available || !target.approved {
+        return Err(tonic::Status::failed_precondition(
+            "the detected target must be reviewed before a customized launch",
+        ));
+    }
+    match &target.spec {
+        TargetSpec::Uri { .. } => Err(tonic::Status::unimplemented(
+            "a detected URI target cannot apply a parameter or mod-layer overlay",
+        )),
+        TargetSpec::Executable { .. } => {
+            let host = engine
+                .shared
+                .ports
+                .installations
+                .as_deref()
+                .ok_or_else(|| {
+                    tonic::Status::unimplemented(
+                        "detected executable launch is unavailable on this platform",
+                    )
+                })?;
+            let (registration, identity) =
+                inspect_target(host, &target.spec, None).map_err(|error| match error {
+                    LocalError::Unsupported => tonic::Status::unimplemented(
+                        "detected executable launch is unavailable on this platform",
+                    ),
+                    LocalError::InvalidTarget => tonic::Status::failed_precondition(
+                        "the detected executable changed or is invalid; review the target",
+                    ),
+                    _ => tonic::Status::unavailable("could not inspect the detected executable"),
+                })?;
+            if target.identity.as_deref() != Some(identity.as_str()) {
+                return Err(tonic::Status::failed_precondition(
+                    "the detected executable changed; review the target",
+                ));
+            }
+            Ok(gamenode_core::drm_free::CustomLaunchCommand {
+                executable: registration.executable,
+                file_identity: registration.file_identity,
+                arguments: registration.arguments,
+                working_directory: registration.working_directory,
+                environment: Default::default(),
+            })
+        }
+    }
+}
+
 fn inspect_target(
     host: &dyn InstallationHost,
     spec: &TargetSpec,

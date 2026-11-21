@@ -1598,11 +1598,13 @@ impl resource_host_server::ResourceHost for ResourceApi {
         };
         let now = unix_now()?;
         // One page spans both sources, in the same receipt order, whether or not the producer is
-        // still connected.
-        let durable = self
+        // still connected. The persisted pool sequence seeds the broker first, so a restarted
+        // host hands the durable revision to a subsequent watch instead of restarting at zero.
+        let (durable, pool_revision) = self
             .shared_pool
             .list_dataset_any(request.dataset_id.clone(), now)
             .await?;
+        self.data.observe_pool_revision(pool_revision);
         let result = self
             .data
             .query_data_with_durable(
@@ -1646,6 +1648,11 @@ impl resource_host_server::ResourceHost for ResourceApi {
             .authorize_resource_session(context.as_ref())?;
         let identity = Self::data_identity(&caller)?;
         self.data.expire(unix_now()?);
+        // A watch positions against the persisted durable sequence, so the revision a `DataList`
+        // returned after a restart is accepted and an older position is rejected as stale even
+        // though the in-memory broker started empty.
+        let pool_revision = self.shared_pool.pool_revision().await?;
+        self.data.observe_pool_revision(pool_revision);
         let subscription = self
             .data
             .subscribe(

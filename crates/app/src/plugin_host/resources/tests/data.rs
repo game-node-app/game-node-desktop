@@ -5,12 +5,15 @@ use crate::plugin_host::{
     grants::PluginIdentity,
     resources::ResourceApi,
     shared_data::{DataBroker, Publication},
+    shared_pool::DurableSharedPool,
     sharing_policy::{
         ActivationReadGrant, Authorizer, SharedSharingPolicies, SharingClass, SharingPolicies,
         SourceRecipientPolicy,
     },
 };
-use gamenode_platform::plugin_shared_data::{OwnerScope, SharedDataStore};
+use gamenode_platform::plugin_shared_data::{
+    OwnerScope, RecordProvenance, RecordWrite, SharedDataStore, WriteOutcome,
+};
 use gamenode_plugin_protocol::{
     capability as cap,
     prost_types::{self, Value, value::Kind},
@@ -85,6 +88,13 @@ fn service(
     )
     .with_shared_data(data, authorizer)
     .with_shared_pool(fixture.shared_pool.clone())
+}
+
+/// A restarted host: a fresh in-memory broker over the durable pool reopened from the fixture's
+/// data folder, so the persisted pool sequence survives while the broker starts at zero.
+fn restarted_service(fixture: &Fixture, broker: Arc<DataBroker>) -> ResourceApi {
+    service(fixture, broker, fixture.shared_policies.clone())
+        .with_shared_pool(Arc::new(DurableSharedPool::new(&fixture.data_dir)))
 }
 
 async fn local_client(service: ResourceApi) -> (ResourceHostClient<Channel>, JoinHandle<()>) {
@@ -1776,5 +1786,785 @@ async fn durable_watch_reports_replacements_without_replaying_old_revisions() {
             .await
             .is_err(),
         "restarting a watch does not replay durable rows"
+    );
+}
+
+#[tokio::test]
+async fn durable_list_revision_hands_off_to_watch_after_a_real_host_restart() {
+    use futures_util::StreamExt;
+
+    let fixture = Fixture::new(&[]).await;
+    let producer =
+        consumer_session_with_grants(&fixture, &[cap::DATA_PUBLISH, cap::STORAGE_PERSIST]).await;
+    let producer_context = producer.host.resource_context().unwrap().clone();
+    let source = authenticated_identity(&fixture, &producer_context);
+    let recipient = authenticated_identity(&fixture, &fixture.context());
+    grant_durable_dataset(&fixture, &source, &recipient, true, true);
+
+    let mut producer_rpc = producer.host.resource_client();
+    let first = producer_rpc
+        .data_publish(durable_request(
+            &producer_context,
+            "restart-first",
+            "runtime-first",
+            60.0,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    let second = producer_rpc
+        .data_publish(durable_request(
+            &producer_context,
+            "restart-second",
+            "runtime-second",
+            61.0,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    fixture.api.disconnect("consumer").await;
+    drop(producer);
+
+    // The pool kept a sequence across the producer session; the reopened store must agree.
+    let persisted = SharedDataStore::open(&fixture.data_dir)
+        .unwrap()
+        .pool_revision()
+        .unwrap();
+    assert_eq!(persisted, 2, "two durable publications advanced the pool");
+
+    // Restart: the in-memory broker is empty while the pool kept its sequence.
+    let broker = Arc::new(DataBroker::new());
+    assert_eq!(broker.revision(), 0);
+    let (mut client, server) = local_client(restarted_service(&fixture, broker.clone())).await;
+
+    let listed = client
+        .data_list(list_request(&fixture.context(), "org.example.metrics.v1"))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(listed.records.len(), 2);
+    let ids: Vec<_> = listed
+        .records
+        .iter()
+        .map(|record| record.record_id.clone())
+        .collect();
+    assert!(ids.contains(&first.record_id) && ids.contains(&second.record_id));
+    assert_eq!(
+        listed.revision, persisted,
+        "the list resumes the persisted pool sequence instead of zero"
+    );
+    assert_eq!(broker.revision(), persisted);
+
+    // The revision the restarted list returned is a valid watch position, with no replay.
+    let mut watch = client
+        .data_watch(DataWatchRequest {
+            context: Some(fixture.context()),
+            dataset_id: "org.example.metrics.v1".into(),
+            after_revision: listed.revision,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(
+        tokio::time::timeout(Duration::ZERO, watch.next())
+            .await
+            .is_err(),
+        "a post-restart handoff starts live-only"
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn stale_watch_position_and_cursor_are_rejected_after_a_real_host_restart() {
+    let fixture = Fixture::new(&[]).await;
+    let producer =
+        consumer_session_with_grants(&fixture, &[cap::DATA_PUBLISH, cap::STORAGE_PERSIST]).await;
+    let producer_context = producer.host.resource_context().unwrap().clone();
+    let source = authenticated_identity(&fixture, &producer_context);
+    let recipient = authenticated_identity(&fixture, &fixture.context());
+    grant_durable_dataset(&fixture, &source, &recipient, true, true);
+    let mut producer_rpc = producer.host.resource_client();
+
+    let first = producer_rpc
+        .data_publish(durable_request(
+            &producer_context,
+            "stale-first",
+            "runtime-first",
+            60.0,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    producer_rpc
+        .data_publish(durable_request(
+            &producer_context,
+            "stale-second",
+            "runtime-second",
+            61.0,
+        ))
+        .await
+        .unwrap();
+    // A first page at pool revision 2 yields both a cursor and a watch position.
+    let mut page = list_request(&fixture.context(), "org.example.metrics.v1");
+    page.page.as_mut().unwrap().page_size = 1;
+    let first_page = fixture
+        .client()
+        .data_list(page.clone())
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(first_page.records[0].record_id, first.record_id);
+    assert_eq!(first_page.revision, 2);
+    assert!(!first_page.next_cursor.is_empty());
+
+    // A later durable publication moves the persisted sequence past both positions.
+    producer_rpc
+        .data_publish(durable_request(
+            &producer_context,
+            "stale-third",
+            "runtime-third",
+            62.0,
+        ))
+        .await
+        .unwrap();
+    fixture.api.disconnect("consumer").await;
+    drop(producer);
+
+    let broker = Arc::new(DataBroker::new());
+    let (mut client, server) = local_client(restarted_service(&fixture, broker.clone())).await;
+
+    // The watch position predates the persisted sequence: resume is refused, not skipped.
+    let error = client
+        .data_watch(DataWatchRequest {
+            context: Some(fixture.context()),
+            dataset_id: "org.example.metrics.v1".into(),
+            after_revision: first_page.revision,
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), Code::FailedPrecondition);
+
+    // The in-process cursor did not survive the restart and cannot silently skip records.
+    let mut stale = page.clone();
+    stale.page.as_mut().unwrap().cursor = first_page.next_cursor.clone();
+    let error = client.data_list(stale).await.unwrap_err();
+    assert_eq!(error.code(), Code::FailedPrecondition);
+    assert!(
+        error.message().contains("cursor is stale"),
+        "unexpected message: {}",
+        error.message()
+    );
+
+    // A fresh list re-anchors at the persisted sequence and pages every record.
+    let listed = client
+        .data_list(list_request(&fixture.context(), "org.example.metrics.v1"))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(listed.records.len(), 3);
+    assert_eq!(listed.revision, 3);
+    server.abort();
+}
+
+#[tokio::test]
+async fn revocation_fences_durable_reads_and_watch_with_the_producer_stopped() {
+    use futures_util::StreamExt;
+
+    let fixture = Fixture::new(&[]).await;
+    let producer =
+        consumer_session_with_grants(&fixture, &[cap::DATA_PUBLISH, cap::STORAGE_PERSIST]).await;
+    let producer_context = producer.host.resource_context().unwrap().clone();
+    let source = authenticated_identity(&fixture, &producer_context);
+    let recipient = authenticated_identity(&fixture, &fixture.context());
+    grant_durable_dataset(&fixture, &source, &recipient, true, true);
+
+    let published = producer
+        .host
+        .resource_client()
+        .data_publish(durable_request(
+            &producer_context,
+            "revoked-offline",
+            "runtime-primary",
+            60.0,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    // The producer stops before the revocation: no publication or reconnection can fence us.
+    fixture.api.disconnect("consumer").await;
+    drop(producer);
+
+    let listed = fixture
+        .client()
+        .data_list(list_request(&fixture.context(), "org.example.metrics.v1"))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(listed.records.len(), 1);
+    let mut watch = fixture
+        .client()
+        .data_watch(DataWatchRequest {
+            context: Some(fixture.context()),
+            dataset_id: "org.example.metrics.v1".into(),
+            after_revision: listed.revision,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+
+    let revision = fixture
+        .shared_policies
+        .recipient_snapshot(&recipient)
+        .unwrap()
+        .revision;
+    fixture
+        .shared_policies
+        .replace_recipient_policies(&recipient, revision, ActivationReadGrant::default(), vec![])
+        .unwrap();
+
+    // Reads are fenced immediately, straight from the persisted row.
+    let listed = fixture
+        .client()
+        .data_list(list_request(&fixture.context(), "org.example.metrics.v1"))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(listed.records.is_empty(), "revocation fences the list");
+    let error = fixture
+        .client()
+        .data_get(DataGetRequest {
+            context: Some(fixture.context()),
+            dataset_id: "org.example.metrics.v1".into(),
+            record_id: published.record_id,
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), Code::NotFound);
+
+    // The open watch ends at its next policy recheck without any producer event.
+    let error = tokio::time::timeout(Duration::from_secs(10), watch.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(error.code(), Code::FailedPrecondition);
+}
+
+#[tokio::test]
+async fn a_profile_change_fences_durable_reads_and_watch_with_the_producer_stopped() {
+    use futures_util::StreamExt;
+
+    let mut fixture = Fixture::new(&[]).await;
+    let producer =
+        consumer_session_with_grants(&fixture, &[cap::DATA_PUBLISH, cap::STORAGE_PERSIST]).await;
+    let producer_context = producer.host.resource_context().unwrap().clone();
+    let source = authenticated_identity(&fixture, &producer_context);
+    let recipient = authenticated_identity(&fixture, &fixture.context());
+    grant_durable_dataset(&fixture, &source, &recipient, true, true);
+
+    let published = producer
+        .host
+        .resource_client()
+        .data_publish(durable_request(
+            &producer_context,
+            "profile-durable",
+            "runtime-primary",
+            60.0,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    fixture.api.disconnect("consumer").await;
+    drop(producer);
+
+    let listed = fixture
+        .client()
+        .data_list(list_request(&fixture.context(), "org.example.metrics.v1"))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(listed.records.len(), 1);
+    let mut watch = fixture
+        .client()
+        .data_watch(DataWatchRequest {
+            context: Some(fixture.context()),
+            dataset_id: "org.example.metrics.v1".into(),
+            after_revision: listed.revision,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let stale_context = fixture.context();
+
+    // Another account signs in. The producer stays stopped; the session and its watches are
+    // fenced while the durable row remains under the previous profile's owner.
+    fixture.api.profiles().update(Some("b"), true);
+    fixture.api.fence_third_party_sessions().await;
+    let error = tokio::time::timeout(Duration::from_secs(10), watch.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert!(
+        matches!(
+            error.code(),
+            Code::FailedPrecondition | Code::Unauthenticated
+        ),
+        "the previous profile's watch must not deliver a record: {error:?}"
+    );
+    let error = fixture
+        .client()
+        .data_list(list_request(&stale_context, "org.example.metrics.v1"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            error.code(),
+            Code::FailedPrecondition | Code::Unauthenticated
+        ),
+        "a stale profile context must be fenced: {error:?}"
+    );
+
+    // Reconnecting into the new profile cannot reach the previous profile's durable record.
+    fixture.reconnect().await;
+    let listed = fixture
+        .client()
+        .data_list(list_request(&fixture.context(), "org.example.metrics.v1"))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(
+        listed.records.is_empty(),
+        "another profile never sees this owner's durable row"
+    );
+    let error = fixture
+        .client()
+        .data_get(DataGetRequest {
+            context: Some(fixture.context()),
+            dataset_id: "org.example.metrics.v1".into(),
+            record_id: published.record_id,
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), Code::NotFound);
+}
+
+/// Writes one host-resolved durable row straight into the pool, standing in for a producer whose
+/// session is gone or a host domain adapter that feeds Common records into the public pool.
+fn write_pool_row(
+    fixture: &Fixture,
+    owner_key: [u8; 32],
+    source: &PluginIdentity,
+    class: SharingClass,
+    category: Option<CommonDataCategory>,
+    resource_id: &str,
+    fields_json: &str,
+) -> String {
+    const DATASET: &str = "org.example.metrics.v1";
+    let caller = fixture
+        .api
+        .authorize_resource_session(Some(&fixture.context()))
+        .unwrap();
+    let owner = OwnerScope::new(owner_key, caller.profile_epoch).unwrap();
+    let provenance = RecordProvenance {
+        source_plugin_id: source.plugin_id.clone(),
+        source_publisher_fingerprint: source.publisher_fingerprint.clone(),
+        source_profile_id: source.profile_id.clone(),
+        declared_developer: "Example Developer".into(),
+        origin: "signed-package".into(),
+        package_version: "1.0.0".into(),
+        package_digest: vec![9; 32],
+    };
+    let now = unix_seconds();
+    let mut store = SharedDataStore::open(&fixture.data_dir).unwrap();
+    let outcome = store
+        .write(
+            owner,
+            RecordWrite {
+                dataset_id: DATASET,
+                category: category.map(|category| category as i32),
+                class: class.as_name(),
+                schema_id: DATASET,
+                schema_version: 1,
+                fields_json,
+                opaque_payload: &[],
+                resource_id: Some(resource_id),
+                observed_at: now,
+                sequence: 1,
+                source_observation_id: resource_id,
+                expires_at: None,
+                now,
+                provenance: &provenance,
+                expected_revision: None,
+            },
+        )
+        .unwrap();
+    match outcome {
+        WriteOutcome::Stored(receipt) => receipt.record.record_id,
+        other => panic!("unexpected pool write outcome: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn durable_custom_records_stay_private_until_their_dataset_grant_keeps_the_mask() {
+    let fixture = Fixture::new(&[]).await;
+    let producer =
+        consumer_session_with_grants(&fixture, &[cap::DATA_PUBLISH, cap::STORAGE_PERSIST]).await;
+    let producer_context = producer.host.resource_context().unwrap().clone();
+    let source = authenticated_identity(&fixture, &producer_context);
+    let recipient = authenticated_identity(&fixture, &fixture.context());
+
+    let mut request = durable_request(&producer_context, "masked-durable", "runtime-primary", 60.0);
+    request.value = Some(value(&[
+        ("fps", number(60.0)),
+        ("title", text("private title")),
+    ]));
+    let published = producer
+        .host
+        .resource_client()
+        .data_publish(request)
+        .await
+        .unwrap()
+        .into_inner();
+    fixture.api.disconnect("consumer").await;
+    drop(producer);
+
+    // Owner-private default: the row exists in the pool but is not disclosed.
+    let listed = fixture
+        .client()
+        .data_list(list_request(&fixture.context(), "org.example.metrics.v1"))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(listed.records.is_empty(), "no grant, no durable row");
+    let error = fixture
+        .client()
+        .data_get(DataGetRequest {
+            context: Some(fixture.context()),
+            dataset_id: "org.example.metrics.v1".into(),
+            record_id: published.record_id.clone(),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), Code::NotFound);
+
+    // A category/selected-record activation grant cannot authorize a Custom durable row, even
+    // when the request selects that category and record.
+    fixture
+        .shared_policies
+        .set_activation_grants(
+            &recipient,
+            ActivationReadGrant::new(
+                [CommonDataCategory::GamePerformanceHistory],
+                [published.record_id.clone()],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let mut selected = list_request(&fixture.context(), "org.example.metrics.v1");
+    selected.common_data_categories = Some(CommonDataSelector {
+        categories: vec![CommonDataCategory::GamePerformanceHistory as i32],
+        selected_record_ids: vec![published.record_id.clone()],
+    });
+    let listed = fixture
+        .client()
+        .data_list(selected.clone())
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(
+        listed.records.is_empty(),
+        "a category or selected-record Common grant cannot widen a Custom durable projection"
+    );
+
+    // The reviewed dataset grant is the only authorization, and its field mask is enforced.
+    grant_durable_dataset(&fixture, &source, &recipient, true, true);
+    let listed = fixture
+        .client()
+        .data_list(selected.clone())
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(listed.records.len(), 1);
+    assert_eq!(listed.records[0].record_id, published.record_id);
+    assert_eq!(
+        listed.records[0].value,
+        Some(value(&[("fps", number(60.0))])),
+        "the ungranted title field stays hidden"
+    );
+    assert_eq!(
+        listed.records[0].durability,
+        StorageDurability::Persistent as i32
+    );
+
+    let mut get = DataGetRequest {
+        context: Some(fixture.context()),
+        dataset_id: "org.example.metrics.v1".into(),
+        record_id: published.record_id.clone(),
+        ..Default::default()
+    };
+    get.common_data_categories = selected.common_data_categories.clone();
+    let fetched = fixture
+        .client()
+        .data_get(get)
+        .await
+        .unwrap()
+        .into_inner()
+        .record
+        .unwrap();
+    assert_eq!(fetched.value, Some(value(&[("fps", number(60.0))])));
+    assert!(
+        !fetched.value.unwrap().fields.contains_key("title"),
+        "the merged get applies the same mask"
+    );
+}
+
+#[tokio::test]
+async fn durable_common_rows_honour_selected_record_grants_through_the_merged_path() {
+    let fixture = Fixture::new(&[]).await;
+    let recipient = authenticated_identity(&fixture, &fixture.context());
+    let source = PluginIdentity {
+        plugin_id: "org.example.adapter".into(),
+        publisher_fingerprint: "1234".repeat(8),
+        profile_id: recipient.profile_id.clone(),
+    };
+    let category = CommonDataCategory::GamePerformanceHistory;
+    let granted = write_pool_row(
+        &fixture,
+        [0x21; 32],
+        &source,
+        SharingClass::Common,
+        Some(category),
+        "runtime-granted",
+        r#"{"fps":60,"title":"catalog"}"#,
+    );
+    let other = write_pool_row(
+        &fixture,
+        [0x21; 32],
+        &source,
+        SharingClass::Common,
+        Some(category),
+        "runtime-other",
+        r#"{"fps":61,"title":"other"}"#,
+    );
+
+    let selector = CommonDataSelector {
+        categories: vec![category as i32],
+        selected_record_ids: vec![granted.clone(), other.clone()],
+    };
+    let mut list = list_request(&fixture.context(), "org.example.metrics.v1");
+    list.common_data_categories = Some(selector.clone());
+    // Owner-private default: the durable Common rows are not disclosed without a grant.
+    assert!(
+        fixture
+            .client()
+            .data_list(list.clone())
+            .await
+            .unwrap()
+            .into_inner()
+            .records
+            .is_empty()
+    );
+
+    // Review exactly one record; the category selection must not widen it to the other row.
+    fixture
+        .shared_policies
+        .set_activation_grants(
+            &recipient,
+            ActivationReadGrant::new(Vec::<CommonDataCategory>::new(), [granted.clone()]).unwrap(),
+        )
+        .unwrap();
+    let listed = fixture
+        .client()
+        .data_list(list.clone())
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(listed.records.len(), 1);
+    assert_eq!(listed.records[0].record_id, granted);
+    assert_eq!(
+        listed.records[0].value,
+        Some(value(&[("fps", number(60.0)), ("title", text("catalog")),]))
+    );
+    assert_eq!(
+        listed.records[0].durability,
+        StorageDurability::Persistent as i32
+    );
+
+    let mut denied = DataGetRequest {
+        context: Some(fixture.context()),
+        dataset_id: "org.example.metrics.v1".into(),
+        record_id: other,
+        ..Default::default()
+    };
+    denied.common_data_categories = Some(selector);
+    let error = fixture.client().data_get(denied).await.unwrap_err();
+    assert_eq!(error.code(), Code::NotFound);
+}
+
+#[tokio::test]
+async fn another_owners_durable_record_stays_private_through_the_merged_path() {
+    let fixture = Fixture::new(&[]).await;
+    let producer =
+        consumer_session_with_grants(&fixture, &[cap::DATA_PUBLISH, cap::STORAGE_PERSIST]).await;
+    let producer_context = producer.host.resource_context().unwrap().clone();
+    let source = authenticated_identity(&fixture, &producer_context);
+    let recipient = authenticated_identity(&fixture, &fixture.context());
+    grant_durable_dataset(&fixture, &source, &recipient, true, true);
+
+    let mut request = durable_request(&producer_context, "granted-owner", "runtime-granted", 60.0);
+    request.value = Some(value(&[
+        ("fps", number(60.0)),
+        ("title", text("private title")),
+    ]));
+    let published = producer
+        .host
+        .resource_client()
+        .data_publish(request)
+        .await
+        .unwrap()
+        .into_inner();
+    // A second owner's durable row in the same dataset, written by the host pool itself. Its
+    // private namespace is never part of this projection.
+    let foreign = write_pool_row(
+        &fixture,
+        [0x31; 32],
+        &PluginIdentity {
+            plugin_id: "org.example.foreign".into(),
+            publisher_fingerprint: "ef".repeat(32),
+            profile_id: recipient.profile_id.clone(),
+        },
+        SharingClass::Custom,
+        None,
+        "runtime-foreign",
+        r#"{"fps":99,"title":"foreign"}"#,
+    );
+    fixture.api.disconnect("consumer").await;
+    drop(producer);
+
+    // Both rows are in the pool; only the granted owner's row may cross the API.
+    let now = unix_seconds();
+    let pool_rows = SharedDataStore::open(&fixture.data_dir)
+        .unwrap()
+        .list_dataset_any("org.example.metrics.v1", now)
+        .unwrap();
+    assert_eq!(pool_rows.len(), 2);
+    assert!(pool_rows.iter().any(|row| row.record_id == foreign));
+
+    let listed = fixture
+        .client()
+        .data_list(list_request(&fixture.context(), "org.example.metrics.v1"))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(listed.records.len(), 1);
+    assert_eq!(listed.records[0].record_id, published.record_id);
+    assert_eq!(
+        listed.records[0].value,
+        Some(value(&[("fps", number(60.0))])),
+        "only the granted fields cross the projection"
+    );
+    let provenance = listed.records[0].provenance.as_ref().unwrap();
+    assert_eq!(
+        provenance.producer_plugin_id, "org.example.consumer",
+        "the record keeps its host-assigned owner, never the reader's"
+    );
+    let field_names: Vec<_> = listed.records[0]
+        .value
+        .as_ref()
+        .unwrap()
+        .fields
+        .keys()
+        .cloned()
+        .collect();
+    assert_eq!(
+        field_names,
+        ["fps"],
+        "no private storage path or ungranted field is reachable"
+    );
+
+    let error = fixture
+        .client()
+        .data_get(DataGetRequest {
+            context: Some(fixture.context()),
+            dataset_id: "org.example.metrics.v1".into(),
+            record_id: foreign,
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), Code::NotFound);
+}
+
+#[tokio::test]
+async fn a_previous_profile_cannot_reach_a_durable_record_even_when_selecting_it() {
+    let mut fixture = Fixture::new(&[]).await;
+    let producer =
+        consumer_session_with_grants(&fixture, &[cap::DATA_PUBLISH, cap::STORAGE_PERSIST]).await;
+    let producer_context = producer.host.resource_context().unwrap().clone();
+    let source = authenticated_identity(&fixture, &producer_context);
+    let recipient = authenticated_identity(&fixture, &fixture.context());
+    grant_durable_dataset(&fixture, &source, &recipient, true, true);
+    let published = producer
+        .host
+        .resource_client()
+        .data_publish(durable_request(
+            &producer_context,
+            "profile-scoped",
+            "runtime-primary",
+            60.0,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    fixture.api.disconnect("consumer").await;
+    drop(producer);
+
+    // Profile a can read it, even by exact record id.
+    let mut selected = list_request(&fixture.context(), "org.example.metrics.v1");
+    selected.common_data_categories = Some(CommonDataSelector {
+        categories: vec![CommonDataCategory::GamePerformanceHistory as i32],
+        selected_record_ids: vec![published.record_id.clone()],
+    });
+    let listed = fixture
+        .client()
+        .data_list(selected.clone())
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(listed.records.len(), 1);
+
+    // Another account signs in and the plugin reconnects into profile b: the grant belonged to
+    // profile a and the durable owner is still profile a, so selecting the record changes nothing.
+    fixture.api.profiles().update(Some("b"), true);
+    fixture.api.fence_third_party_sessions().await;
+    fixture.reconnect().await;
+    let listed = fixture
+        .client()
+        .data_list(list_request(&fixture.context(), "org.example.metrics.v1"))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(
+        listed.records.is_empty(),
+        "another profile never sees the durable row"
+    );
+    selected.page.as_mut().unwrap().context = Some(fixture.context());
+    let listed = fixture
+        .client()
+        .data_list(selected)
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(
+        listed.records.is_empty(),
+        "selecting the exact record id cannot cross profiles"
     );
 }

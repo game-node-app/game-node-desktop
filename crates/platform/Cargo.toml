@@ -35,7 +35,7 @@ sevenz-rust2 = "0.20"
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
 
 [target.'cfg(unix)'.dependencies]
-rustix = { version = "1.1.6", features = ["fs", "process", "system"] }
+rustix = { version = "1.1.6", features = ["fs", "process", "system", "event"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring-core = "1.0.1"

@@ -5,7 +5,6 @@
 //! field of `/proc/<pid>/stat`, assuming the common Linux userspace clock of 100 ticks per second.
 //! Unreadable processes are skipped, exactly as the Windows adapter skips inaccessible handles.
 use std::collections::BTreeMap;
-use std::os::fd::AsFd;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use gamenode_core::ports::{ProcessError, ProcessIdentity, ProcessInfo, Processes};
@@ -131,15 +130,22 @@ impl Processes for HostProcesses {
             .name("gamenode-process-watch".into())
             .spawn(move || {
                 let waited = pidfd.is_some_and(|fd| {
-                    // `P_PIDFD` waits for any process, not only children of this process.
-                    rustix::process::waitid(
-                        rustix::process::WaitId::PidFd(fd.as_fd()),
-                        rustix::process::WaitIdOptions::EXITED,
-                    )
-                    .is_ok()
+                    // A pidfd is readable once any process, child or not, exits. Polling it never
+                    // reaps a child that the application owns.
+                    let mut poll_fds = [rustix::event::PollFd::new(
+                        &fd,
+                        rustix::event::PollFlags::IN,
+                    )];
+                    loop {
+                        match rustix::event::poll(&mut poll_fds, None) {
+                            Ok(_) => return true,
+                            Err(rustix::io::Errno::INTR) => continue,
+                            Err(_) => return false,
+                        }
+                    }
                 });
                 if !waited {
-                    // Kernels without `P_PIDFD`, or a vanished descriptor: poll the identity.
+                    // Kernels without pidfds, or a vanished descriptor: poll the identity.
                     while inspect(watched_pid, boot)
                         .is_some_and(|(seen, _)| seen.created_at == watched_created_at)
                     {

@@ -21,6 +21,10 @@ import type {
   PluginDurableUsage,
   PluginDurableDeletion,
   PluginImportReview,
+  PluginBundleImportReview,
+  BundleComponentPermissionSubmission,
+  BundlePermissionResult,
+  BundleUninstallOutcome,
   PluginConfigurationState,
   PluginPlaytimeInfo,
   PluginUpdatePreferences,
@@ -293,6 +297,17 @@ export const commands = {
   pluginEnable: (pluginId: string) => safeInvoke<void>('plugin_enable', { pluginId }),
   pluginDisable: (pluginId: string) => safeInvoke<void>('plugin_disable', { pluginId }),
   pluginRemove: (pluginId: string) => safeInvoke<void>('plugin_remove', { pluginId }),
+  pluginBundleImportReview: (archivePath: string) =>
+    safeInvoke<PluginBundleImportReview>('plugin_bundle_import_review', { archivePath }),
+  pluginBundleImportConfirmPublisher: (token: string, confirmedFingerprint: string) =>
+    safeInvoke<PluginBundleImportReview>('plugin_bundle_import_confirm_publisher', {
+      token,
+      confirmedFingerprint,
+    }),
+  pluginBundlePermissionsReplace: (submissions: BundleComponentPermissionSubmission[]) =>
+    safeInvoke<BundlePermissionResult>('plugin_bundle_permissions_replace', { submissions }),
+  pluginBundleUninstall: (bundleId: string, deleteData: boolean) =>
+    safeInvoke<BundleUninstallOutcome>('plugin_bundle_uninstall', { bundleId, deleteData }),
 
   pluginConfigurationState: (pluginId: string) =>
     safeInvoke<PluginConfigurationState>(

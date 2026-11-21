@@ -1682,10 +1682,24 @@ export interface PluginUpdateReview {
   }>;
 }
 
+export interface PluginBundleComponent {
+  pluginId: string;
+  pluginKind: 'provider' | 'extension';
+  name: string;
+  version: string;
+  status: 'installed' | 'missing' | 'unavailable' | 'failed' | 'incompatible';
+  session: 'active' | 'stopped';
+  enabled?: boolean;
+  runtimeAvailable?: boolean;
+  publisherFingerprint?: string;
+  compatibilityDetails?: PluginCompatibilityDetails;
+  nativeAccess: string[];
+}
+
 export interface PluginInfo {
   providerId: string;
   pluginId: string;
-  pluginKind: 'provider' | 'extension';
+  pluginKind: 'provider' | 'extension' | 'bundle';
   name: string;
   source: 'official' | 'community';
   status: 'installed' | 'missing' | 'unavailable' | 'failed' | 'incompatible';
@@ -1699,6 +1713,14 @@ export interface PluginInfo {
   /** The pinned publisher of a third-party plugin; absent for the bundled ones. */
   publisherFingerprint?: string;
   compatibilityDetails?: PluginCompatibilityDetails;
+  /** The installed bundle this entry represents; absent for standalone packages. */
+  bundleId?: string;
+  bundleName?: string;
+  bundleVersion?: string;
+  bundleComponentKind?: 'provider' | 'extension';
+  bundlePublisherFingerprint?: string;
+  /** Every component of an aggregated bundle entry, each with its own status. */
+  bundleComponents?: PluginBundleComponent[];
 }
 
 export interface PluginImportReview {
@@ -1726,6 +1748,75 @@ export interface PluginImportReview {
   compatibility: 'compatible' | 'incompatible' | 'unknown';
   compatibilityReason?: string;
   compatibilityDetails?: PluginCompatibilityDetails;
+}
+
+/** The identity shown once for a whole bundle review. */
+export interface PluginBundleIdentity {
+  id: string;
+  name: string;
+  version: string;
+  publisherKeyId: string;
+  publisherFingerprint: string;
+}
+
+export type PluginBundleComponentAvailability =
+  | { status: 'available' }
+  | { status: 'unavailable'; reason: 'noCompatibleTarget' | 'ambiguousTarget' };
+
+/** One component inside a bundle review; the embedded review is the package review. */
+export interface PluginBundleComponentReview {
+  kind: 'provider' | 'extension';
+  availability: PluginBundleComponentAvailability;
+  review: Omit<PluginImportReview, 'token'>;
+}
+
+export interface PluginBundleLicenseComponent {
+  pluginId: string;
+  expression: string;
+  files: string[];
+  notices: string[];
+}
+
+/** The bundle-wide license view shown in the single review header. */
+export interface PluginBundleLicenseSummary {
+  expressions: string[];
+  components: PluginBundleLicenseComponent[];
+}
+
+export interface PluginBundleImportReview {
+  token: string;
+  bundle: PluginBundleIdentity;
+  trust: 'trusted' | 'untrusted' | 'changed';
+  pinnedFingerprint?: string;
+  license: PluginBundleLicenseSummary;
+  components: PluginBundleComponentReview[];
+}
+
+/** One component's permission decisions submitted from a grouped bundle review. */
+export interface BundleComponentPermissionSubmission {
+  pluginId: string;
+  expectedProfileId: string;
+  expectedPublisherFingerprint: string;
+  expectedRevision: number;
+  decisions: PluginPermissionDecision[];
+}
+
+export interface BundleComponentPermissionOutcome {
+  pluginId: string;
+  snapshot?: PluginPermissionSnapshot;
+  error?: string;
+}
+
+export interface BundlePermissionResult {
+  components: BundleComponentPermissionOutcome[];
+}
+
+/** The result of one bundle uninstall; partial failures are named, not collapsed. */
+export interface BundleUninstallOutcome {
+  bundleId: string;
+  removed: Array<{ pluginId: string; version: string; stopped: boolean }>;
+  failures: Array<{ pluginId: string; version: string; error: string }>;
+  dataRetention: 'kept' | 'deleted';
 }
 
 /** Host-owned effective permission state for the currently active account profile. */

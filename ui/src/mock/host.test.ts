@@ -484,7 +484,7 @@ describe('UI mock host', () => {
   it('lists trusted plugin versions and lets Stop/Start change the session', async () => {
     const host = createMockHost({ platform: 'windows' });
     let plugins = await host.invoke('plugin_inventory') as PluginInfo[];
-    expect(plugins.map((plugin) => plugin.version)).toEqual(['0.1.0', '0.1.0', '0.3.1', '1.0.0']);
+    expect(plugins.map((plugin) => plugin.version)).toEqual(['0.1.0', '0.1.0', '0.3.1', '1.0.0', '0.2.0']);
     expect(plugins.find((plugin) => plugin.providerId === 'community')?.session)
       .toBe('stopped');
 

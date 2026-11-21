@@ -157,6 +157,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "GameNode Desktop starting"
     );
     let store = Arc::new(SqliteSettingsStore::open(&paths.database_file())?);
+    plugin_updates.set_bundle_store(store.bundle_store());
     let initial_settings = store.load()?;
     // The lifecycle preferences decide the login value before any window exists.
     #[cfg(windows)]
@@ -439,7 +440,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             processes,
             playtime: Arc::new(store.playtime_store()),
             playtime_api: client.clone(),
-            settings: store,
+            settings: store.clone(),
             credentials,
             api: client.clone(),
             browser: Arc::new(SystemBrowser),
@@ -502,6 +503,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     builder = builder.manage(engine.clone());
+    builder = builder.manage(store.clone());
     builder = builder.manage(plugin_api.providers.clone());
     builder = builder.manage(plugin_api.shared_policies.clone());
     builder = builder.manage(plugin_api.data_broker.clone());
@@ -642,6 +644,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         commands::plugin_enable,
         commands::plugin_disable,
         commands::plugin_remove,
+        commands::plugin_bundle_uninstall,
         commands::plugin_configuration_state,
         commands::plugin_configuration_modes,
         commands::plugin_configuration_open,

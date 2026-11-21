@@ -24,6 +24,8 @@ import {
   type PluginCompatibilityDetails,
   type PluginDurableUsage,
   type PluginInfo,
+  type PluginBundleComponent,
+  type PluginBundleImportReview,
   type PluginUpdateReview,
   type Provider,
   type Registration,
@@ -1771,6 +1773,9 @@ export function createMockHost(options: {
     maxAgeSeconds: null,
     oldestUpdatedAt: null,
   });
+  const mockBundlePublisher = `SHA256:${'ef'.repeat(32)}`;
+  const mockPluginEnabled = new Map<string, boolean>();
+  let mockBundleInstalled = true;
   const folderApprovals = new Map<string, PluginFolderApproval[]>([[
     'community.example.save-sync',
     [
@@ -1808,6 +1813,110 @@ export function createMockHost(options: {
   const mockUpdates = () => mockPluginVersion === '1.0.0' ? [{
     pluginId: mockUpdatePlugin, name: 'Community Save Sync', installedVersion: mockPluginVersion, versions: ['2.0.0'],
   }] : [];
+
+  /** The one installed bundle fixture: a usable discovery provider and an unavailable launcher. */
+  const mockBundleComponents = (): PluginBundleComponent[] => [
+    {
+      pluginId: 'org.example.dolphin',
+      pluginKind: 'provider',
+      name: 'Dolphin GameCube and Wii',
+      version: '0.1.0',
+      status: 'installed',
+      session: 'stopped',
+      enabled: mockPluginEnabled.get('org.example.dolphin') === true,
+      runtimeAvailable: true,
+      publisherFingerprint: mockBundlePublisher,
+      nativeAccess: ['files', 'network'],
+    },
+    {
+      pluginId: 'org.example.dolphin.launch',
+      pluginKind: 'extension',
+      name: 'Dolphin launch extension',
+      version: '0.2.0',
+      status: 'unavailable',
+      session: 'stopped',
+      enabled: mockPluginEnabled.get('org.example.dolphin.launch') === true,
+      runtimeAvailable: false,
+      publisherFingerprint: mockBundlePublisher,
+      nativeAccess: ['files', 'process'],
+      compatibilityDetails: mockCompatibility,
+    },
+  ];
+  const mockBundleEntry = (): PluginInfo => {
+    const components = mockBundleComponents();
+    return {
+      providerId: '',
+      pluginId: 'org.example.dolphin.bundle',
+      pluginKind: 'bundle',
+      name: 'Dolphin GameCube and Wii',
+      version: '0.2.0',
+      source: 'community',
+      status: components.some((component) => component.status === 'installed') ? 'installed' : 'unavailable',
+      capabilities: [],
+      session: 'stopped',
+      nativeAccess: ['files', 'network', 'process'],
+      bundleId: 'org.example.dolphin.bundle',
+      bundleName: 'Dolphin GameCube and Wii',
+      bundleVersion: '0.2.0',
+      bundlePublisherFingerprint: mockBundlePublisher,
+      bundleComponents: components,
+    };
+  };
+  const mockBundleReview = (): PluginBundleImportReview => ({
+    token: 'mock-bundle-review',
+    bundle: {
+      id: 'org.example.dolphin.bundle',
+      name: 'Dolphin GameCube and Wii',
+      version: '0.2.0',
+      publisherKeyId: 'dolphin-dev',
+      publisherFingerprint: mockBundlePublisher,
+    },
+    trust: 'untrusted',
+    license: {
+      expressions: ['MIT'],
+      components: mockBundleComponents().map((component) => ({
+        pluginId: component.pluginId,
+        expression: 'MIT',
+        files: ['licenses/LICENSE'],
+        notices: [],
+      })),
+    },
+    components: mockBundleComponents().map((component) => ({
+      kind: component.pluginKind,
+      availability: component.status === 'installed'
+        ? { status: 'available' }
+        : { status: 'unavailable', reason: 'noCompatibleTarget' },
+      review: {
+        pluginId: component.pluginId,
+        name: component.name,
+        version: component.version,
+        publisherKeyId: 'dolphin-dev',
+        publisherFingerprint: mockBundlePublisher,
+        trust: 'untrusted',
+        license: 'MIT',
+        licenseFiles: ['licenses/LICENSE'],
+        licenseNotices: [],
+        permissionIds: component.pluginKind === 'provider' ? ['storage.persist'] : ['game.launch'],
+        requestedPermissions: component.pluginKind === 'provider'
+          ? [{
+              id: 'storage.persist',
+              required: false,
+              scope: 'own-provider',
+              reason: 'Keep the local game catalog between scans.',
+            }]
+          : [{
+              id: 'game.launch',
+              required: false,
+              scope: 'approved-game-session',
+              reason: 'Start the selected game in this emulator.',
+            }],
+        nativeAccess: component.nativeAccess,
+        playtime: { identifiesGameplay: false, identifiesPauses: false, withoutPauseDetection: 'disabled' },
+        compatibility: component.status === 'installed' ? 'compatible' : 'incompatible',
+        compatibilityDetails: component.compatibilityDetails ?? mockCompatibility,
+      },
+    })),
+  });
   const snapshot = createDefaultSnapshot();
   const systemLocale = mockNormalizeLocale(options.locale ?? 'en');
   const effectiveLocale = () => mockEffectiveLocale(snapshot.preferences, systemLocale);
@@ -4217,9 +4326,13 @@ export function createMockHost(options: {
             session: pluginSessions.packagekit,
             nativeAccess: ['files', 'process', 'dbus'],
           };
-          return [steamPlugin, packageManagerPlugin, communityPlugin, communitySaveSyncPlugin];
+          const plugins = [steamPlugin, packageManagerPlugin, communityPlugin, communitySaveSyncPlugin];
+          if (mockBundleInstalled) plugins.push(mockBundleEntry());
+          return plugins;
         }
-        return [steamPlugin, epicPlugin, communityPlugin, communitySaveSyncPlugin];
+        const plugins = [steamPlugin, epicPlugin, communityPlugin, communitySaveSyncPlugin];
+        if (mockBundleInstalled) plugins.push(mockBundleEntry());
+        return plugins;
       }
       if (cmd === 'plugin_durable_usage') {
         const pluginId = String(args.pluginId ?? '');
@@ -4244,6 +4357,49 @@ export function createMockHost(options: {
           usage: after,
         });
       }
+      if (cmd === 'plugin_bundle_import_review') {
+        return structuredClone(mockBundleReview());
+      }
+      if (cmd === 'plugin_bundle_import_confirm_publisher') {
+        const review = mockBundleReview();
+        const confirmed = String(args.confirmedFingerprint ?? '');
+        if (confirmed !== review.bundle.publisherFingerprint) {
+          throw new Error('publisher fingerprint confirmation does not match');
+        }
+        return { ...review, trust: 'trusted' as const, components: review.components.map((component) => ({
+          ...component,
+          review: { ...component.review, trust: 'trusted', publisherFingerprint: review.bundle.publisherFingerprint },
+        })) };
+      }
+      if (cmd === 'plugin_bundle_permissions_replace') {
+        const submissions = (args.submissions ?? []) as Array<{ pluginId: string }>;
+        return {
+          components: submissions.map((submission) => ({ pluginId: submission.pluginId })),
+        };
+      }
+      if (cmd === 'plugin_bundle_uninstall') {
+        const bundleId = String(args.bundleId ?? '');
+        if (bundleId !== 'org.example.dolphin.bundle' || !mockBundleInstalled) {
+          throw new Error(`bundle ${bundleId} is not installed`);
+        }
+        mockBundleInstalled = false;
+        return {
+          bundleId,
+          removed: mockBundleComponents().map((component) => ({
+            pluginId: component.pluginId,
+            version: component.version,
+            stopped: component.status === 'installed',
+          })),
+          failures: [],
+          dataRetention: args.deleteData === true ? 'deleted' as const : 'kept' as const,
+        };
+      }
+      if (cmd === 'plugin_enable' || cmd === 'plugin_disable') {
+        mockPluginEnabled.set(String(args.pluginId ?? ''), cmd === 'plugin_enable');
+        publish();
+        return undefined;
+      }
+      if (cmd === 'plugin_remove') return undefined;
       if (cmd === 'custom_launch_ids') return [];
       if (cmd === 'custom_launch_stop') return undefined;
       if (cmd === 'plugin_stop' || cmd === 'plugin_start') {

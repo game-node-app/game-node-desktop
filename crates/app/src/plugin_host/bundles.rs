@@ -44,6 +44,7 @@ use gamenode_platform::{
     plugin_environment::{EmulationPolicy, PluginEnvironment},
     plugin_packages::stage_package_archive,
     plugin_registry::{InstallSignedError, InstalledPluginVersion, PluginPackageRegistry},
+    plugin_storage::namespace_dir,
 };
 use thiserror::Error;
 
@@ -679,7 +680,8 @@ impl BundleComponentStopper for ProviderProcesses {
 }
 
 /// One component whose recorded package version this removal deleted.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RemovedBundleComponent {
     pub plugin_id: String,
     pub version: String,
@@ -689,7 +691,8 @@ pub struct RemovedBundleComponent {
 
 /// One component whose package could not be deleted. Its mapping row is retained, so the bundle
 /// uninstall can be retried instead of forgetting a package that is still installed.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BundleRemovalFailure {
     pub plugin_id: String,
     pub version: String,
@@ -859,6 +862,169 @@ pub async fn remove_installed_bundle(
         failures,
         problems,
     })
+}
+
+/// What the bundle uninstall does with each component's private data after the packages are gone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BundleDataRetention {
+    /// Keep private storage, grants, and every other account record (the package-only uninstall).
+    Keep,
+    /// Also delete each removed component's private data for one account profile.
+    Delete,
+}
+
+impl BundleDataRetention {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Keep => "kept",
+            Self::Delete => "deleted",
+        }
+    }
+}
+
+/// The account profile whose private plugin data a bundle uninstall may delete. Library history,
+/// grants and activation never live here; only the plugin's own durable namespace does.
+#[derive(Clone, Copy, Debug)]
+pub struct BundlePrivateData<'a> {
+    /// The OS-user `plugin-data` root.
+    pub root: &'a Path,
+    /// The signed-in account profile whose namespaces this uninstall may delete.
+    pub profile_id: &'a str,
+}
+
+/// The result of one bundle uninstall. A partial failure is reported here instead of as a generic
+/// error: the removed components are listed with the ones that could not be removed.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BundleUninstallOutcome {
+    pub bundle_id: String,
+    pub removed: Vec<RemovedBundleComponent>,
+    /// Components whose package, account state or private data could not be removed. Each one
+    /// stays mapped when its package remains installed, so the uninstall can be retried.
+    pub failures: Vec<BundleRemovalFailure>,
+    /// `kept` or `deleted`, matching the retention choice this uninstall applied.
+    pub data_retention: String,
+}
+
+#[derive(Debug, Error)]
+pub enum BundleUninstallError {
+    #[error("bundle {bundle_id} is not installed")]
+    UnknownBundle { bundle_id: String },
+    #[error("the bundle mapping could not be read: {0}")]
+    Mapping(String),
+    #[error("sign in to uninstall a plugin bundle")]
+    SignInRequired,
+    #[error(transparent)]
+    Removal(#[from] BundleRemovalError),
+    #[error("bundle uninstall worker failed")]
+    WorkerFailed,
+}
+
+/// Uninstall one installed bundle: stop and remove every mapped component through
+/// [`remove_installed_bundle`], then apply one persistence-retention choice to the components that
+/// were actually removed.
+///
+/// Partial package removal is not turned into an error. The returned outcome lists what was
+/// removed and what failed, so the UI can name every remaining component instead of showing a
+/// generic failure; callers must treat a non-empty `failures` as incomplete. Private data is only
+/// deleted when the caller names the profile and the retention choice is
+/// [`BundleDataRetention::Delete`]. Grants, activation and library history are never touched here;
+/// the lifecycle wrapper removes the account state.
+pub async fn uninstall_bundle(
+    bundle_id: impl Into<String>,
+    registry: PluginPackageRegistry,
+    bundles: SqlitePluginBundleStore,
+    stopper: &dyn BundleComponentStopper,
+    retention: BundleDataRetention,
+    private_data: Option<BundlePrivateData<'_>>,
+) -> Result<BundleUninstallOutcome, BundleUninstallError> {
+    let bundle_id = bundle_id.into();
+    let record = {
+        let store = bundles.clone();
+        let lookup = bundle_id.clone();
+        tokio::task::spawn_blocking(move || store.bundle(&lookup))
+            .await
+            .map_err(|_| BundleUninstallError::WorkerFailed)?
+            .map_err(|error| BundleUninstallError::Mapping(error.to_string()))?
+            .ok_or_else(|| BundleUninstallError::UnknownBundle {
+                bundle_id: bundle_id.clone(),
+            })?
+    };
+    let (removed, mut failures) =
+        match remove_installed_bundle(bundle_id.clone(), registry, bundles, stopper).await {
+            Ok(removed) => (removed.components, Vec::new()),
+            Err(BundleRemovalError::PartialRemoval {
+                removed, failures, ..
+            }) => (removed, failures),
+            Err(error) => return Err(BundleUninstallError::Removal(error)),
+        };
+
+    let mut applied_retention = BundleDataRetention::Keep;
+    if retention == BundleDataRetention::Delete
+        && let Some(private_data) = private_data
+    {
+        applied_retention = BundleDataRetention::Delete;
+        let root = private_data.root.to_owned();
+        let publisher = record.publisher_fingerprint.clone();
+        let profile = private_data.profile_id.to_owned();
+        let components = removed.clone();
+        let data_failures = tokio::task::spawn_blocking(move || {
+            let mut problems = Vec::new();
+            for component in components {
+                if let Err(error) =
+                    remove_private_namespace(&root, &publisher, &component.plugin_id, &profile)
+                {
+                    problems.push(BundleRemovalFailure {
+                        plugin_id: component.plugin_id,
+                        version: component.version,
+                        error,
+                    });
+                }
+            }
+            problems
+        })
+        .await
+        .map_err(|_| BundleUninstallError::WorkerFailed)?;
+        failures.extend(data_failures);
+    }
+
+    // The mapping check above already proved the bundle existed; `record` only supplies the id in
+    // the outcome and keeps the publisher decision visible to callers.
+    debug_assert_eq!(record.bundle_id, bundle_id);
+    Ok(BundleUninstallOutcome {
+        bundle_id,
+        removed,
+        failures,
+        data_retention: applied_retention.as_str().to_owned(),
+    })
+}
+
+/// Deletes the private durable namespace of one plugin for one account profile. Only the profile
+/// directory is removed, never the plugin or publisher directories that may hold other profiles,
+/// and symlinks are refused instead of followed.
+fn remove_private_namespace(
+    root: &Path,
+    publisher_fingerprint: &str,
+    plugin_id: &str,
+    profile_id: &str,
+) -> Result<bool, String> {
+    let dir = namespace_dir(root, publisher_fingerprint, plugin_id, profile_id);
+    // `namespace_dir` only sanitizes components; this keeps a future call site that passes a path
+    // from escaping the plugin-data root.
+    if !dir.starts_with(root) {
+        return Err("private data path escapes the plugin-data root".to_owned());
+    }
+    let metadata = match fs::symlink_metadata(&dir) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("private data could not be read: {error}")),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err("private data is not a regular directory".to_owned());
+    }
+    fs::remove_dir_all(&dir)
+        .map_err(|error| format!("private data could not be removed: {error}"))?;
+    Ok(true)
 }
 
 /// The archive must still be the exact bundle the user reviewed. Byte-level comparison is the
@@ -2039,6 +2205,144 @@ mod tests {
         })
     }
 
+    #[tokio::test]
+    async fn an_installed_bundle_is_one_inventory_entry_with_each_component_status() {
+        let fixture = Fixture::new();
+        let provider = fixture.component(
+            "provider",
+            "provider",
+            "org.example.dolphin",
+            "0.1.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+        // The extension installs on this Linux host but no extension runtime is available, so its
+        // component status is `unavailable` while the provider stays usable.
+        let launch = fixture.component(
+            "launch",
+            "extension",
+            "org.example.dolphin.launch",
+            "0.2.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+        let standalone = fixture.component(
+            "standalone",
+            "provider",
+            "org.example.standalone",
+            "0.3.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+        let bundle = fixture.bundle(&[&provider, &launch]);
+
+        let paths = DataPaths::at(fixture.dir.path().join("app-data"));
+        let api = PluginApi::default();
+        let state = PluginStateLayout::managed(&paths);
+        api.set_state_layout(state.clone());
+        let profiles = api.providers.profiles();
+        profiles.update(Some("bundle-account"), true);
+        let registry = PluginPackageRegistry::open(&paths).unwrap();
+        let service = review_service(&api, &paths, &state, &registry);
+        let settings = SqliteSettingsStore::open(&paths.database_file()).unwrap();
+        service.set_bundle_store(settings.bundle_store());
+
+        let report = inspect_bundle_candidate(&bundle, EmulationPolicy::RequireNative)
+            .await
+            .unwrap();
+        install_bundle_candidate(
+            &bundle,
+            report,
+            registry.clone(),
+            settings.bundle_store(),
+            EmulationPolicy::RequireNative,
+            1_700_000_000,
+        )
+        .await
+        .unwrap();
+
+        // A standalone package with the same publisher stays one entry and carries no bundle
+        // fields, so grouping can never absorb an unrelated install.
+        let key = fixture.base64_key();
+        let staged = fixture.dir.path().join("standalone-stage");
+        stage_package_archive(&standalone, &staged, &key).unwrap();
+        registry
+            .install_signed("org.example.standalone", "0.3.0", &staged, &key, true)
+            .unwrap();
+        let fingerprint = publisher_trust::key_fingerprint(&key);
+        publisher_trust::PublisherTrustStore::open(state.trust_dir())
+            .unwrap()
+            .confirm_publishers(&["org.example.standalone".to_owned()], &key, &fingerprint)
+            .unwrap();
+
+        // The inventory only reports publisher-pinned packages, exactly as after one review.
+        let review = service.bundle_import_review(bundle).await.unwrap();
+        service
+            .bundle_import_confirm_publisher(&review.token, &review.bundle.publisher_fingerprint)
+            .await
+            .unwrap();
+
+        let inventory = service.managed_inventory().await.unwrap();
+        assert_eq!(inventory.len(), 2, "{inventory:#?}");
+        let entry = inventory
+            .iter()
+            .find(|plugin| plugin.plugin_id == "org.example.dolphin")
+            .expect("the bundle is one entry keyed by its bundle id");
+        assert_eq!(entry.plugin_kind, "bundle");
+        assert_eq!(entry.name, "Dolphin GameCube and Wii");
+        assert_eq!(entry.version, "0.1.0");
+        assert_eq!(entry.bundle_id.as_deref(), Some("org.example.dolphin"));
+        assert_eq!(
+            entry.bundle_name.as_deref(),
+            Some("Dolphin GameCube and Wii")
+        );
+        assert_eq!(
+            entry.bundle_publisher_fingerprint.as_deref(),
+            Some(review.bundle.publisher_fingerprint.as_str())
+        );
+        assert_eq!(entry.status, "installed");
+        // The bundle itself is never a single manageable component.
+        assert!(entry.publisher_fingerprint.is_none());
+        let components = entry
+            .bundle_components
+            .as_ref()
+            .expect("the entry carries its components");
+        assert_eq!(components.len(), 2);
+        let provider_component = components
+            .iter()
+            .find(|component| component.plugin_id == "org.example.dolphin")
+            .unwrap();
+        assert_eq!(provider_component.plugin_kind, "provider");
+        assert_eq!(provider_component.version, "0.1.0");
+        assert_eq!(provider_component.status, "installed");
+        assert_eq!(provider_component.runtime_available, Some(true));
+        let launch_component = components
+            .iter()
+            .find(|component| component.plugin_id == "org.example.dolphin.launch")
+            .unwrap();
+        assert_eq!(launch_component.plugin_kind, "extension");
+        assert_eq!(launch_component.version, "0.2.0");
+        assert_eq!(launch_component.status, "unavailable");
+        assert_eq!(launch_component.runtime_available, Some(false));
+        assert!(components.iter().all(|component| {
+            component.publisher_fingerprint.as_deref() == Some(fingerprint.as_str())
+        }));
+
+        let standalone_entry = inventory
+            .iter()
+            .find(|plugin| plugin.plugin_id == "org.example.standalone")
+            .expect("the standalone package keeps its own entry");
+        assert_eq!(standalone_entry.plugin_kind, "provider");
+        assert_eq!(standalone_entry.name, "org.example.standalone fixture");
+        assert_eq!(standalone_entry.version, "0.3.0");
+        assert!(standalone_entry.bundle_id.is_none());
+        assert!(standalone_entry.bundle_name.is_none());
+        assert!(standalone_entry.bundle_components.is_none());
+    }
+
     /// A service with an authenticated profile and the same registry and state the fixtures
     /// install into, matching application startup before the hosted providers are composed.
     fn review_service(
@@ -2693,6 +2997,210 @@ mod tests {
                 .bundle_for_plugin("org.example.dolphin.launch")
                 .unwrap(),
             Some(remaining)
+        );
+    }
+
+    #[tokio::test]
+    async fn uninstalling_a_bundle_applies_one_private_data_retention_choice() {
+        use gamenode_platform::plugin_storage::{DurableStore, namespace_dir};
+
+        let fixture = Fixture::new();
+        let provider = fixture.component(
+            "provider",
+            "provider",
+            "org.example.dolphin",
+            "0.1.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+        let launch = fixture.component(
+            "launch",
+            "extension",
+            "org.example.dolphin.launch",
+            "0.2.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+        let bundle = fixture.bundle(&[&provider, &launch]);
+        let (registry, settings) = install_target(&fixture);
+        let install = |report| {
+            install_bundle_candidate(
+                &bundle,
+                report,
+                registry.clone(),
+                settings.bundle_store(),
+                EmulationPolicy::RequireNative,
+                1_700_000_000,
+            )
+        };
+        let installed = install(
+            inspect_bundle_candidate(&bundle, EmulationPolicy::RequireNative)
+                .await
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        let publisher = installed.bundle.publisher_fingerprint.clone();
+        let data_root = fixture.dir.path().join("plugin-data");
+        let profile = "fixture-profile";
+        let profile_data = namespace_dir(&data_root, &publisher, "org.example.dolphin", profile);
+        DurableStore::open(&profile_data).unwrap();
+        let other_profile = namespace_dir(
+            &data_root,
+            &publisher,
+            "org.example.dolphin",
+            "other-profile",
+        );
+        DurableStore::open(&other_profile).unwrap();
+
+        // Keep: the packages and mapping are removed, but the private namespace stays.
+        let stopper = RecordingStopper::default();
+        let kept = uninstall_bundle(
+            "org.example.dolphin",
+            registry.clone(),
+            settings.bundle_store(),
+            &stopper,
+            BundleDataRetention::Keep,
+            Some(BundlePrivateData {
+                root: &data_root,
+                profile_id: profile,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(kept.data_retention, "kept");
+        assert!(kept.failures.is_empty(), "{:?}", kept.failures);
+        assert_eq!(kept.removed.len(), 2);
+        assert_eq!(stopper.stopped().len(), 2);
+        assert!(profile_data.is_dir());
+        assert!(
+            settings
+                .bundle_store()
+                .bundle("org.example.dolphin")
+                .unwrap()
+                .is_none()
+        );
+        assert!(registry.versions("org.example.dolphin").unwrap().is_empty());
+        assert_eq!(registry.active("org.example.dolphin").unwrap(), None);
+
+        // Delete: reinstalling and uninstalling again removes only the chosen profile's data.
+        install(
+            inspect_bundle_candidate(&bundle, EmulationPolicy::RequireNative)
+                .await
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        let deleted = uninstall_bundle(
+            "org.example.dolphin",
+            registry.clone(),
+            settings.bundle_store(),
+            &RecordingStopper::default(),
+            BundleDataRetention::Delete,
+            Some(BundlePrivateData {
+                root: &data_root,
+                profile_id: profile,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(deleted.data_retention, "deleted");
+        assert!(deleted.failures.is_empty(), "{:?}", deleted.failures);
+        assert!(!profile_data.exists());
+        assert!(
+            other_profile.is_dir(),
+            "another signed-in profile's private data is not part of this choice"
+        );
+        assert!(
+            registry
+                .active("org.example.dolphin.launch")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn an_uninstall_outcome_names_every_component_that_could_not_be_removed() {
+        let fixture = Fixture::new();
+        let provider = fixture.component(
+            "provider",
+            "provider",
+            "org.example.dolphin",
+            "0.1.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+        let launch = fixture.component(
+            "launch",
+            "extension",
+            "org.example.dolphin.launch",
+            "0.2.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+        let bundle = fixture.bundle(&[&provider, &launch]);
+        let report = inspect_bundle_candidate(&bundle, EmulationPolicy::RequireNative)
+            .await
+            .unwrap();
+        let (registry, settings) = install_target(&fixture);
+        let installed = install_bundle_candidate(
+            &bundle,
+            report,
+            registry.clone(),
+            settings.bundle_store(),
+            EmulationPolicy::RequireNative,
+            1_700_000_000,
+        )
+        .await
+        .unwrap();
+
+        // Damage the extension's versions directory so its recorded version cannot be deleted.
+        let launch_path = installed
+            .components
+            .iter()
+            .find(|component| component.plugin_id == "org.example.dolphin.launch")
+            .unwrap()
+            .package_path
+            .clone();
+        let versions_dir = launch_path
+            .parent()
+            .and_then(Path::parent)
+            .unwrap()
+            .to_path_buf();
+        fs::remove_dir_all(&versions_dir).unwrap();
+        fs::write(&versions_dir, b"not a directory").unwrap();
+
+        let outcome = uninstall_bundle(
+            "org.example.dolphin",
+            registry.clone(),
+            settings.bundle_store(),
+            &RecordingStopper::default(),
+            BundleDataRetention::Keep,
+            None,
+        )
+        .await
+        .expect("a partial removal is reported as an outcome, not a generic error");
+        assert_eq!(outcome.bundle_id, "org.example.dolphin");
+        assert_eq!(outcome.removed.len(), 1);
+        assert_eq!(outcome.removed[0].plugin_id, "org.example.dolphin");
+        assert_eq!(outcome.failures.len(), 1);
+        assert_eq!(outcome.failures[0].plugin_id, "org.example.dolphin.launch");
+        assert_eq!(outcome.failures[0].version, "0.2.0");
+        assert!(!outcome.failures[0].error.is_empty());
+        // The failed component keeps its mapping row for a retry.
+        assert_eq!(
+            settings
+                .bundle_store()
+                .bundle("org.example.dolphin")
+                .unwrap()
+                .expect("the failed component stays mapped")
+                .components
+                .len(),
+            1
         );
     }
 }

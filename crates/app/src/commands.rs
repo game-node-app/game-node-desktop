@@ -1216,6 +1216,22 @@ pub async fn plugin_remove(
         .map_err(|error| error.message().to_owned())
 }
 
+/// Uninstalls one bundle as one action: every component stops, its package and mapping are
+/// removed, and one retention choice applies to private data for the signed-in account. A partial
+/// failure is returned with the remaining components instead of a generic error.
+#[tauri::command]
+pub async fn plugin_bundle_uninstall(
+    lifecycle: tauri::State<'_, Arc<crate::plugin_host::runtime::ThirdPartyPluginLifecycle>>,
+    settings: tauri::State<'_, Arc<gamenode_platform::db::SqliteSettingsStore>>,
+    bundle_id: String,
+    delete_data: bool,
+) -> Result<crate::plugin_host::bundles::BundleUninstallOutcome, String> {
+    lifecycle
+        .remove_bundle(bundle_id, settings.bundle_store(), delete_data)
+        .await
+        .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 pub async fn plugin_configuration_state(
     updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
@@ -2826,6 +2842,12 @@ mod tests {
             capabilities: vec!["library.discovery".to_owned()],
             session: "active".to_owned(),
             native_access: vec!["files".to_owned()],
+            bundle_id: None,
+            bundle_name: None,
+            bundle_version: None,
+            bundle_component_kind: None,
+            bundle_publisher_fingerprint: None,
+            bundle_components: None,
         }];
         let stores = vec![SystemStore {
             name: "Steam".to_owned(),

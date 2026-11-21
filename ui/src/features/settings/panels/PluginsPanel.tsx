@@ -349,6 +349,22 @@ export const PluginsPanel: React.FC = () => {
                 ) : null}
               </div>
 
+              {plugin.bundleComponents ? (
+                <div className="flex flex-wrap items-center gap-compact border-t border-border-subtle px-md py-sm">
+                  <span className="text-xs text-text-secondary">
+                    {t('plugins.bundle.components')}
+                  </span>
+                  {plugin.bundleComponents.map((component) => (
+                    <Pill
+                      key={component.pluginId}
+                      tone={component.status === 'installed' ? 'success' : 'warning'}
+                    >
+                      {component.name}: {t(`plugins.status.${component.status}`)}
+                    </Pill>
+                  ))}
+                </div>
+              ) : null}
+
               {expired ? (
                 <button
                   type="button"

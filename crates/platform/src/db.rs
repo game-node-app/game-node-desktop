@@ -204,14 +204,15 @@ pub fn migrate(conn: &mut Connection, migrations: &[Migration]) -> Result<(), St
         0
     };
 
-    if applied < supported && history.is_some() {
-        if let Some(path) = conn.path().filter(|path| is_persistent_database_path(path)) {
-            create_verified_migration_snapshot(
-                conn,
-                Path::new(path),
-                history.as_deref().unwrap_or_default(),
-            )?;
-        }
+    if applied < supported
+        && history.is_some()
+        && let Some(path) = conn.path().filter(|path| is_persistent_database_path(path))
+    {
+        create_verified_migration_snapshot(
+            conn,
+            Path::new(path),
+            history.as_deref().unwrap_or_default(),
+        )?;
     }
 
     for migration in migrations.iter().filter(|m| m.version > applied) {

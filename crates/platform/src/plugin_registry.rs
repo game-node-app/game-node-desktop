@@ -398,10 +398,7 @@ impl PluginPackageRegistry {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error),
         }
-        let version = match fs::read_to_string(pointer) {
-            Ok(version) => version,
-            Err(error) => return Err(error),
-        };
+        let version = fs::read_to_string(pointer)?;
         validate_identity(&version)?;
         Ok(self.read_complete(&self.version_path(plugin_id, &version), plugin_id, &version))
     }
@@ -564,10 +561,8 @@ impl PluginPackageRegistry {
                         .file_name()
                         .to_string_lossy()
                         .starts_with(".staging-")
-                    {
-                        remove_tree_no_links(&version_entry.path())?;
-                    } else if version_entry.file_type()?.is_dir()
-                        && self.read_record(&version_entry.path()).is_none()
+                        || (version_entry.file_type()?.is_dir()
+                            && self.read_record(&version_entry.path()).is_none())
                     {
                         remove_tree_no_links(&version_entry.path())?;
                     }
@@ -847,7 +842,7 @@ fn encode_key(value: &str) -> String {
 }
 
 fn decode_key(value: &str) -> Option<String> {
-    if value.is_empty() || value.len() % 2 != 0 {
+    if value.is_empty() || !value.len().is_multiple_of(2) {
         return None;
     }
     let bytes = (0..value.len())

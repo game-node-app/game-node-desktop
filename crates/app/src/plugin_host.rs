@@ -17,6 +17,7 @@ use tokio::sync::oneshot;
 use tonic::{Request, Response, Status, transport::Server};
 
 pub mod bundles;
+pub mod cleanup;
 pub mod compatibility;
 pub mod confirmations;
 pub mod file_approvals;

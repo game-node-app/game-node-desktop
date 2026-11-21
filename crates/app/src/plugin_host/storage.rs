@@ -255,6 +255,181 @@ impl PluginStorage {
         .await
     }
 
+    /// The directory of one namespace below `plugin-data`, if this host has a data folder.
+    fn namespace_dir(&self, resolver: &ExternalNamespaceResolver) -> Option<PathBuf> {
+        let identity = resolver.identity();
+        self.root.as_ref().map(|root| {
+            durable::namespace_dir(
+                root,
+                &identity.publisher_fingerprint,
+                &identity.plugin_id,
+                &identity.profile_id,
+            )
+        })
+    }
+
+    /// Drops a cached namespace slot after its owner's data was archived or removed, so a later
+    /// install cannot keep reading through an open connection.
+    fn forget_slot(&self, owner: [u8; 32], epoch: u64, slot: &Arc<tokio::sync::Mutex<Inner>>) {
+        let mut namespaces = self.namespaces.lock().unwrap_or_else(|p| p.into_inner());
+        if namespaces.get(&owner).is_some_and(|candidate| {
+            candidate.epoch == epoch && Arc::ptr_eq(&candidate.inner, slot)
+        }) {
+            namespaces.remove(&owner);
+        }
+    }
+
+    /// Host-only: makes every live private entry of one plugin/profile namespace inert. The
+    /// namespace is evicted afterwards, so a reinstall opens the archived rows and needs the
+    /// separate reviewed reuse.
+    pub async fn archive_persistence(
+        &self,
+        resolver: &ExternalNamespaceResolver,
+        profile_epoch: u64,
+    ) -> Result<durable::PrivateArchiveOutcome, Status> {
+        let Some(dir) = self.namespace_dir(resolver) else {
+            return Ok(durable::PrivateArchiveOutcome::default());
+        };
+        let owner = *resolver.storage_owner().key();
+        let slot = self.slot(owner, profile_epoch)?;
+        let mut guard = slot.clone().lock_owned().await;
+        let now = (self.clock)();
+        let outcome = tokio::task::spawn_blocking(move || {
+            let mut namespace = Namespace {
+                inner: &mut guard,
+                dir: Some(&dir),
+                now,
+            };
+            namespace.archive_persistence()
+        })
+        .await
+        .map_err(|_| Status::unavailable("plugin storage is unavailable"))??;
+        self.forget_slot(owner, profile_epoch, &slot);
+        Ok(outcome)
+    }
+
+    /// Host-only: restores one namespace's archived private entries after an explicit review.
+    /// The caller has already checked the confirmation and the active profile.
+    pub async fn reuse_archived_persistence(
+        &self,
+        resolver: &ExternalNamespaceResolver,
+        profile_epoch: u64,
+    ) -> Result<durable::PrivateArchiveOutcome, Status> {
+        self.run_for_host(resolver, profile_epoch, |namespace| {
+            namespace.reuse_archived_persistence()
+        })
+        .await
+    }
+
+    /// Host-only: reclaims one namespace's archived, unprotected entries in a reviewed cleanup.
+    pub async fn reclaim_archived_persistence(
+        &self,
+        resolver: &ExternalNamespaceResolver,
+        profile_epoch: u64,
+    ) -> Result<durable::PrivateArchiveOutcome, Status> {
+        self.run_for_host(resolver, profile_epoch, |namespace| {
+            namespace.reclaim_archived_persistence()
+        })
+        .await
+    }
+
+    /// Host-only: deletes one plugin/profile private namespace directory and reports the logical
+    /// bytes it held. Another profile, plugin, publisher, game file or backup archive is never
+    /// touched. The namespace slot is evicted and its cached connection closed first.
+    pub async fn remove_persistence_namespace(
+        &self,
+        resolver: &ExternalNamespaceResolver,
+        profile_epoch: u64,
+    ) -> Result<durable::PrivateArchiveOutcome, Status> {
+        let Some(dir) = self.namespace_dir(resolver) else {
+            return Ok(durable::PrivateArchiveOutcome::default());
+        };
+        let owner = *resolver.storage_owner().key();
+        let slot = self.slot(owner, profile_epoch)?;
+        let mut guard = slot.clone().lock_owned().await;
+        let now = (self.clock)();
+        let outcome = tokio::task::spawn_blocking(
+            move || -> Result<durable::PrivateArchiveOutcome, Status> {
+                let mut namespace = Namespace {
+                    inner: &mut guard,
+                    dir: Some(&dir),
+                    now,
+                };
+                let usage = namespace.store_usage()?;
+                // Closing the connection before the unlink keeps no stale handle to the deleted
+                // file.
+                namespace.inner.durable = None;
+                namespace.inner.session.clear();
+                durable::remove_namespace_at(&dir).map_err(|error| {
+                    tracing::warn!(%error, "private plugin namespace could not be removed");
+                    Status::unavailable("private plugin data could not be removed")
+                })?;
+                Ok(durable::PrivateArchiveOutcome {
+                    records: usage
+                        .categories
+                        .iter()
+                        .map(|category| category.records)
+                        .sum::<u64>()
+                        .saturating_add(usage.archived_records),
+                    logical_bytes: usage
+                        .logical_bytes
+                        .saturating_add(usage.archived_logical_bytes),
+                })
+            },
+        )
+        .await
+        .map_err(|_| Status::unavailable("plugin storage is unavailable"))??;
+        self.forget_slot(owner, profile_epoch, &slot);
+        Ok(outcome)
+    }
+
+    /// Host-only: drops a cached namespace without touching its files. Used after a bundle
+    /// uninstall archived or deleted the namespace directly, so no open connection outlives it.
+    pub async fn forget_persistence_namespace(
+        &self,
+        resolver: &ExternalNamespaceResolver,
+        profile_epoch: u64,
+    ) -> Result<(), Status> {
+        let owner = *resolver.storage_owner().key();
+        // A namespace that was never opened has nothing to drop.
+        let slot = {
+            let namespaces = self.namespaces.lock().unwrap_or_else(|p| p.into_inner());
+            match namespaces.get(&owner) {
+                Some(slot) if slot.epoch == profile_epoch => slot.inner.clone(),
+                Some(_) => return Err(Status::failed_precondition("resource context is stale")),
+                None => return Ok(()),
+            }
+        };
+        let mut guard = slot.clone().lock_owned().await;
+        let dir = self.namespace_dir(resolver);
+        tokio::task::spawn_blocking(move || {
+            let namespace = Namespace {
+                inner: &mut guard,
+                dir: dir.as_deref(),
+                now: 0,
+            };
+            namespace.inner.durable = None;
+            namespace.inner.session.clear();
+        })
+        .await
+        .map_err(|_| Status::unavailable("plugin storage is unavailable"))?;
+        self.forget_slot(owner, profile_epoch, &slot);
+        Ok(())
+    }
+
+    /// Host-only usage of one plugin/profile private namespace. `None` when the namespace never
+    /// wrote anything durably. Never creates a store and never returns a value or a path.
+    pub async fn private_usage(
+        &self,
+        resolver: &ExternalNamespaceResolver,
+        profile_epoch: u64,
+    ) -> Result<Option<durable::StoreUsage>, Status> {
+        self.run_for_host(resolver, profile_epoch, |namespace| {
+            namespace.private_usage()
+        })
+        .await
+    }
+
     /// Runs `work` on a blocking worker with exclusive use of the caller's namespace.
     /// `session_open` says whether a plugin session id is still open.
     pub(crate) async fn run<T: Send + 'static>(
@@ -311,6 +486,9 @@ fn storage_status(error: PluginStorageError) -> Status {
         PluginStorageError::Protected => {
             Status::failed_precondition("the entry is protected by the user")
         }
+        PluginStorageError::Archived => Status::failed_precondition(
+            "archived plugin data requires a reviewed reuse before it can be read or replaced",
+        ),
         other => unavailable(other),
     }
 }
@@ -439,6 +617,10 @@ impl Namespace<'_> {
                 }],
                 logical_bytes: 0,
                 physical_bytes_estimate: 0,
+                archived_records: 0,
+                archived_logical_bytes: 0,
+                oldest_used_at: None,
+                retention: None,
             }),
         }
     }
@@ -471,6 +653,62 @@ impl Namespace<'_> {
         let outcome = store.cleanup(now).map_err(unavailable)?;
         self.inner.counter = revision;
         Ok((outcome, revision))
+    }
+
+    /// Host-only uninstall Keep for this namespace. Advances the revision so cursors are fenced.
+    pub fn archive_persistence(&mut self) -> Result<durable::PrivateArchiveOutcome, Status> {
+        if self.durable(false)?.is_none() {
+            return Ok(durable::PrivateArchiveOutcome::default());
+        }
+        let revision = self.inner.counter.saturating_add(1);
+        let store = self
+            .durable(false)?
+            .ok_or_else(|| Status::unavailable("plugin storage is unavailable"))?;
+        let outcome = store.archive_entries(revision).map_err(unavailable)?;
+        self.inner.counter = revision;
+        Ok(outcome)
+    }
+
+    /// Host-only reuse of this namespace's archived entries. Advances the revision.
+    pub fn reuse_archived_persistence(&mut self) -> Result<durable::PrivateArchiveOutcome, Status> {
+        if self.durable(false)?.is_none() {
+            return Ok(durable::PrivateArchiveOutcome::default());
+        }
+        let revision = self.inner.counter.saturating_add(1);
+        let now = self.now;
+        let store = self
+            .durable(false)?
+            .ok_or_else(|| Status::unavailable("plugin storage is unavailable"))?;
+        let outcome = store
+            .reuse_archived_entries(now, revision)
+            .map_err(unavailable)?;
+        self.inner.counter = revision;
+        Ok(outcome)
+    }
+
+    /// Host-only usage of this namespace, including archived rows. Never creates a store.
+    pub fn private_usage(&mut self) -> Result<Option<durable::StoreUsage>, Status> {
+        let now = self.now;
+        match self.durable(false)? {
+            Some(store) => store.store_usage(now).map(Some).map_err(unavailable),
+            None => Ok(None),
+        }
+    }
+
+    /// Host-only reviewed reclaim of archived, unprotected entries. Advances the revision.
+    pub fn reclaim_archived_persistence(
+        &mut self,
+    ) -> Result<durable::PrivateArchiveOutcome, Status> {
+        if self.durable(false)?.is_none() {
+            return Ok(durable::PrivateArchiveOutcome::default());
+        }
+        let revision = self.inner.counter.saturating_add(1);
+        let store = self
+            .durable(false)?
+            .ok_or_else(|| Status::unavailable("plugin storage is unavailable"))?;
+        let outcome = store.reclaim_archived(revision).map_err(unavailable)?;
+        self.inner.counter = revision;
+        Ok(outcome)
     }
 
     /// Deletes an atomic set of durable keys and advances the namespace revision once.

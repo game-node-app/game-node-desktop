@@ -258,6 +258,11 @@ pub struct ThirdPartyPluginLifecycle {
     registry: gamenode_platform::plugin_registry::PluginPackageRegistry,
     packages: ManagedPackageLifecycle,
     mutation: tokio::sync::Mutex<()>,
+    /// Host-only private store worker, connected by the desktop host. Absent in hosts and tests
+    /// that did not open `plugin-data`; private retention is then skipped rather than guessed.
+    private_storage: Mutex<Option<Arc<super::storage::PluginStorage>>>,
+    /// Single-use host-wide cleanup reviews.
+    cleanup_reviews: super::cleanup::CleanupReviews,
     #[cfg(test)]
     sharing_commit_hook: Mutex<Option<SharingCommitHook>>,
     #[cfg(test)]
@@ -285,11 +290,21 @@ pub struct PluginConfigurationState {
     pub revision: Option<String>,
 }
 
-pub use super::retention::{DataRetention, DurableRetentionOutcome, DurableRetentionSink};
+pub use super::retention::{
+    DataRetention, DurableRetentionOutcome, DurableRetentionSink, PrivateReuseOutcome,
+};
 
 pub(crate) struct SharingIdentityObservation {
     pub identity: PluginIdentity,
     profile_epoch: u64,
+}
+
+/// Host-resolved identity and owner used by uninstall retention and reviewed reuse. It comes from
+/// the pinned registry and the active profile; a plugin RPC never supplies it.
+struct RemovalIdentity {
+    resolver: super::namespace::ExternalNamespaceResolver,
+    owner: OwnerScope,
+    epoch: u64,
 }
 
 #[cfg(test)]
@@ -328,11 +343,39 @@ impl ThirdPartyPluginLifecycle {
             registry,
             packages,
             mutation: tokio::sync::Mutex::new(()),
+            private_storage: Mutex::new(None),
+            cleanup_reviews: super::cleanup::CleanupReviews::default(),
             #[cfg(test)]
             sharing_commit_hook: Mutex::new(None),
             #[cfg(test)]
             permission_commit_hook: Mutex::new(None),
         }
+    }
+
+    /// Connects the host-only private store worker used by uninstall retention and host cleanup.
+    /// This is host wiring: no plugin IPC reaches it.
+    pub fn set_private_storage(&self, storage: Arc<super::storage::PluginStorage>) {
+        *self
+            .private_storage
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(storage);
+    }
+
+    pub(crate) fn private_storage(&self) -> Option<Arc<super::storage::PluginStorage>> {
+        self.private_storage
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// The provider API the host cleanup review enumerates producers from.
+    pub(crate) fn host_api(&self) -> &ProviderApi {
+        &self.api
+    }
+
+    /// The issued host-wide cleanup reviews; single-use and bound to the active profile.
+    pub(crate) fn cleanup_reviews(&self) -> &super::cleanup::CleanupReviews {
+        &self.cleanup_reviews
     }
 
     pub async fn enabled(&self, plugin_id: String) -> Result<bool, Status> {
@@ -1270,7 +1313,7 @@ impl ThirdPartyPluginLifecycle {
     /// Uninstall must not depend on package byte verification: a broken or incompatible package
     /// still has to be removable, while its retained data must stay attributed to the identity the
     /// pinned registry and the active profile already established.
-    async fn removal_owner(&self, plugin_id: &str) -> Result<OwnerScope, Status> {
+    async fn removal_identity(&self, plugin_id: &str) -> Result<RemovalIdentity, Status> {
         let profile = self.api.profiles().require()?;
         let provider_ids = self.api.third_party_provider_ids_for_plugin(plugin_id);
         let [provider_id] = provider_ids.as_slice() else {
@@ -1291,8 +1334,13 @@ impl ThirdPartyPluginLifecycle {
             .api
             .profiles()
             .resolver(plugin_id, &publisher_fingerprint, None)?;
-        OwnerScope::new(*resolver.storage_owner().key(), profile.epoch())
-            .map_err(|_| Status::failed_precondition("plugin profile is invalid"))
+        let owner = OwnerScope::new(*resolver.storage_owner().key(), profile.epoch())
+            .map_err(|_| Status::failed_precondition("plugin profile is invalid"))?;
+        Ok(RemovalIdentity {
+            resolver,
+            owner,
+            epoch: profile.epoch(),
+        })
     }
 
     /// Applies one keep-or-delete choice to a producer's durable shared records. Keep archives
@@ -1303,7 +1351,20 @@ impl ThirdPartyPluginLifecycle {
         plugin_id: &str,
         retention: DataRetention,
     ) -> Result<DurableRetentionOutcome, Status> {
-        let owner = self.removal_owner(plugin_id).await?;
+        let identity = self.removal_identity(plugin_id).await?;
+        self.apply_identity_retention(plugin_id, &identity, retention)
+            .await
+    }
+
+    /// Applies the same choice to the durable shared rows and the private persistence entries of
+    /// one resolved identity. Private retention is skipped, not guessed, when this host has no
+    /// private store worker.
+    async fn apply_identity_retention(
+        &self,
+        plugin_id: &str,
+        identity: &RemovalIdentity,
+        retention: DataRetention,
+    ) -> Result<DurableRetentionOutcome, Status> {
         let now = unix_now()?;
         let pool = self.api.shared_pool();
         let mut outcome = DurableRetentionOutcome {
@@ -1312,22 +1373,74 @@ impl ThirdPartyPluginLifecycle {
             archived_records: 0,
             removed_records: 0,
             reclaimed_bytes: 0,
+            private_archived_records: 0,
+            private_removed_records: 0,
+            private_reclaimed_bytes: 0,
         };
         match retention {
             DataRetention::Keep => {
                 outcome.archived_records = pool
-                    .archive_owner(owner, now)
+                    .archive_owner(identity.owner, now)
                     .await?
                     .map_or(0, |archived| archived.records);
             }
             DataRetention::Delete => {
-                if let Some(deleted) = pool.delete_owner(owner, now).await? {
+                if let Some(deleted) = pool.delete_owner(identity.owner, now).await? {
                     outcome.removed_records = deleted.removed_records;
                     outcome.reclaimed_bytes = deleted.reclaimed_bytes;
                 }
             }
         }
+        if let Some(storage) = self.private_storage() {
+            match retention {
+                DataRetention::Keep => {
+                    let archived = storage
+                        .archive_persistence(&identity.resolver, identity.epoch)
+                        .await?;
+                    outcome.private_archived_records = archived.records;
+                }
+                DataRetention::Delete => {
+                    let removed = storage
+                        .remove_persistence_namespace(&identity.resolver, identity.epoch)
+                        .await?;
+                    outcome.private_removed_records = removed.records;
+                    outcome.private_reclaimed_bytes = removed.logical_bytes;
+                }
+            }
+        }
         Ok(outcome)
+    }
+
+    /// Restores one reinstall's archived private entries after a separate host review. The owner
+    /// comes from the pinned registry identity and the active profile, so a consumer or a new
+    /// package cannot call this on another producer's data. Nothing changes without confirmation.
+    pub async fn reuse_archived_private_data(
+        &self,
+        plugin_id: String,
+        expected_profile_id: &str,
+        confirmed: bool,
+    ) -> Result<PrivateReuseOutcome, Status> {
+        if !confirmed {
+            return Err(Status::failed_precondition(
+                "reusing archived private data requires confirmation",
+            ));
+        }
+        let profile = self.api.profiles().require()?;
+        if profile.profile_id() != expected_profile_id {
+            return Err(Status::failed_precondition("plugin profile changed"));
+        }
+        let identity = self.removal_identity(&plugin_id).await?;
+        let storage = self.private_storage().ok_or_else(|| {
+            Status::failed_precondition("private plugin data is unavailable on this host")
+        })?;
+        let restored = storage
+            .reuse_archived_persistence(&identity.resolver, identity.epoch)
+            .await?;
+        Ok(PrivateReuseOutcome {
+            plugin_id,
+            restored_records: restored.records,
+            logical_bytes: restored.logical_bytes,
+        })
     }
 
     /// Restores one reinstall's archived durable records after a separate host review. The owner
@@ -1350,12 +1463,12 @@ impl ThirdPartyPluginLifecycle {
         }
         // The package identity is pinned in the registry; byte verification is not required to
         // find the owner, so a damaged reinstall can still be reviewed and cleaned up.
-        let owner = self.removal_owner(&plugin_id).await?;
+        let identity = self.removal_identity(&plugin_id).await?;
         let now = unix_now()?;
         let reused = self
             .api
             .shared_pool()
-            .reuse_archived_owner(owner, now)
+            .reuse_archived_owner(identity.owner, now)
             .await?
             .map_or(0, |reused| reused.records);
         Ok(DurableRetentionOutcome {
@@ -1364,6 +1477,9 @@ impl ThirdPartyPluginLifecycle {
             archived_records: reused,
             removed_records: 0,
             reclaimed_bytes: 0,
+            private_archived_records: 0,
+            private_removed_records: 0,
+            private_reclaimed_bytes: 0,
         })
     }
 
@@ -1413,16 +1529,22 @@ impl ThirdPartyPluginLifecycle {
         // resolving the owner; it is removed below. A plugin that was installed without a unique
         // registration has no resolvable owner and must still be removable; no other identity's
         // rows are guessed or touched.
-        let durable = match self.apply_durable_retention(&plugin_id, retention).await {
-            Ok(outcome) => outcome,
+        let durable = match self.removal_identity(&plugin_id).await {
+            Ok(identity) => {
+                self.apply_identity_retention(&plugin_id, &identity, retention)
+                    .await?
+            }
             Err(error) if error.code() == tonic::Code::FailedPrecondition => {
-                tracing::warn!(plugin = %plugin_id, %error, "durable retention skipped at uninstall");
+                tracing::warn!(plugin = %plugin_id, %error, "retention skipped at uninstall");
                 DurableRetentionOutcome {
                     plugin_id: plugin_id.clone(),
                     data_retention: retention.as_str(),
                     archived_records: 0,
                     removed_records: 0,
                     reclaimed_bytes: 0,
+                    private_archived_records: 0,
+                    private_removed_records: 0,
+                    private_reclaimed_bytes: 0,
                 }
             }
             Err(error) => return Err(error),
@@ -1526,6 +1648,12 @@ impl ThirdPartyPluginLifecycle {
                 }
             }));
 
+        // The private namespaces were archived or deleted directly on disk. Drop any cached
+        // connection now, while each removed component's registration still resolves its owner,
+        // so a later install cannot read through an old handle.
+        self.forget_removed_private_namespaces(&outcome.removed)
+            .await;
+
         let state = self.state.clone();
         let removed = outcome.removed.clone();
         let mut failures = Vec::new();
@@ -1562,6 +1690,32 @@ impl ThirdPartyPluginLifecycle {
         failures.extend(account_failures);
         outcome.failures.extend(failures);
         Ok(outcome)
+    }
+
+    /// Drops cached private namespaces for removed bundle components. A component whose identity
+    /// no longer resolves is skipped; its files were already handled by the uninstall.
+    async fn forget_removed_private_namespaces(
+        &self,
+        removed: &[super::bundles::RemovedBundleComponent],
+    ) {
+        let Some(storage) = self.private_storage() else {
+            return;
+        };
+        for component in removed {
+            let Ok(identity) = self.removal_identity(&component.plugin_id).await else {
+                continue;
+            };
+            if let Err(error) = storage
+                .forget_persistence_namespace(&identity.resolver, identity.epoch)
+                .await
+            {
+                tracing::warn!(
+                    plugin = %component.plugin_id,
+                    %error,
+                    "private namespace cache could not be dropped after bundle uninstall"
+                );
+            }
+        }
     }
 
     fn process_ids(&self, plugin_id: &str) -> Result<Vec<String>, Status> {

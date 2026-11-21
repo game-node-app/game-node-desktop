@@ -1,8 +1,10 @@
-//! One keep-or-delete choice for a plugin's durable shared records.
+//! One keep-or-delete choice for a plugin's durable shared records and private persistence
+//! entries.
 //!
-//! The same choice is used by single-plugin and bundle uninstall. Keeping makes the rows inert
-//! under the original owner; deleting removes only that owner's rows. Applying it is host code:
-//! a plugin RPC never reaches these types, and no physical path is included in the outcome.
+//! The same choice is used by single-plugin and bundle uninstall. Keeping makes the rows and
+//! entries inert under the original owner; deleting removes only that owner's rows and private
+//! namespace. Applying it is host code: a plugin RPC never reaches these types, and no physical
+//! path is included in the outcome.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -35,6 +37,22 @@ pub struct DurableRetentionOutcome {
     pub archived_records: u64,
     pub removed_records: u64,
     pub reclaimed_bytes: u64,
+    /// Private-store entries archived by the same choice. Inert until a reviewed reuse.
+    pub private_archived_records: u64,
+    /// Private-store entries deleted by the same choice.
+    pub private_removed_records: u64,
+    /// Logical private bytes reclaimed by deletion. No path is disclosed.
+    pub private_reclaimed_bytes: u64,
+}
+
+/// The result of a reviewed reuse of archived private entries. A reinstall needs this separate
+/// decision before the old values become readable again.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrivateReuseOutcome {
+    pub plugin_id: String,
+    pub restored_records: u64,
+    pub logical_bytes: u64,
 }
 
 /// Applies the host retention choice to one plugin identity. Implemented by the lifecycle; used

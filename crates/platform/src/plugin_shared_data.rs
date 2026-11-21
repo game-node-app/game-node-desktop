@@ -344,6 +344,8 @@ pub struct OwnerUsage {
     pub oldest_updated_at: Option<i64>,
     pub archived_records: u64,
     pub archived_logical_bytes: u64,
+    /// Live records the user protected from pruning.
+    pub protected_records: u64,
     /// SQLite page allocation for the whole pool; shared across owners.
     pub physical_bytes_estimate: u64,
 }
@@ -867,6 +869,40 @@ impl SharedDataStore {
         })
     }
 
+    /// Reclaims one owner's archived, unprotected rows in a reviewed host cleanup. A protected
+    /// archived row stays. Blocking: call this on the storage worker.
+    pub fn reclaim_archived_owner(
+        &mut self,
+        owner: &OwnerScope,
+    ) -> Result<PruneOutcome, SharedDataError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        check_owner(&tx, owner, 0, false)?;
+        let (records, bytes): (i64, i64) = tx.query_row(
+            "SELECT COUNT(*), COALESCE(SUM(logical_bytes), 0) FROM shared_records
+             WHERE owner_key = ?1 AND archived = 1 AND user_protected = 0",
+            [owner.key()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let removed = tx.execute(
+            "DELETE FROM shared_records
+             WHERE owner_key = ?1 AND archived = 1 AND user_protected = 0",
+            [owner.key()],
+        )? as u64;
+        let pool_revision = if removed > 0 {
+            advance_pool(&tx)?
+        } else {
+            current_pool_revision(&tx)?
+        };
+        tx.commit()?;
+        Ok(PruneOutcome {
+            removed_records: records.max(0) as u64,
+            reclaimed_bytes: bytes.max(0) as u64,
+            pool_revision,
+        })
+    }
+
     /// Marks a record as protected from retention pruning, or releases it. Host-only: no plugin
     /// request reaches this method. It never changes the payload or the record revision.
     pub fn set_user_protected(
@@ -1075,13 +1111,19 @@ fn owner_usage(
     now: i64,
 ) -> Result<OwnerUsage, SharedDataError> {
     let policy = retention_policy(conn, owner)?;
-    let (records, logical_bytes, oldest_updated_at): (i64, i64, Option<i64>) = conn.query_row(
-        "SELECT COUNT(*), COALESCE(SUM(logical_bytes), 0), MIN(updated_at)
+    let (records, logical_bytes, oldest_updated_at, protected_records): (
+        i64,
+        i64,
+        Option<i64>,
+        i64,
+    ) = conn.query_row(
+        "SELECT COUNT(*), COALESCE(SUM(logical_bytes), 0), MIN(updated_at),
+                COALESCE(SUM(user_protected), 0)
          FROM shared_records
          WHERE owner_key = ?1 AND archived = 0
            AND (expires_at IS NULL OR expires_at > ?2)",
         params![owner.key(), now],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
     )?;
     let (archived_records, archived_logical_bytes): (i64, i64) = conn.query_row(
         "SELECT COUNT(*), COALESCE(SUM(logical_bytes), 0)
@@ -1101,6 +1143,7 @@ fn owner_usage(
         oldest_updated_at,
         archived_records: archived_records.max(0) as u64,
         archived_logical_bytes: archived_logical_bytes.max(0) as u64,
+        protected_records: protected_records.max(0) as u64,
         physical_bytes_estimate: page_count.max(0) as u64 * page_size.max(0) as u64,
     })
 }

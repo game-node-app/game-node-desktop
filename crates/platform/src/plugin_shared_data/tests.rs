@@ -1354,3 +1354,76 @@ fn invalid_records_are_rejected_before_anything_is_stored() {
     assert_eq!(store.usage(&owner, 100).unwrap().records, 0);
     assert_eq!(store.pool_revision().unwrap(), 0);
 }
+
+#[test]
+fn a_reviewed_reclaim_removes_only_one_owners_unprotected_archived_rows() {
+    let dir = TempDir::new().unwrap();
+    let mut store = SharedDataStore::open(dir.path()).unwrap();
+    let archived_owner = owner(1, 1);
+    let other_owner = owner(2, 1);
+    let first_provenance = provenance("org.example.first");
+    let second_provenance = provenance("org.example.first");
+    let other_provenance = provenance("org.example.other");
+    let first = publish(
+        &mut store,
+        archived_owner,
+        record(
+            "org.example.catalog",
+            Some("disc-1"),
+            r#"{"title":"First"}"#,
+            &first_provenance,
+            100,
+        ),
+    );
+    let second = publish(
+        &mut store,
+        archived_owner,
+        record(
+            "org.example.catalog",
+            Some("disc-2"),
+            r#"{"title":"Second"}"#,
+            &second_provenance,
+            101,
+        ),
+    );
+    let other = publish(
+        &mut store,
+        other_owner,
+        record(
+            "org.example.catalog",
+            Some("disc-3"),
+            r#"{"title":"Other"}"#,
+            &other_provenance,
+            102,
+        ),
+    );
+    assert!(
+        store
+            .set_user_protected(&archived_owner, &first.record.record_id, true, 105)
+            .unwrap()
+    );
+    store.archive_owner(&archived_owner, 110).unwrap();
+    assert_eq!(
+        store.usage(&archived_owner, 110).unwrap().archived_records,
+        2
+    );
+
+    let pool_before = store.pool_revision().unwrap();
+    let reclaimed = store.reclaim_archived_owner(&archived_owner).unwrap();
+    assert_eq!(reclaimed.removed_records, 1, "the protected row stays");
+    assert_eq!(reclaimed.reclaimed_bytes, second.record.size_bytes);
+    assert_eq!(reclaimed.pool_revision, pool_before + 1);
+    let usage = store.usage(&archived_owner, 110).unwrap();
+    assert_eq!(usage.archived_records, 1);
+    assert_eq!(usage.archived_logical_bytes, first.record.size_bytes);
+    assert_eq!(
+        store
+            .list_dataset_any("org.example.catalog", 110)
+            .unwrap()
+            .len(),
+        1,
+        "another owner's live row is untouched"
+    );
+    assert_eq!(store.usage(&other_owner, 110).unwrap().records, 1);
+    assert!(!other.record.archived);
+}

@@ -459,8 +459,10 @@ impl SharedDataStore {
         }
 
         let pool_revision = advance_pool(&tx)?;
+        // Durable ids use their own prefix so they can never collide with the in-memory broker's
+        // `shared-` ids, which are numbered in a separate sequence.
         let record_id = existing.as_ref().map_or_else(
-            || format!("shared-{pool_revision:016x}"),
+            || format!("durable-{pool_revision:016x}"),
             |record| record.record_id.clone(),
         );
         let revision = current_revision.saturating_add(1);
@@ -566,6 +568,50 @@ impl SharedDataStore {
         validate_text(record_id, 64)?;
         check_owner(&self.conn, owner, now, false)?;
         record_by_id(&self.conn, owner, record_id, now)
+    }
+
+    /// Reads one unexpired record by host id across every owner. This is a host-only read for the
+    /// public read path: the caller must authorize the returned source identity against the
+    /// current grant before disclosing any field. Record ids are globally unique.
+    pub fn get_any(
+        &self,
+        record_id: &str,
+        now: i64,
+    ) -> Result<Option<SharedRecord>, SharedDataError> {
+        validate_now(now)?;
+        validate_text(record_id, 64)?;
+        Ok(self
+            .conn
+            .query_row(
+                &format!(
+                    "SELECT {RECORD_COLUMNS} FROM shared_records
+                     WHERE record_id = ?1 AND (expires_at IS NULL OR expires_at > ?2)"
+                ),
+                params![record_id, now],
+                record_from,
+            )
+            .optional()?)
+    }
+
+    /// Lists one dataset's unexpired records across every owner in the same stable order as the
+    /// owner-scoped list. Host-only: the public read path authorizes each record's source identity
+    /// against the current grant before disclosing it.
+    pub fn list_dataset_any(
+        &self,
+        dataset_id: &str,
+        now: i64,
+    ) -> Result<Vec<SharedRecord>, SharedDataError> {
+        validate_now(now)?;
+        validate_text(dataset_id, MAX_IDENTIFIER_BYTES)?;
+        let mut statement = self.conn.prepare(&format!(
+            "SELECT {RECORD_COLUMNS} FROM shared_records
+             WHERE dataset_id = ?1 AND (expires_at IS NULL OR expires_at > ?2)
+             ORDER BY received_at ASC, record_id ASC"
+        ))?;
+        statement
+            .query_map(params![dataset_id, now], record_from)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Into::into)
     }
 
     /// Lists one owner's dataset in a stable order (oldest receipt first, then record id) and

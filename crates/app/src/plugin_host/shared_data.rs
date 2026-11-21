@@ -5,6 +5,10 @@
 //! Record identity and provenance are host-owned; plugin payloads are either bounded dataset
 //! fields or opaque bytes. The broker is wired into `ResourceHost` and shares its policy index
 //! with domain projections.
+//!
+//! Session-retained rows live here; durable rows stay in the host's public pool. A read merges
+//! both under the same owner/grant checks and field projections, in one stable receipt order, and
+//! a durable publication advances the broker revision so lists and watches share a handoff.
 
 use super::grants::PluginIdentity;
 use super::sharing_policy::{
@@ -143,8 +147,66 @@ struct StoredRecord {
     published_at: i64,
     expires_at: Option<i64>,
     revision: u64,
+    /// Broker revision at which this row entered the in-memory state, used only to fence live
+    /// subscriptions. A durable row gets the revision of its dispatch, not of its first insert.
+    position: u64,
+    /// Host-owned durable pool row rather than a session-retained record.
+    durable: bool,
     provenance: Provenance,
     bytes: usize,
+}
+
+/// A durable pool record loaded by the storage worker, ready for the same authorization and
+/// projection path as a session record. Only host code builds one; a plugin RPC never does.
+#[derive(Clone, Debug)]
+pub(crate) struct DurableRecord {
+    pub record_id: String,
+    pub owner: PluginIdentity,
+    pub dataset_id: String,
+    pub category: Option<CommonDataCategory>,
+    pub class: SharingClass,
+    pub schema_id: String,
+    pub schema_version: u32,
+    pub fields: Map<String, Value>,
+    pub opaque_payload: Vec<u8>,
+    pub resource_id: String,
+    pub observed_at: i64,
+    pub received_at: i64,
+    pub published_at: i64,
+    pub sequence: u64,
+    pub source_observation_id: String,
+    pub expires_at: Option<i64>,
+    pub revision: u64,
+    pub provenance: Provenance,
+}
+
+impl From<DurableRecord> for StoredRecord {
+    fn from(record: DurableRecord) -> Self {
+        Self {
+            record_id: record.record_id,
+            owner: record.owner,
+            dataset_id: record.dataset_id,
+            category: record.category,
+            class: record.class,
+            schema_id: record.schema_id,
+            schema_version: record.schema_version,
+            fields: record.fields,
+            opaque_payload: record.opaque_payload,
+            resource_id: record.resource_id,
+            observed_at: record.observed_at,
+            received_at: record.received_at,
+            sequence: record.sequence,
+            source_observation_id: record.source_observation_id,
+            session_id: None,
+            published_at: record.published_at,
+            expires_at: record.expires_at,
+            revision: record.revision,
+            position: 0,
+            durable: true,
+            provenance: record.provenance,
+            bytes: 0,
+        }
+    }
 }
 
 /// A projected result. Its fields and provenance are private so an RPC adapter cannot accept a
@@ -169,6 +231,7 @@ pub struct ProjectedRecord {
     provenance: Provenance,
     recipient: PluginIdentity,
     policy_revision: u64,
+    durable: bool,
 }
 
 /// Host-only sharing metadata for settings review. This intentionally contains no payload values.
@@ -242,13 +305,20 @@ impl ProjectedRecord {
     pub fn source_observation_id(&self) -> &str {
         &self.source_observation_id
     }
+
+    /// True when this projection came from the host-owned durable pool rather than the
+    /// session-retained broker.
+    pub fn is_durable(&self) -> bool {
+        self.durable
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct QueryResult {
     pub records: Vec<ProjectedRecord>,
     pub next_cursor: Option<QueryCursor>,
-    /// Broker-wide revision used to bind the next page and a subsequent watch.
+    /// Broker-wide revision used to bind the next page and a subsequent watch. A durable
+    /// publication in this process advances it too, so both sources share one handoff revision.
     pub revision: u64,
 }
 
@@ -263,7 +333,10 @@ pub struct QueryCursor {
     selector: QuerySelector,
     delivery: Delivery,
     snapshot_revision: u64,
-    after_revision: u64,
+    /// Position of the last returned record in the merged order: `(received_at, record_id)`.
+    /// `None` starts a fresh page. The merged order is shared by session and durable rows.
+    after_received_at: i64,
+    after_record_id: Option<String>,
     policy_revision: u64,
 }
 
@@ -659,7 +732,7 @@ impl DataBroker {
         authorizer: &dyn Authorizer,
         now: i64,
     ) -> Result<QueryResult, BrokerError> {
-        self.query(request, authorizer, now)
+        self.query_inner(request, None, Vec::new(), authorizer, now)
     }
 
     pub fn query_data(
@@ -668,7 +741,20 @@ impl DataBroker {
         authorizer: &dyn Authorizer,
         now: i64,
     ) -> Result<QueryResult, BrokerError> {
-        self.query(request, authorizer, now)
+        self.query_inner(request, None, Vec::new(), authorizer, now)
+    }
+
+    /// Queries session-retained and durable records as one stable page. `durable` is the
+    /// host-loaded candidate set from the public pool; every row still passes the same owner or
+    /// grant authorization and field projection as a session row.
+    pub(crate) fn query_data_with_durable(
+        &self,
+        request: QueryRequest,
+        durable: Vec<DurableRecord>,
+        authorizer: &dyn Authorizer,
+        now: i64,
+    ) -> Result<QueryResult, BrokerError> {
+        self.query_inner(request, None, durable, authorizer, now)
     }
 
     /// Exact host-owned resource lookup through the same authorization/projection path as a
@@ -683,22 +769,14 @@ impl DataBroker {
         if resource_id.trim().is_empty() || resource_id.len() > MAX_RESOURCE_ID_BYTES {
             return Err(BrokerError::InvalidPublication);
         }
-        self.query_inner(request, Some(resource_id), authorizer, now)
-    }
-
-    fn query(
-        &self,
-        request: QueryRequest,
-        authorizer: &dyn Authorizer,
-        now: i64,
-    ) -> Result<QueryResult, BrokerError> {
-        self.query_inner(request, None, authorizer, now)
+        self.query_inner(request, Some(resource_id), Vec::new(), authorizer, now)
     }
 
     fn query_inner(
         &self,
         request: QueryRequest,
         resource_id: Option<&str>,
+        durable: Vec<DurableRecord>,
         authorizer: &dyn Authorizer,
         now: i64,
     ) -> Result<QueryResult, BrokerError> {
@@ -708,7 +786,7 @@ impl DataBroker {
         }
         let selector = QuerySelector::decode(request.selector.as_ref())?;
         let policy_revision = authorizer.revision(&request.caller);
-        let (snapshot_revision, after_revision, rows) = {
+        let (snapshot_revision, after, rows) = {
             let mut state = self.lock();
             prune_expired_locked(&mut state, now);
             let snapshot = state.revision;
@@ -725,36 +803,40 @@ impl DataBroker {
                     {
                         return Err(BrokerError::StaleCursor);
                     }
-                    cursor.after_revision
+                    cursor
+                        .after_record_id
+                        .clone()
+                        .map(|record_id| (cursor.after_received_at, record_id))
                 }
-                None => 0,
+                None => None,
             };
-            let rows = state
+            let mut rows = state
                 .rows
                 .iter()
-                .filter(|record| {
-                    record.revision > after
-                        && record.revision <= snapshot
-                        && record.dataset_id == request.dataset_id
-                        && request
-                            .record_id
-                            .as_ref()
-                            .is_none_or(|record_id| &record.record_id == record_id)
-                        && resource_id.is_none_or(|resource_id| {
-                            record.resource_id == resource_id || record.record_id == resource_id
-                        })
-                        && request
-                            .category
-                            .is_none_or(|category| record.category == Some(category))
-                        && record.expires_at.is_none_or(|expiry| expiry > now)
-                })
+                .filter(|record| record_matches(record, &request, resource_id, now))
                 .cloned()
                 .collect::<Vec<_>>();
+            // Durable rows are read by the storage worker; they are never retained here.
+            rows.extend(
+                durable
+                    .into_iter()
+                    .map(StoredRecord::from)
+                    .filter(|record| record_matches(record, &request, resource_id, now)),
+            );
+            // One stable order for both sources: receipt time, then the globally unique id.
+            rows.sort_by(|left, right| {
+                (left.received_at, left.record_id.as_str())
+                    .cmp(&(right.received_at, right.record_id.as_str()))
+            });
             (snapshot, after, rows)
         };
 
         let mut projected = Vec::new();
         for record in rows {
+            let position = (record.received_at, record.record_id.clone());
+            if after.as_ref().is_some_and(|after| &position <= after) {
+                continue;
+            }
             if let Some(result) = project_for_query(
                 &request.caller,
                 &selector,
@@ -763,7 +845,7 @@ impl DataBroker {
                 policy_revision,
                 authorizer,
             )? {
-                projected.push(result);
+                projected.push((position, result));
             }
         }
         if authorizer.revision(&request.caller) != policy_revision {
@@ -771,30 +853,31 @@ impl DataBroker {
         }
 
         let page_size = request.page_size.clamp(1, MAX_PAGE_SIZE);
-        let mut after = after_revision;
-        let mut iter = projected
-            .into_iter()
-            .filter(|record| record.revision > after_revision);
         let mut records = Vec::with_capacity(page_size);
-        for _ in 0..page_size {
-            if let Some(record) = iter.next() {
-                after = record.revision;
-                records.push(record);
-            } else {
+        let mut last = None;
+        let mut has_more = false;
+        for (position, record) in projected {
+            if records.len() == page_size {
+                has_more = true;
                 break;
             }
+            last = Some(position);
+            records.push(record);
         }
-        let has_more = iter.next().is_some();
-        let next_cursor = has_more.then(|| QueryCursor {
-            caller: request.caller.clone(),
-            dataset_id: request.dataset_id.clone(),
-            record_id: request.record_id.clone(),
-            category: request.category,
-            selector,
-            delivery: request.delivery,
-            snapshot_revision,
-            after_revision: after,
-            policy_revision,
+        let next_cursor = has_more.then(|| {
+            let (after_received_at, after_record_id) = last.unwrap_or((0, String::new()));
+            QueryCursor {
+                caller: request.caller.clone(),
+                dataset_id: request.dataset_id.clone(),
+                record_id: request.record_id.clone(),
+                category: request.category,
+                selector,
+                delivery: request.delivery,
+                snapshot_revision,
+                after_received_at,
+                after_record_id: Some(after_record_id),
+                policy_revision,
+            }
         });
         Ok(QueryResult {
             records,
@@ -880,6 +963,26 @@ impl DataBroker {
             }
         }
         removed
+    }
+
+    /// Records a durable publication already accepted by the storage worker. The row is not
+    /// retained here: the pool remains its source of truth and reads load it from there. The
+    /// broker revision still advances, so a `DataList` revision can hand off to `DataWatch` across
+    /// both sources, and current watchers receive the new revision as a published event.
+    pub(crate) fn note_durable(&self, record: DurableRecord, now: i64) -> u64 {
+        let record = StoredRecord::from(record);
+        let (record, subscribers, position) = {
+            let mut state = self.lock();
+            state.revision = state.revision.saturating_add(1);
+            let position = state.revision;
+            (
+                StoredRecord { position, ..record },
+                state.subscribers.clone(),
+                position,
+            )
+        };
+        self.dispatch(&record, subscribers, now);
+        position
     }
 
     /// Returns only host-owned dataset and field names needed to review sharing. No plugin
@@ -987,6 +1090,8 @@ impl DataBroker {
             published_at: now,
             expires_at: publication.expires_at,
             revision,
+            position: revision,
+            durable: false,
             bytes,
         };
         state.bytes = state.bytes.saturating_add(bytes);
@@ -1018,7 +1123,7 @@ impl DataBroker {
             if state.ended.is_some() {
                 continue;
             }
-            if record.revision <= state.after_revision {
+            if record.position <= state.after_revision {
                 continue;
             }
             if state
@@ -1034,13 +1139,15 @@ impl DataBroker {
             let selector = state.selector.clone();
             let initial_revision = state.policy_revision;
             let authorizer = state.authorizer.clone();
-            state.after_revision = record.revision;
+            state.after_revision = record.position;
             drop(state);
 
             if authorizer.revision(&request.caller) != initial_revision {
                 let mut state = lock(&inner);
                 state.queue.clear();
                 state.ended = Some(SubscriptionEnd::Revoked);
+                // Wake a waiting stream so it observes revocation now, not at its next recheck.
+                state.notify.notify_waiters();
                 continue;
             }
             let projected = project_for_query(
@@ -1056,11 +1163,13 @@ impl DataBroker {
                 Err(_) => {
                     state.queue.clear();
                     state.ended = Some(SubscriptionEnd::Revoked);
+                    state.notify.notify_waiters();
                 }
                 Ok(Some(projection)) => {
                     if state.queue.len() >= state.queue_capacity {
                         state.queue.clear();
                         state.ended = Some(SubscriptionEnd::FellBehind);
+                        state.notify.notify_waiters();
                     } else {
                         state.queue.push_back(projection);
                         state.notify.notify_one();
@@ -1226,6 +1335,7 @@ fn project_for_query(
         provenance: record.provenance.clone(),
         recipient: caller.clone(),
         policy_revision,
+        durable: record.durable,
     }))
 }
 
@@ -1237,6 +1347,27 @@ fn validate_query(request: &QueryRequest) -> Result<(), BrokerError> {
         return Err(BrokerError::InvalidPublication);
     }
     Ok(())
+}
+
+/// The dataset, identity and expiry filters shared by session and durable candidates.
+fn record_matches(
+    record: &StoredRecord,
+    request: &QueryRequest,
+    resource_id: Option<&str>,
+    now: i64,
+) -> bool {
+    record.dataset_id == request.dataset_id
+        && request
+            .record_id
+            .as_ref()
+            .is_none_or(|record_id| &record.record_id == record_id)
+        && resource_id.is_none_or(|resource_id| {
+            record.resource_id == resource_id || record.record_id == resource_id
+        })
+        && request
+            .category
+            .is_none_or(|category| record.category == Some(category))
+        && record.expires_at.is_none_or(|expiry| expiry > now)
 }
 
 fn retain_live_sequences(state: &mut BrokerState) {

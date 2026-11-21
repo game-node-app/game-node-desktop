@@ -444,6 +444,121 @@ fn another_owner_cannot_read_or_replace_a_record() {
 }
 
 #[test]
+fn cross_owner_reads_share_a_dataset_without_disclosing_another_owners_scope() {
+    let dir = TempDir::new().unwrap();
+    let mut store = SharedDataStore::open(dir.path()).unwrap();
+    let first_owner = owner(6, 1);
+    let second_owner = owner(7, 1);
+    let first_provenance = provenance("first");
+    let second_provenance = provenance("second");
+
+    let first = publish(
+        &mut store,
+        first_owner,
+        record(
+            "org.example.catalog",
+            Some("disc-1"),
+            r#"{"title":"one"}"#,
+            &first_provenance,
+            100,
+        ),
+    );
+    let second = publish(
+        &mut store,
+        second_owner,
+        record(
+            "org.example.catalog",
+            Some("disc-1"),
+            r#"{"title":"two"}"#,
+            &second_provenance,
+            101,
+        ),
+    );
+    assert!(first.record.record_id.starts_with("durable-"));
+    assert!(second.record.record_id.starts_with("durable-"));
+    assert_ne!(
+        first.record.record_id, second.record.record_id,
+        "each producer keeps its own record id"
+    );
+
+    // A cross-owner read by id finds the record that an owner-scoped read hides.
+    assert_eq!(
+        store
+            .get(&second_owner, &first.record.record_id, 200)
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        store
+            .get_any(&first.record.record_id, 200)
+            .unwrap()
+            .unwrap(),
+        first.record
+    );
+
+    let listed = store.list_dataset_any("org.example.catalog", 200).unwrap();
+    assert_eq!(
+        listed
+            .iter()
+            .map(|record| record.record_id.as_str())
+            .collect::<Vec<_>>(),
+        [
+            first.record.record_id.as_str(),
+            second.record.record_id.as_str()
+        ],
+        "cross-owner lists use the same receipt order as an owner list"
+    );
+    assert!(
+        store
+            .list_dataset_any("org.example.other", 200)
+            .unwrap()
+            .is_empty()
+    );
+
+    // Expired and replaced values follow the same rules across owners.
+    let mut expiring = record(
+        "org.example.catalog",
+        Some("disc-2"),
+        r#"{"title":"short"}"#,
+        &first_provenance,
+        100,
+    );
+    expiring.expires_at = Some(150);
+    let expiring = publish(&mut store, first_owner, expiring);
+    assert_eq!(
+        store
+            .list_dataset_any("org.example.catalog", 200)
+            .unwrap()
+            .len(),
+        2,
+        "an expired record is not listed"
+    );
+    assert_eq!(
+        store.get_any(&expiring.record.record_id, 200).unwrap(),
+        None,
+        "an expired record cannot be read by id either"
+    );
+
+    let replaced = publish(
+        &mut store,
+        first_owner,
+        record(
+            "org.example.catalog",
+            Some("disc-1"),
+            r#"{"title":"one-updated"}"#,
+            &first_provenance,
+            120,
+        ),
+    );
+    assert_eq!(replaced.record.record_id, first.record.record_id);
+    let listed = store.list_dataset_any("org.example.catalog", 200).unwrap();
+    assert_eq!(listed.len(), 2);
+    assert_eq!(listed[0].record_id, first.record.record_id);
+    assert_eq!(listed[0].fields_json, r#"{"title":"one-updated"}"#);
+    assert_eq!(listed[0].revision, 2);
+}
+
+#[test]
 fn a_stale_profile_epoch_fails_closed_for_reads_writes_and_lists() {
     let dir = TempDir::new().unwrap();
     let mut store = SharedDataStore::open(dir.path()).unwrap();

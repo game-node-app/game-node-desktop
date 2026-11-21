@@ -90,6 +90,27 @@ pub enum SharingClass {
     Custom,
 }
 
+impl SharingClass {
+    /// The stable name stored in the durable pool.
+    pub fn as_name(self) -> &'static str {
+        match self {
+            Self::Common => "common",
+            Self::Sensitive => "sensitive",
+            Self::Custom => "custom",
+        }
+    }
+
+    /// Decodes a stored name; an unknown value is not a record this host wrote.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "common" => Some(Self::Common),
+            "sensitive" => Some(Self::Sensitive),
+            "custom" => Some(Self::Custom),
+            _ => None,
+        }
+    }
+}
+
 /// Which delivery path is being authorized.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Delivery {

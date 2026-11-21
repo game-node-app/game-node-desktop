@@ -2,9 +2,9 @@
 
 ## 1. Bundle format and tooling
 
-- [ ] 1.1 Define the bundle schema and signature domain (`GameNode/plugin-bundle/v1\0` plus the exact `bundle.json` bytes) in the platform/package code, and verify a fixture bundle parses with the expected id, version, publisher and component hashes.
-- [ ] 1.2 Extend `scripts/plugin-package.py` (or add a sibling tool) with `bundle`/`bundle-verify`: canonical `bundle.json`, sorted deterministic ZIP entries, component SHA-256, outer signature and the development-key marker. Verify a round trip succeeds and a one-byte component change fails.
-- [ ] 1.3 Add bundle format docs to `docs/plugin-package-manifest.md` and `docs/plugin-package-registry.md` with the file layout, signature domain, component paths and limits, and verify every documented command runs as written.
+- [x] 1.1 Define the bundle schema and signature domain (`GameNode/plugin-bundle/v1\0` plus the exact `bundle.json` bytes) in the platform/package code, and verify a fixture bundle parses with the expected id, version, publisher and component hashes.
+- [x] 1.2 Extend `scripts/plugin-package.py` (or add a sibling tool) with `bundle`/`bundle-verify`: canonical `bundle.json`, sorted deterministic ZIP entries, component SHA-256, outer signature and the development-key marker. Verify a round trip succeeds and a one-byte component change fails.
+- [x] 1.3 Add bundle format docs to `docs/plugin-package-manifest.md` and `docs/plugin-package-registry.md` with the file layout, signature domain, component paths and limits, and verify every documented command runs as written.
 
 ## 2. Host bundle validation
 

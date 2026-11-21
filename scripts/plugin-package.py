@@ -6,9 +6,12 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import io
 import json
 import os
 from pathlib import Path, PurePosixPath
+import re
+import shutil
 import stat
 import sys
 import tempfile
@@ -19,13 +22,18 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey,
 
 
 DOMAIN = b"GameNode/.gnplugin/integrity/v1\0"
+BUNDLE_DOMAIN = b"GameNode/plugin-bundle/v1\0"
 MAX_COMPRESSED = 256 * 1024 * 1024
 MAX_EXPANDED = 512 * 1024 * 1024
 MAX_ENTRIES = 4096
 MAX_METADATA = 4 * 1024 * 1024
+MAX_BUNDLE_COMPRESSED = 512 * 1024 * 1024
+MAX_BUNDLE_EXPANDED = 2 * 1024 * 1024 * 1024
+MAX_BUNDLE_COMPONENTS = 8
 INTEGRITY = "integrity.json"
 SIGNATURE = "signature.ed25519"
 DEV_NOTICE = "DEVELOPMENT-KEY.txt"
+BUNDLE_MANIFEST = "bundle.json"
 
 
 class PackageError(Exception):
@@ -254,6 +262,284 @@ def verify_archive(path: Path) -> None:
         raise PackageError("invalid ZIP package") from exc
 
 
+def _component_manifest(path: Path) -> dict:
+    if not path.is_file():
+        raise PackageError(f"missing component package: {path}")
+    try:
+        with zipfile.ZipFile(path) as archive:
+            files = _archive_files(archive)
+    except zipfile.BadZipFile as exc:
+        raise PackageError(f"invalid component ZIP: {path}") from exc
+    _verify_files(files)
+    return _load_manifest(files["plugin.json"])
+
+
+def _stream_digest(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _valid_identifier(value: object) -> bool:
+    return isinstance(value, str) and 0 < len(value) <= 128 and all(
+        character.isascii() and (character.isalnum() or character in "._-")
+        for character in value
+    )
+
+
+def _valid_component_path(path: object) -> bool:
+    if not isinstance(path, str) or not path.startswith("components/") or not path.endswith(".gnplugin"):
+        return False
+    if "\\" in path or any(ord(character) < 0x20 for character in path):
+        return False
+    return all(part and part not in (".", "..") and ":" not in part for part in path.split("/"))
+
+
+def _bundle_manifest(components: list[Path], key: Ed25519PrivateKey, bundle_id: str, name: str, version: str) -> tuple[dict, list[tuple[Path, str]]]:
+    if not _valid_identifier(bundle_id):
+        raise PackageError("bundle id must be 1-128 ASCII letters, digits, '.', '_' or '-'")
+    if not name.strip() or len(name) > 200 or any(ord(character) < 0x20 for character in name):
+        raise PackageError("bundle name must be non-empty plain text up to 200 characters")
+    if not re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", version):
+        raise PackageError("bundle version must be a SemVer string")
+    if not 1 <= len(components) <= MAX_BUNDLE_COMPONENTS:
+        raise PackageError(f"a bundle needs 1 to {MAX_BUNDLE_COMPONENTS} components")
+    public = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    key_id = None
+    plugin_ids: set[str] = set()
+    paths: set[str] = set()
+    entries: list[dict] = []
+    declared: list[tuple[Path, str]] = []
+    for component in components:
+        manifest = _component_manifest(component)
+        publisher = manifest["publisher"]
+        component_public = base64.b64decode(publisher["public_key"], validate=True)
+        if component_public != public:
+            raise PackageError(
+                f"component {component.name} must be signed by the bundle publisher key"
+            )
+        component_key_id = publisher.get("key_id")
+        if not isinstance(component_key_id, str) or not component_key_id:
+            raise PackageError(f"component {component.name} has no publisher key id")
+        if key_id is None:
+            key_id = component_key_id
+        elif key_id != component_key_id:
+            raise PackageError("bundle components must share one publisher key id")
+        plugin_id = manifest.get("id")
+        kind = manifest.get("kind")
+        if not _valid_identifier(plugin_id):
+            raise PackageError(f"component {component.name} has an invalid plugin id")
+        if kind not in ("provider", "extension"):
+            raise PackageError(f"component {component.name} must be a provider or extension package")
+        if plugin_id in plugin_ids:
+            raise PackageError(f"bundle repeats plugin id {plugin_id}")
+        if component.suffix != ".gnplugin":
+            raise PackageError(f"component {component.name} must be a .gnplugin archive")
+        archive_path = _safe_name(f"components/{component.name}")
+        if archive_path.casefold() in paths:
+            raise PackageError(f"bundle repeats component path {archive_path}")
+        plugin_ids.add(plugin_id)
+        paths.add(archive_path.casefold())
+        entries.append(
+            {
+                "path": archive_path,
+                "sha256": _stream_digest(component),
+                "plugin_id": plugin_id,
+                "kind": kind,
+            }
+        )
+        declared.append((component, archive_path))
+    entries.sort(key=lambda entry: entry["plugin_id"])
+    declared.sort(key=lambda entry: entry[1])
+    manifest = {
+        "schema": 1,
+        "id": bundle_id,
+        "name": name,
+        "version": version,
+        "publisher": {
+            "key_id": key_id,
+            "public_key": base64.b64encode(public).decode("ascii"),
+        },
+        "components": entries,
+    }
+    return manifest, declared
+
+
+def _bundle_archive_files(path: Path) -> dict[str, bytes]:
+    if path.stat().st_size > MAX_BUNDLE_COMPRESSED:
+        raise PackageError("bundle archive exceeds the 512 MiB compressed limit")
+    try:
+        with zipfile.ZipFile(path) as archive:
+            infos = archive.infolist()
+            if len(infos) > MAX_BUNDLE_COMPONENTS + 3:
+                raise PackageError("bundle contains too many entries")
+            files: dict[str, bytes] = {}
+            folded: set[str] = set()
+            expanded = 0
+            for info in infos:
+                name = _safe_name(info.filename[:-1] if info.is_dir() else info.filename)
+                if info.is_dir():
+                    raise PackageError(f"bundle must not contain directory entries: {name}")
+                mode = (info.external_attr >> 16) & 0xFFFF
+                if stat.S_IFMT(mode) not in (0, stat.S_IFREG):
+                    raise PackageError(f"bundle entry is not a regular file: {name}")
+                if name.casefold() in folded:
+                    raise PackageError(f"duplicate or case-colliding bundle path: {name}")
+                folded.add(name.casefold())
+                allowed = (
+                    name in (BUNDLE_MANIFEST, SIGNATURE, DEV_NOTICE)
+                    or (name.startswith("components/") and name.endswith(".gnplugin"))
+                )
+                if not allowed:
+                    raise PackageError(f"unexpected bundle entry: {name}")
+                expanded += info.file_size
+                if expanded > MAX_BUNDLE_EXPANDED:
+                    raise PackageError("bundle expansion exceeds 2 GiB")
+                files[name] = archive.read(info)
+    except zipfile.BadZipFile as exc:
+        raise PackageError("invalid ZIP bundle") from exc
+    return files
+
+
+def _validate_bundle_manifest(manifest: object) -> dict:
+    if not isinstance(manifest, dict) or set(manifest) != {
+        "schema",
+        "id",
+        "name",
+        "version",
+        "publisher",
+        "components",
+    }:
+        raise PackageError("bundle.json must contain schema, id, name, version, publisher and components")
+    if manifest["schema"] != 1:
+        raise PackageError("bundle.json must be schema 1")
+    if not _valid_identifier(manifest["id"]):
+        raise PackageError("bundle.json has an invalid id")
+    if not isinstance(manifest["name"], str) or not manifest["name"].strip() or len(manifest["name"]) > 200:
+        raise PackageError("bundle.json has an invalid name")
+    if not isinstance(manifest["version"], str) or not re.fullmatch(
+        r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", manifest["version"]
+    ):
+        raise PackageError("bundle.json has an invalid SemVer version")
+    publisher = manifest["publisher"]
+    if not isinstance(publisher, dict) or set(publisher) != {"key_id", "public_key"}:
+        raise PackageError("bundle.json has an invalid publisher")
+    if not isinstance(publisher["key_id"], str) or not publisher["key_id"]:
+        raise PackageError("bundle.json has no publisher key id")
+    try:
+        public = base64.b64decode(publisher["public_key"], validate=True)
+    except (TypeError, ValueError) as exc:
+        raise PackageError("bundle.json publisher.public_key is not base64") from exc
+    if len(public) != 32:
+        raise PackageError("bundle.json publisher.public_key must decode to 32 bytes")
+    components = manifest["components"]
+    if not isinstance(components, list) or not 1 <= len(components) <= MAX_BUNDLE_COMPONENTS:
+        raise PackageError(f"bundle.json needs 1 to {MAX_BUNDLE_COMPONENTS} components")
+    plugin_ids: set[str] = set()
+    paths: set[str] = set()
+    for component in components:
+        if not isinstance(component, dict) or set(component) != {"path", "sha256", "plugin_id", "kind"}:
+            raise PackageError("bundle.json has an invalid component")
+        if not _valid_component_path(component["path"]):
+            raise PackageError(f"unsafe component path: {component['path']!r}")
+        digest = component["sha256"]
+        if not isinstance(digest, str) or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+            raise PackageError(f"invalid component SHA-256: {component['path']}")
+        if not _valid_identifier(component["plugin_id"]):
+            raise PackageError("bundle.json has an invalid component plugin id")
+        if component["kind"] not in ("provider", "extension"):
+            raise PackageError("bundle.json component kind must be provider or extension")
+        if component["plugin_id"] in plugin_ids or component["path"].casefold() in paths:
+            raise PackageError("bundle.json repeats a component id or path")
+        plugin_ids.add(component["plugin_id"])
+        paths.add(component["path"].casefold())
+    return manifest
+
+
+def bundle(components: list[Path], bundle_id: str, name: str, version: str, output: Path, key_path: Path) -> None:
+    key = _load_private_key(key_path)
+    development = Path(str(key_path) + ".development-key").exists()
+    manifest, declared = _bundle_manifest(components, key, bundle_id, name, version)
+    raw_manifest = json.dumps(manifest, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    signature = key.sign(BUNDLE_DOMAIN + raw_manifest)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(output, "w") as archive:
+        info = zipfile.ZipInfo(BUNDLE_MANIFEST, (1980, 1, 1, 0, 0, 0))
+        info.compress_type = zipfile.ZIP_DEFLATED
+        info.external_attr = (stat.S_IFREG | 0o644) << 16
+        archive.writestr(info, raw_manifest)
+        for component, archive_path in declared:
+            info = zipfile.ZipInfo(archive_path, (1980, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_STORED
+            info.external_attr = (stat.S_IFREG | 0o644) << 16
+            with archive.open(info, "w") as destination, component.open("rb") as source:
+                shutil.copyfileobj(source, destination, 1024 * 1024)
+        info = zipfile.ZipInfo(SIGNATURE, (1980, 1, 1, 0, 0, 0))
+        info.compress_type = zipfile.ZIP_DEFLATED
+        info.external_attr = (stat.S_IFREG | 0o644) << 16
+        archive.writestr(info, signature)
+        if development:
+            info = zipfile.ZipInfo(DEV_NOTICE, (1980, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = (stat.S_IFREG | 0o644) << 16
+            archive.writestr(
+                info,
+                b"DEVELOPMENT KEY ONLY\nThis bundle was signed with a locally generated test key.\n",
+            )
+    if output.stat().st_size > MAX_BUNDLE_COMPRESSED:
+        output.unlink(missing_ok=True)
+        raise PackageError("bundle archive exceeds the 512 MiB compressed limit")
+    bundle_verify(output)
+
+
+def bundle_verify(path: Path) -> None:
+    files = _bundle_archive_files(path)
+    if BUNDLE_MANIFEST not in files or SIGNATURE not in files:
+        raise PackageError("bundle is missing bundle.json or signature.ed25519")
+    raw_manifest = files[BUNDLE_MANIFEST]
+    if len(raw_manifest) > MAX_METADATA:
+        raise PackageError("bundle.json exceeds the 4 MiB metadata limit")
+    try:
+        manifest = _validate_bundle_manifest(
+            json.loads(raw_manifest.decode("utf-8"), object_pairs_hook=_object_pairs)
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise PackageError(f"invalid bundle.json: {exc}") from exc
+    signature = files[SIGNATURE]
+    if len(signature) != 64:
+        raise PackageError("bundle signature.ed25519 must contain 64 raw bytes")
+    public = base64.b64decode(manifest["publisher"]["public_key"], validate=True)
+    try:
+        Ed25519PublicKey.from_public_bytes(public).verify(signature, BUNDLE_DOMAIN + raw_manifest)
+    except Exception as exc:
+        raise PackageError("invalid bundle signature") from exc
+    declared = {component["path"]: component for component in manifest["components"]}
+    expected = set(declared) | {BUNDLE_MANIFEST, SIGNATURE}
+    if DEV_NOTICE in files:
+        expected.add(DEV_NOTICE)
+    if set(files) != expected:
+        raise PackageError("bundle contains entries not listed in bundle.json")
+    for path_name, component in declared.items():
+        data = files[path_name]
+        if hashlib.sha256(data).hexdigest() != component["sha256"]:
+            raise PackageError(f"bundle component hash mismatch: {path_name}")
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as inner:
+                inner_files = _archive_files(inner)
+        except zipfile.BadZipFile as exc:
+            raise PackageError(f"invalid component ZIP: {path_name}") from exc
+        _verify_files(inner_files)
+        inner_manifest = _load_manifest(inner_files["plugin.json"])
+        if inner_manifest["publisher"]["public_key"] != manifest["publisher"]["public_key"]:
+            raise PackageError(f"component publisher differs from the bundle publisher: {path_name}")
+        if inner_manifest.get("id") != component["plugin_id"]:
+            raise PackageError(f"component plugin id mismatch: {path_name}")
+        if inner_manifest.get("kind") != component["kind"]:
+            raise PackageError(f"component kind mismatch: {path_name}")
+
+
 def keygen(private_path: Path) -> None:
     private_path.parent.mkdir(parents=True, exist_ok=True)
     if private_path.exists():
@@ -288,6 +574,15 @@ def main(argv=None) -> int:
     build.add_argument("--private-key", type=Path, required=True)
     check = commands.add_parser("verify", help="validate archive paths, hashes, and signature without executing code")
     check.add_argument("package", type=Path)
+    bundle_command = commands.add_parser("bundle", help="sign a .gnbundle containing .gnplugin components")
+    bundle_command.add_argument("--component", type=Path, action="append", required=True, help="repeat for each component package")
+    bundle_command.add_argument("--id", required=True)
+    bundle_command.add_argument("--name", required=True)
+    bundle_command.add_argument("--version", required=True)
+    bundle_command.add_argument("--output", type=Path, required=True)
+    bundle_command.add_argument("--private-key", type=Path, required=True)
+    bundle_check = commands.add_parser("bundle-verify", help="validate a .gnbundle and every component without executing code")
+    bundle_check.add_argument("bundle", type=Path)
     args = parser.parse_args(argv)
     try:
         if args.command == "keygen":
@@ -295,6 +590,19 @@ def main(argv=None) -> int:
         elif args.command == "pack":
             pack(args.source, args.output, args.private_key)
             print(f"verified package: {args.output}")
+        elif args.command == "bundle":
+            bundle(
+                args.component,
+                args.id,
+                args.name,
+                args.version,
+                args.output,
+                args.private_key,
+            )
+            print(f"verified bundle: {args.output}")
+        elif args.command == "bundle-verify":
+            bundle_verify(args.bundle)
+            print(f"valid bundle: {args.bundle}")
         else:
             verify_archive(args.package)
             print(f"valid package: {args.package}")

@@ -31,3 +31,21 @@ from the trust store. This rereads the signed integrity metadata and hashes ever
 including the manifest, notices and executable, rejecting changed, missing, extra or linked files.
 The key is supplied by the trust store; the package's self-declared key must not replace the
 user-pinned identity during this check.
+
+## Bundles
+
+A bundle import does not create a second package registry. It stages the envelope, verifies the
+outer signature and every component hash, and then installs each component through the normal
+signed-package path. Two additive records group them:
+
+- `plugin_bundles` stores the bundle id, name, version, publisher fingerprint, manifest hash and
+  installation time;
+- `plugin_bundle_components` maps the bundle to each component's plugin id, kind, package version
+  and component hash.
+
+Component packages, grants, activation and payloads stay in their existing tables and
+directories. The mapping is written in the same transaction that records the staged component
+installs; a failure removes staged files and leaves no mapping. Standalone imports remain
+ungrouped. Uninstall resolves the mapping, stops every component with the normal bounded grace,
+removes the packages and deletes the mapping; retained managed data follows the existing
+persistence-retention rules.

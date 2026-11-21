@@ -259,6 +259,82 @@ raw `signature.ed25519`. `pack` refuses a key that does not match the manifest p
 Deterministic Linux and Windows-shaped fixture round trips, tamper rejection, and inert hook
 content are covered by `python3 -m unittest scripts.tests.test_plugin_package_tool`.
 
+## Plugin bundles
+
+A bundle distributes several managed packages as one signed download. It is a ZIP archive with a
+manifest, existing `.gnplugin` components and one outer signature:
+
+```text
+bundle.json
+components/provider.gnplugin
+components/launch.gnplugin
+signature.ed25519
+DEVELOPMENT-KEY.txt        (only for bundles signed with a development key)
+```
+
+`bundle.json` is a schema-1 object:
+
+```json
+{
+  "schema": 1,
+  "id": "org.example.gamenode.dolphin",
+  "name": "Dolphin GameCube and Wii",
+  "version": "0.1.0",
+  "publisher": { "key_id": "example-publisher", "public_key": "<base64 32-byte key>" },
+  "components": [
+    {
+      "path": "components/provider.gnplugin",
+      "sha256": "<lowercase SHA-256 of the exact component archive>",
+      "plugin_id": "org.example.gamenode.dolphin",
+      "kind": "provider"
+    },
+    {
+      "path": "components/launch.gnplugin",
+      "sha256": "<lowercase SHA-256 of the exact component archive>",
+      "plugin_id": "org.example.gamenode.dolphin.launch",
+      "kind": "extension"
+    }
+  ]
+}
+```
+
+Each component remains a full signed package with its own `plugin.json`, `integrity.json` and
+`signature.ed25519`. Every component's publisher public key and key id must equal the bundle's,
+so one consent decision covers one publisher. Components keep their own plugin id, kind, API
+range, permissions and lifecycle; the bundle never merges session kinds or shares grants.
+
+`signature.ed25519` is 64 raw signature bytes over the exact `bundle.json` bytes, with no
+re-serialization:
+
+```text
+ASCII("GameNode/plugin-bundle/v1") || 0x00 || raw(bundle.json)
+```
+
+Limits: 1 to 8 components, 512 MiB compressed bundle, 2 GiB expanded, no directory entries,
+links, special files, nested bundles or paths outside `components/`. Duplicate plugin ids or
+case-colliding component paths are rejected. Structural failures reject the whole import; a
+component that is only platform- or API-incompatible is installed unavailable without blocking
+its siblings.
+
+Build and verify a bundle from already signed components:
+
+```sh
+python3 scripts/plugin-package.py bundle \
+  --component ./provider.gnplugin \
+  --component ./launch.gnplugin \
+  --id org.example.gamenode.dolphin \
+  --name "Dolphin GameCube and Wii" \
+  --version 0.1.0 \
+  --private-key ./fixture-dev.pem \
+  --output ./dolphin.gnbundle
+python3 scripts/plugin-package.py bundle-verify ./dolphin.gnbundle
+```
+
+The host still verifies each component with the normal package validator before installation.
+The review pins one publisher fingerprint, shows the grouped per-component permissions, and
+grants nothing. The inventory shows one bundle entry with per-component status; uninstall stops
+and removes every component. Existing `.gnplugin` imports are unchanged.
+
 ## Example
 
 ```json

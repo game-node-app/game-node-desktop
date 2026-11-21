@@ -223,6 +223,38 @@ impl PluginStorage {
         .map_err(|_| Status::unavailable("plugin storage is unavailable"))?
     }
 
+    /// Host-only user protection for one durable private key. A plugin RPC has no field that can
+    /// reach this decision, and it is never exposed through `ResourceHost`.
+    pub async fn set_persistence_protected(
+        &self,
+        resolver: &ExternalNamespaceResolver,
+        profile_epoch: u64,
+        key: impl Into<String>,
+        protected: bool,
+    ) -> Result<bool, Status> {
+        let key = key.into();
+        if key.is_empty() || key.len() > MAX_KEY_BYTES || key.chars().any(char::is_control) {
+            return Err(Status::invalid_argument("persistence key is invalid"));
+        }
+        self.run_for_host(resolver, profile_epoch, move |namespace| {
+            namespace.set_persistence_protected(&key, protected)
+        })
+        .await
+    }
+
+    /// Host-only cleanup of one plugin's durable private store: expired and policy-exceeding
+    /// records are removed, while user-protected records remain. Never called from plugin IPC.
+    pub async fn cleanup_persistence(
+        &self,
+        resolver: &ExternalNamespaceResolver,
+        profile_epoch: u64,
+    ) -> Result<durable::CleanupOutcome, Status> {
+        self.run_for_host(resolver, profile_epoch, |namespace| {
+            namespace.cleanup_persistence().map(|(outcome, _)| outcome)
+        })
+        .await
+    }
+
     /// Runs `work` on a blocking worker with exclusive use of the caller's namespace.
     /// `session_open` says whether a plugin session id is still open.
     pub(crate) async fn run<T: Send + 'static>(
@@ -270,6 +302,17 @@ fn unavailable(error: PluginStorageError) -> Status {
     // The error text never contains a path; the plugin gets even less.
     tracing::warn!(%error, "plugin storage failed");
     Status::unavailable("plugin storage is unavailable")
+}
+
+/// A plugin mutation that names user-protected data fails explicitly; no other storage detail
+/// leaves the host.
+fn storage_status(error: PluginStorageError) -> Status {
+    match error {
+        PluginStorageError::Protected => {
+            Status::failed_precondition("the entry is protected by the user")
+        }
+        other => unavailable(other),
+    }
 }
 
 fn session_bytes(entries: &BTreeMap<String, Entry>) -> u64 {
@@ -382,11 +425,52 @@ impl Namespace<'_> {
         }
     }
 
-    pub fn physical_bytes(&mut self) -> Result<u64, Status> {
+    /// Per-category logical accounting and the namespace-wide physical estimate.
+    pub fn store_usage(&mut self) -> Result<durable::StoreUsage, Status> {
+        let now = self.now;
         match self.durable(false)? {
-            Some(store) => store.physical_bytes().map_err(unavailable),
-            None => Ok(0),
+            Some(store) => store.store_usage(now).map_err(unavailable),
+            None => Ok(durable::StoreUsage {
+                categories: vec![durable::CategoryUsage {
+                    category: "private".to_owned(),
+                    records: 0,
+                    logical_bytes: 0,
+                    protected_records: 0,
+                }],
+                logical_bytes: 0,
+                physical_bytes_estimate: 0,
+            }),
         }
+    }
+
+    /// Host-only protection decision for one durable private key. No plugin RPC reaches it.
+    pub fn set_persistence_protected(
+        &mut self,
+        key: &str,
+        protected: bool,
+    ) -> Result<bool, Status> {
+        match self.durable(false)? {
+            Some(store) => store
+                .set_user_protected(key, protected)
+                .map_err(unavailable),
+            None => Ok(false),
+        }
+    }
+
+    /// Host-only cleanup that keeps user-protected records and advances the namespace revision so
+    /// stale cursors cannot resume across the change.
+    pub fn cleanup_persistence(&mut self) -> Result<(durable::CleanupOutcome, u64), Status> {
+        if self.durable(false)?.is_none() {
+            return Ok((durable::CleanupOutcome::default(), self.inner.counter));
+        }
+        let revision = self.inner.counter.saturating_add(1);
+        let now = self.now;
+        let store = self
+            .durable(false)?
+            .ok_or_else(|| Status::unavailable("plugin storage is unavailable"))?;
+        let outcome = store.cleanup(now).map_err(unavailable)?;
+        self.inner.counter = revision;
+        Ok((outcome, revision))
     }
 
     /// Deletes an atomic set of durable keys and advances the namespace revision once.
@@ -414,7 +498,7 @@ impl Namespace<'_> {
             .ok_or_else(|| Status::not_found("persistence entry not found"))?;
         let reclaimed = store
             .delete_persistence_entries(keys, now, revision)
-            .map_err(unavailable)?;
+            .map_err(storage_status)?;
         self.inner.counter = revision;
         Ok((reclaimed, revision))
     }
@@ -468,7 +552,7 @@ impl Namespace<'_> {
                     .ok_or_else(|| Status::unavailable("plugin storage is unavailable"))?;
                 match store
                     .put(key, &value, revision, expires_at, now, QUOTA_BYTES)
-                    .map_err(unavailable)?
+                    .map_err(storage_status)?
                 {
                     PutResult::OverQuota { usage } => return Err(exhausted(usage)),
                     PutResult::Stored { usage } => {
@@ -495,7 +579,7 @@ impl Namespace<'_> {
                     .is_some_and(|found| found.durability == Durability::Persistent)
                     && let Some(store) = self.durable(false)?
                 {
-                    store.remove(key).map_err(unavailable)?;
+                    store.remove(key).map_err(storage_status)?;
                 }
                 self.inner.session.insert(
                     key.to_owned(),
@@ -539,7 +623,7 @@ impl Namespace<'_> {
             }
             Durability::Persistent => {
                 if let Some(store) = self.durable(false)? {
-                    store.remove(key).map_err(unavailable)?;
+                    store.remove(key).map_err(storage_status)?;
                 }
             }
         }

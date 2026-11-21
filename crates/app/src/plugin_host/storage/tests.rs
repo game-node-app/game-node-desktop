@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 
 use super::*;
 use crate::plugin_host::grants::PluginIdentity;
+use crate::plugin_host::namespace::ExternalNamespaceResolver;
 
 const START: i64 = 1_000_000;
 
@@ -659,4 +660,66 @@ async fn an_unusable_store_is_unavailable_without_leaking_where_it_is() {
     let message = status.message().to_owned();
     assert!(!message.contains("plugin-data"), "{message}");
     assert!(!message.contains(host.root.to_str().unwrap()), "{message}");
+}
+
+#[tokio::test]
+async fn host_cleanup_keeps_protected_entries_and_reclaims_only_the_owner() {
+    let host = Host::new();
+    let owner = plugin();
+    let other = caller(
+        "org.example.other",
+        "publisher-a",
+        "profile-1",
+        1,
+        "session-2",
+    );
+    let resolver = |plugin: &str| {
+        ExternalNamespaceResolver::new(
+            PluginIdentity {
+                plugin_id: plugin.into(),
+                publisher_fingerprint: "publisher-a".into(),
+                profile_id: "profile-1".into(),
+            },
+            Some("provider".into()),
+            1,
+        )
+        .unwrap()
+    };
+
+    applied(
+        host.put(&owner, "keep", b"protected", Persistent, 0, 0)
+            .await
+            .unwrap(),
+    );
+    applied(
+        host.put(&owner, "expiring", b"old", Persistent, 10, 0)
+            .await
+            .unwrap(),
+    );
+    applied(
+        host.put(&other, "other", b"still here", Persistent, 0, 0)
+            .await
+            .unwrap(),
+    );
+    assert!(
+        host.storage
+            .set_persistence_protected(&resolver("org.example.plugin"), 1, "keep", true)
+            .await
+            .unwrap()
+    );
+
+    host.clock.store(START + 20, Ordering::SeqCst);
+    let cleaned = host
+        .storage
+        .cleanup_persistence(&resolver("org.example.plugin"), 1)
+        .await
+        .unwrap();
+    assert_eq!(cleaned.removed_records, 1);
+    assert_eq!(cleaned.reclaimed_bytes, durable::charge("expiring", 3));
+    assert!(host.get(&owner, "keep").await.unwrap().is_some());
+    assert!(host.get(&owner, "expiring").await.unwrap().is_none());
+    assert!(
+        host.get(&other, "other").await.unwrap().is_some(),
+        "another owner's store is untouched"
+    );
 }

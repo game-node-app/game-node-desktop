@@ -917,6 +917,7 @@ enum ProviderOperation {
   PROVIDER_OPERATION_CONFIGURATION_FOCUS = 18;
   PROVIDER_OPERATION_CONFIGURATION_CLOSE = 19;
   PROVIDER_OPERATION_RUNTIME_SESSION_RESULT = 20;
+  PROVIDER_OPERATION_RUNTIME_SESSION_CONTEXT_RESULT = 21;
 }
 
 message ProviderCommand {
@@ -927,6 +928,7 @@ message ProviderCommand {
   optional AchievementsRequest achievements = 5;
   // API 1.6+ (third-party).
   optional RuntimeSessionResult runtime_session_result = 6;
+  optional RuntimeSessionContextResult runtime_session_context_result = 7;
 }
 
 message ProviderContext {
@@ -1332,7 +1334,29 @@ message ProviderEvent {
     CatalogChunk catalog_chunk = 4;
     OperationResult result = 5;
     RuntimeSessionReport runtime_session = 6;
+    RuntimeSessionContextRequest runtime_session_context = 7;
   }
+}
+
+// A request for a host-authorized game context for an already-running runtime instance.
+// These identifiers are proposals; the host resolves current library and runtime bindings and
+// asks the user before issuing any reporting authority.
+message RuntimeSessionContextRequest {
+  string correlation_id = 1;
+  string game_id = 2;
+  string installation_id = 3;
+  string runtime_id = 4;
+  string runtime_instance_id = 5;
+  string content_id = 6;
+}
+
+message RuntimeSessionContextResult {
+  string correlation_id = 1;
+  RuntimeSessionOutcome outcome = 2;
+  // An opaque host-minted context token, present only on an approved request.
+  string runtime_context_id = 3;
+  string reason = 4;
+  DenialDetail denial = 5;
 }
 
 message RuntimeSessionReport {
@@ -1344,9 +1368,14 @@ message RuntimeSessionReport {
   string runtime_instance_id = 6;
   string reporter_session_id = 7;
   uint64 sequence = 8;
+  // Unix time in seconds. The host accepts reports up to 30 seconds stale or 5 seconds ahead;
+  // session expiry is calculated from host monotonic receipt time.
   int64 observed_at = 9;
   RuntimeSessionTransition transition = 10;
   string source_observation_id = 11;
+  // Empty only for the extension's initial host-selected context. Other contexts require
+  // the opaque id returned by RuntimeSessionContextResult.
+  string runtime_context_id = 12;
 }
 
 enum RuntimeSessionTransition {

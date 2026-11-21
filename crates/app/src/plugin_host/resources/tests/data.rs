@@ -34,6 +34,12 @@ fn number(value: f64) -> Value {
     }
 }
 
+fn text(value: &str) -> Value {
+    Value {
+        kind: Some(Kind::StringValue(value.to_owned())),
+    }
+}
+
 fn publication(owner: &PluginIdentity, fields: &[(&str, serde_json::Value)]) -> Publication {
     Publication {
         owner: owner.clone(),
@@ -794,6 +800,124 @@ async fn recipient_must_explicitly_persist_a_projected_shared_record() {
     assert_eq!(restored.expires_at, stored.expires_at);
     let retained = DataRecord::decode(restored.value.as_slice()).unwrap();
     assert_eq!(retained.value.unwrap().fields.len(), 1);
+}
+
+#[tokio::test]
+async fn consented_runtime_session_data_projection_hides_handles_and_credentials() {
+    let fixture = Fixture::new(&[cap::DATA_PUBLISH]).await;
+    let consumer = consumer_session(&fixture).await;
+    let context = consumer.host.resource_context().unwrap().clone();
+    let source = authenticated_identity(&fixture, &fixture.context());
+    let recipient = authenticated_identity(&fixture, &context);
+    let dataset = "org.example.runtime-sessions.v1";
+    let policy = SourceRecipientPolicy::new(
+        source,
+        recipient,
+        SharingClass::Custom,
+        dataset.into(),
+        ["game_id".into(), "content_id".into(), "transition".into()],
+        true,
+        true,
+    )
+    .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(SharedSharingPolicies::open(dir.path()).unwrap());
+    store
+        .replace_recipient_policies(
+            &authenticated_identity(&fixture, &context),
+            0,
+            ActivationReadGrant::default(),
+            vec![policy],
+        )
+        .unwrap();
+    let resource = service(&fixture, Arc::new(DataBroker::new()), store);
+    let (mut client, server) = local_client(resource).await;
+
+    let mut request = data_publish(
+        &fixture,
+        "runtime-session-observation",
+        value(&[
+            ("game_id", text("620")),
+            ("content_id", text("rom:zelda")),
+            ("transition", text("started")),
+            ("process_handle", text("opaque-process-handle")),
+            ("credential", text("launch-secret")),
+        ]),
+    );
+    request.dataset_id = dataset.into();
+    request.schema_id = dataset.into();
+    let published = client.data_publish(request).await.unwrap().into_inner();
+    let listed = client
+        .data_list(list_request(&context, dataset))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(listed.records.len(), 1);
+    assert_eq!(
+        listed.records[0].value,
+        Some(value(&[
+            ("game_id", text("620")),
+            ("content_id", text("rom:zelda")),
+            ("transition", text("started")),
+        ]))
+    );
+    assert_eq!(listed.records[0].record_id, published.record_id);
+    assert!(listed.records[0].opaque_payload.is_empty());
+    let fetched = client
+        .data_get(DataGetRequest {
+            context: Some(context.clone()),
+            dataset_id: dataset.into(),
+            record_id: published.record_id,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .record
+        .unwrap();
+    assert_eq!(fetched.value, listed.records[0].value);
+
+    let mut live = client
+        .data_watch(DataWatchRequest {
+            context: Some(context),
+            dataset_id: dataset.into(),
+            after_revision: listed.revision,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let mut paused_request = data_publish(
+        &fixture,
+        "runtime-session-paused",
+        value(&[
+            ("game_id", text("620")),
+            ("content_id", text("rom:zelda")),
+            ("transition", text("paused")),
+            ("process_handle", text("opaque-process-handle")),
+            ("credential", text("launch-secret")),
+        ]),
+    );
+    paused_request.dataset_id = dataset.into();
+    paused_request.schema_id = dataset.into();
+    paused_request.sequence = 2;
+    paused_request.source_observation_id = "runtime-session-paused".into();
+    client.data_publish(paused_request).await.unwrap();
+    let event = tokio::time::timeout(Duration::from_secs(2), live.message())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(event.event_type, "published");
+    assert_eq!(
+        event.record.unwrap().value,
+        Some(value(&[
+            ("game_id", text("620")),
+            ("content_id", text("rom:zelda")),
+            ("transition", text("paused")),
+        ]))
+    );
+    server.abort();
 }
 
 #[tokio::test]

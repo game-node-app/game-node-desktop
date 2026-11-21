@@ -128,6 +128,25 @@ describe('PluginConfirmationHost', () => {
     expect(answer).toHaveBeenCalledWith('c1', true, false);
   });
 
+  it.each(['en', 'pt-BR'])('requires a fresh, non-remembered approval for a runtime context in %s', async (locale) => {
+    renderHost(locale);
+    await ready();
+    act(() => emit(PLUGIN_CONFIRMATION_EVENT, confirmation({
+      operation: 'runtime_session_context',
+      launchPlan: undefined,
+    })));
+    const dialog = await screen.findByRole('alertdialog');
+    expect(dialog).toHaveTextContent(locale === 'en'
+      ? 'Allow runtime tracking for another game?'
+      : 'Permitir o registro de atividade em outro jogo?');
+    expect(dialog).toHaveTextContent(locale === 'en'
+      ? 'does not allow launching, installing, or reading files'
+      : 'não permite iniciar jogos, instalar ou ler arquivos');
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: locale === 'en' ? 'Allow' : 'Permitir' }));
+    expect(answer).toHaveBeenCalledWith('c1', true, false);
+  });
+
   it('asks about the game, naming the plugin and the publisher, with Cancel focused', async () => {
     renderHost();
     await ready();

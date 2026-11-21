@@ -63,6 +63,37 @@ describe('PluginInventory', () => {
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   });
 
+  it('discloses the signed playtime warning in Portuguese and persists the per-plugin setting', async () => {
+    const declared = {
+      pluginId: 'org.example.emulator',
+      name: 'Emulador',
+      version: '1.0.0',
+      playtime: { identifiesGameplay: true, identifiesPauses: false, withoutPauseDetection: 'application_open' as const },
+      accountingEnabled: true,
+    };
+    const inventory = vi.spyOn(commands, 'pluginPlaytimeInventory')
+      .mockResolvedValueOnce([declared])
+      .mockResolvedValueOnce([{ ...declared, accountingEnabled: false }]);
+    const save = vi.spyOn(commands, 'pluginPlaytimeSetAccounting').mockResolvedValue(undefined);
+
+    renderInventory('pt-BR');
+
+    const card = await screen.findByRole('article', { name: 'Emulador' });
+    expect(within(card).getByText('Identifica o conteúdo do jogo: Sim')).toBeInTheDocument();
+    expect(within(card).getByRole('note')).toHaveTextContent(
+      'Este plugin não consegue distinguir pausas. O tempo com o aplicativo aberto pode ser contabilizado como tempo de jogo.',
+    );
+    expect(screen.getByText(/Desativar a contabilização preserva o histórico/)).toBeInTheDocument();
+    expect(screen.getByText(/não altera permissões de descoberta ou lançamento/)).toBeInTheDocument();
+
+    const accounting = within(card).getByRole('checkbox', { name: 'Permitir que este plugin contabilize tempo de jogo' });
+    expect(accounting).toBeChecked();
+    fireEvent.click(accounting);
+    await waitFor(() => expect(save).toHaveBeenCalledWith('org.example.emulator', false));
+    await waitFor(() => expect(accounting).not.toBeChecked());
+    expect(inventory).toHaveBeenCalledTimes(2);
+  });
+
   it('loads a fresh data review when the publisher changes and binds the save to that publisher', async () => {
     const oldFingerprint = `SHA256:${'a'.repeat(64)}`;
     const newFingerprint = `SHA256:${'b'.repeat(64)}`;
@@ -500,7 +531,9 @@ describe('PluginInventory', () => {
       publisherKeyId: 'key-1', publisherFingerprint: 'SHA256:abc', trust: 'untrusted' as const,
       license: 'MIT', licenseFiles: ['LICENSE'], licenseNotices: [], permissionIds: ['library.read'],
       requestedPermissions: [{ id: 'library.read', required: false, scope: 'selected-game', reason: 'Read selected game data' }],
-      nativeAccess: [], compatibility: 'compatible' as const,
+      nativeAccess: [],
+      playtime: { identifiesGameplay: true, identifiesPauses: false, withoutPauseDetection: 'application_open' as const },
+      compatibility: 'compatible' as const,
     };
     const importReview = vi.spyOn(commands, 'pluginImportReview').mockResolvedValue(staged);
     const confirm = vi.spyOn(commands, 'pluginImportConfirmPublisher').mockResolvedValue({ ...staged, trust: 'trusted' });
@@ -511,7 +544,11 @@ describe('PluginInventory', () => {
     fireEvent.change(await screen.findByRole('textbox', { name: 'Path to signed ZIP package' }), { target: { value: '/packages/community.zip' } });
     await userEvent.setup().type(screen.getByRole('textbox', { name: 'Path to signed ZIP package' }), '{Enter}');
     expect(await screen.findByRole('article', { name: 'Review plugin package' })).toHaveTextContent('SHA256:abc');
-    expect(screen.getByRole('article', { name: 'Review plugin package' })).toHaveTextContent('library.read · selected-game · optional · Read selected game data');
+    const packageReview = screen.getByRole('article', { name: 'Review plugin package' });
+    expect(packageReview).toHaveTextContent('library.read · selected-game · optional · Read selected game data');
+    expect(packageReview).toHaveTextContent('Playtime behavior declared by this signed package');
+    expect(packageReview).toHaveTextContent('Application-open time');
+    expect(within(packageReview).getByRole('note')).toHaveTextContent('This plugin cannot distinguish pauses.');
     fireEvent.click(screen.getByText('LICENSE'));
     fireEvent.click(screen.getByRole('button', { name: 'View this license or notice offline' }));
     expect(await screen.findByText('MIT license text available offline')).toBeInTheDocument();
@@ -535,7 +572,8 @@ describe('PluginInventory', () => {
       token: 'musl-review', pluginId: 'org.example.musl', name: 'Musl', version: '1.0.0',
       publisherKeyId: 'key-musl', publisherFingerprint: 'SHA256:musl', trust: 'trusted',
       license: 'MIT', licenseFiles: [], licenseNotices: [], permissionIds: [], requestedPermissions: [],
-      nativeAccess: [], compatibility: 'incompatible', compatibilityReason: 'no compatible target',
+      nativeAccess: [], playtime: { identifiesGameplay: false, identifiesPauses: false, withoutPauseDetection: 'disabled' },
+      compatibility: 'incompatible', compatibilityReason: 'no compatible target',
       compatibilityDetails: {
         state: 'incompatible', ambiguous: false, os: 'alpine', release: '3.19', architecture: 'x86_64', abi: 'musl',
         libc: { family: 'musl', version: '1.2.4' }, emulation: 'native',
@@ -558,7 +596,8 @@ describe('PluginInventory', () => {
       token: 'native-review', pluginId: 'org.example.native', name: 'Native', version: '1.0.0',
       publisherKeyId: 'key-native', publisherFingerprint: 'SHA256:native', trust: 'trusted' as const,
       license: 'MIT', licenseFiles: [], licenseNotices: [], permissionIds: [], requestedPermissions: [],
-      nativeAccess: ['process'], compatibility: 'compatible' as const,
+      nativeAccess: ['process'], playtime: { identifiesGameplay: false, identifiesPauses: false, withoutPauseDetection: 'disabled' as const },
+      compatibility: 'compatible' as const,
     };
     const install = vi.spyOn(commands, 'pluginImportInstall').mockResolvedValue(staged.pluginId);
     vi.spyOn(commands, 'pluginImportReview').mockResolvedValue(staged);
@@ -582,7 +621,7 @@ describe('PluginInventory', () => {
       token: 'changed-token', pluginId: 'org.example.changed', name: 'Changed', version: '2.0.0',
       publisherKeyId: 'key-2', publisherFingerprint: 'SHA256:new', pinnedFingerprint: 'SHA256:old',
       trust: 'changed' as const, license: 'MIT', licenseFiles: [], licenseNotices: [],
-      requestedPermissions: [],
+      requestedPermissions: [], playtime: { identifiesGameplay: false, identifiesPauses: false, withoutPauseDetection: 'disabled' as const },
       permissionIds: [], nativeAccess: [], compatibility: 'compatible' as const,
     };
     vi.spyOn(commands, 'pluginImportReview').mockResolvedValue(changed);

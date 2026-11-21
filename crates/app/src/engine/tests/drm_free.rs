@@ -3195,3 +3195,362 @@ async fn backup_usage_counts_versions_and_bytes_per_game_largest_first() {
         "largest first, removed games keep their last known title"
     );
 }
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_custom_launch_dispatch_is_supervised_and_can_be_stopped() {
+    use crate::plugin_host::library::{CustomLaunchDispatch, LibraryHost};
+    use gamenode_core::drm_free::{CustomLaunchCommand, LaunchEnvironmentDelta};
+    if std::env::var_os("GAMENODE_TEST_HELPER_BINARY").is_none() {
+        return;
+    }
+    let mut h = harness(FakeApi::new(), FakeCreds::with(None));
+    let installation_host = Arc::new(gamenode_platform::installations::LinuxInstallations);
+    let registration = installation_host.inspect("/bin/sh").unwrap();
+    Arc::get_mut(&mut h.engine.shared)
+        .unwrap()
+        .ports
+        .installations = Some(installation_host);
+    let host = super::super::PluginLibraryHost {
+        shared: Arc::downgrade(&h.engine.shared),
+    };
+    host.launch_custom_for_entry(
+        CustomLaunchDispatch::Executable(CustomLaunchCommand {
+            executable: registration.executable,
+            file_identity: registration.file_identity,
+            arguments: vec!["-c".into(), "sleep 30 & wait".into()],
+            working_directory: "/".into(),
+            environment: LaunchEnvironmentDelta::default(),
+        }),
+        "steam:620".into(),
+    )
+    .await
+    .unwrap();
+    let ids = h
+        .engine
+        .shared
+        .custom_launch_supervisor
+        .as_ref()
+        .unwrap()
+        .active_ids()
+        .unwrap();
+    assert_eq!(ids.len(), 1);
+    assert_eq!(
+        h.engine
+            .supervised_custom_launch_ids_for_entry("steam:620".into())
+            .await
+            .unwrap(),
+        ids
+    );
+    assert!(
+        h.engine
+            .supervised_custom_launch_ids_for_entry("steam:other".into())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    h.engine
+        .stop_supervised_custom_launch(ids[0])
+        .await
+        .unwrap();
+    assert!(
+        h.engine
+            .shared
+            .custom_launch_supervisor
+            .as_ref()
+            .unwrap()
+            .active_ids()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn supervised_custom_launch_runtime_serializes_with_exclusive_resource_lease() {
+    use crate::plugin_host::grants::PluginIdentity;
+    use crate::plugin_host::library::{CustomLaunchDispatch, LibraryHost};
+    use crate::plugin_host::resource_leases::{
+        ResourceLeaseCoordinator, ResourceLeaseError, ResourceLeaseKey,
+    };
+    use gamenode_core::drm_free::{CustomLaunchCommand, LaunchEnvironmentDelta};
+    if std::env::var_os("GAMENODE_TEST_HELPER_BINARY").is_none() {
+        return;
+    }
+    let mut h = harness(FakeApi::new(), FakeCreds::with(None));
+    let installation_host = Arc::new(gamenode_platform::installations::LinuxInstallations);
+    let registration = installation_host.inspect("/bin/sh").unwrap();
+    Arc::get_mut(&mut h.engine.shared)
+        .unwrap()
+        .ports
+        .installations = Some(installation_host);
+    let key = ResourceLeaseKey::derive(
+        &PluginIdentity {
+            plugin_id: "fixture".into(),
+            publisher_fingerprint: "fixture".into(),
+            profile_id: "fixture".into(),
+        },
+        1,
+        "save",
+        1,
+        b"host-approved-backing",
+    )
+    .unwrap();
+    let command = CustomLaunchCommand {
+        executable: registration.executable,
+        file_identity: registration.file_identity,
+        arguments: vec!["-c".into(), "sleep 30 & wait".into()],
+        working_directory: "/".into(),
+        environment: LaunchEnvironmentDelta::default(),
+    };
+    let dispatch = CustomLaunchDispatch::Runtime {
+        command,
+        runtime_id: "runtime".into(),
+        runtime_version: "1".into(),
+        runtime_revision: 1,
+        content_id: "game".into(),
+        binding_revision: Some(1),
+        lease_keys: vec![key],
+    };
+    let host = super::super::PluginLibraryHost {
+        shared: Arc::downgrade(&h.engine.shared),
+    };
+    let coordinator = h.engine.shared_resource_leases();
+    let exclusive = coordinator.acquire_exclusive(&[key]).unwrap();
+    assert_eq!(
+        host.launch_custom_for_entry(dispatch.clone(), "steam:620".into())
+            .await
+            .unwrap_err()
+            .code(),
+        tonic::Code::FailedPrecondition
+    );
+    assert!(
+        h.engine
+            .supervised_custom_launch_ids()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    drop(exclusive);
+    host.launch_custom_for_entry(dispatch, "steam:620".into())
+        .await
+        .unwrap();
+    let ids = h
+        .engine
+        .supervised_custom_launch_ids_for_entry("steam:620".into())
+        .await
+        .unwrap();
+    assert_eq!(ids.len(), 1);
+    let id = ids[0];
+    assert!(matches!(
+        coordinator.acquire_exclusive(&[key]),
+        Err(ResourceLeaseError::Busy)
+    ));
+    h.engine.stop_supervised_custom_launch(id).await.unwrap();
+    assert!(coordinator.acquire_exclusive(&[key]).is_ok());
+}
+
+#[cfg(target_os = "linux")]
+fn selected_launch_authority_fixture() -> (
+    tempfile::TempDir,
+    Arc<crate::plugin_host::profile::PluginProfiles>,
+    crate::plugin_host::profile::PluginStateLayout,
+    crate::plugin_host::grants::PluginIdentity,
+    crate::plugin_host::library::UserLaunchAuthority,
+) {
+    use crate::plugin_host::grants::{
+        GrantScope, PermissionDecision, PermissionRequest, PluginIdentity,
+    };
+    use crate::plugin_host::library::UserLaunchAuthority;
+    use gamenode_plugin_protocol::capability as cap;
+    let dir = tempfile::tempdir().unwrap();
+    let profiles = Arc::new(crate::plugin_host::profile::PluginProfiles::default());
+    let layout = crate::plugin_host::profile::PluginStateLayout::new(dir.path());
+    profiles.set_state_layout(layout.clone());
+    profiles.update(Some("account"), true);
+    let profile = profiles.require().unwrap();
+    let identity = PluginIdentity {
+        plugin_id: "org.example.runtime".into(),
+        publisher_fingerprint: "publisher".into(),
+        profile_id: profile.profile_id().into(),
+    };
+    let scope = GrantScope::Declared {
+        value: "selected-game".into(),
+    };
+    let request = PermissionRequest {
+        permission_id: cap::GAME_CUSTOM_LAUNCH.into(),
+        required: false,
+        allowed_scopes: [scope.clone()].into(),
+    };
+    let decision = PermissionDecision {
+        permission_id: cap::GAME_CUSTOM_LAUNCH.into(),
+        scope,
+        granted: true,
+    };
+    layout
+        .open_grants(&profile)
+        .unwrap()
+        .replace_grants(identity.clone(), &[request], &[decision])
+        .unwrap();
+    layout
+        .open_activation(&profile)
+        .unwrap()
+        .set_enabled(&identity.plugin_id, true)
+        .unwrap();
+    let (revision, _) = profiles
+        .granted_permissions(&identity.plugin_id, &identity.publisher_fingerprint)
+        .unwrap();
+    let authority = UserLaunchAuthority {
+        plugin_id: identity.plugin_id.clone(),
+        publisher_fingerprint: identity.publisher_fingerprint.clone(),
+        profile_id: identity.profile_id.clone(),
+        profile_epoch: profile.epoch(),
+        grant_revision: Some(revision),
+        requires_files: false,
+    };
+    (dir, profiles, layout, identity, authority)
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn selected_custom_launch_revocation_blocks_new_launch_without_stopping_existing_tree() {
+    use crate::plugin_host::grants::{GrantScope, PermissionRequest};
+    use crate::plugin_host::library::{CustomLaunchDispatch, LibraryHost};
+    use gamenode_core::drm_free::CustomLaunchCommand;
+    use gamenode_plugin_protocol::capability as cap;
+    if std::env::var_os("GAMENODE_TEST_HELPER_BINARY").is_none() {
+        return;
+    }
+    let (_dir, profiles, layout, identity, authority) = selected_launch_authority_fixture();
+    let mut h = harness(FakeApi::new(), FakeCreds::with(None));
+    let installation_host = Arc::new(gamenode_platform::installations::LinuxInstallations);
+    let registration = installation_host.inspect("/bin/sh").unwrap();
+    Arc::get_mut(&mut h.engine.shared)
+        .unwrap()
+        .ports
+        .installations = Some(installation_host);
+    *h.engine.shared.plugin_profiles.lock().unwrap() = Some(profiles.clone());
+    let host = super::super::PluginLibraryHost {
+        shared: Arc::downgrade(&h.engine.shared),
+    };
+    let dispatch = CustomLaunchDispatch::Executable(CustomLaunchCommand {
+        executable: registration.executable,
+        file_identity: registration.file_identity,
+        arguments: vec!["-c".into(), "sleep 30 & wait".into()],
+        working_directory: "/".into(),
+        environment: Default::default(),
+    });
+    host.launch_custom_for_entry_authorized(
+        dispatch.clone(),
+        "steam:620".into(),
+        authority.clone(),
+    )
+    .await
+    .unwrap();
+    let ids = h
+        .engine
+        .supervised_custom_launch_ids_for_entry("steam:620".into())
+        .await
+        .unwrap();
+    assert_eq!(ids.len(), 1);
+    let profile = profiles.require().unwrap();
+    let scope = GrantScope::Declared {
+        value: "selected-game".into(),
+    };
+    let request = PermissionRequest {
+        permission_id: cap::GAME_CUSTOM_LAUNCH.into(),
+        required: false,
+        allowed_scopes: [scope].into(),
+    };
+    {
+        let _transition = profiles.lock_transition();
+        layout
+            .open_grants(&profile)
+            .unwrap()
+            .replace_grants(identity, &[request], &[])
+            .unwrap();
+    }
+    let mut session_authority = authority.clone();
+    session_authority.grant_revision = None;
+    assert_eq!(
+        host.launch_custom_for_entry_authorized(
+            dispatch.clone(),
+            "steam:620".into(),
+            session_authority
+        )
+        .await
+        .unwrap_err()
+        .code(),
+        tonic::Code::PermissionDenied
+    );
+    assert_eq!(
+        host.launch_custom_for_entry_authorized(dispatch, "steam:620".into(), authority)
+            .await
+            .unwrap_err()
+            .code(),
+        tonic::Code::PermissionDenied
+    );
+    assert_eq!(
+        h.engine
+            .supervised_custom_launch_ids_for_entry("steam:620".into())
+            .await
+            .unwrap(),
+        ids
+    );
+    h.engine
+        .stop_supervised_custom_launch(ids[0])
+        .await
+        .unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn selected_custom_launch_rechecks_profile_after_waiting_for_transition() {
+    use gamenode_core::drm_free::CustomLaunchCommand;
+    if std::env::var_os("GAMENODE_TEST_HELPER_BINARY").is_none() {
+        return;
+    }
+    let (_dir, profiles, _layout, _identity, authority) = selected_launch_authority_fixture();
+    let mut h = harness(FakeApi::new(), FakeCreds::with(None));
+    let installation_host = Arc::new(gamenode_platform::installations::LinuxInstallations);
+    let registration = installation_host.inspect("/bin/sh").unwrap();
+    Arc::get_mut(&mut h.engine.shared)
+        .unwrap()
+        .ports
+        .installations = Some(installation_host);
+    *h.engine.shared.plugin_profiles.lock().unwrap() = Some(profiles.clone());
+    let command = CustomLaunchCommand {
+        executable: registration.executable,
+        file_identity: registration.file_identity,
+        arguments: vec!["-c".into(), "sleep 30".into()],
+        working_directory: "/".into(),
+        environment: Default::default(),
+    };
+    let transition = profiles.lock_transition();
+    let engine = h.engine.clone();
+    let pending = tokio::spawn(async move {
+        engine
+            .start_supervised_custom_launch(
+                command,
+                vec![],
+                Some("steam:620".into()),
+                Some(authority),
+            )
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!pending.is_finished());
+    transition.update(Some("another-account"), true);
+    drop(transition);
+    assert_eq!(
+        pending.await.unwrap().unwrap_err().code(),
+        tonic::Code::PermissionDenied
+    );
+    assert!(
+        h.engine
+            .supervised_custom_launch_ids()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}

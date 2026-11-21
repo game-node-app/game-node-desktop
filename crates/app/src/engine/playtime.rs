@@ -361,7 +361,10 @@ impl Engine {
         // rebuilding the whole library just to refresh the tray tooltip is wasteful, and the UI
         // already holds the previous snapshot.
         let mut changed = self.sync_tracker(&mut state);
-        let expired_runtime = state.playtime.runtime_sessions.expire(now);
+        let expired_runtime = state
+            .playtime
+            .runtime_sessions
+            .expire(std::time::Instant::now());
         if !expired_runtime.is_empty() {
             changed |= self.track_effects(&mut state, runtime_track_effects(expired_runtime));
         }

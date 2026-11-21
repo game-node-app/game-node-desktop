@@ -557,10 +557,12 @@ async fn every_missing_host_grant_is_rejected_before_adapter_or_domain_effects()
             .copied()
             .filter(|v| *v != case.capability())
             .collect();
-        // Settings-only descriptors can legitimately omit context. Include its
-        // independent feature solely to permit negotiating that negative case.
+        // Provider sessions need context to negotiate. For the negative context
+        // case, revoke it after opening the session so the RPC itself exercises
+        // the missing-grant check rather than failing during ClientSession::open.
         if matches!(case, Access::Context) {
             grants.push(cap::SETTINGS);
+            grants.push(cap::CONTEXT);
         }
         let (mut h, entered) = Harness::with_grants(&grants).await;
         if case.required_to_dispatch() {
@@ -599,6 +601,12 @@ async fn every_missing_host_grant_is_rejected_before_adapter_or_domain_effects()
             };
             let pending = h.execute(operation);
             let context = h.next(operation).await.context().clone();
+            if matches!(case, Access::Context) {
+                h.api
+                    .replace_session_grants(&context.session_id, [cap::SETTINGS.to_owned()].into())
+                    .await
+                    .unwrap();
+            }
             assert_eq!(
                 case.attempt(&h.api, context).await.unwrap_err().code(),
                 tonic::Code::PermissionDenied,

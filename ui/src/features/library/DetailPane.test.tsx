@@ -236,6 +236,30 @@ describe('DetailPane', () => {
     vi.useRealTimers();
   });
 
+  it('stops only supervised launches for the selected entry', async () => {
+    const user = userEvent.setup();
+    const list = vi.spyOn(commands, 'customLaunchIds').mockResolvedValue([41, 42]);
+    const stop = vi.spyOn(commands, 'customLaunchStop').mockResolvedValue(undefined);
+    renderDetail(createSnapshot(createLibrary([createRow()], createDetail())));
+    await user.click(screen.getByTestId('detail-more-btn'));
+    const action = await screen.findByRole('menuitem', { name: 'Stop custom launch' });
+    expect(list).toHaveBeenCalledWith('steam:620');
+    await user.click(action);
+    await waitFor(() => expect(stop).toHaveBeenCalledTimes(2));
+    expect(stop).toHaveBeenCalledWith(41);
+    expect(stop).toHaveBeenCalledWith(42);
+  });
+
+  it('reports when termination cannot be confirmed', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(commands, 'customLaunchIds').mockResolvedValue([41]);
+    vi.spyOn(commands, 'customLaunchStop').mockRejectedValue(new Error('unknown state'));
+    renderDetail(createSnapshot(createLibrary([createRow()], createDetail())));
+    await user.click(screen.getByTestId('detail-more-btn'));
+    await user.click(await screen.findByRole('menuitem', { name: 'Stop custom launch' }));
+    expect(await screen.findByText('Could not confirm that the launch stopped. Try again.')).toBeInTheDocument();
+  });
+
   it('shows the matched Steam sections and sends the single-game status change', async () => {
     const libraryInput = vi.spyOn(commands, 'libraryInput');
     const openPage = vi.spyOn(commands, 'openGameNodePage');

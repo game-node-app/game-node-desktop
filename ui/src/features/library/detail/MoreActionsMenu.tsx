@@ -1,8 +1,10 @@
 import React from 'react';
 import { Menu } from '@mantine/core';
+import { useQuery } from '@tanstack/react-query';
 import {
   IconBookmark,
   IconCirclePlay,
+  IconPlayerStop,
   IconDots,
   IconDownload,
   IconFolderOpen,
@@ -64,7 +66,16 @@ export function MoreActionsMenu({
 }: MoreActionsMenuProps) {
   const { t } = useI18n();
   const [opened, setOpened] = React.useState(false);
+  const [stoppingLaunch, setStoppingLaunch] = React.useState(false);
+  const [stopLaunchFailed, setStopLaunchFailed] = React.useState(false);
   const row = detail.row;
+  const customLaunches = useQuery({
+    queryKey: ['custom-launches', row.key],
+    queryFn: () => commands.customLaunchIds(row.key),
+    enabled: opened,
+    staleTime: 0,
+    refetchInterval: opened ? 2000 : false,
+  });
   const playReady = actions.play === 'available';
   const installHasRule =
     actions.install === 'available' ||
@@ -112,6 +123,26 @@ export function MoreActionsMenu({
             </span>
           )}
         </Menu.Item>
+        {(customLaunches.data?.length ?? 0) > 0 && (
+          <Menu.Item
+            leftSection={<IconPlayerStop size={16} stroke={2} aria-hidden="true" />}
+            disabled={stoppingLaunch}
+            closeMenuOnClick={false}
+            onClick={() => {
+              setStoppingLaunch(true);
+              setStopLaunchFailed(false);
+              void Promise.all((customLaunches.data ?? []).map((id) => commands.customLaunchStop(id)))
+                .catch(() => setStopLaunchFailed(true))
+                .finally(() => {
+                  void customLaunches.refetch();
+                  setStoppingLaunch(false);
+                });
+            }}
+          >
+            {t('Detail::Stop custom launch')}
+            {stopLaunchFailed && <span className={menuItemReasonClass}>{t('Detail::Could not stop custom launch')}</span>}
+          </Menu.Item>
+        )}
         {installHasRule && (
           <Menu.Item
             leftSection={<IconDownload size={16} stroke={2} aria-hidden="true" />}

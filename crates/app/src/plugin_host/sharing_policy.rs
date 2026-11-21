@@ -295,6 +295,18 @@ pub struct AccessDecision {
 pub trait Authorizer: Send + Sync {
     fn revision(&self, recipient: &PluginIdentity) -> u64;
     fn decide(&self, request: &AccessRequest<'_>) -> AccessDecision;
+
+    /// Category-wide common read for a domain catalog. Unlike [`Authorizer::decide`], it does not
+    /// need a source identity because every producer in the category is in scope. The returned
+    /// fields are only the projection names the recipient may read.
+    fn common_category(
+        &self,
+        _recipient: &PluginIdentity,
+        _category: CommonDataCategory,
+        _fields: &BTreeSet<String>,
+    ) -> AccessDecision {
+        AccessDecision::default()
+    }
 }
 
 /// Thread-safe handle for host services that need to share policy reads and serialize durable
@@ -420,6 +432,20 @@ impl Authorizer for SharedSharingPolicies {
     fn decide(&self, request: &AccessRequest<'_>) -> AccessDecision {
         self.read()
             .map(|policies| policies.decide(request))
+            .unwrap_or_else(|_| AccessDecision {
+                revision: u64::MAX,
+                ..AccessDecision::default()
+            })
+    }
+
+    fn common_category(
+        &self,
+        recipient: &PluginIdentity,
+        category: CommonDataCategory,
+        fields: &BTreeSet<String>,
+    ) -> AccessDecision {
+        self.read()
+            .map(|policies| policies.common_category(recipient, category, fields))
             .unwrap_or_else(|_| AccessDecision {
                 revision: u64::MAX,
                 ..AccessDecision::default()
@@ -775,6 +801,48 @@ impl SharingPolicies {
         record_id: &str,
     ) -> bool {
         selection.includes_category(category) || selection.includes_record(record_id)
+    }
+
+    /// Category-wide common read for a domain catalog such as the runtime catalog.
+    ///
+    /// This grants projection names only. It never grants mutation, execution or a private field,
+    /// and an empty or filtered-out field set is denied rather than widened.
+    pub fn common_category(
+        &self,
+        recipient: &PluginIdentity,
+        category: CommonDataCategory,
+        fields: &BTreeSet<String>,
+    ) -> AccessDecision {
+        let revision = self.revision(recipient);
+        let denied = AccessDecision {
+            revision,
+            ..AccessDecision::default()
+        };
+        if validate_identity(recipient).is_err()
+            || category == CommonDataCategory::Unspecified
+            || fields.is_empty()
+        {
+            return denied;
+        }
+        let Some(grant) = self.activation.get(&IdentityKey::from(recipient)) else {
+            return denied;
+        };
+        if !grant.categories.contains(&category) {
+            return denied;
+        }
+        let fields = fields
+            .iter()
+            .filter(|field| valid_field_name(field))
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let allowed = !fields.is_empty();
+        AccessDecision {
+            allowed,
+            fields,
+            history: allowed,
+            live: allowed,
+            revision,
+        }
     }
 
     /// Replace one exact source-to-recipient dataset policy.

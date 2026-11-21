@@ -65,13 +65,41 @@ impl ExternalAccountPersistence for UnavailableExternalAccounts {
 
 pub type Observer = Arc<dyn Fn() + Send + Sync>;
 
+#[derive(Clone, Copy, Debug)]
+pub struct RuntimeContextRevision {
+    pub library_revision: u64,
+    pub binding_revision: u64,
+}
+
 #[tonic::async_trait]
 pub trait RuntimeSessionHandler: Send + Sync {
+    async fn authorize_context(
+        &self,
+        plugin_id: String,
+        publisher_fingerprint: String,
+        owner_key: String,
+        profile_epoch: u64,
+        request: gamenode_plugin_protocol::proto::RuntimeSessionContextRequest,
+    ) -> Result<RuntimeContextRevision, Status> {
+        let _ = (
+            plugin_id,
+            publisher_fingerprint,
+            owner_key,
+            profile_epoch,
+            request,
+        );
+        Err(Status::unimplemented(
+            "runtime context changes are unavailable",
+        ))
+    }
     async fn report(
         &self,
         plugin_id: String,
         owner_key: String,
         report: gamenode_plugin_protocol::proto::RuntimeSessionReport,
+        context_authorized: bool,
+        context_revision: Option<RuntimeContextRevision>,
+        received_at: std::time::Instant,
     ) -> gamenode_plugin_protocol::proto::RuntimeSessionResult;
 
     async fn disconnected(&self, plugin_id: String);

@@ -3,7 +3,7 @@
 //! Every adapter is a double with a switchable delay, so the tests can show that slow scans,
 //! requests and storage never hold up the caller.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -147,6 +147,8 @@ pub(super) struct FakeLibrary {
     pub(super) installations_fail: AtomicBool,
     pub(super) chosen: Mutex<Vec<(String, ChosenMatch)>>,
     pub(super) launch_selection: Mutex<Option<gamenode_core::library::LaunchRecipeSelection>>,
+    pub(super) runtime_bindings:
+        Mutex<HashMap<(String, u64, String), Vec<gamenode_core::library::RuntimeContentBinding>>>,
 }
 
 impl FakeLibrary {
@@ -483,6 +485,20 @@ impl LibraryStore for FakeLibrary {
         self.pause();
         self.account.lock().unwrap().take();
         Ok(())
+    }
+    fn runtime_content_bindings(
+        &self,
+        owner_key: &str,
+        game_id: u64,
+        installation_id: &str,
+    ) -> Result<Vec<gamenode_core::library::RuntimeContentBinding>, StorageError> {
+        Ok(self
+            .runtime_bindings
+            .lock()
+            .unwrap()
+            .get(&(owner_key.to_owned(), game_id, installation_id.to_owned()))
+            .cloned()
+            .unwrap_or_default())
     }
 }
 

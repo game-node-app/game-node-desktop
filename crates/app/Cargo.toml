@@ -61,7 +61,7 @@ zip = { version = "2.4", default-features = false, features = ["deflate"] }
 rustix = { workspace = true, features = ["fs", "process"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_Globalization", "Win32_UI_WindowsAndMessaging", "Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_Globalization", "Win32_UI_WindowsAndMessaging", "Win32_Storage_FileSystem"] }
 webview2-com = "0.39"
 windows-core = "0.62"
 

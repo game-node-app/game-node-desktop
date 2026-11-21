@@ -32,6 +32,7 @@ export const PluginConfirmationDialog: React.FC<{
   const [revealEnvironment, setRevealEnvironment] = useState(false);
   const launching = confirmation.operation === 'launch';
   const customLaunching = confirmation.operation === 'custom_launch';
+  const changingRuntimeContext = confirmation.operation === 'runtime_session_context';
   const launchPlan = confirmation.launchPlan;
   const restoring = confirmation.operation === 'backup_restore';
   const game = confirmation.gameName || t('plugins.confirm.unnamedGame');
@@ -66,7 +67,9 @@ export const PluginConfirmationDialog: React.FC<{
           className="flex flex-col gap-md"
         >
           <h2 id="plugin-confirm-title" className="text-lg font-bold text-white">
-            {launchPlan
+            {changingRuntimeContext
+              ? t('plugins.confirm.runtimeContextTitle')
+              : launchPlan
               ? t('plugins.confirm.planTitle')
               : restoring
                 ? t('plugins.confirm.restoreTitle')
@@ -75,7 +78,9 @@ export const PluginConfirmationDialog: React.FC<{
                   : t('plugins.confirm.installTitle')}
           </h2>
           <p id="plugin-confirm-body" className="text-sm text-white">
-            {launchPlan
+            {changingRuntimeContext
+              ? t('plugins.confirm.runtimeContextBody', { plugin: confirmation.pluginId, game })
+              : launchPlan
               ? t('plugins.confirm.planBody', { plugin: confirmation.pluginId, game })
               : restoring
               ? t('plugins.confirm.restoreBody', { plugin: confirmation.pluginId, game })
@@ -96,7 +101,7 @@ export const PluginConfirmationDialog: React.FC<{
             <dd className="break-words text-white">{game}</dd>
           </dl>
           <p className="text-xs text-[var(--settings-text-secondary)]">
-            {restoring ? t('plugins.confirm.restoreNote') : launching || customLaunching ? t('plugins.confirm.launchNote') : t('plugins.confirm.installNote')}
+            {changingRuntimeContext ? t('plugins.confirm.runtimeContextNote') : restoring ? t('plugins.confirm.restoreNote') : launching || customLaunching ? t('plugins.confirm.launchNote') : t('plugins.confirm.installNote')}
           </p>
           {launchPlan && (
             <section
@@ -188,7 +193,7 @@ export const PluginConfirmationDialog: React.FC<{
               ))}
             </ul>
           )}
-          {!restoring && <label className="flex items-start gap-compact text-sm text-white">
+          {!restoring && !changingRuntimeContext && <label className="flex items-start gap-compact text-sm text-white">
             <input
               type="checkbox"
               className="mt-[3px]"
@@ -220,7 +225,7 @@ export const PluginConfirmationDialog: React.FC<{
             <button
               type="button"
               className={settingsButtonPrimary}
-              onClick={() => onAnswer(true, !restoring && remember)}
+              onClick={() => onAnswer(true, !restoring && !changingRuntimeContext && remember)}
             >
               {launchPlan ? t('plugins.confirm.runOnce') : t('plugins.confirm.allow')}
             </button>

@@ -1634,6 +1634,44 @@ pub async fn plugin_stop(
     engine.plugin_stop(&provider_id).await
 }
 
+/// Lists supervised custom launches for host-controlled termination.
+#[tauri::command]
+pub async fn custom_launch_ids(
+    engine: tauri::State<'_, Engine>,
+    entry_key: Option<String>,
+) -> Result<Vec<u64>, String> {
+    #[cfg(any(target_os = "linux", windows))]
+    {
+        match entry_key {
+            Some(key) => engine.supervised_custom_launch_ids_for_entry(key).await,
+            None => engine.supervised_custom_launch_ids().await,
+        }
+        .map_err(|error| error.message().to_owned())
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    {
+        let _ = (engine, entry_key);
+        Ok(Vec::new())
+    }
+}
+
+/// Explicitly stops a supervised custom launch and confirms that its tree is fenced.
+#[tauri::command]
+pub async fn custom_launch_stop(engine: tauri::State<'_, Engine>, id: u64) -> Result<(), String> {
+    #[cfg(any(target_os = "linux", windows))]
+    {
+        engine
+            .stop_supervised_custom_launch(id)
+            .await
+            .map_err(|error| error.message().to_owned())
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    {
+        let _ = (engine, id);
+        Err("custom launch termination is unavailable".into())
+    }
+}
+
 /// Starts a stopped plugin with a fresh session and restores its account (Settings › Plugins ›
 /// Iniciar).
 #[tauri::command]

@@ -825,35 +825,25 @@ async fn custom_launch_without_its_own_grant_is_denied_and_describe_lists_the_ro
 /// The protocol carries routes this build has not mounted. They must stay invisible in
 /// `DescribeApi` and answer `UNIMPLEMENTED`, never a partial success or a permission error.
 #[tokio::test]
-async fn deferred_resource_routes_are_unadvertised_and_unimplemented() {
+async fn deferred_plugin_routes_are_unadvertised_and_unimplemented() {
     let fixture = Fixture::new(&[cap::LIBRARY_READ]).await;
     let described = fixture.host.describe_api().await.unwrap();
-    for method in [
-        "StorageDiagnosticsPublishBenchmark",
-        "PersistenceGetUsage",
-        "GamePerformancePublishSamples",
-    ] {
-        assert!(
-            !described
-                .methods
-                .iter()
-                .any(|advertised| advertised.method == method),
-            "deferred route {method} was advertised"
-        );
-    }
-    let status = fixture
-        .client()
-        .persistence_get_usage(PersistenceUsageRequest {
-            context: Some(fixture.context()),
-        })
-        .await
-        .unwrap_err();
-    assert_eq!(status.code(), Code::Unimplemented);
-    let status = fixture
-        .client()
-        .storage_diagnostics_publish_benchmark(BenchmarkReportRequest::default())
-        .await
-        .unwrap_err();
+    assert!(
+        !described
+            .methods
+            .iter()
+            .any(|advertised| advertised.service == "PluginHost"
+                && advertised.method == "SubmitDiscovery"),
+        "the legacy discovery route was advertised"
+    );
+    // The unary discovery route remains for API 1.1 clients but reports that it is not mounted:
+    // full providers submit discovery through the exchange stream.
+    let status = crate::plugin_host::plugin_host_server::PluginHost::submit_discovery(
+        &crate::plugin_host::PluginApi::default(),
+        tonic::Request::new(gamenode_plugin_protocol::proto::SubmitDiscoveryRequest::default()),
+    )
+    .await
+    .unwrap_err();
     assert_eq!(status.code(), Code::Unimplemented);
 }
 
@@ -908,9 +898,28 @@ struct FakeHost {
         Mutex<HashMap<(String, String), gamenode_core::library::CustomLaunchRecipe>>,
     launch_recipe_selections: Mutex<HashMap<String, gamenode_core::library::LaunchRecipeSelection>>,
     custom_launch_dispatches: Mutex<Vec<crate::plugin_host::library::CustomLaunchDispatch>>,
+    custom_launch_gate: Mutex<Option<Arc<tokio::sync::Notify>>>,
+    custom_launch_entered: tokio::sync::Notify,
+    runtime_resources: Mutex<HashMap<(String, String), gamenode_core::library::RuntimeResource>>,
+    runtime_bindings:
+        Mutex<HashMap<(String, u64, String), Vec<gamenode_core::library::RuntimeContentBinding>>>,
+    /// Monotonic catalog revision for runtime list/watch fixtures.
+    runtime_catalog_revision: std::sync::atomic::AtomicU64,
 }
 
 impl FakeHost {
+    fn seed_runtime_resource(
+        &self,
+        owner_key: String,
+        runtime: gamenode_core::library::RuntimeResource,
+    ) {
+        self.runtime_resources
+            .lock()
+            .unwrap()
+            .insert((owner_key, runtime.id.clone()), runtime);
+        self.runtime_catalog_revision.fetch_add(1, Ordering::SeqCst);
+    }
+
     fn hook(&self) -> Option<(ProviderApi, &'static str)> {
         self.revoke_before_commit
             .lock()
@@ -1051,6 +1060,157 @@ impl LibraryHost for FakeHost {
         Ok(1)
     }
 
+    async fn runtime_resource(
+        &self,
+        owner_key: String,
+        runtime_id: String,
+    ) -> Result<Option<gamenode_core::library::RuntimeResource>, Status> {
+        Ok(self
+            .runtime_resources
+            .lock()
+            .unwrap()
+            .get(&(owner_key, runtime_id))
+            .cloned())
+    }
+
+    async fn runtime_resources(
+        &self,
+        owner_key: String,
+    ) -> Result<Vec<gamenode_core::library::RuntimeResource>, Status> {
+        Ok(self
+            .runtime_resources
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|((owner, _), _)| *owner == owner_key)
+            .map(|(_, runtime)| runtime.clone())
+            .collect())
+    }
+
+    async fn shared_runtime_resources(
+        &self,
+    ) -> Result<Vec<(String, gamenode_core::library::RuntimeResource)>, Status> {
+        Ok(self
+            .runtime_resources
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|((owner, _), runtime)| (owner.clone(), runtime.clone()))
+            .collect())
+    }
+
+    async fn runtime_catalog_revision(&self, _owner_key: String) -> Result<u64, Status> {
+        Ok(self.runtime_catalog_revision.load(Ordering::SeqCst))
+    }
+
+    async fn shared_runtime_catalog_revision(&self) -> Result<u64, Status> {
+        Ok(self.runtime_catalog_revision.load(Ordering::SeqCst))
+    }
+
+    async fn runtime_availability(
+        &self,
+        owner_key: Option<String>,
+        installation_ids: Vec<String>,
+    ) -> Result<Vec<gamenode_core::library::RuntimeAvailabilityEntry>, Status> {
+        let resources = self.runtime_resources.lock().unwrap();
+        let bindings = self.runtime_bindings.lock().unwrap();
+        let mut availability = Vec::new();
+        for ((owner, game_id, _), rows) in bindings.iter() {
+            if owner_key.as_ref().is_some_and(|key| key != owner) {
+                continue;
+            }
+            for row in rows.iter().filter(|row| {
+                row.game_id == *game_id && installation_ids.contains(&row.installation_id)
+            }) {
+                let runtime = resources.get(&(owner.clone(), row.runtime_id.clone()));
+                availability.push(gamenode_core::library::RuntimeAvailabilityEntry {
+                    installation_id: row.installation_id.clone(),
+                    content_id: row.content_id.clone(),
+                    content_kind: row.content_kind.clone(),
+                    runtime_id: row.runtime_id.clone(),
+                    runtime_name: runtime
+                        .map(|runtime| runtime.name.clone())
+                        .unwrap_or_default(),
+                    platform: runtime
+                        .map(|runtime| runtime.platform.clone())
+                        .or_else(|| row.supported_platforms.first().cloned())
+                        .unwrap_or_default(),
+                    publisher_id: runtime
+                        .map(|runtime| runtime.provenance.plugin_id.clone())
+                        .unwrap_or_default(),
+                    revision: row.revision,
+                });
+            }
+        }
+        Ok(availability)
+    }
+
+    async fn save_runtime_resource(
+        &self,
+        owner_key: String,
+        runtime: gamenode_core::library::RuntimeResource,
+    ) -> Result<gamenode_core::library::RuntimeMutation, Status> {
+        use gamenode_core::library::RuntimeMutation;
+        let mut resources = self.runtime_resources.lock().unwrap();
+        let key = (owner_key, runtime.id.clone());
+        let current = resources.get(&key).map(|resource| resource.revision);
+        if current.unwrap_or(0).saturating_add(1) != runtime.revision {
+            return Ok(RuntimeMutation::Conflict {
+                current: current.unwrap_or(0),
+            });
+        }
+        let revision = runtime.revision;
+        resources.insert(key, runtime);
+        self.runtime_catalog_revision.fetch_add(1, Ordering::SeqCst);
+        Ok(RuntimeMutation::Applied { revision })
+    }
+
+    async fn runtime_content_bindings(
+        &self,
+        owner_key: String,
+        game_id: u64,
+        installation_id: String,
+    ) -> Result<Vec<gamenode_core::library::RuntimeContentBinding>, Status> {
+        Ok(self
+            .runtime_bindings
+            .lock()
+            .unwrap()
+            .get(&(owner_key, game_id, installation_id))
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    async fn save_runtime_content_binding(
+        &self,
+        owner_key: String,
+        binding: gamenode_core::library::RuntimeContentBinding,
+    ) -> Result<gamenode_core::library::RuntimeMutation, Status> {
+        use gamenode_core::library::RuntimeMutation;
+        let key = (owner_key, binding.game_id, binding.installation_id.clone());
+        let mut bindings = self.runtime_bindings.lock().unwrap();
+        let rows = bindings.entry(key).or_default();
+        let current = rows
+            .iter()
+            .find(|row| {
+                row.content_id == binding.content_id && row.runtime_id == binding.runtime_id
+            })
+            .map(|row| row.revision);
+        if current.unwrap_or(0).saturating_add(1) != binding.revision {
+            return Ok(RuntimeMutation::Conflict {
+                current: current.unwrap_or(0),
+            });
+        }
+        let revision = binding.revision;
+        if let Some(existing) = rows.iter_mut().find(|row| {
+            row.content_id == binding.content_id && row.runtime_id == binding.runtime_id
+        }) {
+            *existing = binding;
+        } else {
+            rows.push(binding);
+        }
+        Ok(RuntimeMutation::Applied { revision })
+    }
+
     async fn custom_launch_recipe(
         &self,
         owner_key: String,
@@ -1144,7 +1304,7 @@ impl LibraryHost for FakeHost {
         recipe: gamenode_core::library::CustomLaunchRecipe,
         _executable_path: Option<String>,
         working_directory_path: Option<String>,
-        _runtime: Option<crate::plugin_host::library::ResolvedRuntimeLaunch>,
+        runtime: Option<crate::plugin_host::library::ResolvedRuntimeLaunch>,
     ) -> Result<crate::plugin_host::library::CustomLaunchDispatch, Status> {
         use crate::plugin_host::library::CustomLaunchDispatch;
         if !recipe.uri.is_empty() {
@@ -1157,6 +1317,38 @@ impl LibraryHost for FakeHost {
                 environment,
             });
         }
+        if let Some(runtime) = runtime {
+            use gamenode_core::library::RuntimeArgumentTemplate;
+
+            let environment = recipe.environment();
+            let mut arguments = runtime
+                .arguments
+                .iter()
+                .map(|argument| match argument {
+                    RuntimeArgumentTemplate::Literal(value) => Ok(value.clone()),
+                    RuntimeArgumentTemplate::ContentPath => runtime
+                        .content_path
+                        .clone()
+                        .ok_or_else(|| Status::failed_precondition("content path is unavailable")),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            arguments.extend(recipe.arguments);
+            return Ok(CustomLaunchDispatch::Runtime {
+                command: gamenode_core::drm_free::CustomLaunchCommand {
+                    executable: runtime.executable,
+                    file_identity: "fixture-runtime-identity".into(),
+                    arguments,
+                    working_directory: working_directory_path.unwrap_or_default(),
+                    environment,
+                },
+                runtime_id: runtime.runtime_id,
+                runtime_version: runtime.version,
+                runtime_revision: runtime.runtime_revision,
+                content_id: runtime.content_id,
+                binding_revision: runtime.binding_revision,
+                lease_keys: runtime.lease_keys,
+            });
+        }
         Err(Status::unimplemented("fixture supports URI recipes only"))
     }
 
@@ -1164,6 +1356,11 @@ impl LibraryHost for FakeHost {
         &self,
         dispatch: crate::plugin_host::library::CustomLaunchDispatch,
     ) -> Result<(), Status> {
+        let gate = self.custom_launch_gate.lock().unwrap().clone();
+        if let Some(gate) = gate {
+            self.custom_launch_entered.notify_one();
+            gate.notified().await;
+        }
         self.custom_launch_dispatches.lock().unwrap().push(dispatch);
         Ok(())
     }

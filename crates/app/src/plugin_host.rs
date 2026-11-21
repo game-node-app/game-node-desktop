@@ -25,6 +25,7 @@ pub mod grants;
 pub mod intents;
 pub mod jobs;
 pub mod launch_plan;
+pub mod launch_supervisor;
 pub mod library;
 pub mod login;
 pub mod managed_packages;

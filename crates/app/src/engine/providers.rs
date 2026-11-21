@@ -209,6 +209,176 @@ pub struct ExtensionReadinessChoice {
 }
 
 impl Engine {
+    async fn authorize_runtime_context(
+        &self,
+        plugin_id: String,
+        publisher_fingerprint: String,
+        owner_key: String,
+        profile_epoch: u64,
+        request: gamenode_plugin_protocol::proto::RuntimeSessionContextRequest,
+    ) -> Result<crate::plugin_host::runtime::RuntimeContextRevision, tonic::Status> {
+        let profiles = self
+            .shared
+            .plugin_profiles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| tonic::Status::unavailable("plugin profile service unavailable"))?;
+        let preference_plugin = plugin_id.clone();
+        let accounting = self
+            .shared
+            .runtime
+            .spawn_blocking(move || profiles.is_playtime_accounting_enabled(&preference_plugin))
+            .await
+            .map_err(|_| tonic::Status::unavailable("playtime preference worker unavailable"))?
+            .map_err(|_| tonic::Status::unavailable("playtime preference unavailable"))?;
+        if !accounting {
+            return Err(tonic::Status::permission_denied(
+                "plugin playtime accounting is disabled",
+            ));
+        }
+        let game_id = request
+            .game_id
+            .parse::<u64>()
+            .ok()
+            .filter(|id| *id > 0)
+            .ok_or_else(|| tonic::Status::invalid_argument("invalid game id"))?;
+        if request.installation_id.is_empty()
+            || request.runtime_id.is_empty()
+            || request.runtime_instance_id.is_empty()
+            || request.content_id.is_empty()
+        {
+            return Err(tonic::Status::invalid_argument(
+                "runtime context is incomplete",
+            ));
+        }
+        let library = self.shared.ports.library.clone();
+        let installation_id = request.installation_id.clone();
+        let runtime_id = request.runtime_id.clone();
+        let content_id = request.content_id.clone();
+        let owner = owner_key.clone();
+        let bindings = self
+            .shared
+            .runtime
+            .spawn_blocking(move || {
+                library.runtime_content_bindings(&owner, game_id, &installation_id)
+            })
+            .await
+            .map_err(|_| tonic::Status::unavailable("runtime binding worker unavailable"))?
+            .map_err(|_| tonic::Status::unavailable("runtime binding store unavailable"))?;
+        let binding_revision = bindings
+            .iter()
+            .find(|binding| {
+                binding.runtime_id == runtime_id
+                    && binding.content_id == content_id
+                    && binding
+                        .supported_platforms
+                        .iter()
+                        .any(|platform| platform == std::env::consts::OS)
+            })
+            .map(|binding| binding.revision)
+            .ok_or_else(|| {
+                tonic::Status::permission_denied("runtime content binding is not approved")
+            })?;
+
+        let library_revision = self
+            .shared
+            .library_feed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .and_then(|feed| feed.revision_of(&request.installation_id))
+            .ok_or_else(|| {
+                tonic::Status::permission_denied("installation is not in the host library")
+            })?;
+
+        let game_name = {
+            let state = self.lock();
+            let Some(entry) = state.library.entry(&request.installation_id) else {
+                return Err(tonic::Status::permission_denied(
+                    "installation is not in the library",
+                ));
+            };
+            if state.library.match_status(entry).game_id() != Some(game_id) {
+                return Err(tonic::Status::permission_denied(
+                    "installation belongs to another game",
+                ));
+            }
+            entry
+                .record()
+                .name
+                .unwrap_or_else(|| format!("Game {game_id}"))
+        };
+        let api = self
+            .shared
+            .selected_launch_api
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| {
+                tonic::Status::unavailable("runtime context confirmation is unavailable")
+            })?;
+        if !api
+            .confirm_runtime_context(
+                plugin_id,
+                publisher_fingerprint,
+                profile_epoch,
+                request.game_id.clone(),
+                request.installation_id.clone(),
+                game_name,
+            )
+            .await?
+        {
+            Err(tonic::Status::permission_denied(
+                "runtime context was not approved",
+            ))
+        } else {
+            let library = self.shared.ports.library.clone();
+            let owner = owner_key;
+            let installation_id = request.installation_id.clone();
+            let runtime_id = request.runtime_id.clone();
+            let content_id = request.content_id.clone();
+            let refreshed = self
+                .shared
+                .runtime
+                .spawn_blocking(move || {
+                    library.runtime_content_bindings(&owner, game_id, &installation_id)
+                })
+                .await
+                .map_err(|_| tonic::Status::unavailable("runtime binding worker unavailable"))?
+                .map_err(|_| tonic::Status::unavailable("runtime binding store unavailable"))?;
+            let current_binding_revision = refreshed
+                .iter()
+                .find(|binding| {
+                    binding.runtime_id == runtime_id
+                        && binding.content_id == content_id
+                        && binding
+                            .supported_platforms
+                            .iter()
+                            .any(|platform| platform == std::env::consts::OS)
+                })
+                .map(|binding| binding.revision);
+            let current_library_revision = self
+                .shared
+                .library_feed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .and_then(|feed| feed.revision_of(&request.installation_id));
+            if current_binding_revision != Some(binding_revision)
+                || current_library_revision != Some(library_revision)
+            {
+                return Err(tonic::Status::failed_precondition(
+                    "runtime target changed during confirmation",
+                ));
+            }
+            Ok(crate::plugin_host::runtime::RuntimeContextRevision {
+                library_revision,
+                binding_revision,
+            })
+        }
+    }
+
     fn extension_readiness_library(
         &self,
     ) -> Result<
@@ -416,6 +586,9 @@ impl Engine {
         plugin_id: String,
         owner_key: String,
         report: RuntimeSessionReport,
+        context_authorized: bool,
+        context_revision: Option<crate::plugin_host::runtime::RuntimeContextRevision>,
+        received_at: std::time::Instant,
     ) -> RuntimeSessionResult {
         let correlation_id = report.correlation_id.clone();
         let profiles = self
@@ -500,6 +673,31 @@ impl Engine {
                 "content/runtime binding is not approved",
             );
         }
+        if context_authorized {
+            let Some(expected) = context_revision else {
+                return runtime_result(
+                    correlation_id,
+                    RuntimeSessionOutcome::RejectedUnauthorized,
+                    "approved runtime context revision is missing",
+                );
+            };
+            let current_library_revision = self
+                .shared
+                .library_feed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .and_then(|feed| feed.revision_of(&report.installation_id));
+            if binding.map(|binding| binding.revision) != Some(expected.binding_revision)
+                || current_library_revision != Some(expected.library_revision)
+            {
+                return runtime_result(
+                    correlation_id,
+                    RuntimeSessionOutcome::RejectedStale,
+                    "runtime target changed after context approval",
+                );
+            }
+        }
 
         let mut state = self.lock();
         if !state.playtime.ready || state.playtime.is_stopped() {
@@ -530,13 +728,7 @@ impl Engine {
                 "installation belongs to another game",
             );
         }
-        if state.playtime.tracker.running().contains(&entry.key) {
-            return runtime_result(
-                correlation_id,
-                RuntimeSessionOutcome::Duplicate,
-                "process evidence already measures this installation",
-            );
-        }
+        let process_evidence_running = state.playtime.tracker.running().contains(&entry.key);
         let source = state.library.provider(&entry.provider).map_or_else(
             || entry.provider.clone(),
             |provider| provider.source().to_owned(),
@@ -545,12 +737,25 @@ impl Engine {
             .library
             .provider(&entry.provider)
             .is_some_and(|provider| provider.manifest().playtime.is_some());
-        if state.playtime.source.uses_counter(has_counter) {
-            return runtime_result(
-                correlation_id,
-                RuntimeSessionOutcome::RejectedUnavailable,
-                "selected playtime source is the provider counter",
-            );
+        match runtime_report_source_conflict(
+            process_evidence_running,
+            state.playtime.source.uses_counter(has_counter),
+        ) {
+            Some(RuntimeReportSourceConflict::ProcessEvidence) => {
+                return runtime_result(
+                    correlation_id,
+                    RuntimeSessionOutcome::Duplicate,
+                    "process evidence already measures this installation",
+                );
+            }
+            Some(RuntimeReportSourceConflict::ProviderCounter) => {
+                return runtime_result(
+                    correlation_id,
+                    RuntimeSessionOutcome::RejectedUnavailable,
+                    "selected playtime source is the provider counter",
+                );
+            }
+            None => {}
         }
         let transition = match RuntimeSessionTransition::try_from(report.transition) {
             Ok(RuntimeSessionTransition::Identified) => {
@@ -595,6 +800,8 @@ impl Engine {
             observed_at: report.observed_at,
             transition,
             source_observation_id: report.source_observation_id,
+            context_authorized,
+            received_at,
         };
         let (outcome, effects) = state.playtime.runtime_sessions.report(
             &plugin_id,
@@ -1203,6 +1410,25 @@ fn runtime_result(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RuntimeReportSourceConflict {
+    ProcessEvidence,
+    ProviderCounter,
+}
+
+fn runtime_report_source_conflict(
+    process_evidence_running: bool,
+    provider_counter_selected: bool,
+) -> Option<RuntimeReportSourceConflict> {
+    if process_evidence_running {
+        Some(RuntimeReportSourceConflict::ProcessEvidence)
+    } else if provider_counter_selected {
+        Some(RuntimeReportSourceConflict::ProviderCounter)
+    } else {
+        None
+    }
+}
+
 fn runtime_track_effects(
     effects: Vec<gamenode_core::tracker::runtime_sessions::Effect>,
 ) -> Vec<gamenode_core::tracker::Effect> {
@@ -1228,15 +1454,59 @@ fn runtime_track_effects(
         .collect()
 }
 
+#[cfg(test)]
+mod runtime_report_source_tests {
+    use super::{RuntimeReportSourceConflict, runtime_report_source_conflict};
+
+    #[test]
+    fn plugin_playtime_is_not_double_counted_with_host_process_or_provider_counter_evidence() {
+        assert_eq!(
+            runtime_report_source_conflict(true, false),
+            Some(RuntimeReportSourceConflict::ProcessEvidence)
+        );
+        assert_eq!(
+            runtime_report_source_conflict(false, true),
+            Some(RuntimeReportSourceConflict::ProviderCounter)
+        );
+        assert_eq!(runtime_report_source_conflict(false, false), None);
+    }
+}
+
 struct EngineRuntimeSessionHandler(std::sync::Weak<Shared>);
 
 #[tonic::async_trait]
 impl RuntimeSessionHandler for EngineRuntimeSessionHandler {
+    async fn authorize_context(
+        &self,
+        plugin_id: String,
+        publisher_fingerprint: String,
+        owner_key: String,
+        profile_epoch: u64,
+        request: gamenode_plugin_protocol::proto::RuntimeSessionContextRequest,
+    ) -> Result<crate::plugin_host::runtime::RuntimeContextRevision, tonic::Status> {
+        let shared = self
+            .0
+            .upgrade()
+            .ok_or_else(|| tonic::Status::unavailable("playtime engine unavailable"))?;
+        Engine { shared }
+            .authorize_runtime_context(
+                plugin_id,
+                publisher_fingerprint,
+                owner_key,
+                profile_epoch,
+                request,
+            )
+            .await
+    }
+
     async fn report(
         &self,
         plugin_id: String,
         owner_key: String,
         report: RuntimeSessionReport,
+        context_authorized: bool,
+        context_revision: Option<crate::plugin_host::runtime::RuntimeContextRevision>,
+        received_at: std::time::Instant,
     ) -> RuntimeSessionResult {
         let Some(shared) = self.0.upgrade() else {
             return runtime_result(
@@ -1246,7 +1516,14 @@ impl RuntimeSessionHandler for EngineRuntimeSessionHandler {
             );
         };
         Engine { shared }
-            .report_runtime_session(plugin_id, owner_key, report)
+            .report_runtime_session(
+                plugin_id,
+                owner_key,
+                report,
+                context_authorized,
+                context_revision,
+                received_at,
+            )
             .await
     }
 

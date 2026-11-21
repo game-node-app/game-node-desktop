@@ -3,27 +3,48 @@
 //! Plugin file handles are session scoped. Durable records keep only the host-owned approval id
 //! and relative path; reads issue a fresh handle after checking the approval and current grant.
 
-use gamenode_plugin_protocol::{extensions::ExtensionSet, prost::Message};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 use gamenode_core::library::{
     ApprovedFileReference, LaunchPlanResource, RuntimeArgumentTemplate as CoreArgument,
-    RuntimeContentBinding, RuntimeMutation, RuntimeResource,
+    RuntimeContentBinding, RuntimeExtension, RuntimeMutation, RuntimeProvenance, RuntimeResource,
 };
-use gamenode_plugin_protocol::{capability as cap, proto::*};
+use gamenode_plugin_protocol::{
+    capability as cap,
+    extensions::{MAX_EXTENSION_BYTES, validate_payload},
+    proto::*,
+};
 use tonic::{Request, Response, Status};
 
 use super::mutations::{mutation_key, mutation_owner, request_hash, unavailable};
-use super::{CursorBinding, CursorError, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, ResourceApi, Scope};
+use super::{
+    CursorBinding, CursorError, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, ResourceApi, Scope,
+    json_to_struct, struct_to_json,
+};
 use crate::plugin_host::provider::ResourceCaller;
+use crate::plugin_host::sharing_policy::AccessDecision;
 
 const MAX_RUNTIME_ID_BYTES: usize = 128;
 const MAX_BINDINGS_PER_ENTRY: usize = 512;
 const WATCH_RECHECK: std::time::Duration = std::time::Duration::from_secs(5);
 const WATCH_POLL: std::time::Duration = std::time::Duration::from_millis(500);
+/// Projection names a common runtime-catalog reader may see. Executable handles, approvals and
+/// private owner identifiers are never part of it.
+const SHARED_RUNTIME_FIELDS: &[&str] = &[
+    "id",
+    "name",
+    "version",
+    "platform",
+    "supported_formats",
+    "argument_template",
+    "extensions",
+    "provenance",
+    "revision",
+    "observed_at",
+];
 
 struct ResolvedRuntimePath {
     path: String,
@@ -113,14 +134,120 @@ fn proto_arguments(values: &[CoreArgument]) -> Vec<RuntimeArgumentTemplate> {
 }
 
 fn validate_common_selector(selector: Option<&CommonDataSelector>) -> Result<(), Status> {
-    if selector.is_some_and(|selector| {
-        !selector.categories.is_empty() || !selector.selected_record_ids.is_empty()
-    }) {
-        return Err(Status::unimplemented(
-            "common runtime catalog projections are not available in this build",
-        ));
+    match selector {
+        Some(selector) if !selector.selected_record_ids.is_empty() => Err(Status::unimplemented(
+            "selected-record runtime catalog reads are not available in this build",
+        )),
+        Some(selector)
+            if !selector.categories.is_empty()
+                && selector.categories != [CommonDataCategory::RuntimeCatalog as i32] =>
+        {
+            Err(Status::unimplemented(
+                "common runtime catalog projections support only the runtime catalog category",
+            ))
+        }
+        _ => Ok(()),
     }
-    Ok(())
+}
+
+fn runtime_extension_payloads(
+    record: &RuntimeRecord,
+) -> Result<BTreeMap<String, RuntimeExtension>, Status> {
+    let mut extensions = BTreeMap::new();
+    let mut total = 0usize;
+    for (namespace, payload) in &record.extensions {
+        let valid_namespace = !namespace.is_empty()
+            && namespace.len() <= MAX_RUNTIME_ID_BYTES
+            && namespace
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'));
+        if !valid_namespace
+            || (payload.schema_id != *namespace
+                && !payload.schema_id.starts_with(&format!("{namespace}.")))
+        {
+            return Err(Status::invalid_argument(
+                "runtime extension namespace and schema do not match",
+            ));
+        }
+        validate_payload(payload)
+            .map_err(|_| Status::invalid_argument("invalid runtime extension payload"))?;
+        let data = payload
+            .data
+            .as_ref()
+            .ok_or_else(|| Status::invalid_argument("runtime extension data is required"))?;
+        let data = serde_json::Value::Object(struct_to_json(data)?);
+        total = total
+            .checked_add(serde_json::to_vec(&data).map_or(usize::MAX, |bytes| bytes.len()))
+            .ok_or_else(|| Status::invalid_argument("runtime extension size overflow"))?;
+        if total > MAX_EXTENSION_BYTES {
+            return Err(Status::resource_exhausted(
+                "runtime extensions exceed the accepted size",
+            ));
+        }
+        extensions.insert(
+            namespace.clone(),
+            RuntimeExtension {
+                schema_id: payload.schema_id.clone(),
+                schema_version: payload.schema_version,
+                schema_digest: payload.schema_digest.clone(),
+                data,
+            },
+        );
+    }
+    Ok(extensions)
+}
+
+fn runtime_extension_proto(
+    extensions: &BTreeMap<String, RuntimeExtension>,
+) -> Result<HashMap<String, ExtensionPayload>, Status> {
+    extensions
+        .iter()
+        .map(|(namespace, extension)| {
+            let serde_json::Value::Object(data) = &extension.data else {
+                return Err(Status::internal("stored runtime extension is invalid"));
+            };
+            Ok((
+                namespace.clone(),
+                ExtensionPayload {
+                    schema_id: extension.schema_id.clone(),
+                    schema_version: extension.schema_version,
+                    schema_digest: extension.schema_digest.clone(),
+                    data: Some(json_to_struct(data)),
+                },
+            ))
+        })
+        .collect()
+}
+
+fn runtime_provenance(caller: &ResourceCaller) -> RuntimeProvenance {
+    let identity = caller
+        .namespace
+        .as_ref()
+        .map(|namespace| namespace.identity());
+    RuntimeProvenance {
+        plugin_id: identity
+            .map(|identity| identity.plugin_id.clone())
+            .unwrap_or_default(),
+        declared_developer: caller.declared_developer.clone(),
+        origin: caller.origin.clone(),
+        publisher_fingerprint: identity
+            .map(|identity| identity.publisher_fingerprint.clone())
+            .unwrap_or_default(),
+        package_version: caller.package_version.clone(),
+        package_digest: caller.package_digest.clone(),
+    }
+}
+
+fn runtime_provenance_proto(provenance: &RuntimeProvenance) -> Option<DataProvenance> {
+    (!provenance.plugin_id.is_empty()).then(|| DataProvenance {
+        producer_plugin_id: provenance.plugin_id.clone(),
+        declared_developer: provenance.declared_developer.clone(),
+        origin: provenance.origin.clone(),
+        publisher_fingerprint: provenance.publisher_fingerprint.clone(),
+        package_version: provenance.package_version.clone(),
+        package_digest: provenance.package_digest.clone(),
+        ..Default::default()
+    })
 }
 
 fn valid_id(value: &str) -> bool {
@@ -337,21 +464,11 @@ impl ResourceApi {
         let executable_handle = self
             .session_handle(caller, runtime.executable.clone())
             .await?;
-        let extensions = runtime
-            .extensions
-            .into_iter()
-            .map(|(namespace, bytes)| {
-                ExtensionPayload::decode(bytes.as_slice())
-                    .map(|payload| (namespace, payload))
-                    .map_err(|_| Status::internal("stored runtime extension is invalid"))
-            })
-            .collect::<Result<std::collections::HashMap<_, _>, _>>()?;
-        let extensions = ExtensionSet::from_wire(extensions)
-            .map_err(|_| Status::internal("stored runtime extensions are invalid"))?;
+        let extensions = runtime_extension_proto(&runtime.extensions)?;
         let descriptors = self
             .providers
             .extension_schemas_for_provider(&caller.provider_id);
-        for (namespace, payload) in extensions.as_map() {
+        for (namespace, payload) in &extensions {
             if let Some(descriptor) = descriptors
                 .iter()
                 .find(|schema| schema.namespace == *namespace)
@@ -374,9 +491,67 @@ impl ResourceApi {
             observed_at: runtime.observed_at,
             platform: runtime.platform,
             argument_template: proto_arguments(&runtime.launch_arguments),
-            extensions: extensions.into_wire(),
-            provenance: None,
+            extensions,
+            provenance: runtime_provenance_proto(&runtime.provenance),
         })
+    }
+
+    /// Shared catalog projection: no executable handle, approval or private owner key is exposed.
+    fn runtime_proto_shared(runtime: RuntimeResource) -> Result<RuntimeRecord, Status> {
+        Ok(RuntimeRecord {
+            id: runtime.id,
+            name: runtime.name,
+            version: runtime.version,
+            executable_handle: String::new(),
+            supported_formats: runtime.supported_formats,
+            revision: runtime.revision,
+            observed_at: runtime.observed_at,
+            platform: runtime.platform,
+            argument_template: proto_arguments(&runtime.launch_arguments),
+            extensions: runtime_extension_proto(&runtime.extensions)?,
+            provenance: runtime_provenance_proto(&runtime.provenance),
+        })
+    }
+
+    /// Returns whether this query explicitly selected the runtime catalog category and is
+    /// currently granted. An empty selector keeps the query owner-private.
+    fn shared_runtime_read(
+        &self,
+        caller: &ResourceCaller,
+        selector: Option<&CommonDataSelector>,
+    ) -> Result<bool, Status> {
+        validate_common_selector(selector)?;
+        let Some(selector) = selector.filter(|selector| !selector.categories.is_empty()) else {
+            return Ok(false);
+        };
+        let recipient = caller
+            .namespace
+            .as_ref()
+            .map(|namespace| namespace.identity().clone())
+            .ok_or_else(|| {
+                Status::failed_precondition(
+                    "a third-party plugin identity is required for shared catalog reads",
+                )
+            })?;
+        let fields = SHARED_RUNTIME_FIELDS
+            .iter()
+            .map(|field| (*field).to_owned())
+            .collect::<BTreeSet<_>>();
+        let decision: AccessDecision = self.shared_authorizer.common_category(
+            &recipient,
+            CommonDataCategory::RuntimeCatalog,
+            &fields,
+        );
+        if !decision.allowed {
+            return Err(Status::permission_denied(
+                "common runtime catalog access is not granted",
+            ));
+        }
+        debug_assert_eq!(
+            selector.categories,
+            [CommonDataCategory::RuntimeCatalog as i32]
+        );
+        Ok(true)
     }
 
     /// Resolves a recipe's runtime and selected binding under the authenticated plugin owner.
@@ -481,6 +656,9 @@ impl ResourceApi {
             binding_revision,
             arguments: runtime.launch_arguments,
             resources,
+            // This branch cannot create shared-save scopes. Data 1.8 must populate these keys
+            // from its reviewed host-owned resource bindings before enabling those scopes.
+            lease_keys: Vec::new(),
         })
     }
 
@@ -490,6 +668,8 @@ impl ResourceApi {
         id: String,
         revision: u64,
         observed_at: i64,
+        provenance: RuntimeProvenance,
+        extensions: BTreeMap<String, RuntimeExtension>,
     ) -> Result<RuntimeResource, Status> {
         runtime_request_shape(&request, true)?;
         let runtime = RuntimeResource {
@@ -500,27 +680,16 @@ impl ResourceApi {
             platform: request.platform,
             supported_formats: request.supported_formats,
             launch_arguments: core_arguments(&request.argument_template)?,
-            extensions: Self::encode_extensions(request.extensions)?,
             revision,
             observed_at,
+            provenance,
+            extensions,
         };
         if runtime.validate() {
             Ok(runtime)
         } else {
             Err(Status::invalid_argument("invalid runtime resource"))
         }
-    }
-
-    fn encode_extensions(
-        extensions: std::collections::HashMap<String, ExtensionPayload>,
-    ) -> Result<std::collections::BTreeMap<String, Vec<u8>>, Status> {
-        let set = gamenode_plugin_protocol::extensions::ExtensionSet::from_wire(extensions)
-            .map_err(|_| Status::invalid_argument("invalid runtime extensions"))?;
-        Ok(set
-            .into_wire()
-            .into_iter()
-            .map(|(namespace, payload)| (namespace, payload.encode_to_vec()))
-            .collect())
     }
 
     fn authorize_runtime_namespaces<'a>(
@@ -563,7 +732,7 @@ impl ResourceApi {
             .authorize_resource(page.context.as_ref(), cap::GAME_RUNTIME_READ)?;
         self.providers
             .authorize_resource(page.context.as_ref(), cap::FILES_READ)?;
-        validate_common_selector(page.common_data_categories.as_ref())?;
+        let shared = self.shared_runtime_read(&caller, page.common_data_categories.as_ref())?;
         if !request.kind.is_empty() && request.kind != "runtime" {
             return Err(Status::invalid_argument("unsupported runtime kind"));
         }
@@ -574,13 +743,55 @@ impl ResourceApi {
         }
         let owner = mutation_owner(&caller);
         let host = self.library.host().ok_or_else(unavailable)?;
-        let mut revision = host.runtime_catalog_revision(owner.clone()).await?;
-        let mut records = host.runtime_resources(owner.clone()).await?;
-        if host.runtime_catalog_revision(owner.clone()).await? != revision {
-            revision = host.runtime_catalog_revision(owner.clone()).await?;
-            records = host.runtime_resources(owner.clone()).await?;
+        let mut revision = if shared {
+            host.shared_runtime_catalog_revision().await?
+        } else {
+            host.runtime_catalog_revision(owner.clone()).await?
+        };
+        let mut records = host
+            .runtime_resources(owner.clone())
+            .await?
+            .into_iter()
+            .map(|runtime| (false, runtime))
+            .collect::<Vec<_>>();
+        if shared {
+            records.extend(
+                host.shared_runtime_resources()
+                    .await?
+                    .into_iter()
+                    .filter(|(owner_key, _)| *owner_key != owner)
+                    .map(|(_, runtime)| (true, runtime)),
+            );
         }
-        records.sort_by(|left, right| left.id.cmp(&right.id));
+        let reread = if shared {
+            host.shared_runtime_catalog_revision().await?
+        } else {
+            host.runtime_catalog_revision(owner.clone()).await?
+        };
+        if reread != revision {
+            revision = reread;
+            records = host
+                .runtime_resources(owner.clone())
+                .await?
+                .into_iter()
+                .map(|runtime| (false, runtime))
+                .collect();
+            if shared {
+                records.extend(
+                    host.shared_runtime_resources()
+                        .await?
+                        .into_iter()
+                        .filter(|(owner_key, _)| *owner_key != owner)
+                        .map(|(_, runtime)| (true, runtime)),
+                );
+            }
+        }
+        records.sort_by(|left, right| {
+            left.1
+                .id
+                .cmp(&right.1.id)
+                .then_with(|| left.0.cmp(&right.0))
+        });
         let limit = match page.page_size as usize {
             0 => DEFAULT_PAGE_SIZE,
             size => size.min(MAX_PAGE_SIZE),
@@ -592,7 +803,9 @@ impl ResourceApi {
             grant_revision: caller.grant_revision,
             scope: Scope {
                 own_provider: caller.provider_id.clone(),
-                read_all: false,
+                // Reused as the shared-catalog marker for this route so a private cursor cannot
+                // resume a category query, and vice versa.
+                read_all: shared,
                 provider_filter: None,
             },
             search: None,
@@ -616,16 +829,20 @@ impl ResourceApi {
         };
         let mut remaining = records
             .into_iter()
-            .filter(|record| after.as_ref().is_none_or(|after| record.id > *after));
+            .filter(|record| after.as_ref().is_none_or(|after| record.1.id > *after));
         let selected = remaining.by_ref().take(limit).collect::<Vec<_>>();
         let more = remaining.next().is_some();
         let next_cursor = match selected.last().filter(|_| more) {
-            Some(last) => self.library.issue_cursor(&binding, revision, &last.id),
+            Some(last) => self.library.issue_cursor(&binding, revision, &last.1.id),
             None => String::new(),
         };
         let mut runtimes = Vec::with_capacity(selected.len());
-        for record in selected {
-            runtimes.push(self.runtime_proto(&caller, &context, record).await?);
+        for (is_shared, record) in selected {
+            runtimes.push(if is_shared {
+                Self::runtime_proto_shared(record)?
+            } else {
+                self.runtime_proto(&caller, &context, record).await?
+            });
         }
         self.providers
             .authorize_resource(page.context.as_ref(), cap::GAME_RUNTIME_READ)?;
@@ -650,25 +867,55 @@ impl ResourceApi {
             .authorize_resource(request.context.as_ref(), cap::GAME_RUNTIME_READ)?;
         self.providers
             .authorize_resource(request.context.as_ref(), cap::FILES_READ)?;
-        validate_common_selector(request.shared_records.as_ref())?;
+        let shared = self.shared_runtime_read(&caller, request.shared_records.as_ref())?;
         if !valid_id(&request.resource_id) {
             return Err(Status::invalid_argument("runtime id is required"));
         }
         let host = self.library.host().ok_or_else(unavailable)?;
-        let runtime = host
-            .runtime_resource(mutation_owner(&caller), request.resource_id.clone())
+        let owner = mutation_owner(&caller);
+        if let Some(runtime) = host
+            .runtime_resource(owner.clone(), request.resource_id.clone())
             .await?
-            .ok_or_else(|| Status::not_found("runtime not found"))?;
-        if request.expected_revision != 0 && request.expected_revision != runtime.revision {
-            return Err(Status::aborted("runtime revision changed"));
+        {
+            if request.expected_revision != 0 && request.expected_revision != runtime.revision {
+                return Err(Status::aborted("runtime revision changed"));
+            }
+            let runtime = self.runtime_proto(&caller, &context, runtime).await?;
+            self.providers
+                .authorize_resource(request.context.as_ref(), cap::GAME_RUNTIME_READ)?;
+            return Ok(Response::new(RuntimeRecordReply {
+                revision: runtime.revision,
+                runtime: Some(runtime),
+            }));
         }
-        let runtime = self.runtime_proto(&caller, &context, runtime).await?;
-        self.providers
-            .authorize_resource(request.context.as_ref(), cap::GAME_RUNTIME_READ)?;
-        Ok(Response::new(RuntimeRecordReply {
-            revision: runtime.revision,
-            runtime: Some(runtime),
-        }))
+        if !shared {
+            return Err(Status::not_found("runtime not found"));
+        }
+        let mut matches = host
+            .shared_runtime_resources()
+            .await?
+            .into_iter()
+            .filter(|(owner_key, runtime)| *owner_key != owner && runtime.id == request.resource_id)
+            .map(|(_, runtime)| runtime)
+            .collect::<Vec<_>>();
+        match matches.len() {
+            0 => Err(Status::not_found("runtime not found")),
+            1 => {
+                let runtime = Self::runtime_proto_shared(matches.remove(0))?;
+                if request.expected_revision != 0 && request.expected_revision != runtime.revision {
+                    return Err(Status::aborted("runtime revision changed"));
+                }
+                self.providers
+                    .authorize_resource(request.context.as_ref(), cap::GAME_RUNTIME_READ)?;
+                Ok(Response::new(RuntimeRecordReply {
+                    revision: runtime.revision,
+                    runtime: Some(runtime),
+                }))
+            }
+            _ => Err(Status::failed_precondition(
+                "several shared runtimes use this id; list the catalog instead",
+            )),
+        }
     }
 
     pub(super) async fn register_runtime(
@@ -697,8 +944,7 @@ impl ResourceApi {
             .runtime
             .ok_or_else(|| Status::invalid_argument("runtime is required"))?;
         runtime_request_shape(&runtime_request, true)?;
-        Self::authorize_runtime_namespaces(&caller, runtime_request.extensions.keys())?;
-        Self::validate_package_extensions(&self.providers, &caller, &runtime_request.extensions)?;
+        let extensions = runtime_extension_payloads(&runtime_request)?;
         let request_id = runtime_request.id.clone();
         let hash = request_hash(&[
             "runtime-register",
@@ -709,7 +955,7 @@ impl ResourceApi {
             &runtime_request.platform,
             &runtime_request.supported_formats.join("\0"),
             &format!("{:?}", runtime_request.argument_template),
-            &format!("{:?}", runtime_request.extensions),
+            &format!("{:?}", extensions),
             &mutation.expected_revision.to_string(),
         ]);
         let lock = self.mutations.lock.lock().await;
@@ -742,6 +988,8 @@ impl ResourceApi {
             id.clone(),
             1,
             unix_now(),
+            runtime_provenance(&caller),
+            extensions,
         )?;
         let host = self.library.host().ok_or_else(unavailable)?;
         self.authorize_commit(context, cap::GAME_RUNTIME_CREATE, caller.grant_revision)?;
@@ -833,6 +1081,7 @@ impl ResourceApi {
             "platform",
             "supported_formats",
             "argument_template",
+            "extensions",
         ];
         let mut mask = HashSet::new();
         let mut patch_mask = HashSet::new();
@@ -863,7 +1112,7 @@ impl ResourceApi {
             &runtime_request.platform,
             &runtime_request.supported_formats.join("\0"),
             &format!("{:?}", runtime_request.argument_template),
-            &format!("{:?}", request.extension_patch),
+            &format!("{:?}", runtime_request.extensions),
         ]);
         let lock = self.mutations.lock.lock().await;
         if let Some(replay) = self.mutations.replay(&caller, key, hash)? {
@@ -905,15 +1154,7 @@ impl ResourceApi {
                 version: current.version.clone(),
                 supported_formats: current.supported_formats.clone(),
                 revision: current.revision,
-                extensions: current
-                    .extensions
-                    .iter()
-                    .map(|(namespace, bytes)| {
-                        ExtensionPayload::decode(bytes.as_slice())
-                            .map(|payload| (namespace.clone(), payload))
-                            .map_err(|_| Status::internal("stored runtime extension is invalid"))
-                    })
-                    .collect::<Result<_, _>>()?,
+                extensions: runtime_extension_proto(&current.extensions)?,
                 ..Default::default()
             };
             let proposed_wire = RuntimeRecord {
@@ -931,10 +1172,10 @@ impl ResourceApi {
             )
             .map_err(|_| Status::invalid_argument("invalid or stale runtime extension patch"))?;
             Self::validate_package_extensions(&self.providers, &caller, &applied.extensions)?;
+            extensions = runtime_extension_payloads(&applied)?;
             runtime_request.name = applied.name;
             runtime_request.version = applied.version;
             runtime_request.supported_formats = applied.supported_formats;
-            extensions = Self::encode_extensions(applied.extensions)?;
         } else if runtime_request.extensions.len() > 0 {
             return Err(Status::invalid_argument(
                 "runtime extensions require a revision-checked extension_patch",
@@ -983,6 +1224,7 @@ impl ResourceApi {
             extensions,
             revision: current.revision.saturating_add(1),
             observed_at: unix_now(),
+            provenance: current.provenance,
         };
         if !updated.validate() {
             return Err(Status::invalid_argument("invalid runtime resource"));
@@ -1088,6 +1330,11 @@ impl ResourceApi {
         let caller = self
             .providers
             .authorize_resource(Some(context), cap::DISCOVERY)?;
+        // A discovery grant authorizes submitting observations, but it does not authorize
+        // reading a content file. Require the independent file grant before resolving game or
+        // runtime records, so discovery-only callers cannot probe those namespaces.
+        self.providers
+            .authorize_resource(Some(context), cap::FILES_READ)?;
         let key = mutation_key(mutation)?;
         if !valid_id(&request.installation_id)
             || !valid_id(&request.content_kind)
@@ -1123,13 +1370,9 @@ impl ResourceApi {
         let all_bindings = host
             .runtime_content_bindings(owner.clone(), game_id, request.installation_id.clone())
             .await?;
-        if !request.content_id.is_empty()
-            && !all_bindings
-                .iter()
-                .any(|binding| binding.content_id == request.content_id)
-        {
-            return Err(Status::not_found("runtime content not found"));
-        }
+        // A stable content id can have been selected from another runtime's discovery. Accept
+        // that identity as a new owner-scoped binding after validating this caller's game,
+        // installation and approved file handle; never read or mutate the foreign binding row.
         let requested_content_id = request.content_id.clone();
         let hash = request_hash(&[
             "runtime-content-register",
@@ -1151,8 +1394,6 @@ impl ResourceApi {
         } else {
             requested_content_id
         };
-        self.providers
-            .authorize_resource(Some(context), cap::FILES_READ)?;
         let content = self
             .capture_reference(
                 &caller,
@@ -1223,18 +1464,26 @@ impl ResourceApi {
             .authorize_resource(request.context.as_ref(), cap::GAME_RUNTIME_READ)?;
         self.providers
             .authorize_resource(request.context.as_ref(), cap::FILES_READ)?;
-        validate_common_selector(request.shared_records.as_ref())?;
+        let shared = self.shared_runtime_read(&caller, request.shared_records.as_ref())?;
         let host = self.library.host().ok_or_else(unavailable)?;
         let owner = mutation_owner(&caller);
         let slot = self.watch_slot(&caller.session_id)?;
-        let initial_revision = host.runtime_catalog_revision(owner.clone()).await?;
+        let initial_revision = runtime_catalog_release(&host, &owner, shared).await?;
         if request.after_revision > initial_revision {
             return Err(Status::invalid_argument(
                 "runtime watch revision is in the future",
             ));
         }
-        let mut initial = host.runtime_resources(owner.clone()).await?;
-        initial.sort_by(|left, right| left.id.cmp(&right.id));
+        let initial = runtime_catalog_records(&host, &owner, shared).await?;
+        let shared_recipient = caller
+            .namespace
+            .as_ref()
+            .map(|namespace| namespace.identity().clone());
+        let shared_fields = SHARED_RUNTIME_FIELDS
+            .iter()
+            .map(|field| (*field).to_owned())
+            .collect::<BTreeSet<_>>();
+        let authorizer = self.shared_authorizer.clone();
         let (sender, receiver) = mpsc::channel(32);
         let providers = self.providers.clone();
         let resource = self.clone();
@@ -1253,13 +1502,18 @@ impl ResourceApi {
                 if sender.send(Ok(event)).await.is_err() {
                     return;
                 }
-                for runtime in &last {
+                for (is_shared, runtime) in &last {
                     if !resource_id.is_empty() && runtime.id != resource_id {
                         continue;
                     }
-                    match resource
-                        .runtime_proto(&caller, &context, runtime.clone())
-                        .await
+                    match runtime_event_record(
+                        &resource,
+                        &caller,
+                        &context,
+                        *is_shared,
+                        runtime.clone(),
+                    )
+                    .await
                     {
                         Ok(runtime) => {
                             if sender
@@ -1292,33 +1546,38 @@ impl ResourceApi {
                             let _ = sender.send(Err(error)).await;
                             return;
                         }
+                        if shared && !shared_category_allowed(&authorizer, shared_recipient.as_ref(), &shared_fields) {
+                            let _ = sender.send(Err(Status::permission_denied(
+                                "common runtime catalog access is not granted",
+                            ))).await;
+                            return;
+                        }
                     }
                     _ = poll.tick() => {
-                        let revision = match host.runtime_catalog_revision(owner.clone()).await {
+                        let revision = match runtime_catalog_release(&host, &owner, shared).await {
                             Ok(revision) => revision,
                             Err(error) => { let _ = sender.send(Err(error)).await; return; }
                         };
                         if revision == last_revision { continue; }
-                        let mut current = match host.runtime_resources(owner.clone()).await {
+                        let current = match runtime_catalog_records(&host, &owner, shared).await {
                             Ok(records) => records,
                             Err(error) => { let _ = sender.send(Err(error)).await; return; }
                         };
-                        current.sort_by(|left, right| left.id.cmp(&right.id));
-                        let removed = last.iter().any(|old| !current.iter().any(|new| new.id == old.id));
+                        let removed = last.iter().any(|old| !current.iter().any(|new| new.0 == old.0 && new.1.id == old.1.id));
                         if removed {
                             if sender.send(Ok(RuntimeRecordEvent { revision, event_type: "reset".into(), runtime: None })).await.is_err() { return; }
                         }
-                        for runtime in &current {
-                            let changed = last.iter().find(|old| old.id == runtime.id).is_none_or(|old| old.revision != runtime.revision);
+                        for (is_shared, runtime) in &current {
+                            let changed = last.iter().find(|old| old.0 == *is_shared && old.1.id == runtime.id).is_none_or(|old| old.1.revision != runtime.revision);
                             if !changed || (!resource_id.is_empty() && runtime.id != resource_id) { continue; }
-                            match resource.runtime_proto(&caller, &context, runtime.clone()).await {
+                            match runtime_event_record(&resource, &caller, &context, *is_shared, runtime.clone()).await {
                                 Ok(runtime) => {
                                     if sender.send(Ok(RuntimeRecordEvent { revision, event_type: "upserted".into(), runtime: Some(runtime) })).await.is_err() { return; }
                                 }
                                 Err(error) => { let _ = sender.send(Err(error)).await; return; }
                             }
                         }
-                        if current.iter().all(|runtime| last.iter().any(|old| old.id == runtime.id && old.revision == runtime.revision)) {
+                        if current.iter().all(|(is_shared, runtime)| last.iter().any(|old| old.0 == *is_shared && old.1.id == runtime.id && old.1.revision == runtime.revision)) {
                             let _ = sender.send(Ok(RuntimeRecordEvent { revision, event_type: "bindings_changed".into(), runtime: None })).await;
                         }
                         last = current;
@@ -1329,4 +1588,71 @@ impl ResourceApi {
         });
         Ok(Response::new(Box::pin(ReceiverStream::new(receiver))))
     }
+}
+
+async fn runtime_catalog_release(
+    host: &std::sync::Arc<dyn crate::plugin_host::library::LibraryHost>,
+    owner: &str,
+    shared: bool,
+) -> Result<u64, Status> {
+    if shared {
+        host.shared_runtime_catalog_revision().await
+    } else {
+        host.runtime_catalog_revision(owner.to_owned()).await
+    }
+}
+
+async fn runtime_catalog_records(
+    host: &std::sync::Arc<dyn crate::plugin_host::library::LibraryHost>,
+    owner: &str,
+    shared: bool,
+) -> Result<Vec<(bool, RuntimeResource)>, Status> {
+    let mut records = host
+        .runtime_resources(owner.to_owned())
+        .await?
+        .into_iter()
+        .map(|runtime| (false, runtime))
+        .collect::<Vec<_>>();
+    if shared {
+        records.extend(
+            host.shared_runtime_resources()
+                .await?
+                .into_iter()
+                .filter(|(owner_key, _)| owner_key != owner)
+                .map(|(_, runtime)| (true, runtime)),
+        );
+    }
+    records.sort_by(|left, right| {
+        left.1
+            .id
+            .cmp(&right.1.id)
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    Ok(records)
+}
+
+async fn runtime_event_record(
+    resource: &ResourceApi,
+    caller: &ResourceCaller,
+    context: &ServiceContext,
+    shared: bool,
+    runtime: RuntimeResource,
+) -> Result<RuntimeRecord, Status> {
+    if shared {
+        ResourceApi::runtime_proto_shared(runtime)
+    } else {
+        resource.runtime_proto(caller, context, runtime).await
+    }
+}
+
+fn shared_category_allowed(
+    authorizer: &std::sync::Arc<dyn crate::plugin_host::sharing_policy::Authorizer>,
+    recipient: Option<&crate::plugin_host::grants::PluginIdentity>,
+    fields: &BTreeSet<String>,
+) -> bool {
+    recipient.is_some_and(|recipient| {
+        authorizer
+            .common_category(recipient, CommonDataCategory::RuntimeCatalog, fields)
+            .allowed
+    })
 }

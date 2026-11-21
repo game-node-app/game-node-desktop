@@ -206,6 +206,241 @@ async fn internal_records_sessions_and_source_switch_preserves_histories() {
     );
     h.engine.shutdown();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn disabling_plugin_playtime_preserves_measured_history_and_activation() {
+    use crate::plugin_host::profile::{PluginProfiles, PluginStateLayout};
+    use gamenode_core::playtime::Session;
+    use std::sync::Arc;
+
+    let h = ready_with_source(PlaytimeSource::Internal).await;
+    let state_dir = tempfile::tempdir().unwrap();
+    let profiles = Arc::new(PluginProfiles::default());
+    let layout = PluginStateLayout::new(state_dir.path().join("plugins"));
+    profiles.set_state_layout(layout.clone());
+    h.engine.set_plugin_profiles(profiles.clone());
+
+    let profile = profiles.current().unwrap();
+    layout
+        .open_activation(&profile)
+        .unwrap()
+        .set_enabled("org.example.emulator", true)
+        .unwrap();
+    let existing = Session {
+        id: "previous-runtime-session".into(),
+        account_id: "u1".into(),
+        entry_key: "steam:620".into(),
+        game_id: Some(7),
+        source: "runtime:org.example.emulator".into(),
+        platform_id: 1,
+        started_at: 100,
+        checkpoint_at: 200,
+        ended_at: None,
+    };
+    let store = h.engine.shared.ports.playtime.clone();
+    store.open_session(&existing).unwrap();
+    store
+        .close_session("u1", &existing.id, 200, Some(7))
+        .unwrap();
+    let history_before = store.sessions("u1").unwrap();
+    assert_eq!(history_before.len(), 1);
+    assert_eq!(history_before[0].ended_at, Some(200));
+
+    h.engine
+        .set_plugin_playtime_accounting("org.example.emulator".into(), false)
+        .await
+        .unwrap();
+
+    assert!(
+        !profiles
+            .is_playtime_accounting_enabled("org.example.emulator")
+            .unwrap()
+    );
+    assert!(
+        layout
+            .open_activation(&profile)
+            .unwrap()
+            .is_enabled("org.example.emulator")
+    );
+    assert_eq!(store.sessions("u1").unwrap(), history_before);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn runtime_reports_account_for_confirmed_pauses_and_disable_fences_active_session() {
+    use crate::plugin_host::{
+        grants::PluginIdentity,
+        namespace::ExternalNamespaceResolver,
+        profile::{PluginProfiles, PluginStateLayout},
+    };
+    use gamenode_core::library::{ApprovedFileReference, RuntimeContentBinding};
+    use gamenode_plugin_protocol::proto::{
+        RuntimeSessionOutcome, RuntimeSessionReport, RuntimeSessionTransition,
+    };
+    use std::sync::Arc;
+
+    let h = ready_with_source(PlaytimeSource::Internal).await;
+    let state_dir = tempfile::tempdir().unwrap();
+    let profiles = Arc::new(PluginProfiles::default());
+    let layout = PluginStateLayout::new(state_dir.path().join("plugins"));
+    profiles.set_state_layout(layout.clone());
+    h.engine.set_plugin_profiles(profiles.clone());
+
+    let plugin_id = "org.example.emulator";
+    let profile = profiles.current().unwrap();
+    layout
+        .open_activation(&profile)
+        .unwrap()
+        .set_enabled(plugin_id, true)
+        .unwrap();
+    let identity = PluginIdentity {
+        plugin_id: plugin_id.into(),
+        publisher_fingerprint: "ab".repeat(32),
+        profile_id: profile.profile_id().to_owned(),
+    };
+    let namespace = ExternalNamespaceResolver::new(identity, None, profile.epoch()).unwrap();
+    let owner_key = namespace.library_recipe_owner_key();
+    h.store.runtime_bindings.lock().unwrap().insert(
+        (owner_key.clone(), 7, "steam:620".into()),
+        vec![RuntimeContentBinding {
+            game_id: 7,
+            installation_id: "steam:620".into(),
+            content_id: "rom:portal".into(),
+            content: ApprovedFileReference {
+                approval_id: "approved-content".into(),
+                relative_path: vec!["portal.rom".into()],
+            },
+            content_kind: "fixture-rom".into(),
+            runtime_id: "runtime:emulator".into(),
+            supported_platforms: vec![std::env::consts::OS.into()],
+            revision: 1,
+        }],
+    );
+
+    let now = super::super::unix_now();
+    let started_at = now - 5;
+    let paused_at = now - 4;
+    let resumed_at = now - 3;
+    let checkpoint_at = now - 2;
+    let received_at = Instant::now();
+    let report = |sequence, observed_at, transition| RuntimeSessionReport {
+        correlation_id: format!("runtime-report-{sequence}"),
+        game_id: "7".into(),
+        installation_id: "steam:620".into(),
+        content_id: "rom:portal".into(),
+        runtime_id: "runtime:emulator".into(),
+        runtime_instance_id: "instance:one".into(),
+        reporter_session_id: "extension-session".into(),
+        sequence,
+        observed_at,
+        transition: transition as i32,
+        source_observation_id: format!("observation-{sequence}"),
+        runtime_context_id: String::new(),
+    };
+    let store = h.engine.shared.ports.playtime.clone();
+
+    let started = h
+        .engine
+        .report_runtime_session(
+            plugin_id.into(),
+            owner_key.clone(),
+            report(1, started_at, RuntimeSessionTransition::Started),
+            false,
+            None,
+            received_at,
+        )
+        .await;
+    assert_eq!(started.outcome, RuntimeSessionOutcome::Accepted as i32);
+    eventually(|| store.sessions("u1").unwrap().len() == 1).await;
+
+    let paused = h
+        .engine
+        .report_runtime_session(
+            plugin_id.into(),
+            owner_key.clone(),
+            report(2, paused_at, RuntimeSessionTransition::Paused),
+            false,
+            None,
+            received_at,
+        )
+        .await;
+    assert_eq!(paused.outcome, RuntimeSessionOutcome::Accepted as i32);
+    eventually(|| {
+        store
+            .sessions("u1")
+            .unwrap()
+            .iter()
+            .any(|session| session.ended_at == Some(paused_at))
+    })
+    .await;
+
+    let resumed = h
+        .engine
+        .report_runtime_session(
+            plugin_id.into(),
+            owner_key.clone(),
+            report(3, resumed_at, RuntimeSessionTransition::Resumed),
+            false,
+            None,
+            received_at,
+        )
+        .await;
+    assert_eq!(resumed.outcome, RuntimeSessionOutcome::Accepted as i32);
+    let checkpoint = h
+        .engine
+        .report_runtime_session(
+            plugin_id.into(),
+            owner_key.clone(),
+            report(4, checkpoint_at, RuntimeSessionTransition::Identified),
+            false,
+            None,
+            received_at,
+        )
+        .await;
+    assert_eq!(checkpoint.outcome, RuntimeSessionOutcome::Accepted as i32);
+
+    let sessions_before_disable = store.sessions("u1").unwrap();
+    assert_eq!(sessions_before_disable.len(), 2);
+    assert_eq!(sessions_before_disable[0].ended_at, Some(paused_at));
+    assert!(sessions_before_disable[1].ended_at.is_none());
+    h.engine
+        .set_plugin_playtime_accounting(plugin_id.into(), false)
+        .await
+        .unwrap();
+    eventually(|| {
+        store
+            .sessions("u1")
+            .unwrap()
+            .iter()
+            .any(|session| session.ended_at == Some(checkpoint_at))
+    })
+    .await;
+    let sessions_after_disable = store.sessions("u1").unwrap();
+    assert_eq!(sessions_after_disable.len(), 2);
+
+    let after_disable = h
+        .engine
+        .report_runtime_session(
+            plugin_id.into(),
+            owner_key,
+            report(5, now - 1, RuntimeSessionTransition::Ended),
+            false,
+            None,
+            received_at,
+        )
+        .await;
+    assert_eq!(
+        after_disable.outcome,
+        RuntimeSessionOutcome::RejectedUnavailable as i32
+    );
+    assert_eq!(store.sessions("u1").unwrap(), sessions_after_disable);
+    assert!(
+        layout
+            .open_activation(&profile)
+            .unwrap()
+            .is_enabled(plugin_id)
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn quit_flushes_a_closed_session_and_signout_preserves_its_account() {
     for signout in [false, true] {

@@ -24,12 +24,25 @@ complete or callable.
 The runtime-session Exchange family now has typed `RuntimeSessionReport` and
 `RuntimeSessionResult` messages with `game.sessions.report` authorization and correlated outcomes.
 One plugin may implement adapters for several runtimes; Core consumes only the common lifecycle
-reports and does not contain emulator-specific detection. A report is accepted only for the
-authenticated extension's selected game and installation and a host-approved content/runtime
-binding. `GamePresence` is descriptive metadata: it cannot start, extend or confirm a measured
-playtime session. Runtime-session observations are sensitive and may be projected through Data
-only under the relevant sharing consent; process handles, credentials and launch tokens are never
-part of that projection.
+reports and does not contain emulator-specific detection. The first report is limited to the
+authenticated extension's host-selected game and installation and an approved content/runtime
+binding. To report another game or installation from the same running runtime instance, the
+extension requests a context using proposed identifiers; the host resolves the current library and
+binding, checks the active session/profile/grant and requires a fresh, non-rememberable user
+confirmation. Reports for the new context must carry the opaque host-issued context id. It is
+session-only, bound to the runtime instance and approved target/revisions, expires after 30 seconds
+without an accepted report, and does not survive a session restart. A new context requires fresh
+active evidence and confirmation.
+
+Adapters should report at least every 10 seconds. `observed_at` is Unix time in seconds; the host
+rejects a report more than 30 seconds old or more than 5 seconds in the future. Report expiry is
+measured independently from host monotonic receipt time, so plugin wall clocks cannot extend a
+session. Each game transition closes the prior interval at the last accepted observation and starts
+the new one at the approved event timestamp; time between them stays unattributed. `GamePresence`
+is descriptive metadata: it cannot start, extend or confirm a measured playtime session.
+Runtime-session observations are sensitive and may be projected through Data only under the
+relevant sharing consent; process handles, credentials and launch tokens are never part of that
+projection.
 
 Rust SDK patch preservation is covered by `crates/plugin-sdk/tests/reference_host.rs`; direct Go
 protobuf preservation and exact 64-bit field handling are covered by the runnable interoperability

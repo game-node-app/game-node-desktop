@@ -1213,6 +1213,19 @@ mod tests {
     }
 
     #[test]
+    fn omitted_playtime_declaration_keeps_legacy_packages_disabled() {
+        let manifest = Manifest::parse_json(VALID.as_bytes()).unwrap();
+        assert_eq!(
+            manifest.manifest().playtime,
+            PlaytimeCapabilities::default()
+        );
+        assert_eq!(
+            manifest.manifest().playtime.without_pause_detection,
+            PlaytimeAccountingMode::Disabled
+        );
+    }
+
+    #[test]
     fn rejects_malformed_and_unsafe_manifest_fixtures() {
         for malformed in [
             VALID.replace("\"schema\":1", "\"schema\":2"),

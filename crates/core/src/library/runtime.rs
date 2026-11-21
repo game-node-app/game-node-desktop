@@ -9,6 +9,10 @@ use std::collections::BTreeMap;
 pub const MAX_RUNTIME_ID_BYTES: usize = 128;
 pub const MAX_RUNTIME_FIELD_BYTES: usize = 4096;
 pub const MAX_RUNTIME_ITEMS: usize = 128;
+/// Bounded declarative metadata namespaces per runtime.
+pub const MAX_RUNTIME_EXTENSIONS: usize = 32;
+/// Total serialized size of a runtime's declarative metadata.
+pub const MAX_RUNTIME_EXTENSION_BYTES: usize = 64 * 1024;
 
 /// A durable, host-only reference to a location inside an approved file root. Unlike the opaque
 /// handle returned to a plugin, this reference is not session-sealed and can be stored. It never
@@ -41,9 +45,72 @@ impl ApprovedFileReference {
     }
 }
 
+/// Host-recorded provenance of the authenticated plugin that registered a runtime.
+///
+/// The host writes these values from the verified package and session, never from a plugin
+/// payload. Older stored records deserialize with empty provenance.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeProvenance {
+    pub plugin_id: String,
+    pub declared_developer: String,
+    pub origin: String,
+    pub publisher_fingerprint: String,
+    pub package_version: String,
+    #[serde(default)]
+    pub package_digest: Vec<u8>,
+}
+
+impl RuntimeProvenance {
+    pub fn is_empty(&self) -> bool {
+        self.plugin_id.is_empty()
+            && self.declared_developer.is_empty()
+            && self.origin.is_empty()
+            && self.publisher_fingerprint.is_empty()
+            && self.package_version.is_empty()
+            && self.package_digest.is_empty()
+    }
+
+    fn validate(&self) -> bool {
+        let valid = |value: &str, max: usize| {
+            value.len() <= max && !value.chars().any(|ch| ch == '\0' || ch.is_control())
+        };
+        valid(&self.plugin_id, MAX_RUNTIME_ID_BYTES)
+            && valid(&self.declared_developer, MAX_RUNTIME_FIELD_BYTES)
+            && valid(&self.origin, MAX_RUNTIME_FIELD_BYTES)
+            && valid(&self.publisher_fingerprint, MAX_RUNTIME_ID_BYTES)
+            && valid(&self.package_version, MAX_RUNTIME_FIELD_BYTES)
+            && self.package_digest.len() <= 64
+    }
+}
+
+/// One namespaced declarative metadata payload. It is an annotation only: the host never treats
+/// it as identity, authorization, a path or an executable command.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeExtension {
+    pub schema_id: String,
+    pub schema_version: u32,
+    #[serde(default)]
+    pub schema_digest: Vec<u8>,
+    pub data: serde_json::Value,
+}
+
+impl RuntimeExtension {
+    fn validate(&self) -> bool {
+        !self.schema_id.is_empty()
+            && self.schema_id.len() <= MAX_RUNTIME_FIELD_BYTES
+            && !self
+                .schema_id
+                .chars()
+                .any(|ch| ch == '\0' || ch.is_control())
+            && self.data.is_object()
+    }
+}
+
 /// A plugin-owned, host-approved installed runtime. This describes software already present on
 /// the host; registering it never installs or downloads anything.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeResource {
     pub id: String,
@@ -57,13 +124,37 @@ pub struct RuntimeResource {
     pub supported_formats: Vec<String>,
     /// Ordered argument template. Each token is a literal or a content path; never shell text.
     pub launch_arguments: Vec<RuntimeArgumentTemplate>,
-    /// Opaque, versioned plugin annotations keyed by their declared namespace. Values are
-    /// encoded protocol payloads so Core can persist and return them without interpreting them.
     #[serde(default)]
-    pub extensions: BTreeMap<String, Vec<u8>>,
     pub revision: u64,
     /// Unix seconds assigned by the host when the resource is stored.
     pub observed_at: i64,
+    /// Host-recorded registering-plugin provenance; empty for records saved before it existed.
+    #[serde(default)]
+    pub provenance: RuntimeProvenance,
+    /// Validated declarative metadata namespaces. Annotations only; never authority.
+    #[serde(default)]
+    pub extensions: BTreeMap<String, RuntimeExtension>,
+}
+
+fn validate_extensions(extensions: &BTreeMap<String, RuntimeExtension>) -> bool {
+    extensions.len() <= MAX_RUNTIME_EXTENSIONS
+        && extensions.iter().all(|(namespace, extension)| {
+            valid_extension_namespace(namespace) && extension.validate()
+        })
+        && extensions
+            .values()
+            .filter_map(|extension| serde_json::to_vec(&extension.data).ok())
+            .map(|data| data.len())
+            .sum::<usize>()
+            <= MAX_RUNTIME_EXTENSION_BYTES
+}
+
+fn valid_extension_namespace(namespace: &str) -> bool {
+    !namespace.is_empty()
+        && namespace.len() <= MAX_RUNTIME_ID_BYTES
+        && namespace
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
 }
 
 impl RuntimeResource {
@@ -90,18 +181,10 @@ impl RuntimeResource {
                 .launch_arguments
                 .iter()
                 .all(RuntimeArgumentTemplate::validate)
-            && self.extensions.len() <= 32
-            && self.extensions.iter().all(|(namespace, value)| {
-                !namespace.is_empty()
-                    && namespace.len() <= 256
-                    && !namespace.chars().any(char::is_control)
-                    && !namespace.starts_with("org.gamenode")
-                    && namespace.split('.').count() >= 2
-                    && value.len() <= 64 * 1024
-            })
-            && self.extensions.values().map(Vec::len).sum::<usize>() <= 64 * 1024
             && self.revision > 0
             && self.observed_at >= 0
+            && self.provenance.validate()
+            && validate_extensions(&self.extensions)
     }
 }
 
@@ -163,6 +246,21 @@ impl RuntimeContentBinding {
                 .all(|platform| valid(platform, MAX_RUNTIME_ID_BYTES))
             && self.revision > 0
     }
+}
+
+/// Safe content/runtime availability projection for one installation. It never carries a path,
+/// handle or payload; shared rows identify the registering plugin, not a private field.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeAvailabilityEntry {
+    pub installation_id: String,
+    pub content_id: String,
+    pub content_kind: String,
+    pub runtime_id: String,
+    pub runtime_name: String,
+    pub platform: String,
+    pub publisher_id: String,
+    pub revision: u64,
 }
 
 /// Outcome of a revision-checked runtime or binding mutation.

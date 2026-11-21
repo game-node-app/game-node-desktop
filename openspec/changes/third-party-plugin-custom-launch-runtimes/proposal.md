@@ -6,8 +6,8 @@ Custom launch recipes, runtime bindings and plugin-reported game sessions affect
 
 ## What Changes
 
-Adds custom executable/URI recipes and overlays, immutable reviewed launch plans, runtime resources/content identity and runtime-session accounting. It also adds provider-free extension process supervision and account-bound activation, plus launch-specific UI and Go/Rust interoperability coverage. The extension's runtime-unavailable inventory state remains owned by the provider/catalog MVP's task 10.2.
+Adds custom executable/URI recipes and overlays, immutable reviewed launch plans, runtime resources/content identity and runtime-session accounting. It adds Linux execution for reviewed custom plans, including direct executables and Proton-style wrappers, without changing the detected official launch default. It also supervises launched process trees so explicit stop can terminate and reap descendants and shared-resource use leases remain held for the full process lifetime. Provider-free extension process supervision and account-bound activation, launch-specific UI and Go/Rust interoperability coverage are included. The extension's runtime-unavailable inventory state remains owned by the provider/catalog MVP's task 10.2.
 
 ## Out of Scope
 
-Does not modify official provider implementations, launch defaults, credentials or accounting policy. MVP providers cannot customize launch or register runtimes.
+Does not modify official provider implementations, launch defaults, credentials or accounting policy, and does not claim that custom processes are sandboxed or safe. MVP providers cannot customize launch or register runtimes.

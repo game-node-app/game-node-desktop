@@ -569,9 +569,55 @@ impl ResourceApi {
                 return Outcome::failed("target_changed", "the launch plan changed; ask again");
             }
         }
+        // The final spawn and a permission revocation must have a defined ordering. Holding the
+        // provider commit guard through dispatch ensures a revocation that wins first prevents
+        // the launch; a revocation after spawn does not terminate the running game.
+        let _launch_guard = if operation == Operation::CustomLaunch {
+            match self
+                .providers
+                .authorize_resource_commit(&context, permission)
+                .await
+            {
+                Ok((current, guard)) if current.grant_revision == caller.grant_revision => {
+                    Some(guard)
+                }
+                Ok(_) => {
+                    return Outcome::failed("revoked", "plugin permissions changed before launch");
+                }
+                Err(status) => return Outcome::stopped(&status),
+            }
+        } else {
+            None
+        };
+        if let Err(status) = ctx.check() {
+            return Outcome::stopped(&status);
+        }
         let dispatch = if operation == Operation::CustomLaunch {
             match custom_dispatch {
-                Some(dispatch) => host.launch_custom(dispatch).await,
+                Some(dispatch) => {
+                    if let Some(namespace) = &caller.namespace {
+                        let identity = namespace.identity();
+                        let requires_files = custom_recipe.as_ref().is_some_and(|recipe| {
+                            recipe.executable.is_some()
+                                || recipe.working_directory.is_some()
+                                || !recipe.executable_handle.is_empty()
+                                || !recipe.working_directory_handle.is_empty()
+                                || !recipe.runtime_handle.is_empty()
+                        });
+                        let authority = crate::plugin_host::library::UserLaunchAuthority {
+                            plugin_id: identity.plugin_id.clone(),
+                            publisher_fingerprint: identity.publisher_fingerprint.clone(),
+                            profile_id: identity.profile_id.clone(),
+                            profile_epoch: caller.profile_epoch,
+                            grant_revision: None,
+                            requires_files,
+                        };
+                        host.launch_custom_for_entry_authorized(dispatch, entry_key, authority)
+                            .await
+                    } else {
+                        host.launch_custom_for_entry(dispatch, entry_key).await
+                    }
+                }
                 None => Err(tonic::Status::failed_precondition(
                     "custom launch recipe is unavailable",
                 )),
@@ -588,6 +634,9 @@ impl ResourceApi {
                     Operation::CustomLaunch => "the custom game launch was started",
                     Operation::Install => "the provider's install flow was opened",
                     Operation::BackupRestore => unreachable!("restores use the backup adapter"),
+                    Operation::RuntimeSessionContext => {
+                        unreachable!("runtime contexts do not dispatch game actions")
+                    }
                 },
             ),
             Err(status) => Outcome::failed(code_word(&status), status.message()),

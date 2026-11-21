@@ -2361,8 +2361,8 @@ fn selected_launch_recipe_is_revision_checked_persistent_and_never_falls_back_si
 #[test]
 fn runtime_resources_and_content_bindings_keep_identity_and_survive_runtime_removal() {
     use gamenode_core::library::{
-        ApprovedFileReference, RuntimeArgumentTemplate, RuntimeContentBinding, RuntimeMutation,
-        RuntimeResource,
+        ApprovedFileReference, RuntimeArgumentTemplate, RuntimeContentBinding, RuntimeExtension,
+        RuntimeMutation, RuntimeProvenance, RuntimeResource,
     };
 
     let dir = TempDir::new().unwrap();
@@ -2404,9 +2404,10 @@ fn runtime_resources_and_content_bindings_keep_identity_and_survive_runtime_remo
             RuntimeArgumentTemplate::Literal("--fullscreen".into()),
             RuntimeArgumentTemplate::ContentPath,
         ],
-        extensions: Default::default(),
         revision: 1,
         observed_at: 100,
+        provenance: Default::default(),
+        extensions: Default::default(),
     };
     let plugin = "plugin-a/profile-1";
     let runtime_a = runtime("runtime-a");
@@ -2419,6 +2420,15 @@ fn runtime_resources_and_content_bindings_keep_identity_and_survive_runtime_remo
         store.save_runtime_resource(plugin, &runtime_b).unwrap(),
         RuntimeMutation::Applied { revision: 1 }
     );
+    // A separate runtime owner can add its own binding to the same GameNode game/content. This
+    // is the DeSmuME -> melonDS migration path: it does not need to delete or mutate the old
+    // owner's record in order to make the new runtime selectable.
+    let next_owner = "plugin-b/profile-1";
+    let melonds = runtime("melonds");
+    assert_eq!(
+        store.save_runtime_resource(next_owner, &melonds).unwrap(),
+        RuntimeMutation::Applied { revision: 1 }
+    );
     assert_eq!(
         store.save_runtime_resource(plugin, &runtime_a).unwrap(),
         RuntimeMutation::Conflict { current: 1 }
@@ -2426,9 +2436,22 @@ fn runtime_resources_and_content_bindings_keep_identity_and_survive_runtime_remo
     let mut updated_runtime = runtime_a.clone();
     updated_runtime.revision = 2;
     updated_runtime.version = "1.1".into();
+    updated_runtime.provenance = RuntimeProvenance {
+        plugin_id: "org.example.runtime".into(),
+        declared_developer: "Example developer".into(),
+        origin: "example".into(),
+        publisher_fingerprint: "ab".repeat(32),
+        package_version: "1.1.0".into(),
+        package_digest: vec![5; 32],
+    };
     updated_runtime.extensions.insert(
-        "org.example.runtime".into(),
-        b"opaque-versioned-extension-payload".to_vec(),
+        "org.example.compatibility".into(),
+        RuntimeExtension {
+            schema_id: "org.example.compatibility.v1".into(),
+            schema_version: 1,
+            schema_digest: vec![3; 32],
+            data: serde_json::json!({"console": "snes"}),
+        },
     );
     assert_eq!(
         store
@@ -2439,13 +2462,17 @@ fn runtime_resources_and_content_bindings_keep_identity_and_survive_runtime_remo
     drop(store);
     let reopened = SqliteSettingsStore::open(&path).unwrap();
     let store = reopened.library_store();
+    let reopened_a = store
+        .runtime_resource(plugin, "runtime-a")
+        .unwrap()
+        .unwrap();
     assert_eq!(
-        store
-            .runtime_resource(plugin, "runtime-a")
-            .unwrap()
-            .unwrap()
-            .extensions["org.example.runtime"],
-        b"opaque-versioned-extension-payload"
+        reopened_a.extensions["org.example.compatibility"].schema_version,
+        1
+    );
+    assert_eq!(
+        reopened_a.extensions["org.example.compatibility"].data,
+        serde_json::json!({"console": "snes"})
     );
     assert_eq!(
         store.save_runtime_resource(plugin, &runtime_a).unwrap(),
@@ -2510,6 +2537,21 @@ fn runtime_resources_and_content_bindings_keep_identity_and_survive_runtime_remo
     let content_a_runtime_b = binding(72, "content-a", "runtime-b", "a.sfc");
     let content_a_variant = binding(72, "content-a-patched", "runtime-a", "a-patched.sfc");
     let content_b_runtime_a = binding(73, "content-b", "runtime-a", "b.sfc");
+    let desmume_owner = "plugin-desmume/profile-1";
+    let desmume = runtime("desmume");
+    assert_eq!(
+        store
+            .save_runtime_resource(desmume_owner, &desmume)
+            .unwrap(),
+        RuntimeMutation::Applied { revision: 1 }
+    );
+    let desmume_binding = binding(72, "content-a", "desmume", "a.sfc");
+    assert_eq!(
+        store
+            .save_runtime_content_binding(desmume_owner, &desmume_binding)
+            .unwrap(),
+        RuntimeMutation::Applied { revision: 1 }
+    );
     for binding in [
         &content_a_runtime_a,
         &content_a_runtime_b,
@@ -2521,6 +2563,48 @@ fn runtime_resources_and_content_bindings_keep_identity_and_survive_runtime_remo
             RuntimeMutation::Applied { revision: 1 }
         );
     }
+    let melonds_binding = binding(72, "content-a", "melonds", "a.sfc");
+    assert_eq!(
+        store
+            .save_runtime_content_binding(next_owner, &melonds_binding)
+            .unwrap(),
+        RuntimeMutation::Applied { revision: 1 }
+    );
+
+    // The shared catalog exposes every owner's typed metadata, while the safe availability
+    // projection joins bindings to runtime names without a path or handle.
+    let shared = store.shared_runtime_resources().unwrap();
+    assert_eq!(shared.len(), 4);
+    let stored = shared
+        .iter()
+        .find(|(owner, runtime)| owner == plugin && runtime.id == "runtime-a")
+        .map(|(_, runtime)| runtime)
+        .unwrap();
+    assert_eq!(stored.provenance.plugin_id, "org.example.runtime");
+    assert_eq!(
+        stored.extensions["org.example.compatibility"].schema_version,
+        1
+    );
+    assert!(store.shared_runtime_catalog_revision().unwrap() >= 3);
+
+    let private = store
+        .runtime_availability(Some(plugin), &["steam:72".to_owned()])
+        .unwrap();
+    assert_eq!(private.len(), 3);
+    assert!(private.iter().all(
+        |entry| entry.publisher_id == "org.example.runtime" || entry.runtime_id != "runtime-a"
+    ));
+    let all = store
+        .runtime_availability(None, &["steam:72".to_owned()])
+        .unwrap();
+    assert_eq!(all.len(), 5);
+    let melonds = all
+        .iter()
+        .find(|entry| entry.runtime_id == "melonds")
+        .unwrap();
+    assert_eq!(melonds.runtime_name, "Runtime melonds");
+    assert_eq!(melonds.content_id, "content-a");
+    assert_eq!(melonds.platform, "linux");
 
     // Moving a file updates its approved location under the same stable content identity.
     let mut moved_content = content_a_runtime_a.clone();
@@ -2533,6 +2617,30 @@ fn runtime_resources_and_content_bindings_keep_identity_and_survive_runtime_remo
         RuntimeMutation::Applied { revision: 2 }
     );
     assert_eq!(store.runtime_catalog_revision(plugin).unwrap(), 4);
+    let migrated = store
+        .runtime_content_bindings(next_owner, 72, "steam:72")
+        .unwrap();
+    assert_eq!(migrated.len(), 1);
+    assert_eq!(migrated[0].content_id, "content-a");
+    assert_eq!(migrated[0].runtime_id, "melonds");
+    assert_eq!(
+        migrated[0].content.approval_id,
+        "content-approval-content-a"
+    );
+    assert!(
+        store
+            .runtime_resource(desmume_owner, "desmume")
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(
+        store
+            .runtime_content_bindings(desmume_owner, 72, "steam:72")
+            .unwrap()[0]
+            .runtime_id,
+        "desmume",
+        "the migration leaves the foreign DeSmuME runtime and binding intact"
+    );
 
     assert_eq!(
         store
@@ -2574,6 +2682,14 @@ fn runtime_resources_and_content_bindings_keep_identity_and_survive_runtime_remo
         sibling.content.relative_path,
         ["moved", "renamed.sfc"],
         "all runtime choices for one content follow its moved locator"
+    );
+    assert!(
+        store
+            .runtime_content_bindings(plugin, 72, "steam:72")
+            .unwrap()
+            .iter()
+            .any(|binding| binding.runtime_id == "runtime-a"),
+        "migrating to another owner's runtime does not require deleting the original binding"
     );
     assert!(bindings.iter().any(|binding| {
         binding.content_id == "content-a-patched"

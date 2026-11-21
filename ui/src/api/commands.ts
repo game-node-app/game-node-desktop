@@ -406,6 +406,14 @@ export const commands = {
   pluginStop: (providerId: string) =>
     safeInvoke<void>('plugin_stop', { providerId }, () => undefined),
 
+  /** Host-owned custom launches that have not been confirmed exited. */
+  customLaunchIds: (entryKey: string) =>
+    safeInvoke<number[]>('custom_launch_ids', { entryKey }, () => []),
+
+  /** Explicitly terminate a supervised launch and confirm its process tree has exited. */
+  customLaunchStop: (id: number) =>
+    safeInvoke<void>('custom_launch_stop', { id }, () => undefined),
+
   /** Starts a stopped plugin with a fresh session and restores its account. */
   pluginStart: (providerId: string) =>
     safeInvoke<void>('plugin_start', { providerId }, () => undefined),

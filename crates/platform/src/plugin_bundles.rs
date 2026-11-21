@@ -899,4 +899,84 @@ mod tests {
             Err(BundleError::ComponentMismatch)
         );
     }
+
+    #[test]
+    fn case_colliding_and_excess_entries_are_rejected() {
+        let key = Ed25519KeyPair::from_seed_unchecked(&[28; 32]).unwrap();
+        let components = sample_components(&key);
+
+        // Two component archives whose names differ only by case collide.
+        let colliding = vec![
+            (
+                "provider.gnplugin",
+                "org.example.provider",
+                "provider",
+                component_archive("org.example.provider", "provider", "0.1.0", &key, None),
+            ),
+            (
+                "Provider.gnplugin",
+                "org.example.provider",
+                "provider",
+                component_archive("org.example.provider", "provider", "0.1.0", &key, None),
+            ),
+        ];
+        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+        {
+            let bytes = bundle_archive(&key, &colliding, false);
+            let mut source = ZipArchive::new(Cursor::new(&bytes)).unwrap();
+            for index in 0..source.len() {
+                let mut entry = source.by_index(index).unwrap();
+                let name = entry.name().to_owned();
+                let mut data = Vec::new();
+                entry.read_to_end(&mut data).unwrap();
+                writer.start_file(name, SimpleFileOptions::default()).unwrap();
+                writer.write_all(&data).unwrap();
+            }
+        }
+        writer.start_file("components/Extra.gnplugin", SimpleFileOptions::default()).unwrap();
+        writer.write_all(b"extra case-colliding entry").unwrap();
+        let bytes = writer.finish().unwrap().into_inner();
+        assert_eq!(
+            verify_bundle_bytes(&bytes),
+            Err(BundleError::InvalidArchive)
+        );
+
+        // More entries than components plus metadata exceeds the archive limit before any read.
+        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+        {
+            let bytes = bundle_archive(&key, &components, true);
+            let mut source = ZipArchive::new(Cursor::new(&bytes)).unwrap();
+            for index in 0..source.len() {
+                let mut entry = source.by_index(index).unwrap();
+                let name = entry.name().to_owned();
+                let mut data = Vec::new();
+                entry.read_to_end(&mut data).unwrap();
+                writer.start_file(name, SimpleFileOptions::default()).unwrap();
+                writer.write_all(&data).unwrap();
+            }
+        }
+        for index in 0..=(MAX_BUNDLE_COMPONENTS + 1) {
+            let name = format!("components/pad-{index}.gnplugin");
+            writer.start_file(name, SimpleFileOptions::default()).unwrap();
+            writer.write_all(b"padding entry").unwrap();
+        }
+        let bytes = writer.finish().unwrap().into_inner();
+        assert_eq!(
+            verify_bundle_bytes(&bytes),
+            Err(BundleError::ArchiveLimit)
+        );
+    }
+
+    #[test]
+    fn bounded_reads_reject_entries_over_their_limit() {
+        let data = vec![0u8; 128];
+        assert_eq!(
+            read_bounded(Cursor::new(&data), 64),
+            Err(BundleError::ArchiveLimit)
+        );
+        assert_eq!(
+            read_bounded(Cursor::new(&data), 128).unwrap(),
+            data.as_slice()
+        );
+    }
 }

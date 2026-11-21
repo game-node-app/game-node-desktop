@@ -135,6 +135,28 @@ class PluginBundleToolTests(unittest.TestCase):
             with self.assertRaisesRegex(tool.PackageError, "unexpected bundle entry"):
                 tool.bundle_verify(extra)
 
+    def test_expansion_and_compressed_limits_are_enforced(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            key_path, provider, extension = self._fixture(base)
+            output = base / "example.gnbundle"
+            tool.bundle([provider, extension], "org.example.bundle", "Bundle", "0.1.0", output, key_path)
+            original_expanded = tool.MAX_BUNDLE_EXPANDED
+            tool.MAX_BUNDLE_EXPANDED = 10
+            try:
+                with self.assertRaisesRegex(tool.PackageError, "expansion exceeds"):
+                    tool.bundle_verify(output)
+            finally:
+                tool.MAX_BUNDLE_EXPANDED = original_expanded
+            original_compressed = tool.MAX_BUNDLE_COMPRESSED
+            tool.MAX_BUNDLE_COMPRESSED = 10
+            try:
+                with self.assertRaisesRegex(tool.PackageError, "compressed limit"):
+                    tool.bundle_verify(output)
+            finally:
+                tool.MAX_BUNDLE_COMPRESSED = original_compressed
+            tool.bundle_verify(output)
+
 
 if __name__ == "__main__":
     unittest.main()

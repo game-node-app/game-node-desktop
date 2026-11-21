@@ -318,15 +318,14 @@ impl QuerySelector {
         // Category and selected-record grants are independent. If both are selected and the
         // category grant denies, the record selector still gets its own authorization check.
         let mut scopes = Vec::with_capacity(2);
-        if record.class == SharingClass::Common {
-            if record
+        if record.class == SharingClass::Common
+            && record
                 .category
                 .is_some_and(|category| self.categories.contains(&category))
-            {
-                scopes.push(AccessScope::Category(
-                    record.category.expect("checked above"),
-                ));
-            }
+        {
+            scopes.push(AccessScope::Category(
+                record.category.expect("checked above"),
+            ));
         }
         if self.record_ids.contains(&record.record_id) {
             scopes.push(AccessScope::SelectedRecord(record.record_id.clone()));
@@ -503,14 +502,13 @@ impl DataBroker {
                         && record.dataset_id == publication.dataset_id
                         && record.resource_id == publication.resource_id
                         && record.source_observation_id == publication.source_observation_id
-                }) {
-                    if same_observation(prior, &publication) {
-                        return Ok(PublicationReceipt {
-                            record_id: prior.record_id.clone(),
-                            revision: prior.revision,
-                            duplicate: true,
-                        });
-                    }
+                }) && same_observation(prior, &publication)
+                {
+                    return Ok(PublicationReceipt {
+                        record_id: prior.record_id.clone(),
+                        revision: prior.revision,
+                        duplicate: true,
+                    });
                 }
                 if publication.sequence > 0 {
                     let stream = PublicationStream {

@@ -35,7 +35,7 @@ fn window() -> (Emit, Arc<Mutex<Vec<Signal>>>, Arc<AtomicBool>) {
 async fn shown(seen: &Arc<Mutex<Vec<Signal>>>) -> PluginConfirmation {
     for _ in 0..200 {
         if let Some(Signal::Open(confirmation)) = seen.lock().unwrap().first().cloned() {
-            return confirmation;
+            return *confirmation;
         }
         tokio::time::sleep(Duration::from_millis(5)).await;
     }

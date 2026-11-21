@@ -303,15 +303,14 @@ impl ResourceApi {
                     "the handle is not an approved runtime or content file",
                 ));
             }
-            if let Some((game_id, installation_id)) = target {
-                if opened.approval.kind != "library"
-                    && (opened.approval.game_id.parse::<u64>().ok() != Some(game_id)
-                        || opened.approval.installation_id != installation_id)
-                {
-                    return Err(Status::permission_denied(
-                        "the content handle is not approved for this game installation",
-                    ));
-                }
+            if let Some((game_id, installation_id)) = target
+                && opened.approval.kind != "library"
+                && (opened.approval.game_id.parse::<u64>().ok() != Some(game_id)
+                    || opened.approval.installation_id != installation_id)
+            {
+                return Err(Status::permission_denied(
+                    "the content handle is not approved for this game installation",
+                ));
             }
             let entry = opened
                 .confined
@@ -1176,7 +1175,7 @@ impl ResourceApi {
             runtime_request.name = applied.name;
             runtime_request.version = applied.version;
             runtime_request.supported_formats = applied.supported_formats;
-        } else if runtime_request.extensions.len() > 0 {
+        } else if !runtime_request.extensions.is_empty() {
             return Err(Status::invalid_argument(
                 "runtime extensions require a revision-checked extension_patch",
             ));
@@ -1564,9 +1563,8 @@ impl ResourceApi {
                             Err(error) => { let _ = sender.send(Err(error)).await; return; }
                         };
                         let removed = last.iter().any(|old| !current.iter().any(|new| new.0 == old.0 && new.1.id == old.1.id));
-                        if removed {
-                            if sender.send(Ok(RuntimeRecordEvent { revision, event_type: "reset".into(), runtime: None })).await.is_err() { return; }
-                        }
+                        if removed
+                            && sender.send(Ok(RuntimeRecordEvent { revision, event_type: "reset".into(), runtime: None })).await.is_err() { return; }
                         for (is_shared, runtime) in &current {
                             let changed = last.iter().find(|old| old.0 == *is_shared && old.1.id == runtime.id).is_none_or(|old| old.1.revision != runtime.revision);
                             if !changed || (!resource_id.is_empty() && runtime.id != resource_id) { continue; }

@@ -973,7 +973,6 @@ fn data_record(record: &ProjectedRecord) -> DataRecord {
         expires_at: record.expires_at().unwrap_or_default(),
         sequence: record.sequence(),
         source_observation_id: record.source_observation_id().to_owned(),
-        ..Default::default()
     }
 }
 

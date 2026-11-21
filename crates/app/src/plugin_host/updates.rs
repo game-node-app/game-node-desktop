@@ -1890,6 +1890,17 @@ mod review_tests {
     }
 }
 
+/// One host-approved release and the verified sources needed to install it.
+pub struct ApprovedRelease<'a, F> {
+    pub verifier: &'a UpdateIndexVerifier,
+    pub client: &'a FetchClient,
+    pub index: &'a VerifiedUpdateIndex,
+    pub version: &'a str,
+    pub publisher_key: [u8; 32],
+    pub emulation_policy: EmulationPolicy,
+    pub allowed_origin: F,
+}
+
 /// Coordinates feed checks and update installs for one managed package registry.
 #[derive(Clone)]
 pub struct ManagedPluginUpdater {
@@ -1971,8 +1982,7 @@ impl ManagedPluginUpdater {
         })
         .await
         .map_err(|_| ManagedUpdateError::WorkerFailed)??;
-        let candidate_key =
-            package_key(&package_path).map_err(|error| ManagedUpdateError::Staging(error))?;
+        let candidate_key = package_key(&package_path).map_err(ManagedUpdateError::Staging)?;
         let report = self
             .packages
             .inspect_candidate(&package_path, candidate_key, EmulationPolicy::RequireNative)
@@ -1988,16 +1998,22 @@ impl ManagedPluginUpdater {
     /// Download and install one release after caller approval. The index and package are both
     /// validated before the registry can change its active pointer. Any fetch, extraction,
     /// compatibility or signature failure leaves the old pointer intact.
-    pub async fn apply_approved_release(
+    pub async fn apply_approved_release<F>(
         &self,
-        verifier: &UpdateIndexVerifier,
-        client: &FetchClient,
-        index: &VerifiedUpdateIndex,
-        version: &str,
-        publisher_key: [u8; 32],
-        emulation_policy: EmulationPolicy,
-        allowed_origin: impl Fn(&str) -> bool + Send + Sync,
-    ) -> Result<InstalledPluginVersion, ManagedUpdateError> {
+        release: ApprovedRelease<'_, F>,
+    ) -> Result<InstalledPluginVersion, ManagedUpdateError>
+    where
+        F: Fn(&str) -> bool + Send + Sync,
+    {
+        let ApprovedRelease {
+            verifier,
+            client,
+            index,
+            version,
+            publisher_key,
+            emulation_policy,
+            allowed_origin,
+        } = release;
         let index = index.index();
         let release = index
             .releases

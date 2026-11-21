@@ -556,24 +556,22 @@ impl ProviderProcesses {
                 ));
             }
             active_profile_epoch = Some(profile.epoch());
-            if !allow_disabled {
-                if let Some(layout) = activation_layout.as_ref() {
-                    let layout = layout.clone();
-                    let plugin = plugin_id.clone();
-                    let account = profile.clone();
-                    let enabled = tokio::task::spawn_blocking(move || {
-                        layout
-                            .open_activation(&account)
-                            .map(|state| state.is_enabled(&plugin))
-                            .map_err(|error| {
-                                Status::internal(format!("plugin activation state: {error}"))
-                            })
-                    })
-                    .await
-                    .map_err(|_| Status::internal("plugin activation worker failed"))??;
-                    if !enabled {
-                        return Err(Status::permission_denied("third-party plugin is disabled"));
-                    }
+            if !allow_disabled && let Some(layout) = activation_layout.as_ref() {
+                let layout = layout.clone();
+                let plugin = plugin_id.clone();
+                let account = profile.clone();
+                let enabled = tokio::task::spawn_blocking(move || {
+                    layout
+                        .open_activation(&account)
+                        .map(|state| state.is_enabled(&plugin))
+                        .map_err(|error| {
+                            Status::internal(format!("plugin activation state: {error}"))
+                        })
+                })
+                .await
+                .map_err(|_| Status::internal("plugin activation worker failed"))??;
+                if !enabled {
+                    return Err(Status::permission_denied("third-party plugin is disabled"));
                 }
             }
             active_profile = Some(profile);
@@ -967,12 +965,7 @@ impl ProviderProcesses {
         // Send correlated Close acknowledgements while provider command sessions are still
         // serviceable. Broadcasting shutdown first would let supervisors tear down those sessions
         // before the configuration windows could be fenced.
-        let provider_ids: Vec<_> = self
-            .inner
-            .slots
-            .iter()
-            .map(|(provider_id, _)| provider_id.clone())
-            .collect();
+        let provider_ids: Vec<_> = self.inner.slots.keys().cloned().collect();
         for provider_id in &provider_ids {
             let _ = self
                 .inner
@@ -1065,19 +1058,18 @@ async fn supervise(mut child: tokio::process::Child, supervision: Supervision) {
         if target.is_some() {
             api.disconnect(&provider_id).await;
         }
-        if !exited {
-            if tokio::time::timeout(Duration::from_secs(1), child.wait())
+        if !exited
+            && tokio::time::timeout(Duration::from_secs(1), child.wait())
+                .await
+                .is_err()
+        {
+            tree.terminate();
+            if tokio::time::timeout(Duration::from_secs(2), child.wait())
                 .await
                 .is_err()
             {
-                tree.terminate();
-                if tokio::time::timeout(Duration::from_secs(2), child.wait())
-                    .await
-                    .is_err()
-                {
-                    tree.kill();
-                    let _ = child.wait().await;
-                }
+                tree.kill();
+                let _ = child.wait().await;
             }
         }
     }

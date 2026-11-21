@@ -183,10 +183,8 @@ impl ExternalNamespaceResolver {
                 OwnerKind::Secret => b"secret",
             },
         );
-        if provider_scoped {
-            if let Some(provider_id) = &self.provider_id {
-                hash_part(&mut hash, provider_id.as_bytes());
-            }
+        if provider_scoped && let Some(provider_id) = &self.provider_id {
+            hash_part(&mut hash, provider_id.as_bytes());
         }
         NamespaceOwner {
             key: hash.finalize().into(),

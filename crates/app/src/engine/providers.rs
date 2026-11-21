@@ -1454,24 +1454,6 @@ fn runtime_track_effects(
         .collect()
 }
 
-#[cfg(test)]
-mod runtime_report_source_tests {
-    use super::{RuntimeReportSourceConflict, runtime_report_source_conflict};
-
-    #[test]
-    fn plugin_playtime_is_not_double_counted_with_host_process_or_provider_counter_evidence() {
-        assert_eq!(
-            runtime_report_source_conflict(true, false),
-            Some(RuntimeReportSourceConflict::ProcessEvidence)
-        );
-        assert_eq!(
-            runtime_report_source_conflict(false, true),
-            Some(RuntimeReportSourceConflict::ProviderCounter)
-        );
-        assert_eq!(runtime_report_source_conflict(false, false), None);
-    }
-}
-
 struct EngineRuntimeSessionHandler(std::sync::Weak<Shared>);
 
 #[tonic::async_trait]
@@ -1531,5 +1513,23 @@ impl RuntimeSessionHandler for EngineRuntimeSessionHandler {
         if let Some(shared) = self.0.upgrade() {
             Engine { shared }.fence_runtime_sessions(&plugin_id);
         }
+    }
+}
+
+#[cfg(test)]
+mod runtime_report_source_tests {
+    use super::{RuntimeReportSourceConflict, runtime_report_source_conflict};
+
+    #[test]
+    fn plugin_playtime_is_not_double_counted_with_host_process_or_provider_counter_evidence() {
+        assert_eq!(
+            runtime_report_source_conflict(true, false),
+            Some(RuntimeReportSourceConflict::ProcessEvidence)
+        );
+        assert_eq!(
+            runtime_report_source_conflict(false, true),
+            Some(RuntimeReportSourceConflict::ProviderCounter)
+        );
+        assert_eq!(runtime_report_source_conflict(false, false), None);
     }
 }

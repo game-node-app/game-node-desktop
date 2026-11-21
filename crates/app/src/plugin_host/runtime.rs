@@ -1122,13 +1122,11 @@ impl ThirdPartyPluginLifecycle {
             if enabled
                 && !self.api.is_extension(&config.provider_id)
                 && self.api.profiles().is_current(profile_epoch)
+                && let Err(restart_error) = self.processes.ensure_started(&config.provider_id).await
             {
-                if let Err(restart_error) = self.processes.ensure_started(&config.provider_id).await
-                {
-                    return Err(Status::unavailable(format!(
-                        "candidate activation failed ({error}); previous version was restored but could not restart ({restart_error})"
-                    )));
-                }
+                return Err(Status::unavailable(format!(
+                    "candidate activation failed ({error}); previous version was restored but could not restart ({restart_error})"
+                )));
             }
             return Err(error);
         }

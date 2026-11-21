@@ -580,10 +580,10 @@ fn validate_target_requirements(
                 .as_deref()
                 .map(parse_numeric_version)
                 .transpose()?;
-            if let (Some(min), Some(max)) = (&min_version, &max_version) {
-                if compare_numeric_versions(min, max).is_gt() {
-                    return invalid("Windows min_version must not exceed max_version");
-                }
+            if let (Some(min), Some(max)) = (&min_version, &max_version)
+                && compare_numeric_versions(min, max).is_gt()
+            {
+                return invalid("Windows min_version must not exceed max_version");
             }
             if req
                 .min_build
@@ -781,12 +781,10 @@ fn validate_schema_node(
         }
     }
 
-    if let Some(dialect) = object.get("$schema") {
-        if dialect.as_str() != Some(JSON_SCHEMA_DIALECT) {
-            return invalid(
-                "schema $schema must identify the supported JSON Schema 2020-12 subset",
-            );
-        }
+    if let Some(dialect) = object.get("$schema")
+        && dialect.as_str() != Some(JSON_SCHEMA_DIALECT)
+    {
+        return invalid("schema $schema must identify the supported JSON Schema 2020-12 subset");
     }
     for text_key in ["title", "description"] {
         if let Some(text) = object.get(text_key) {
@@ -988,7 +986,7 @@ fn decode_key(s: &str) -> Option<Vec<u8>> {
     }
     let mut out = Vec::with_capacity(33);
     let bytes = s.as_bytes();
-    for chunk in bytes.chunks_exact(4) {
+    for chunk in bytes.as_chunks::<4>().0 {
         let a = alphabet.iter().position(|b| *b == chunk[0])? as u32;
         let b = alphabet.iter().position(|b| *b == chunk[1])? as u32;
         let c = if chunk[2] == b'=' {

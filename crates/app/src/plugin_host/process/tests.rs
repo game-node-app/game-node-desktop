@@ -308,7 +308,7 @@ async fn extension_fixture_process(mode: &str) {
     assert_eq!(context.target_game.as_ref(), Some(&target));
     assert!(session.host.provider_context().await.is_err());
     let output = std::env::var_os("GAMENODE_TEST_PLUGIN_TREE_OUTPUT").unwrap();
-    let child = std::process::Command::new("sh")
+    let mut child = std::process::Command::new("sh")
         .args([
             "-c",
             r#"trap '' TERM; while :; do printf x >> "$1"; sleep 0.05; done"#,
@@ -318,7 +318,11 @@ async fn extension_fixture_process(mode: &str) {
         .spawn()
         .unwrap();
     let pid_path = std::env::var_os("GAMENODE_TEST_PLUGIN_TREE_PID").unwrap();
-    std::fs::write(pid_path, child.id().to_string()).unwrap();
+    std::fs::write(&pid_path, child.id().to_string()).unwrap();
+    // The fixture child outlives this session; reap it after the host tears down the tree.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
     if mode == "extension-crash" {
         let marker = std::env::var_os("GAMENODE_TEST_PLUGIN_CRASH_MARKER").unwrap();
         while !std::path::Path::new(&marker).exists() {

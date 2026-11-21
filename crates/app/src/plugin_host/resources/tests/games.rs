@@ -2269,7 +2269,6 @@ async fn shared_runtime_catalog_and_content_availability_need_no_pairwise_grant(
                             )]
                             .into(),
                         }),
-                        ..Default::default()
                     },
                 )]
                 .into(),

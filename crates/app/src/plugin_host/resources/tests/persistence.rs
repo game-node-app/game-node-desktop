@@ -140,7 +140,7 @@ async fn persistence_admin_is_logical_paged_and_bound_to_authenticated_owner() {
         .unwrap()
         .into_inner();
     assert_eq!(cleared.outcome, MutationOutcome::Applied as i32);
-    assert_eq!(fixture.load("beta").await.unwrap().found, false);
+    assert!(!fixture.load("beta").await.unwrap().found);
 }
 
 #[tokio::test]

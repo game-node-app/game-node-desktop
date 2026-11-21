@@ -489,10 +489,7 @@ impl PluginStateLayout {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(error) => return Err(error.into()),
         }
-        let entries = match fs::read_dir(&accounts) {
-            Ok(entries) => entries,
-            Err(error) => return Err(error.into()),
-        };
+        let entries = fs::read_dir(&accounts)?;
         let mut directories = Vec::new();
         for entry in entries {
             let entry = entry?;

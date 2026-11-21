@@ -45,7 +45,7 @@ pub struct PluginConfirmation {
 /// What the bridge tells the window.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Signal {
-    Open(PluginConfirmation),
+    Open(Box<PluginConfirmation>),
     Closed(String),
 }
 
@@ -115,7 +115,7 @@ impl Prompter for ConfirmationBridge {
             bridge: self,
             id: id.clone(),
         };
-        let shown = (self.emit)(Signal::Open(PluginConfirmation {
+        let shown = (self.emit)(Signal::Open(Box::new(PluginConfirmation {
             id,
             plugin_id: request.plugin_id,
             publisher_fingerprint: request.publisher_fingerprint,
@@ -124,7 +124,7 @@ impl Prompter for ConfirmationBridge {
             details: request.details,
             launch_plan: request.launch_plan,
             timeout_seconds: super::intents::CONFIRMATION_TIMEOUT.as_secs(),
-        }));
+        })));
         if !shown {
             return Err(Status::unavailable("there is no window to ask the user in"));
         }

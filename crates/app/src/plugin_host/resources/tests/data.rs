@@ -776,7 +776,6 @@ async fn recipient_must_explicitly_persist_a_projected_shared_record() {
             value: read.encode_to_vec(),
             durability: StorageDurability::Persistent as i32,
             ttl_seconds: 3600,
-            ..Default::default()
         })
         .await
         .unwrap()

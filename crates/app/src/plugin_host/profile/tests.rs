@@ -229,7 +229,10 @@ fn active_profile_exposes_only_its_authenticated_identities_and_activation() {
         .replace_grants(identity.clone(), &[grant_request()], &[])
         .unwrap();
 
-    assert_eq!(profiles.identities().unwrap(), [identity.clone()]);
+    assert_eq!(
+        profiles.identities().unwrap(),
+        std::slice::from_ref(&identity)
+    );
     assert!(!profiles.is_enabled(&identity.plugin_id).unwrap());
     layout
         .open_activation(&current)

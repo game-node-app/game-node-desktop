@@ -1320,14 +1320,13 @@ impl ResourceApi {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         cursors.retain(|_, value| value.expires_at > Instant::now());
-        if cursors.len() >= MAX_CURSORS {
-            if let Some(key) = cursors
+        if cursors.len() >= MAX_CURSORS
+            && let Some(key) = cursors
                 .iter()
                 .min_by_key(|(_, value)| value.expires_at)
                 .map(|(key, _)| key.clone())
-            {
-                cursors.remove(&key);
-            }
+        {
+            cursors.remove(&key);
         }
         let mut bytes = [0u8; 24];
         getrandom::fill(&mut bytes)
@@ -1544,7 +1543,7 @@ pub(super) fn validate_request(
         }
         previous_sequence = sample.sequence;
         previous_time = sample.observed_at;
-        samples.push(sample.clone());
+        samples.push(*sample);
     }
     let mut canonical = request.clone();
     canonical.mutation = None;

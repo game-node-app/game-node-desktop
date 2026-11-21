@@ -2044,7 +2044,7 @@ impl ProviderApi {
         Ok(OpenSessionReply {
             resource_context,
             session_id,
-            granted_capabilities: granted_capabilities,
+            granted_capabilities,
             api_major: gamenode_plugin_protocol::API_MAJOR,
             api_minor: minor,
             features: selection

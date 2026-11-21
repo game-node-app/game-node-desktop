@@ -172,6 +172,72 @@ function bundleReview(trust: PluginBundleImportReview['trust'] = 'untrusted'): P
   };
 }
 
+function bundleUpdateReviewFixture(rollback = false) {
+  const component = (
+    pluginId: string,
+    kind: 'provider' | 'extension',
+    installedVersion: string,
+    candidateVersion: string,
+  ) => ({
+    pluginId,
+    kind,
+    installedVersion,
+    candidateVersion,
+    addedPermissions: rollback ? [] : ['library.write'],
+    removedPermissions: [],
+    changedPermissions: ['game.launch'],
+    permissionChanges: [{
+      id: 'game.launch',
+      installedScope: 'approved-game-session',
+      candidateScope: 'selected-game-session',
+      installedRequired: false,
+      candidateRequired: false,
+    }],
+    addedNativeAccess: [],
+    removedNativeAccess: [],
+    apiChanged: false,
+    installedApi: '1.6.0',
+    candidateApi: '1.6.0',
+    availability: { status: 'available' as const },
+    compatibility: 'compatible' as const,
+    compatibilityDetails: {
+      state: 'compatible' as const,
+      ambiguous: false, os: 'linux', release: '24.04', architecture: 'x86_64', abi: 'gnu',
+      libc: { family: 'gnu' as const, version: '2.39' }, emulation: 'native' as const, targets: [],
+    },
+    publisherChanged: false,
+    isDowngrade: rollback,
+  });
+  return {
+    bundleId: 'org.example.dolphin.bundle',
+    name: 'Dolphin GameCube and Wii',
+    installedVersion: rollback ? '0.3.0' : '0.2.0',
+    candidateVersion: rollback ? '0.2.0' : '0.3.0',
+    bundleSha256: 'ab'.repeat(32),
+    publisherFingerprint: publisher,
+    components: [
+      component(
+        'org.example.dolphin',
+        'provider',
+        rollback ? '0.2.0' : '0.1.0',
+        rollback ? '0.1.0' : '0.2.0',
+      ),
+      component(
+        'org.example.dolphin.launch',
+        'extension',
+        rollback ? '0.3.0' : '0.2.0',
+        rollback ? '0.2.0' : '0.3.0',
+      ),
+    ],
+    addedPermissions: rollback ? [] : ['library.write'],
+    removedPermissions: [],
+    changedPermissions: ['game.launch'],
+    requiresManualApproval: true,
+    isDowngrade: rollback,
+    isRollback: rollback,
+  };
+}
+
 describe('bundle inventory', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -413,6 +479,183 @@ describe('bundle inventory', () => {
     fireEvent.click(within(article).getByRole('button', { name: 'Trust this publisher' }));
     await waitFor(() => expect(confirm).toHaveBeenCalledWith('bundle-token', publisher));
     expect(await screen.findByText(/Bundle publisher confirmed/)).toBeInTheDocument();
+  });
+
+  it('installs an approved bundle from the review and refreshes the inventory', async () => {
+    const inventory = vi.spyOn(commands, 'pluginInventory').mockResolvedValue([official]);
+    vi.spyOn(commands, 'pluginBundleImportReview').mockResolvedValue(bundleReview());
+    vi.spyOn(commands, 'pluginBundleImportConfirmPublisher').mockResolvedValue(bundleReview('trusted'));
+    const install = vi.spyOn(commands, 'pluginBundleImportInstall').mockResolvedValue({
+      bundleId: 'org.example.dolphin.bundle',
+      components: [
+        { pluginId: 'org.example.dolphin', kind: 'provider', version: '0.1.0', active: true },
+        { pluginId: 'org.example.dolphin.launch', kind: 'extension', version: '0.2.0', active: false },
+      ],
+    });
+    renderInventory('en', 'account-one');
+
+    const path = await screen.findByRole('textbox', { name: 'Path to signed ZIP package' });
+    fireEvent.change(path, { target: { value: '/packages/dolphin.gnbundle' } });
+    await userEvent.setup().type(path, '{Enter}');
+    const article = await screen.findByRole('article', { name: 'Review plugin bundle' });
+    fireEvent.click(within(article).getByRole('button', { name: 'Trust this publisher' }));
+
+    const consent = await within(article).findByRole('checkbox');
+    fireEvent.click(consent);
+    fireEvent.click(within(article).getByRole('button', { name: 'Install bundle' }));
+
+    await waitFor(() => expect(install).toHaveBeenCalledWith('bundle-token', true));
+    expect(screen.queryByRole('article', { name: 'Review plugin bundle' })).not.toBeInTheDocument();
+    await waitFor(() => expect(inventory.mock.calls.length).toBeGreaterThan(1));
+  });
+
+  it('reviews and applies one bundle update with per-component old and new versions', async () => {
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([bundle]);
+    vi.spyOn(commands, 'pluginBundleUpdateAvailable').mockResolvedValue([{
+      bundleId: 'org.example.dolphin.bundle',
+      name: 'Dolphin GameCube and Wii',
+      installedVersion: '0.2.0',
+      versions: ['0.3.0'],
+    }]);
+    vi.spyOn(commands, 'pluginBundleRollbackAvailable').mockResolvedValue([]);
+    const check = vi.spyOn(commands, 'pluginBundleUpdateCheck').mockResolvedValue([{
+      bundleId: 'org.example.dolphin.bundle',
+      name: 'Dolphin GameCube and Wii',
+      installedVersion: '0.2.0',
+      versions: ['0.3.0'],
+    }]);
+    const review = vi.spyOn(commands, 'pluginBundleUpdateReview')
+      .mockResolvedValue(bundleUpdateReviewFixture());
+    const approve = vi.spyOn(commands, 'pluginBundleUpdateApprove').mockResolvedValue({
+      bundleId: 'org.example.dolphin.bundle',
+      previousVersion: '0.2.0',
+      version: '0.3.0',
+      components: [
+        { pluginId: 'org.example.dolphin', kind: 'provider', previousVersion: '0.1.0', version: '0.2.0', active: true },
+        { pluginId: 'org.example.dolphin.launch', kind: 'extension', previousVersion: '0.2.0', version: '0.3.0', active: true },
+      ],
+    });
+    renderInventory('en', 'account-one');
+
+    fireEvent.click(await screen.findByRole('button', { name: /Dolphin GameCube and Wii/ }));
+    const details = await screen.findByRole('article', { name: 'Bundle details' });
+    const updates = within(details).getByRole('region', { name: 'Bundle updates and rollback' });
+    fireEvent.click(within(updates).getByRole('button', { name: 'Check for bundle updates' }));
+    await waitFor(() => expect(check).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(await within(updates).findByRole('button', { name: 'Review bundle 0.3.0' }));
+    await waitFor(() => expect(review).toHaveBeenCalledWith('org.example.dolphin.bundle', '0.3.0'));
+    const reviewPanel = await within(updates).findByRole('article', { name: 'Bundle update review' });
+    expect(reviewPanel).toHaveTextContent('Dolphin GameCube and Wii: 0.2.0 → 0.3.0');
+    expect(reviewPanel).toHaveTextContent('0.1.0 → 0.2.0');
+    expect(reviewPanel).toHaveTextContent('0.2.0 → 0.3.0');
+    expect(reviewPanel).toHaveTextContent('game.launch: approved-game-session → selected-game-session');
+    expect(reviewPanel).toHaveTextContent('Signed bundle hash');
+
+    fireEvent.click(within(reviewPanel).getByRole('button', { name: 'Update every component' }));
+    await waitFor(() => expect(approve).toHaveBeenCalledWith('org.example.dolphin.bundle', '0.3.0'));
+    expect(await within(updates).findByText('Bundle updated to 0.3.0.')).toBeInTheDocument();
+  });
+
+  it('keeps unrelated bundle controls usable during a slow update and restores the saved state on failure', async () => {
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([bundle]);
+    vi.spyOn(commands, 'pluginBundleUpdateAvailable').mockResolvedValue([{
+      bundleId: 'org.example.dolphin.bundle',
+      name: 'Dolphin GameCube and Wii',
+      installedVersion: '0.2.0',
+      versions: ['0.3.0'],
+    }]);
+    vi.spyOn(commands, 'pluginBundleRollbackAvailable').mockResolvedValue([]);
+    vi.spyOn(commands, 'pluginBundleUpdateReview').mockResolvedValue(bundleUpdateReviewFixture());
+    let rejectApprove!: (error: Error) => void;
+    const pendingApprove = new Promise<never>((_, reject) => {
+      rejectApprove = reject;
+    });
+    const approve = vi.spyOn(commands, 'pluginBundleUpdateApprove')
+      .mockReturnValue(pendingApprove);
+    renderInventory('en', 'account-one');
+
+    fireEvent.click(await screen.findByRole('button', { name: /Dolphin GameCube and Wii/ }));
+    const details = await screen.findByRole('article', { name: 'Bundle details' });
+    const updates = within(details).getByRole('region', { name: 'Bundle updates and rollback' });
+    fireEvent.click(await within(updates).findByRole('button', { name: 'Review bundle 0.3.0' }));
+    const reviewPanel = await within(updates).findByRole('article', { name: 'Bundle update review' });
+    fireEvent.click(within(reviewPanel).getByRole('button', { name: 'Update every component' }));
+    await waitFor(() => expect(approve).toHaveBeenCalledTimes(1));
+
+    // The pending update only disables its own controls: per-component activation stays usable.
+    const componentItems = within(details)
+      .getAllByRole('list', { name: 'Bundle components' })[0]
+      .querySelectorAll('li');
+    expect(within(componentItems[0] as HTMLElement).getByRole('button', { name: 'Enable' })).toBeEnabled();
+    expect(within(reviewPanel).getByRole('button', { name: 'Update every component' })).toBeDisabled();
+
+    rejectApprove(new Error('persistence failed'));
+    expect(await within(updates).findByText(
+      'The bundle change could not be saved. The last saved host state is still in effect.',
+    )).toBeInTheDocument();
+    expect(details).toHaveTextContent('Bundle version: 0.2.0');
+    expect(within(reviewPanel).getByRole('button', { name: 'Update every component' })).toBeEnabled();
+  });
+
+  it('localizes a failed bundle update review in pt-BR', async () => {
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([bundle]);
+    vi.spyOn(commands, 'pluginBundleUpdateAvailable').mockResolvedValue([{
+      bundleId: 'org.example.dolphin.bundle',
+      name: 'Dolphin GameCube and Wii',
+      installedVersion: '0.2.0',
+      versions: ['0.3.0'],
+    }]);
+    vi.spyOn(commands, 'pluginBundleRollbackAvailable').mockResolvedValue([]);
+    vi.spyOn(commands, 'pluginBundleUpdateReview').mockRejectedValue(new Error('hash mismatch'));
+    renderInventory('pt-BR', 'account-one');
+
+    fireEvent.click(await screen.findByRole('button', { name: /Dolphin GameCube and Wii/ }));
+    const details = await screen.findByRole('article', { name: 'Detalhes do pacote' });
+    const updates = within(details).getByRole('region', { name: 'Atualizações e reversão do pacote' });
+    fireEvent.click(await within(updates).findByRole('button', { name: 'Revisar pacote 0.3.0' }));
+
+    expect(await within(updates).findByText(
+      'Não foi possível revisar esta versão do pacote. Nada foi instalado.',
+    )).toBeInTheDocument();
+  });
+
+  it('reviews and confirms one bundle rollback', async () => {
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([bundle]);
+    vi.spyOn(commands, 'pluginBundleUpdateAvailable').mockResolvedValue([]);
+    vi.spyOn(commands, 'pluginBundleRollbackAvailable').mockResolvedValue([{
+      bundleId: 'org.example.dolphin.bundle',
+      name: 'Dolphin GameCube and Wii',
+      activeVersion: '0.3.0',
+      versions: ['0.2.0'],
+    }]);
+    vi.spyOn(commands, 'pluginBundleRollbackReview')
+      .mockResolvedValue(bundleUpdateReviewFixture(true));
+    const approve = vi.spyOn(commands, 'pluginBundleRollbackApprove').mockResolvedValue({
+      bundleId: 'org.example.dolphin.bundle',
+      previousVersion: '0.3.0',
+      version: '0.2.0',
+      components: [],
+    });
+    renderInventory('en', 'account-one');
+
+    fireEvent.click(await screen.findByRole('button', { name: /Dolphin GameCube and Wii/ }));
+    const details = await screen.findByRole('article', { name: 'Bundle details' });
+    const updates = within(details).getByRole('region', { name: 'Bundle updates and rollback' });
+    fireEvent.click(await within(updates).findByRole('button', { name: 'Review rollback to 0.2.0' }));
+    const reviewPanel = await within(updates).findByRole('article', { name: 'Bundle rollback review' });
+    const confirm = within(reviewPanel).getByRole('checkbox');
+    const action = within(reviewPanel).getByRole('button', { name: 'Roll back every component' });
+    expect(action).toBeDisabled();
+    fireEvent.click(confirm);
+    fireEvent.click(action);
+
+    await waitFor(() => expect(approve).toHaveBeenCalledWith(
+      'org.example.dolphin.bundle',
+      '0.2.0',
+      true,
+    ));
+    expect(await within(updates).findByText('Bundle rolled back to 0.2.0.')).toBeInTheDocument();
   });
 
   it('keeps the bundle review signed out and disables the publisher decision', async () => {

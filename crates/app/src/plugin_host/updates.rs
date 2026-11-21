@@ -238,6 +238,74 @@ pub struct AvailablePluginUpdate {
     pub versions: Vec<String>,
 }
 
+/// A signed bundle release offered by a component's update feed. The release version is the
+/// bundle's distribution version; component versions remain independent.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AvailableBundleUpdate {
+    pub bundle_id: String,
+    pub name: String,
+    pub installed_version: String,
+    pub versions: Vec<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AvailableBundleRollback {
+    pub bundle_id: String,
+    pub name: String,
+    pub active_version: String,
+    pub versions: Vec<String>,
+}
+
+/// One component's old/new facts in a bundle update or rollback review. Produced from signed
+/// metadata only: the candidate package is staged and inspected, never executed.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BundleComponentUpdateReview {
+    pub plugin_id: String,
+    pub kind: String,
+    pub installed_version: String,
+    pub candidate_version: String,
+    pub added_permissions: Vec<String>,
+    pub removed_permissions: Vec<String>,
+    pub changed_permissions: Vec<String>,
+    pub permission_changes: Vec<PermissionChange>,
+    pub added_native_access: Vec<String>,
+    pub removed_native_access: Vec<String>,
+    pub api_changed: bool,
+    pub installed_api: String,
+    pub candidate_api: String,
+    pub availability: super::bundles::BundleComponentAvailability,
+    pub compatibility: String,
+    pub compatibility_reason: Option<String>,
+    pub compatibility_details: super::managed_packages::PackageCompatibilityReview,
+    pub publisher_changed: bool,
+    pub is_downgrade: bool,
+}
+
+/// The grouped review of one signed bundle release: the bundle hash from the update index and each
+/// component's old/new version, compatibility verdict and permission diff.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BundleUpdateReview {
+    pub bundle_id: String,
+    pub name: String,
+    pub installed_version: String,
+    pub candidate_version: String,
+    /// Lowercase SHA-256 of the exact signed `bundle.json` bytes the update index committed to.
+    pub bundle_sha256: String,
+    pub publisher_fingerprint: String,
+    pub components: Vec<BundleComponentUpdateReview>,
+    /// Distinct union over the components, for a one-line summary.
+    pub added_permissions: Vec<String>,
+    pub removed_permissions: Vec<String>,
+    pub changed_permissions: Vec<String>,
+    pub requires_manual_approval: bool,
+    pub is_downgrade: bool,
+    pub is_rollback: bool,
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AvailablePluginRollback {
@@ -409,6 +477,50 @@ struct PendingBundleImport {
     /// The verified bundle publisher key; the single pin this review confirms.
     publisher_key: [u8; 32],
     review: BundleImportReview,
+    /// The reviewed archive and the exact component inspection the review showed. Installation
+    /// re-verifies the archive and compares it with this report, so the approved bytes are the
+    /// installed bytes.
+    archive_path: PathBuf,
+    report: super::bundles::BundleCandidateReport,
+    created_at: std::time::Instant,
+}
+
+/// The result of installing one reviewed bundle. Every component is listed with the version this
+/// install published or adopted, and whether it was activated on this host.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BundleImportInstallOutcome {
+    pub bundle_id: String,
+    pub components: Vec<BundleImportInstalledComponent>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BundleImportInstalledComponent {
+    pub plugin_id: String,
+    pub kind: String,
+    pub version: String,
+    pub active: bool,
+}
+
+/// A reviewed bundle release ready to install. The work directory holds the exact downloaded
+/// archive, which the update primitive re-verifies before any registry write.
+struct PendingBundleUpdate {
+    /// Owns the private staging directory for as long as the reviewed archive is needed.
+    _work: UpdateWorkDir,
+    archive_path: PathBuf,
+    report: super::bundles::BundleCandidateReport,
+    installed: BundleRecord,
+    release_version: String,
+    publisher_key: [u8; 32],
+    review: BundleUpdateReview,
+    created_at: std::time::Instant,
+}
+
+/// A reviewed rollback target. Approval re-reads the archived mapping and revalidates every
+/// component, so this only records that the user saw the version.
+struct PendingBundleRollback {
+    version: String,
     created_at: std::time::Instant,
 }
 
@@ -548,6 +660,70 @@ fn bundle_trust_state<'a>(
     }
 }
 
+/// Build one component's old/new review from signed package metadata. Both manifests were parsed
+/// from verified packages; nothing here executes package code.
+fn bundle_component_update_review(
+    installed: &Manifest,
+    candidate: &Manifest,
+    candidate_report: &PackageCandidateReport,
+    installed_version: &str,
+    candidate_version: &str,
+) -> BundleComponentUpdateReview {
+    let comparison = UpdateReview::compare(installed, candidate);
+    let details = candidate_report.compatibility_review();
+    let (compatibility, compatibility_reason) = match candidate_report.selected_target() {
+        Ok(_) => ("compatible".to_owned(), None),
+        Err(error) => (
+            if details.state == super::compatibility::CompatibilityState::Indeterminate {
+                "unknown"
+            } else {
+                "incompatible"
+            }
+            .to_owned(),
+            Some(error.to_string()),
+        ),
+    };
+    BundleComponentUpdateReview {
+        plugin_id: candidate.id.clone(),
+        kind: match candidate.kind {
+            super::package::PluginKind::Provider => "provider".to_owned(),
+            super::package::PluginKind::Extension => "extension".to_owned(),
+        },
+        installed_version: installed_version.to_owned(),
+        candidate_version: candidate_version.to_owned(),
+        added_permissions: comparison.added_permissions,
+        removed_permissions: comparison.removed_permissions,
+        changed_permissions: comparison.changed_permissions,
+        permission_changes: comparison.permission_changes,
+        added_native_access: comparison.added_native_access,
+        removed_native_access: comparison.removed_native_access,
+        api_changed: comparison.api_changed,
+        installed_api: comparison.installed_api,
+        candidate_api: comparison.candidate_api,
+        availability: super::bundles::availability(candidate_report),
+        compatibility,
+        compatibility_reason,
+        compatibility_details: details,
+        publisher_changed: comparison.publisher_changed,
+        is_downgrade: comparison.is_downgrade,
+    }
+}
+
+fn union_permissions(
+    components: &[BundleComponentUpdateReview],
+    pick: impl Fn(&BundleComponentUpdateReview) -> &Vec<String>,
+) -> Vec<String> {
+    let mut union = Vec::new();
+    for component in components {
+        for permission in pick(component) {
+            if !union.contains(permission) {
+                union.push(permission.clone());
+            }
+        }
+    }
+    union
+}
+
 fn bundle_license_summary(components: &[BundleComponentReview]) -> BundleLicenseSummary {
     let mut expressions: Vec<String> = Vec::new();
     let mut licenses = Vec::with_capacity(components.len());
@@ -585,9 +761,13 @@ pub struct PluginUpdateService {
     preferences: std::sync::Arc<std::sync::Mutex<PluginUpdatePreferences>>,
     available: std::sync::Arc<std::sync::Mutex<Vec<AvailablePluginUpdate>>>,
     indexes: std::sync::Arc<std::sync::Mutex<HashMap<String, VerifiedUpdateIndex>>>,
+    bundle_indexes: std::sync::Arc<std::sync::Mutex<HashMap<String, VerifiedUpdateIndex>>>,
+    bundle_available: std::sync::Arc<std::sync::Mutex<Vec<AvailableBundleUpdate>>>,
     checks: std::sync::Arc<AsyncMutex<()>>,
     activations: std::sync::Arc<AsyncMutex<()>>,
     pending: std::sync::Arc<AsyncMutex<HashMap<String, PendingCandidate>>>,
+    pending_bundles: std::sync::Arc<AsyncMutex<HashMap<String, PendingBundleUpdate>>>,
+    pending_rollbacks: std::sync::Arc<AsyncMutex<HashMap<String, PendingBundleRollback>>>,
     imports: std::sync::Arc<AsyncMutex<HashMap<String, PendingImport>>>,
     bundle_imports: std::sync::Arc<AsyncMutex<HashMap<String, PendingBundleImport>>>,
     /// The bundle mapping on the application database connection. It is set at startup; when it is
@@ -629,9 +809,13 @@ impl PluginUpdateService {
             preferences: std::sync::Arc::new(std::sync::Mutex::new(preferences)),
             available: std::sync::Arc::new(std::sync::Mutex::new(available)),
             indexes: Default::default(),
+            bundle_indexes: Default::default(),
+            bundle_available: Default::default(),
             checks: Default::default(),
             activations: Default::default(),
             pending: Default::default(),
+            pending_bundles: Default::default(),
+            pending_rollbacks: Default::default(),
             imports: Default::default(),
             bundle_imports: Default::default(),
             bundles: Default::default(),
@@ -944,6 +1128,13 @@ impl PluginUpdateService {
             publisher_key,
             components: staged,
         } = candidate;
+        let report = super::bundles::BundleCandidateReport {
+            bundle: bundle.clone(),
+            components: staged
+                .iter()
+                .map(|component| component.inspection.clone())
+                .collect(),
+        };
         let private_dir = self.trust_dir.clone();
         let key = publisher_key;
         let components = tokio::task::spawn_blocking(move || {
@@ -985,6 +1176,8 @@ impl PluginUpdateService {
             PendingBundleImport {
                 publisher_key,
                 review: review.clone(),
+                archive_path,
+                report,
                 created_at: std::time::Instant::now(),
             },
         );
@@ -1044,6 +1237,105 @@ impl PluginUpdateService {
             component.review.publisher_fingerprint.clone_from(&pinned);
         }
         Ok(pending.review.clone())
+    }
+
+    /// Installs one reviewed bundle through the ordinary staged registry path. This is the
+    /// approved step behind the single review: the publisher must be pinned for every component,
+    /// native-code consent must cover a component that declares native access, and the archive on
+    /// disk is re-verified against the reviewed component report before any registry write. The
+    /// safety rules match [`Self::import_install`]; the difference is only that one bundle approval
+    /// installs all components atomically.
+    pub async fn bundle_import_install(
+        &self,
+        token: &str,
+        native_code_consent: bool,
+    ) -> Result<BundleImportInstallOutcome, String> {
+        let lifecycle = self
+            .lifecycle
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| "managed plugin runtime is unavailable".to_owned())?;
+        lifecycle
+            .require_active_profile()
+            .map_err(|error| error.message().to_owned())?;
+        let bundles = self
+            .bundle_store()
+            .ok_or_else(|| "plugin bundle mapping is unavailable".to_owned())?;
+        let mut imports = self.bundle_imports.lock().await;
+        let pending = imports
+            .get(token)
+            .ok_or_else(|| "plugin bundle import review expired".to_owned())?;
+        if pending.created_at.elapsed() >= std::time::Duration::from_secs(15 * 60) {
+            imports.remove(token);
+            return Err("plugin bundle import review expired".into());
+        }
+        if pending.review.trust != "trusted" {
+            return Err("confirm the bundle publisher fingerprint before importing".into());
+        }
+        if pending
+            .review
+            .components
+            .iter()
+            .any(|component| !component.review.native_access.is_empty())
+            && !native_code_consent
+        {
+            return Err("explicit native-code consent is required for this bundle".into());
+        }
+        let private_dir = self.trust_dir.clone();
+        let plugin_ids = pending
+            .review
+            .components
+            .iter()
+            .map(|component| component.review.plugin_id.clone())
+            .collect::<Vec<_>>();
+        let key = pending.publisher_key;
+        let all_pinned = tokio::task::spawn_blocking(move || {
+            let trust = super::publisher_trust::PublisherTrustStore::open(private_dir)
+                .map_err(|error| error.to_string())?;
+            for plugin_id in plugin_ids {
+                if !trust
+                    .is_pinned(&plugin_id, &key)
+                    .map_err(|error| error.to_string())?
+                {
+                    return Ok::<_, String>(false);
+                }
+            }
+            Ok(true)
+        })
+        .await
+        .map_err(|_| "publisher trust worker failed".to_owned())??;
+        if !all_pinned {
+            return Err("publisher trust changed; review the bundle again".into());
+        }
+        let installed_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| error.to_string())?
+            .as_secs() as i64;
+        let installed = super::bundles::install_bundle_candidate(
+            &pending.archive_path,
+            pending.report.clone(),
+            self.registry.clone(),
+            bundles,
+            EmulationPolicy::RequireNative,
+            installed_at,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+        imports.remove(token);
+        Ok(BundleImportInstallOutcome {
+            bundle_id: installed.bundle.bundle_id,
+            components: installed
+                .components
+                .into_iter()
+                .map(|component| BundleImportInstalledComponent {
+                    plugin_id: component.plugin_id,
+                    kind: component.kind,
+                    version: component.version,
+                    active: component.active,
+                })
+                .collect(),
+        })
     }
 
     /// Applies per-component permission decisions from one grouped review through the ordinary
@@ -1543,8 +1835,24 @@ impl PluginUpdateService {
             .await
             .map_err(|_| "plugin registry worker failed".to_owned())?
             .map_err(|error| error.to_string())?;
+        let bundled_ids: BTreeSet<String> = match self.bundle_store() {
+            Some(store) => tokio::task::spawn_blocking(move || store.bundles())
+                .await
+                .map_err(|_| "plugin bundle mapping worker failed".to_owned())?
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .flat_map(|bundle| bundle.components)
+                .map(|component| component.plugin_id)
+                .collect(),
+            None => BTreeSet::new(),
+        };
         let mut updates = Vec::new();
         for installed in active {
+            // A bundle component updates only as part of its bundle; offering a standalone update
+            // here would mix the two installation models.
+            if bundled_ids.contains(&installed.plugin_id) {
+                continue;
+            }
             let current = self
                 .packages
                 .inspect_candidate(
@@ -1588,6 +1896,9 @@ impl PluginUpdateService {
                 .releases
                 .iter()
                 .filter_map(|release| {
+                    if release.bundle_sha256.is_some() {
+                        return None;
+                    }
                     Version::parse(&release.version)
                         .ok()
                         .filter(|version| version > &current_version)
@@ -1640,6 +1951,18 @@ impl PluginUpdateService {
             .map_err(|_| "plugin registry worker failed".to_owned())?
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "plugin is not installed".to_owned())?;
+        if let Some(store) = self.bundle_store() {
+            let lookup = plugin_id.to_owned();
+            let mapped = tokio::task::spawn_blocking(move || store.bundle_for_plugin(&lookup))
+                .await
+                .map_err(|_| "plugin bundle mapping worker failed".to_owned())?
+                .map_err(|error| error.to_string())?;
+            if mapped.is_some() {
+                return Err(
+                    "this plugin belongs to a bundle; review the bundle update instead".into(),
+                );
+            }
+        }
         let current = self
             .packages
             .inspect_candidate(
@@ -1663,6 +1986,11 @@ impl PluginUpdateService {
             .find(|release| release.version == version)
             .cloned()
             .ok_or_else(|| "release is no longer available".to_owned())?;
+        if release.bundle_sha256.is_some() {
+            return Err(
+                "this index release is a signed bundle; use the bundle update review".into(),
+            );
+        }
         let current_version = Version::parse(&active.version).map_err(|error| error.to_string())?;
         let candidate_version =
             Version::parse(&release.version).map_err(|error| error.to_string())?;
@@ -1781,6 +2109,683 @@ impl PluginUpdateService {
             }
         }
         Ok(available)
+    }
+
+    /// Bundle releases cached by the last check. Unlike standalone updates these are not persisted:
+    /// the index verifier's replay state is the durable part, and a review always re-downloads.
+    pub fn bundle_update_available(&self) -> Vec<AvailableBundleUpdate> {
+        self.bundle_available
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone()
+    }
+
+    /// Fetch each installed bundle's component feed and list releases that carry a bundle hash.
+    /// Components mapped to a bundle are never listed as standalone updates, and a standalone
+    /// plugin's feed releases without a bundle hash remain ordinary package updates.
+    pub async fn check_bundle_updates(&self) -> Result<Vec<AvailableBundleUpdate>, String> {
+        let _check = self.checks.lock().await;
+        let Some(store) = self.bundle_store() else {
+            return Ok(Vec::new());
+        };
+        let bundles = tokio::task::spawn_blocking(move || store.bundles())
+            .await
+            .map_err(|_| "plugin bundle mapping worker failed".to_owned())?
+            .map_err(|error| error.to_string())?;
+        let trust = super::publisher_trust::PublisherTrustStore::open(&self.trust_dir)
+            .map_err(|error| error.to_string())?;
+        let mut available = Vec::new();
+        for bundle in bundles {
+            let Some((installed, current)) = self.bundle_feed_manifest(&bundle).await? else {
+                continue;
+            };
+            let Some(feed_url) = current.manifest.update_url.as_deref() else {
+                continue;
+            };
+            let key = decode_publisher_key(&current.manifest.publisher.public_key)?;
+            if !trust
+                .is_pinned(&installed.plugin_id, &key)
+                .map_err(|error| error.to_string())?
+            {
+                continue;
+            }
+            let feed_origin = url::Url::parse(feed_url)
+                .map_err(|error| error.to_string())?
+                .origin()
+                .ascii_serialization();
+            let verified = ManagedPluginUpdater::new(self.registry.clone())
+                .check_feed(
+                    &self.verifier,
+                    &self.client,
+                    &installed.plugin_id,
+                    feed_url,
+                    key,
+                    move |origin| origin == feed_origin,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            let installed_version =
+                Version::parse(&bundle.version).map_err(|error| error.to_string())?;
+            let mut versions: Vec<String> = verified
+                .index()
+                .releases
+                .iter()
+                .filter(|release| release.bundle_sha256.is_some())
+                .filter_map(|release| {
+                    Version::parse(&release.version)
+                        .ok()
+                        .filter(|version| version > &installed_version)
+                        .map(|_| release.version.clone())
+                })
+                .collect();
+            if versions.is_empty() {
+                continue;
+            }
+            versions
+                .sort_by(|left, right| Version::parse(right).ok().cmp(&Version::parse(left).ok()));
+            self.bundle_indexes
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .insert(bundle.bundle_id.clone(), verified);
+            available.push(AvailableBundleUpdate {
+                bundle_id: bundle.bundle_id,
+                name: bundle.name,
+                installed_version: bundle.version,
+                versions,
+            });
+        }
+        *self
+            .bundle_available
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) = available.clone();
+        Ok(available)
+    }
+
+    /// The first bundle component whose active feed can carry a bundle release. Components are
+    /// inspected at the exact version the mapping records, never at an unrelated standalone version.
+    async fn bundle_feed_manifest(
+        &self,
+        bundle: &BundleRecord,
+    ) -> Result<Option<(InstalledPluginVersion, PackageCandidateReport)>, String> {
+        for component in &bundle.components {
+            let registry = self.registry.clone();
+            let plugin_id = component.plugin_id.clone();
+            let version = component.package_version.clone();
+            let installed = tokio::task::spawn_blocking(move || {
+                registry.versions(&plugin_id).map(|versions| {
+                    versions
+                        .into_iter()
+                        .find(|installed| installed.version == version)
+                })
+            })
+            .await
+            .map_err(|_| "plugin registry worker failed".to_owned())?
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| {
+                format!(
+                    "bundle component {} version {} is no longer installed",
+                    component.plugin_id, component.package_version
+                )
+            })?;
+            let key = package_key(&installed.package_path)?;
+            let report = self
+                .packages
+                .inspect_candidate(&installed.package_path, key, EmulationPolicy::RequireNative)
+                .await
+                .map_err(|error| error.to_string())?;
+            if report.manifest.update_url.is_some() {
+                return Ok(Some((installed, report)));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Reviews one signed bundle release from the feed. The downloaded archive must hash to the
+    /// bundle hash the index committed to and to the same bundle identity, publisher and component
+    /// set as the installed mapping; every component is staged and inspected without executing it.
+    pub async fn review_bundle_update(
+        &self,
+        bundle_id: &str,
+        version: &str,
+    ) -> Result<BundleUpdateReview, String> {
+        let Some(store) = self.bundle_store() else {
+            return Err("plugin bundle mapping is unavailable".into());
+        };
+        let lookup = bundle_id.to_owned();
+        let installed = tokio::task::spawn_blocking(move || store.bundle(&lookup))
+            .await
+            .map_err(|_| "plugin bundle mapping worker failed".to_owned())?
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "plugin bundle is not installed".to_owned())?;
+        let index = self
+            .bundle_indexes
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .get(bundle_id)
+            .cloned()
+            .ok_or_else(|| "check for bundle updates first".to_owned())?;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| error.to_string())?
+            .as_secs();
+        if index.index().expires_at <= now {
+            return Err("the signed update index expired; check for updates again".into());
+        }
+        let release = index
+            .index()
+            .releases
+            .iter()
+            .find(|release| release.version == version)
+            .cloned()
+            .ok_or_else(|| "release is no longer available".to_owned())?;
+        if release.bundle_sha256.is_none() {
+            return Err(
+                "this index release is a single package, not a bundle; use the package update review"
+                    .into(),
+            );
+        }
+        let Some((_feed_installed, current)) = self.bundle_feed_manifest(&installed).await? else {
+            return Err("the bundle has no component with an update feed".into());
+        };
+        let feed_origin = current
+            .manifest
+            .update_url
+            .as_deref()
+            .and_then(|url| url::Url::parse(url).ok())
+            .map(|url| url.origin().ascii_serialization())
+            .ok_or_else(|| "bundle update URL is invalid".to_owned())?;
+        let release_origin = url::Url::parse(&release.package_url)
+            .map_err(|error| error.to_string())?
+            .origin()
+            .ascii_serialization();
+        let archive = self
+            .verifier
+            .download_release(&self.client, &release, move |origin| {
+                origin == feed_origin || origin == release_origin
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+        let work = tokio::task::spawn_blocking(UpdateWorkDir::create)
+            .await
+            .map_err(|_| "bundle update staging worker failed".to_owned())?
+            .map_err(|error| error.to_string())?;
+        let archive_path = work.path.join("bundle.gnbundle");
+        let write_path = archive_path.clone();
+        tokio::task::spawn_blocking(move || fs::write(&write_path, archive))
+            .await
+            .map_err(|_| "bundle update staging worker failed".to_owned())?
+            .map_err(|error| error.to_string())?;
+        let (review, report) = self
+            .bundle_update_review_from_archive(&installed, &release, &archive_path)
+            .await?;
+        if review.components.is_empty() {
+            return Err("the bundle release has no components".into());
+        }
+        let first = installed
+            .components
+            .first()
+            .ok_or_else(|| "the bundle mapping has no components".to_owned())?;
+        let installed_report = self
+            .inspect_installed_version(&first.plugin_id, &first.package_version)
+            .await?;
+        let publisher_key = decode_publisher_key(&installed_report.manifest.publisher.public_key)?;
+        self.pending_bundles.lock().await.insert(
+            bundle_id.to_owned(),
+            PendingBundleUpdate {
+                _work: work,
+                archive_path,
+                report,
+                installed,
+                release_version: version.to_owned(),
+                publisher_key,
+                review: review.clone(),
+                created_at: std::time::Instant::now(),
+            },
+        );
+        Ok(review)
+    }
+
+    /// Build the grouped bundle review from one downloaded archive. Factored from the feed path so
+    /// the review can be exercised without a network and is the single place that decides which
+    /// bundle releases are compatible with an installed mapping.
+    pub(super) async fn bundle_update_review_from_archive(
+        &self,
+        installed: &BundleRecord,
+        release: &UpdateRelease,
+        archive_path: &Path,
+    ) -> Result<(BundleUpdateReview, super::bundles::BundleCandidateReport), String> {
+        let bundle_sha256 = release
+            .bundle_sha256
+            .as_deref()
+            .ok_or_else(|| "the index release is not a signed bundle".to_owned())?;
+        let archive_for_worker = archive_path.to_owned();
+        let verified = tokio::task::spawn_blocking(move || {
+            gamenode_platform::plugin_bundles::verify_bundle_archive(&archive_for_worker)
+        })
+        .await
+        .map_err(|_| "bundle verification worker failed".to_owned())?
+        .map_err(|error| error.to_string())?;
+        if verified.manifest_sha256 != bundle_sha256 {
+            return Err("the downloaded bundle does not match the index bundle hash".into());
+        }
+        if verified.manifest.id != installed.bundle_id {
+            return Err("the bundle release belongs to another bundle".into());
+        }
+        let publisher_key = verified
+            .manifest
+            .publisher_key()
+            .map_err(|e| e.to_string())?;
+        if super::publisher_trust::key_fingerprint(&publisher_key)
+            != installed.publisher_fingerprint
+        {
+            return Err("a bundle update cannot change the bundle publisher".into());
+        }
+        if release.version != verified.manifest.version {
+            return Err("the index release version does not match the bundle version".into());
+        }
+        let installed_version =
+            Version::parse(&installed.version).map_err(|error| error.to_string())?;
+        let candidate_version =
+            Version::parse(&verified.manifest.version).map_err(|error| error.to_string())?;
+        if candidate_version <= installed_version {
+            return Err("update is no longer newer than the installed bundle version".into());
+        }
+        let candidate =
+            super::bundles::inspect_bundle_review(archive_path, EmulationPolicy::RequireNative)
+                .await
+                .map_err(|error| format!("selected bundle update failed validation: {error}"))?;
+        let mapped = installed
+            .components
+            .iter()
+            .map(|component| (component.plugin_id.as_str(), component.kind.as_str()))
+            .collect::<BTreeSet<_>>();
+        let candidate_set = candidate
+            .components
+            .iter()
+            .map(|component| {
+                (
+                    component.inspection.plugin_id.as_str(),
+                    component.inspection.kind.as_str(),
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        if mapped != candidate_set || candidate.components.len() != installed.components.len() {
+            return Err("a bundle update cannot add, remove or re-kind a component".into());
+        }
+        let mut components = Vec::with_capacity(candidate.components.len());
+        for staged in &candidate.components {
+            let previous = installed
+                .components
+                .iter()
+                .find(|component| component.plugin_id == staged.inspection.plugin_id)
+                .ok_or_else(|| "a bundle update cannot add a component".to_owned())?;
+            let installed_report = self
+                .inspect_installed_version(&previous.plugin_id, &previous.package_version)
+                .await?;
+            components.push(bundle_component_update_review(
+                &installed_report.manifest,
+                &staged.report.manifest,
+                &staged.report,
+                &previous.package_version,
+                &staged.inspection.version,
+            ));
+        }
+        let added_permissions =
+            union_permissions(&components, |component| &component.added_permissions);
+        let removed_permissions =
+            union_permissions(&components, |component| &component.removed_permissions);
+        let changed_permissions =
+            union_permissions(&components, |component| &component.changed_permissions);
+        let review = BundleUpdateReview {
+            bundle_id: candidate.bundle.id.clone(),
+            name: candidate.bundle.name.clone(),
+            installed_version: installed.version.clone(),
+            candidate_version: candidate.bundle.version.clone(),
+            bundle_sha256: bundle_sha256.to_owned(),
+            publisher_fingerprint: candidate.bundle.publisher_fingerprint.clone(),
+            components,
+            added_permissions,
+            removed_permissions,
+            changed_permissions,
+            requires_manual_approval: true,
+            is_downgrade: false,
+            is_rollback: false,
+        };
+        let report = super::bundles::BundleCandidateReport {
+            bundle: candidate.bundle,
+            components: candidate
+                .components
+                .iter()
+                .map(|component| component.inspection.clone())
+                .collect(),
+        };
+        Ok((review, report))
+    }
+
+    async fn inspect_installed_version(
+        &self,
+        plugin_id: &str,
+        version: &str,
+    ) -> Result<PackageCandidateReport, String> {
+        let registry = self.registry.clone();
+        let lookup_id = plugin_id.to_owned();
+        let wanted = version.to_owned();
+        let installed = tokio::task::spawn_blocking(move || registry.versions(&lookup_id))
+            .await
+            .map_err(|_| "plugin registry worker failed".to_owned())?
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .find(|installed| installed.version == wanted)
+            .ok_or_else(|| {
+                format!("plugin {plugin_id} version {version} is no longer installed")
+            })?;
+        let key = package_key(&installed.package_path)?;
+        self.packages
+            .inspect_candidate(&installed.package_path, key, EmulationPolicy::RequireNative)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    /// Reviews an archived bundle version. The archived mapping is read from the bundle history,
+    /// every component's installed package is inspected, and the review shows the current→target
+    /// version and permission differences without executing anything.
+    pub async fn review_bundle_rollback(
+        &self,
+        bundle_id: &str,
+        version: &str,
+    ) -> Result<BundleUpdateReview, String> {
+        let Some(store) = self.bundle_store() else {
+            return Err("plugin bundle mapping is unavailable".into());
+        };
+        let lookup = bundle_id.to_owned();
+        let wanted = version.to_owned();
+        let (current, target) = tokio::task::spawn_blocking(move || {
+            let current = store
+                .bundle(&lookup)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "plugin bundle is not installed".to_owned())?;
+            let target = store
+                .previous_bundle(&lookup, &wanted)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "that bundle version is not available for rollback".to_owned())?;
+            Ok::<_, String>((current, target))
+        })
+        .await
+        .map_err(|_| "plugin bundle mapping worker failed".to_owned())??;
+        if target.components.len() != current.components.len() {
+            return Err("the archived bundle version has a different component set".into());
+        }
+        let mut components = Vec::with_capacity(target.components.len());
+        for archived in &target.components {
+            let current_component = current
+                .components
+                .iter()
+                .find(|component| component.plugin_id == archived.plugin_id)
+                .ok_or_else(|| {
+                    "the archived bundle version has a different component set".to_owned()
+                })?;
+            if current_component.kind != archived.kind {
+                return Err("the archived bundle version has a different component set".into());
+            }
+            let current_report = self
+                .inspect_installed_version(
+                    &current_component.plugin_id,
+                    &current_component.package_version,
+                )
+                .await?;
+            let target_report = self
+                .inspect_installed_version(&archived.plugin_id, &archived.package_version)
+                .await?;
+            let mut review = bundle_component_update_review(
+                &current_report.manifest,
+                &target_report.manifest,
+                &target_report,
+                &current_component.package_version,
+                &archived.package_version,
+            );
+            review.is_downgrade = true;
+            components.push(review);
+        }
+        let added_permissions =
+            union_permissions(&components, |component| &component.added_permissions);
+        let removed_permissions =
+            union_permissions(&components, |component| &component.removed_permissions);
+        let changed_permissions =
+            union_permissions(&components, |component| &component.changed_permissions);
+        let review = BundleUpdateReview {
+            bundle_id: target.bundle_id.clone(),
+            name: target.name.clone(),
+            installed_version: current.version.clone(),
+            candidate_version: target.version.clone(),
+            bundle_sha256: target.manifest_sha256.clone(),
+            publisher_fingerprint: target.publisher_fingerprint.clone(),
+            components,
+            added_permissions,
+            removed_permissions,
+            changed_permissions,
+            requires_manual_approval: true,
+            is_downgrade: true,
+            is_rollback: true,
+        };
+        self.pending_rollbacks.lock().await.insert(
+            bundle_id.to_owned(),
+            PendingBundleRollback {
+                version: version.to_owned(),
+                created_at: std::time::Instant::now(),
+            },
+        );
+        Ok(review)
+    }
+
+    pub async fn available_bundle_rollbacks(&self) -> Result<Vec<AvailableBundleRollback>, String> {
+        let Some(store) = self.bundle_store() else {
+            return Ok(Vec::new());
+        };
+        let bundles = tokio::task::spawn_blocking(move || store.bundles())
+            .await
+            .map_err(|_| "plugin bundle mapping worker failed".to_owned())?
+            .map_err(|error| error.to_string())?;
+        let store = self.bundle_store().expect("bundle store was checked");
+        let mut available = Vec::new();
+        for bundle in bundles {
+            let id = bundle.bundle_id.clone();
+            let lookup_store = store.clone();
+            let versions = tokio::task::spawn_blocking(move || lookup_store.previous_versions(&id))
+                .await
+                .map_err(|_| "plugin bundle mapping worker failed".to_owned())?
+                .map_err(|error| error.to_string())?;
+            if !versions.is_empty() {
+                available.push(AvailableBundleRollback {
+                    bundle_id: bundle.bundle_id,
+                    name: bundle.name,
+                    active_version: bundle.version,
+                    versions,
+                });
+            }
+        }
+        Ok(available)
+    }
+
+    /// Approves the reviewed bundle update. Every component is staged, installed and activated
+    /// together; the archive is re-verified against the reviewed report first, so a changed file
+    /// installs nothing. A failure keeps the previous set active.
+    pub async fn approve_bundle_update(
+        &self,
+        bundle_id: &str,
+        version: &str,
+    ) -> Result<super::bundles::BundleUpdateOutcome, String> {
+        let _activation = self.activations.lock().await;
+        let lifecycle = self
+            .lifecycle
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| "managed plugin runtime is unavailable".to_owned())?;
+        lifecycle
+            .require_active_profile()
+            .map_err(|error| error.message().to_owned())?;
+        let bundles = self
+            .bundle_store()
+            .ok_or_else(|| "plugin bundle mapping is unavailable".to_owned())?;
+        let profiles = self
+            .profiles
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone()
+            .ok_or_else(|| "plugin profiles are unavailable".to_owned())?;
+        let mut pending = self.pending_bundles.lock().await;
+        let reviewed = pending
+            .remove(bundle_id)
+            .ok_or_else(|| "review the bundle update before approving it".to_owned())?;
+        drop(pending);
+        if reviewed.release_version != version || reviewed.review.candidate_version != version {
+            return Err("the reviewed bundle update changed; review it again".into());
+        }
+        if reviewed.installed.version != self.current_bundle_version(bundle_id).await? {
+            return Err(
+                "the installed bundle changed after review; review the update again".into(),
+            );
+        }
+        if reviewed.created_at.elapsed() >= std::time::Duration::from_secs(15 * 60) {
+            return Err("the bundle update review expired; review it again".into());
+        }
+        let private_dir = self.trust_dir.clone();
+        let plugin_ids = reviewed
+            .installed
+            .components
+            .iter()
+            .map(|component| component.plugin_id.clone())
+            .collect::<Vec<_>>();
+        let key = reviewed.publisher_key;
+        let all_pinned = tokio::task::spawn_blocking(move || {
+            let trust = super::publisher_trust::PublisherTrustStore::open(private_dir)
+                .map_err(|error| error.to_string())?;
+            for plugin_id in plugin_ids {
+                if !trust
+                    .is_pinned(&plugin_id, &key)
+                    .map_err(|error| error.to_string())?
+                {
+                    return Ok::<_, String>(false);
+                }
+            }
+            Ok(true)
+        })
+        .await
+        .map_err(|_| "publisher trust worker failed".to_owned())??;
+        if !all_pinned {
+            return Err("publisher trust changed; review the bundle update again".into());
+        }
+        let installed_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| error.to_string())?
+            .as_secs() as i64;
+        let grants = super::bundles::BundleGrantContext {
+            layout: self.grant_layout.clone(),
+            profiles,
+        };
+        let result = super::bundles::apply_bundle_update(
+            &reviewed.archive_path,
+            reviewed.report,
+            reviewed.installed,
+            self.registry.clone(),
+            bundles,
+            lifecycle.as_ref(),
+            grants,
+            EmulationPolicy::RequireNative,
+            installed_at,
+        )
+        .await
+        .map_err(|error| error.to_string());
+        if result.is_ok() {
+            self.bundle_available
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .retain(|update| update.bundle_id != bundle_id);
+        }
+        result
+    }
+
+    async fn current_bundle_version(&self, bundle_id: &str) -> Result<String, String> {
+        let store = self
+            .bundle_store()
+            .ok_or_else(|| "plugin bundle mapping is unavailable".to_owned())?;
+        let lookup = bundle_id.to_owned();
+        tokio::task::spawn_blocking(move || store.bundle(&lookup))
+            .await
+            .map_err(|_| "plugin bundle mapping worker failed".to_owned())?
+            .map_err(|error| error.to_string())?
+            .map(|bundle| bundle.version)
+            .ok_or_else(|| "plugin bundle is not installed".to_owned())
+    }
+
+    /// Approves a reviewed rollback only after explicit confirmation. The archived versions and
+    /// mapping are restored together and grants are intersected with the archived manifests.
+    pub async fn approve_bundle_rollback(
+        &self,
+        bundle_id: &str,
+        version: &str,
+        confirmed: bool,
+    ) -> Result<super::bundles::BundleRollbackOutcome, String> {
+        if !confirmed {
+            return Err("rollback requires explicit user confirmation".into());
+        }
+        let _activation = self.activations.lock().await;
+        let lifecycle = self
+            .lifecycle
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| "managed plugin runtime is unavailable".to_owned())?;
+        lifecycle
+            .require_active_profile()
+            .map_err(|error| error.message().to_owned())?;
+        let bundles = self
+            .bundle_store()
+            .ok_or_else(|| "plugin bundle mapping is unavailable".to_owned())?;
+        let profiles = self
+            .profiles
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone()
+            .ok_or_else(|| "plugin profiles are unavailable".to_owned())?;
+        let mut pending = self.pending_rollbacks.lock().await;
+        let reviewed = pending
+            .remove(bundle_id)
+            .ok_or_else(|| "review the bundle rollback before approving it".to_owned())?;
+        drop(pending);
+        if reviewed.version != version
+            || reviewed.created_at.elapsed() >= std::time::Duration::from_secs(15 * 60)
+        {
+            return Err("the reviewed bundle rollback changed; review it again".into());
+        }
+        let archived_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| error.to_string())?
+            .as_secs() as i64;
+        let grants = super::bundles::BundleGrantContext {
+            layout: self.grant_layout.clone(),
+            profiles,
+        };
+        super::bundles::rollback_bundle_version(
+            bundle_id,
+            version,
+            self.registry.clone(),
+            bundles,
+            lifecycle.as_ref(),
+            grants,
+            EmulationPolicy::RequireNative,
+            archived_at,
+        )
+        .await
+        .map_err(|error| error.to_string())
+    }
+
+    pub async fn decline_bundle_update(&self, bundle_id: &str) {
+        let candidate = self.pending_bundles.lock().await.remove(bundle_id);
+        if let Some(candidate) = candidate {
+            let _ = tokio::task::spawn_blocking(move || drop(candidate)).await;
+        }
+        self.pending_rollbacks.lock().await.remove(bundle_id);
     }
 
     /// Reviews an already installed, verified package as an explicit rollback candidate.
@@ -3032,6 +4037,7 @@ pub(super) mod tests {
                 package_url: "https://updates.example/v2.zip".into(),
                 package_size: 10,
                 package_sha256: "a".repeat(64),
+                bundle_sha256: None,
             }],
         };
         let signed_index = serde_json::to_vec(&metadata).unwrap();
@@ -3102,6 +4108,7 @@ pub(super) mod tests {
             package_url: "https://updates.example/v2.zip".into(),
             package_size: archive.len() as u64,
             package_sha256: format!("{:x}", sha2::Sha256::digest(&archive)),
+            bundle_sha256: None,
         };
         let index = UpdateIndex {
             schema: 1,

@@ -69,6 +69,8 @@ preference leaves the latest geometry in place.
 | `plugin_runtime_catalog_state` | Per-owner revision for the runtime resource catalog, advanced when its resources or bindings change so an existing launch approval cannot survive catalog edits. |
 | `plugin_bundles` | One installed bundle: its id, name, version, publisher fingerprint, SHA-256 of the signed `bundle.json` and the Unix time the mapping was recorded. A bundle only groups packages; it owns no payload, grant or session. |
 | `plugin_bundle_components` | The components of an installed bundle: plugin id, kind (`provider` or `extension`), component archive SHA-256 and package version. A plugin id belongs to at most one bundle; a standalone package has no row. Removing a row removes the grouping only, never the component package. |
+| `plugin_bundle_history` | One previous mapping of an installed bundle, archived by a bundle update: bundle id, version, name, publisher fingerprint, SHA-256 of the signed `bundle.json`, the original installed time and when it was archived. It exists only so a rollback can restore the component set and package versions that were active before the update; it owns no payload, grant or session. |
+| `plugin_bundle_history_components` | The component rows of one archived bundle mapping: plugin id, kind, component archive SHA-256 and package version. Restoring a version moves these rows back into `plugin_bundle_components` and removes the history entry. |
 | `provider_scans` | Per provider, the time of the last successful scan and the last error, plus the last owned (`last_catalog_at`, `catalog_error`) and family (`last_family_at`, `family_error`) catalog sync. A failed scan or catalog phase records the error and keeps the previous facts. |
 | `store_accounts` | The last connected account of a store provider: `provider`, `account_id`, optional `account_name` and optional `last_verified_at`. It holds no cookie, token or password. |
 | `auto_matches` | The GameNode game ids the server reported for a store id, per `(category, uid)` and PC. An empty list means the server knows no game. |
@@ -79,6 +81,9 @@ preference leaves the latest geometry in place.
 Migration `0025_plugin_bundles.sql` adds the two bundle tables as additive STRICT
 tables. An upgraded database keeps every existing row, and packages installed on
 their own stay ungrouped because no bundle row exists for them.
+Migration `0026_plugin_bundle_history.sql` adds the two history tables used only
+by bundle update rollback; it is additive, starts empty and changes no current
+mapping.
 
 Saving a provider's scan is one transaction: it either fully applies or leaves
 the previous entries as they were. Migration `0006_store_accounts_and_catalog.sql`

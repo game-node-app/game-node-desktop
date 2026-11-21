@@ -22,9 +22,15 @@ import type {
   PluginDurableDeletion,
   PluginImportReview,
   PluginBundleImportReview,
+  BundleImportInstallOutcome,
   BundleComponentPermissionSubmission,
   BundlePermissionResult,
   BundleUninstallOutcome,
+  AvailableBundleUpdate,
+  AvailableBundleRollback,
+  BundleUpdateReview,
+  BundleUpdateOutcome,
+  BundleRollbackOutcome,
   PluginConfigurationState,
   PluginPlaytimeInfo,
   PluginUpdatePreferences,
@@ -304,10 +310,35 @@ export const commands = {
       token,
       confirmedFingerprint,
     }),
+  pluginBundleImportInstall: (token: string, nativeCodeConsent: boolean) =>
+    safeInvoke<BundleImportInstallOutcome>('plugin_bundle_import_install', {
+      token,
+      nativeCodeConsent,
+    }),
   pluginBundlePermissionsReplace: (submissions: BundleComponentPermissionSubmission[]) =>
     safeInvoke<BundlePermissionResult>('plugin_bundle_permissions_replace', { submissions }),
   pluginBundleUninstall: (bundleId: string, deleteData: boolean) =>
     safeInvoke<BundleUninstallOutcome>('plugin_bundle_uninstall', { bundleId, deleteData }),
+  pluginBundleUpdateCheck: () =>
+    safeInvoke<AvailableBundleUpdate[]>('plugin_bundle_update_check'),
+  pluginBundleUpdateAvailable: () =>
+    safeInvoke<AvailableBundleUpdate[]>('plugin_bundle_update_available'),
+  pluginBundleUpdateReview: (bundleId: string, version: string) =>
+    safeInvoke<BundleUpdateReview>('plugin_bundle_update_review', { bundleId, version }),
+  pluginBundleUpdateApprove: (bundleId: string, version: string) =>
+    safeInvoke<BundleUpdateOutcome>('plugin_bundle_update_approve', { bundleId, version }),
+  pluginBundleUpdateDecline: (bundleId: string) =>
+    safeInvoke<void>('plugin_bundle_update_decline', { bundleId }),
+  pluginBundleRollbackAvailable: () =>
+    safeInvoke<AvailableBundleRollback[]>('plugin_bundle_rollback_available'),
+  pluginBundleRollbackReview: (bundleId: string, version: string) =>
+    safeInvoke<BundleUpdateReview>('plugin_bundle_rollback_review', { bundleId, version }),
+  pluginBundleRollbackApprove: (bundleId: string, version: string, confirmed: boolean) =>
+    safeInvoke<BundleRollbackOutcome>('plugin_bundle_rollback_approve', {
+      bundleId,
+      version,
+      confirmed,
+    }),
 
   pluginConfigurationState: (pluginId: string) =>
     safeInvoke<PluginConfigurationState>(

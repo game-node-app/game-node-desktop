@@ -54,6 +54,7 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
   const [bundleUninstallOutcome, setBundleUninstallOutcome] = useState<BundleUninstallOutcome | null>(null);
   const [bundleUninstallError, setBundleUninstallError] = useState(false);
   const [nativeCodeConsent, setNativeCodeConsent] = useState(false);
+  const [bundleNativeConsent, setBundleNativeConsent] = useState(false);
   const [licenseText, setLicenseText] = useState<Record<string, string>>({});
   const [archivePath, setArchivePath] = useState('');
   const [scopeChoices, setScopeChoices] = useState<Record<string, boolean>>({});
@@ -316,6 +317,7 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
     setImportReview(null);
     setBundleReview(null);
     setNativeCodeConsent(false);
+    setBundleNativeConsent(false);
     setLicenseText({});
     try {
       const path = archivePath.trim();
@@ -338,6 +340,20 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
         bundleReview.token,
         bundleReview.bundle.publisherFingerprint,
       ));
+    } catch { setManagementError(true); }
+    finally { setBusy(false); }
+  };
+
+  const installBundle = async () => {
+    if (!bundleReview) return;
+    setBusy(true);
+    setManagementError(false);
+    try {
+      await commands.pluginBundleImportInstall(bundleReview.token, bundleNativeConsent);
+      setBundleReview(null);
+      setBundleNativeConsent(false);
+      setArchivePath('');
+      await queryClient.invalidateQueries({ queryKey: pluginQueryKeys.inventory });
     } catch { setManagementError(true); }
     finally { setBusy(false); }
   };
@@ -745,9 +761,36 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
               {bundleReview.trust === 'changed' ? t('plugins.import.retrust') : t('plugins.import.trust')}
             </button>
           ) : (
-            <p className={`${settingsRowDescription} mt-compact`} role="status">
-              {t('plugins.bundle.publisherConfirmed')}
-            </p>
+            <div className="mt-compact flex flex-col gap-compact">
+              <p className={settingsRowDescription} role="status">
+                {t('plugins.bundle.publisherConfirmed')}
+              </p>
+              {bundleReview.components.some((component) => component.review.nativeAccess.length > 0) && (
+                <label className="flex items-start gap-compact text-sm">
+                  <input
+                    type="checkbox"
+                    checked={bundleNativeConsent}
+                    disabled={busy}
+                    onChange={(event) => setBundleNativeConsent(event.currentTarget.checked)}
+                  />
+                  <span>{t('plugins.import.nativeConsent')}</span>
+                </label>
+              )}
+              <button
+                type="button"
+                className="self-start rounded-sm border border-brand bg-brand px-sm py-1 text-sm text-white disabled:opacity-50"
+                disabled={
+                  busy
+                  || profileId === null
+                  || (bundleReview.components.some(
+                    (component) => component.review.nativeAccess.length > 0,
+                  ) && !bundleNativeConsent)
+                }
+                onClick={() => void installBundle()}
+              >
+                {t('plugins.import.installBundle')}
+              </button>
+            </div>
           )}
         </article>}
       </div>

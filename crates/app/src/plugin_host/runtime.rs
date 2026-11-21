@@ -1311,6 +1311,19 @@ impl ThirdPartyPluginLifecycle {
             .map_err(|error| Status::internal(format!("plugin account state: {error}")))
     }
 
+    /// Stops the supervised processes of one bundle component with the ordinary bounded grace
+    /// before a bundle update or rollback swaps its active package. Activation state, grants and
+    /// registrations are left untouched.
+    pub async fn stop_bundle_component(&self, plugin_id: &str) {
+        let provider_ids = self.api.third_party_provider_ids_for_plugin(plugin_id);
+        for provider_id in &provider_ids {
+            self.processes.terminate_provider(provider_id).await;
+        }
+        for provider_id in provider_ids.iter().filter(|id| !self.api.is_extension(id)) {
+            self.api.disconnect(provider_id).await;
+        }
+    }
+
     /// Uninstalls one installed bundle: the shared removal primitive stops every active component
     /// with the bounded grace and deletes the mapped package versions and mapping, then this
     /// wrapper unregisters the removed components, clears their activation and grants for the

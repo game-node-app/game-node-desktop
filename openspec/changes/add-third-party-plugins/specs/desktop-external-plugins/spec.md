@@ -22,7 +22,19 @@ The application SHALL install third-party plugins only through explicit package 
 - **THEN** installation is rejected without changing the active version or writing outside staging
 
 ### Requirement: Versioned manifest and integrity contract
-Packages SHALL declare stable plugin/provider identity, publisher key, SemVer version, API range, target entrypoints, required/optional scoped permissions, optional native access disclosures and bundled license notices. Native access disclosures SHALL be limited to supported OS access names, covered by package integrity, and treated as information rather than sandbox rules. The host SHALL verify a publisher signature and hashes covering all payload files and reject unsupported schema versions or unlisted payloads.
+Packages SHALL declare stable plugin/provider identity, publisher key, SemVer version, API range, target entrypoints, required/optional scoped permissions, optional native access disclosures and bundled license notices. Native access disclosures SHALL be limited to supported OS access names, covered by package integrity, and treated as information rather than sandbox rules. Packages MAY declare optional content platforms and a per-permission impact_if_disabled disclosure; both SHALL be covered by package integrity and remain informational. The import review SHALL show the declared content platforms and permission impacts, allow the user to disable optional permissions before import, and apply those decisions to the active profile without widening any grant. Required permissions SHALL NOT be disabled. The host SHALL verify a publisher signature and hashes covering all payload files and reject unsupported schema versions or unlisted payloads.
+
+#### Scenario: Optional permission is disabled during import
+- **WHEN** the user turns off an optional permission in the signed package review before importing
+- **THEN** the package is installed, that permission remains denied for the active profile, and the review shows the plugin's impact disclosure for the disabled capability
+
+#### Scenario: Required permission is disabled during import
+- **WHEN** an import decision disables a permission the manifest marks required
+- **THEN** the host rejects the decision before writing and the package is not imported
+
+#### Scenario: Content platforms are declared
+- **WHEN** the manifest declares supported content platforms such as gamecube and wii
+- **THEN** the review shows them as informational metadata and they grant no permission, process or execution authority
 
 #### Scenario: Modified executable
 - **WHEN** any packaged executable or manifest differs from its signed integrity metadata

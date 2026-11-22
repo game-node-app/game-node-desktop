@@ -20,8 +20,11 @@ install the package, or execute plugin code.
 | `license` | SPDX expression or `LicenseRef-*`, plus one or more package-relative `files` and optional `notices`. |
 | `schemas` | Optional versioned namespace descriptors and package-relative declarative schema asset paths. |
 
-`permissions` is an optional list of `{id, required, scope, reason}` requests. Permission
-requests do not grant access. `configuration` optionally declares `external` and/or
+`permissions` is an optional list of `{id, required, scope, reason}` requests with an optional
+`impact_if_disabled` disclosure. Permission requests do not grant access. A required request
+gates activation and cannot be denied; an optional request may be declined by the user, and
+`impact_if_disabled` (non-empty, at most 512 bytes, no control characters) is the signed text
+shown for that consequence. `configuration` optionally declares `external` and/or
 `declarative` configuration modes. `resources` optionally maps descriptor names to
 package-relative resource paths. `source_url` is an optional absolute HTTP(S) URL;
 `update_url` is an optional HTTPS URL.
@@ -30,6 +33,13 @@ package-relative resource paths. `source_url` is an optional absolute HTTP(S) UR
 `process`, `registry`, and `dbus`. These signed declarations disclose operating-system access
 the program may use; they are not sandbox rules and do not grant GameNode plugin permissions.
 Update review compares this list with the installed version.
+
+`supported_platforms` is an optional array of at most 16 unique content platforms the package
+covers, such as `gamecube`, `wii`, or `nintendo.wii-u`. Entries are 1 to 64 bytes of lowercase
+ASCII letters, digits, `.`, `_`, or `-`; uppercase, control characters, and separators other
+than those are rejected. This field describes content families only. It does not replace
+`targets`, which remain the explicit OS/architecture/ABI executable tuples, and an omitted or
+empty list stays valid for existing packages.
 
 The parser rejects unknown fields, duplicate JSON object keys at every depth, and SPDX
 identifiers or exceptions absent from the strict SPDX catalog. Paths
@@ -331,9 +341,11 @@ python3 scripts/plugin-package.py bundle-verify ./dolphin.gnbundle
 ```
 
 The host still verifies each component with the normal package validator before installation.
-The review pins one publisher fingerprint, shows the grouped per-component permissions, and
-grants nothing. The inventory shows one bundle entry with per-component status; uninstall stops
-and removes every component. Existing `.gnplugin` imports are unchanged.
+The review pins one publisher fingerprint, shows the grouped per-component permissions
+(including each component's `supported_platforms` and per-permission `impact_if_disabled`
+disclosures), and grants nothing. The install then applies the reviewed optional-permission
+choices per component. The inventory shows one bundle entry with per-component status;
+uninstall stops and removes every component. Existing `.gnplugin` imports are unchanged.
 
 ## Example
 
@@ -347,9 +359,16 @@ and removes every component. Existing `.gnplugin` imports are unchanged.
   "version": "1.2.3",
   "api": { "min": "1.6.0", "max": "1.7.0" },
   "permissions": [
-    { "id": "library.read", "required": false, "scope": "own-provider", "reason": "Read imported games" }
+    {
+      "id": "library.read",
+      "required": false,
+      "scope": "own-provider",
+      "reason": "Read imported games",
+      "impact_if_disabled": "Games imported by this provider are not visible to the plugin"
+    }
   ],
   "native_access": ["files", "network"],
+  "supported_platforms": ["gamecube", "wii"],
   "targets": [
     { "os": "linux", "arch": "x86_64", "abi": "gnu", "entrypoint": "bin/linux-x64/plugin" }
   ],

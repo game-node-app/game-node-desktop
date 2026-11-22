@@ -1447,6 +1447,32 @@ resources available to its operating-system identity, so API grants do not
 constrain direct filesystem, network, or process access. Show that distinction
 separately from the host-enforced grants.
 
+## Import and update permission decisions
+
+A package review lists every requested permission with its signed `scope`, `reason` and, when the
+manifest declares one, `impact_if_disabled`. The package review also carries the manifest's
+`supported_platforms` content platforms. None of these fields grants access.
+
+Required permissions gate activation: the host never offers to deny them and rejects a denial.
+Optional permissions are granted by default when the reviewed package is installed, so the user
+opts out instead of opting in; `impact_if_disabled` describes what that opt-out costs.
+
+A standalone import passes `deniedPermissionIds` with the install. A bundle import passes
+`componentDeniedPermissions` as `{pluginId, deniedPermissionIds}` entries, one per reviewed
+component. Before any registry write the host rejects an id the reviewed component does not
+request, an attempt to deny a required permission, and a repeated id. After the package is
+installed and its publisher is pinned, the decisions are written to the active account profile
+through the same grant store the activation review uses: every optional permission not denied is
+granted, every required permission is granted, and a denied permission stays denied. A bundle
+reports a per-component `permissionError` when one component's decisions cannot be saved, without
+claiming that its siblings failed.
+
+Grants are keyed by account profile and publisher fingerprint. A package that was just imported
+is resolved from its installed, trusted package because its provider is registered only when the
+host next composes the runtime; the review still supplies permission ids and disabled choices,
+never a grant. If the profile changes or the grant revision moved while the decisions are saved,
+the write is rejected rather than applied to a stale account.
+
 ## Typed operation contracts
 
 Every `ResourceHost` and domain-service route has an operation-specific request

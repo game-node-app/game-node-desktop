@@ -2017,6 +2017,65 @@ fn removing_a_provider_by_plugin_id_resolves_the_composed_provider_id() {
 }
 
 #[test]
+fn a_reinstalled_provider_keeps_the_users_chosen_match() {
+    let cache = LibraryCache {
+        entries: vec![stored("shop", "1", "Shop One", true)],
+        chosen_matches: vec![ChosenMatch {
+            entry_key: "shop:1".to_owned(),
+            game_id: Some(42),
+            chosen_at: 5,
+            source: Default::default(),
+        }],
+        ..LibraryCache::default()
+    };
+    let (mut machine, effects) = loaded(true, cache);
+    let ops = scan_ops(&effects);
+    for (op, provider) in &ops {
+        let records = if provider == "shop" {
+            vec![record("1", "Shop One", "/shop/one")]
+        } else {
+            Vec::new()
+        };
+        scanned(&mut machine, *op, provider, Ok(records), 10);
+    }
+    assert_eq!(
+        machine
+            .match_status(machine.entry("shop:1").unwrap())
+            .game_id(),
+        Some(42),
+        "the host cache restores the user's chosen match"
+    );
+
+    let shop = registry::tests::load(&[("shop.toml", SHOP_MANIFEST)], Platform::Linux)
+        .providers
+        .into_iter()
+        .next()
+        .unwrap();
+    assert!(machine.remove_provider("shop"));
+    assert!(machine.entry("shop:1").is_none());
+    assert!(machine.put_provider(shop));
+    let effects = machine.handle(Input::ScanRequested);
+    let (op, _) = scan_ops(&effects)
+        .into_iter()
+        .find(|(_, provider)| provider == "shop")
+        .unwrap();
+    scanned(
+        &mut machine,
+        op,
+        "shop",
+        Ok(vec![record("1", "Shop One", "/shop/one")]),
+        20,
+    );
+    assert_eq!(
+        machine
+            .match_status(machine.entry("shop:1").unwrap())
+            .game_id(),
+        Some(42),
+        "reinstalling the provider must not lose the host-owned association"
+    );
+}
+
+#[test]
 fn cached_entries_of_a_provider_that_is_not_loaded_stay_hidden() {
     let cache = LibraryCache {
         entries: vec![stored("shop", "1", "Shop One", true)],

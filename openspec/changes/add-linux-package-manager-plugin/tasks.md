@@ -7,8 +7,8 @@ After the provider record shape and plugin identity are agreed, scanner parsing/
 ## 1. Linux package discovery plugin
 
 - [x] 1.1 Add a Linux-only `gamenode-plugin-packagekit` workspace crate and extract bounded desktop-entry parsing, executable resolution, package identity normalization, and Arch-family selection; verify fixtures cover visible Game entries, hidden/non-game entries, malformed values, duplicate packages, Arch derivatives, and other distributions.
-- [ ] 1.2 Implement PackageKit installed-file queries and pacman `-Qqo` queries behind the selected backend, with timeouts and typed failures; verify fixtures distinguish a successful empty scan from unavailable or failed backends and preserve safe argument-based process invocation.
-- [ ] 1.3 Implement the plugin with `gamenode-plugin-sdk::ProviderPlugin` for discovery only and return normalized records through `OperationResult.discovery`; verify the reference host accepts the result under `library.discovery` and rejects unsupported operations without using `PluginHost.SubmitDiscovery`.
+- [x] 1.2 Implement PackageKit installed-file queries and pacman `-Qqo` queries behind the selected backend, with timeouts and typed failures; verify fixtures distinguish a successful empty scan from unavailable or failed backends and preserve safe argument-based process invocation.
+- [x] 1.3 Implement the plugin with `gamenode-plugin-sdk::ProviderPlugin` for discovery only and return normalized records through `OperationResult.discovery`; verify the reference host accepts the result under `library.discovery` and rejects unsupported operations without using `PluginHost.SubmitDiscovery`.
 
 ## 2. Trusted provider integration and inventory
 
@@ -18,7 +18,7 @@ After the provider record shape and plugin identity are agreed, scanner parsing/
 ## 3. Platform-specific build and package delivery
 
 - [x] 3.1 Update Linux development and release launchers to build and stage `gamenode-plugin-packagekit` beside the host; verify the launcher fails clearly when the executable is missing and the Linux package verifier requires a valid executable x86-64 ELF.
-- [ ] 3.2 Keep Windows development and release commands free of the Linux-only crate and reject any packagekit executable in Windows package verification; verify Windows package fixtures and the Windows cross-build/package validation pass.
+- [x] 3.2 Keep Windows development and release commands free of the Linux-only crate and reject any packagekit executable in Windows package verification; verify Windows package fixtures and the Windows cross-build/package validation pass.
 - [x] 3.3 Update plugin-build and development documentation with the Linux package layout, supported PackageKit/pacman selection, read-only discovery, `library.discovery` grant, native access, and the fact that the plugin is not sandboxed; verify every documented command and binary name matches the scripts.
 
 ## 4. Integrated candidate

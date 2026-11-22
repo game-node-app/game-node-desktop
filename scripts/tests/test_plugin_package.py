@@ -102,6 +102,28 @@ class PackageLayout(unittest.TestCase):
         self.assertTrue(any("another platform" in error for error in errors))
         self.assertTrue(any(other.executable in error for error in errors))
 
+    def test_windows_rejects_the_linux_package_manager_executable(self):
+        self._windows()
+        packagekit = next(
+            plugin
+            for plugin in bundled_plugins.load("linux")
+            if plugin.provider_id == "packagekit"
+        )
+        self.assertNotIn(
+            "packagekit",
+            [plugin.provider_id for plugin in bundled_plugins.load("windows")],
+        )
+        for name in (packagekit.executable, packagekit.executable + ".exe"):
+            (self.root / name).write_bytes(b"MZ")
+        errors = package_check.verify(self.root, "windows")
+        self.assertTrue(
+            any(
+                "another platform" in error and packagekit.executable in error
+                for error in errors
+            ),
+            errors,
+        )
+
     @unittest.skipUnless(os.name == "posix", "Linux execute bits require POSIX stat semantics")
     def test_linux_requires_adjacent_plugins_and_user_execute_permissions(self):
         self._linux()

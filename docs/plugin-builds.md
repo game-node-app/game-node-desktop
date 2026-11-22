@@ -19,7 +19,16 @@ The package stores all three executables together in `libexec/`. The Linux packa
 uses pacman on Arch-family systems and PackageKit on other distributions. Its discovery is
 read-only and receives `provider.context.read` and `library.discovery`; it has native access to
 desktop-entry files, local process execution for pacman, and system D-Bus for PackageKit. The
-process plugin is not sandboxed. The unversioned `gamenode-desktop.tar.gz` remains a convenience
+process plugin is not sandboxed. Scans are bounded by desktop-entry, record and D-Bus message
+counts and by per-query timeouts; a failed or unavailable backend fails only that provider scan.
+Fixture tests cover success, empty, timeout, malformed output and unavailable backends. On an
+Arch-family host, the read-only live check is:
+
+```sh
+cargo test -p gamenode-plugin-packagekit --locked -- --ignored --nocapture
+```
+
+The unversioned `gamenode-desktop.tar.gz` remains a convenience
 alias for the latest local package.
 
 ## Windows

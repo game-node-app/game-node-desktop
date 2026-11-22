@@ -1723,6 +1723,19 @@ export interface PluginInfo {
   bundleComponents?: PluginBundleComponent[];
 }
 
+/** One permission requested by a verified package manifest. */
+export interface PluginImportPermissionReview {
+  id: string;
+  required: boolean;
+  scope: string;
+  reason: string;
+  /**
+   * What stops working when the user denies this optional permission. Required permissions
+   * cannot be denied, so they never carry an impact.
+   */
+  impactIfDisabled?: string;
+}
+
 export interface PluginImportReview {
   token: string;
   pluginId: string;
@@ -1737,12 +1750,9 @@ export interface PluginImportReview {
   licenseFiles: string[];
   licenseNotices: string[];
   permissionIds: string[];
-  requestedPermissions: Array<{
-    id: string;
-    required: boolean;
-    scope: string;
-    reason: string;
-  }>;
+  requestedPermissions: PluginImportPermissionReview[];
+  /** Emulator or runtime platforms declared by the signed bundle manifest. */
+  supportedPlatforms?: string[];
   nativeAccess: string[];
   playtime: PlaytimeCapabilities;
   compatibility: 'compatible' | 'incompatible' | 'unknown';

@@ -26,6 +26,7 @@ import {
   type PluginInfo,
   type PluginBundleComponent,
   type PluginBundleImportReview,
+  type PluginImportReview,
   type BundleUpdateReview,
   type PluginUpdateReview,
   type Provider,
@@ -2010,19 +2011,64 @@ export function createMockHost(options: {
               required: false,
               scope: 'own-provider',
               reason: 'Keep the local game catalog between scans.',
+              impactIfDisabled: 'The catalog is rebuilt on every start and plugin preferences are lost.',
             }]
           : [{
               id: 'game.launch',
               required: false,
               scope: 'approved-game-session',
               reason: 'Start the selected game in this emulator.',
+              impactIfDisabled: 'Games cannot be started from GameNode with this extension.',
             }],
+        supportedPlatforms: ['gamecube', 'wii'],
         nativeAccess: component.nativeAccess,
         playtime: { identifiesGameplay: false, identifiesPauses: false, withoutPauseDetection: 'disabled' },
         compatibility: component.status === 'installed' ? 'compatible' : 'incompatible',
         compatibilityDetails: component.compatibilityDetails ?? mockCompatibility,
       },
     })),
+  });
+  /** A standalone package review so the individual-path flow can be exercised in the mock host. */
+  const mockPackageReview = (trust: 'untrusted' | 'trusted' = 'untrusted'): PluginImportReview => ({
+    token: 'mock-package-review',
+    pluginId: 'org.example.dolphin',
+    providerId: 'dolphin',
+    name: 'Dolphin discovery',
+    version: '0.1.0',
+    publisherKeyId: 'dolphin-dev',
+    publisherFingerprint: mockBundlePublisher,
+    trust,
+    license: 'MIT',
+    licenseFiles: ['licenses/LICENSE'],
+    licenseNotices: [],
+    permissionIds: ['provider.context.read', 'library.discovery', 'storage.persist'],
+    requestedPermissions: [
+      {
+        id: 'provider.context.read',
+        required: true,
+        scope: 'own-provider',
+        reason: 'Read the host-issued provider context.',
+      },
+      {
+        id: 'library.discovery',
+        required: false,
+        scope: 'own-provider',
+        reason: 'Report the emulator library to GameNode.',
+        impactIfDisabled: 'GameCube and Wii titles from this emulator are not discovered.',
+      },
+      {
+        id: 'storage.persist',
+        required: false,
+        scope: 'own-provider',
+        reason: 'Keep the local game catalog between scans.',
+        impactIfDisabled: 'The catalog is rebuilt on every start and plugin preferences are lost.',
+      },
+    ],
+    supportedPlatforms: ['gamecube', 'wii'],
+    nativeAccess: ['files'],
+    playtime: { identifiesGameplay: false, identifiesPauses: false, withoutPauseDetection: 'disabled' },
+    compatibility: 'compatible',
+    compatibilityDetails: mockCompatibility,
   });
   /** A grouped bundle update/rollback review fixture with per-component old/new versions. */
   const mockBundleUpdateReviewFor = (version: string, rollback: boolean): BundleUpdateReview => {
@@ -4539,6 +4585,24 @@ export function createMockHost(options: {
             error: null,
           })),
         });
+      }
+      if (cmd === 'plugin_import_review') {
+        return structuredClone(mockPackageReview());
+      }
+      if (cmd === 'plugin_import_confirm_publisher') {
+        const review = mockPackageReview();
+        const confirmed = String(args.confirmedFingerprint ?? '');
+        if (confirmed !== review.publisherFingerprint) {
+          throw new Error('publisher fingerprint confirmation does not match');
+        }
+        return structuredClone(mockPackageReview('trusted'));
+      }
+      if (cmd === 'plugin_import_install') {
+        if (args.token !== 'mock-package-review') throw new Error('plugin import review expired');
+        return 'org.example.dolphin';
+      }
+      if (cmd === 'plugin_import_license_text') {
+        return 'MIT License\n\nPermission is hereby granted, free of charge, to any person obtaining a copy.';
       }
       if (cmd === 'plugin_bundle_import_review') {
         return structuredClone(mockBundleReview());

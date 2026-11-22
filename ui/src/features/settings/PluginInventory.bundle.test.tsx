@@ -139,8 +139,21 @@ function bundleReview(trust: PluginBundleImportReview['trust'] = 'untrusted'): P
       licenseNotices: [],
       permissionIds: kind === 'provider' ? ['storage.persist'] : ['game.launch'],
       requestedPermissions: kind === 'provider'
-        ? [{ id: 'storage.persist', required: false, scope: 'own-provider', reason: 'Keep the local catalog.' }]
-        : [{ id: 'game.launch', required: false, scope: 'approved-game-session', reason: 'Start the selected game.' }],
+        ? [{
+            id: 'storage.persist',
+            required: false,
+            scope: 'own-provider',
+            reason: 'Keep the local catalog.',
+            impactIfDisabled: 'The local catalog is rebuilt on every start.',
+          }]
+        : [{
+            id: 'game.launch',
+            required: false,
+            scope: 'approved-game-session',
+            reason: 'Start the selected game.',
+            impactIfDisabled: 'Games cannot be launched from GameNode.',
+          }],
+      supportedPlatforms: ['gamecube', 'wii'],
       nativeAccess: ['files'],
       playtime: { identifiesGameplay: false, identifiesPauses: false, withoutPauseDetection: 'disabled' as const },
       compatibility: kind === 'provider' ? 'compatible' as const : 'incompatible' as const,
@@ -450,13 +463,16 @@ describe('bundle inventory', () => {
     vi.spyOn(commands, 'pluginBundleImportReview').mockResolvedValue(bundleReview());
     renderInventory('pt-BR', 'account-one');
 
-    const path = await screen.findByRole('textbox', { name: 'Caminho do pacote ZIP assinado' });
+    const path = await screen.findByRole('textbox', { name: 'Caminho do bundle assinado' });
     fireEvent.change(path, { target: { value: '/pacotes/dolphin.gnbundle' } });
     await userEvent.setup().type(path, '{Enter}');
 
     const article = await screen.findByRole('article', { name: 'Revisar pacote de plugins' });
     expect(article).toHaveTextContent('Identificador do pacote: org.example.dolphin.bundle');
     expect(article).toHaveTextContent('Permissões solicitadas');
+    expect(article).toHaveTextContent('Plataformas: GameCube, Wii');
+    expect(article).toHaveTextContent('Persistir dados do plugin');
+    expect(article).toHaveTextContent('Aceitar e instalar');
     expect(article).toHaveTextContent('Confiar neste publicador');
   });
 
@@ -471,10 +487,14 @@ describe('bundle inventory', () => {
     await waitFor(() => expect(openFile).toHaveBeenCalledWith({
       multiple: false,
       directory: false,
-      title: 'Choose a signed plugin package',
-      filters: [{ name: 'Signed plugin packages', extensions: ['gnbundle', 'gnplugin', 'zip'] }],
+      title: 'Choose a signed plugin bundle',
+      filters: [
+        { name: 'Signed plugin bundles', extensions: ['gnbundle'] },
+        { name: 'Individual plugin packages', extensions: ['gnplugin'] },
+        { name: 'Signed plugin bundles and individual packages', extensions: ['gnbundle', 'gnplugin'] },
+      ],
     }));
-    const input = screen.getByRole('textbox', { name: 'Path to signed ZIP package' });
+    const input = screen.getByRole('textbox', { name: 'Path to signed bundle' });
     await waitFor(() => expect(input).toHaveValue('/tmp/dolphin-emu-0.1.0-linux-x64.gnbundle'));
   });
 
@@ -485,7 +505,7 @@ describe('bundle inventory', () => {
       .mockResolvedValue(bundleReview('trusted'));
     renderInventory('en', 'account-one');
 
-    const path = await screen.findByRole('textbox', { name: 'Path to signed ZIP package' });
+    const path = await screen.findByRole('textbox', { name: 'Path to signed bundle' });
     fireEvent.change(path, { target: { value: '/packages/dolphin.gnbundle' } });
     await userEvent.setup().type(path, '{Enter}');
 
@@ -493,11 +513,17 @@ describe('bundle inventory', () => {
     expect(review).toHaveBeenCalledWith('/packages/dolphin.gnbundle');
     expect(article).toHaveTextContent('Dolphin GameCube and Wii 0.2.0');
     expect(article).toHaveTextContent(publisher);
-    expect(article).toHaveTextContent('storage.persist · own-provider · optional · Keep the local catalog.');
-    expect(article).toHaveTextContent('game.launch · approved-game-session · optional · Start the selected game.');
+    expect(article).toHaveTextContent('Persist plugin data');
+    expect(article).toHaveTextContent('Own provider');
+    expect(article).toHaveTextContent('Optional');
+    expect(article).toHaveTextContent('Keep the local catalog.');
+    expect(article).toHaveTextContent('Launch games');
+    expect(article).toHaveTextContent('Approved game session');
+    expect(article).toHaveTextContent('Platforms: GameCube, Wii');
     expect(article).toHaveTextContent('Unavailable on this system');
     expect(article).toHaveTextContent('No package target matches this system');
     expect(article).toHaveTextContent('Incompatible');
+    expect(within(article).getByRole('button', { name: 'Accept and install' })).toBeDisabled();
 
     fireEvent.click(within(article).getByRole('button', { name: 'Trust this publisher' }));
     await waitFor(() => expect(confirm).toHaveBeenCalledWith('bundle-token', publisher));
@@ -517,7 +543,7 @@ describe('bundle inventory', () => {
     });
     renderInventory('en', 'account-one');
 
-    const path = await screen.findByRole('textbox', { name: 'Path to signed ZIP package' });
+    const path = await screen.findByRole('textbox', { name: 'Path to signed bundle' });
     fireEvent.change(path, { target: { value: '/packages/dolphin.gnbundle' } });
     await userEvent.setup().type(path, '{Enter}');
     const article = await screen.findByRole('article', { name: 'Review plugin bundle' });
@@ -525,11 +551,42 @@ describe('bundle inventory', () => {
 
     const consent = await within(article).findByRole('checkbox');
     fireEvent.click(consent);
-    fireEvent.click(within(article).getByRole('button', { name: 'Install bundle' }));
+    fireEvent.click(within(article).getByRole('button', { name: 'Accept and install' }));
 
-    await waitFor(() => expect(install).toHaveBeenCalledWith('bundle-token', true));
+    await waitFor(() => expect(install).toHaveBeenCalledWith('bundle-token', true, [
+      { pluginId: 'org.example.dolphin', deniedPermissionIds: [] },
+      { pluginId: 'org.example.dolphin.launch', deniedPermissionIds: [] },
+    ]));
     expect(screen.queryByRole('article', { name: 'Review plugin bundle' })).not.toBeInTheDocument();
     await waitFor(() => expect(inventory.mock.calls.length).toBeGreaterThan(1));
+  });
+
+  it('collects denied optional permissions per bundle component', async () => {
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([official]);
+    vi.spyOn(commands, 'pluginBundleImportReview').mockResolvedValue(bundleReview('trusted'));
+    const install = vi.spyOn(commands, 'pluginBundleImportInstall').mockResolvedValue({
+      bundleId: 'org.example.dolphin.bundle',
+      components: [],
+    });
+    renderInventory('en', 'account-one');
+
+    const path = await screen.findByRole('textbox', { name: 'Path to signed bundle' });
+    fireEvent.change(path, { target: { value: '/packages/dolphin.gnbundle' } });
+    await userEvent.setup().type(path, '{Enter}');
+    const article = await screen.findByRole('article', { name: 'Review plugin bundle' });
+
+    const persist = within(article).getByRole('switch', { name: 'Allow Persist plugin data' });
+    expect(persist).toBeChecked();
+    fireEvent.click(persist);
+    expect(await within(article).findByText('The local catalog is rebuilt on every start.')).toBeInTheDocument();
+
+    fireEvent.click(within(article).getByRole('checkbox', { name: /reviewed the declared native access/i }));
+    fireEvent.click(within(article).getByRole('button', { name: 'Accept and install' }));
+
+    await waitFor(() => expect(install).toHaveBeenCalledWith('bundle-token', true, [
+      { pluginId: 'org.example.dolphin', deniedPermissionIds: ['storage.persist'] },
+      { pluginId: 'org.example.dolphin.launch', deniedPermissionIds: [] },
+    ]));
   });
 
   it('reviews and applies one bundle update with per-component old and new versions', async () => {

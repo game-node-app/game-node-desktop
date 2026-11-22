@@ -357,14 +357,22 @@ impl SystemPackageKit {
         let mut rows = Vec::new();
         let mut messages = 0usize;
         loop {
+            // A signal flood is a broken or hostile backend, not a truncated success.
+            if messages >= MAX_PACKAGEKIT_MESSAGES {
+                return Err(ScanFailure::PackageKitFailed);
+            }
             messages += 1;
-            if messages > MAX_PACKAGEKIT_MESSAGES || rows.len() >= MAX_RECORDS {
+            // Stop collecting at the record bound; the transaction is dropped with the proxy.
+            if rows.len() >= MAX_RECORDS {
                 break;
             }
             tokio::select! {
                 biased;
                 message = packages.next() => {
-                    let Some(message) = message else { break };
+                    // Only a `Finished` signal completes a PackageKit transaction.
+                    let Some(message) = message else {
+                        return Err(ScanFailure::PackageKitFailed);
+                    };
                     if let Ok((_, package_id, summary)) =
                         message.body().deserialize::<(u32, String, String)>()
                         && package_id.contains(';')
@@ -373,7 +381,9 @@ impl SystemPackageKit {
                     }
                 }
                 message = finished.next() => {
-                    let Some(message) = message else { break };
+                    let Some(message) = message else {
+                        return Err(ScanFailure::PackageKitFailed);
+                    };
                     let (exit, _runtime) = message
                         .body()
                         .deserialize::<(u32, u32)>()

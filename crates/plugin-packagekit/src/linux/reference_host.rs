@@ -379,6 +379,26 @@ async fn provider_returns_normalized_discovery_records_and_declines_other_operat
 }
 
 #[tokio::test]
+async fn provider_reports_a_successful_empty_scan_as_completed() {
+    let (results, submit_discovery) =
+        run_fixture(Arc::new(StaticSource(Ok(Vec::new()))), PROVIDER_ID, "linux").await;
+
+    let completion = &results["discover"];
+    assert_eq!(
+        completion.disposition,
+        OperationDisposition::Completed as i32
+    );
+    let discovery = completion
+        .discovery
+        .as_ref()
+        .expect("an empty scan still returns a discovery result");
+    assert_eq!(discovery.provider_id, PROVIDER_ID);
+    assert!(discovery.records.is_empty());
+    assert!(completion.failure.is_none());
+    assert_eq!(submit_discovery.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 async fn provider_reports_a_failed_scan_without_returning_stale_or_partial_records() {
     let (results, submit_discovery) = run_fixture(
         Arc::new(StaticSource(Err(ScanFailure::PackageKitUnavailable))),

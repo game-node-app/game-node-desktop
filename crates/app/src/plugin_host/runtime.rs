@@ -733,13 +733,10 @@ impl ThirdPartyPluginLifecycle {
         let mut outcomes = Vec::new();
         for installed in active {
             let plugin_id = installed.plugin_id.clone();
-            if !self
+            let registered = !self
                 .api
                 .third_party_provider_ids_for_plugin(&plugin_id)
-                .is_empty()
-            {
-                continue;
-            }
+                .is_empty();
             let prepared = match prepare_managed_package(
                 installed,
                 &trust,
@@ -767,6 +764,52 @@ impl ThirdPartyPluginLifecycle {
                 extension_schemas,
                 entry,
             } = prepared;
+            if registered {
+                // A newer version replaced the package while its provider stayed registered.
+                // Keep the host-owned identity, but point the supervised process at the new
+                // immutable config so an accepted import takes effect without a restart. The
+                // same immutable package is already fully registered and stays untouched.
+                let current_version =
+                    self.processes
+                        .config(&provider_id)
+                        .ok()
+                        .and_then(|current| {
+                            current
+                                .integrity
+                                .as_ref()
+                                .map(|integrity| integrity.version.clone())
+                        });
+                let next_version = config
+                    .integrity
+                    .as_ref()
+                    .map(|integrity| integrity.version.clone());
+                if current_version == next_version {
+                    continue;
+                }
+                let replaced = if self.processes.config(&provider_id).is_ok() {
+                    self.processes.replace_config(&provider_id, config).await
+                } else {
+                    self.processes.register_config(config)
+                };
+                if let Err(error) = replaced {
+                    outcomes.push(InstalledPackageRegistration {
+                        plugin_id,
+                        error: Some(error.message().to_owned()),
+                    });
+                    continue;
+                }
+                if let Some(composition) = composition.as_ref() {
+                    if let Some(entry) = entry {
+                        composition.dynamic.insert_entry(provider_id, entry);
+                    }
+                    composition.dynamic.push_inventory(inventory);
+                }
+                outcomes.push(InstalledPackageRegistration {
+                    plugin_id,
+                    error: None,
+                });
+                continue;
+            }
             if let Err(error) = register_prepared_management(
                 &self.api,
                 &provider_id,

@@ -41,6 +41,10 @@ fn installed_package_digest_hashes_the_signed_integrity_manifest() {
 
 #[cfg(target_os = "linux")]
 fn signed_provider_archive(root: &Path) -> PathBuf {
+    signed_provider_archive_version(root, "1.0.0")
+}
+
+fn signed_provider_archive_version(root: &Path, version: &str) -> PathBuf {
     use base64::Engine as _;
     use ring::signature::KeyPair as _;
     use sha2::Digest as _;
@@ -55,7 +59,7 @@ fn signed_provider_archive(root: &Path) -> PathBuf {
         "kind": "provider",
         "provider_id": "fixture",
         "name": "Signed acceptance fixture",
-        "version": "1.0.0",
+        "version": version,
         "api": {"min": "1.6.0", "max": "1.6.0"},
         "permissions": [{
             "id": cap::CATALOG,
@@ -99,6 +103,10 @@ fn signed_provider_archive(root: &Path) -> PathBuf {
     let mut signed = gamenode_platform::plugin_packages::SIGNATURE_DOMAIN_PREFIX.to_vec();
     signed.extend_from_slice(&integrity);
     let signature = key.sign(&signed);
+    // Keep the extracted source complete: `install_verified` copies it directly in tests that
+    // replace an active version without going through the archive importer.
+    std::fs::write(root.join("integrity.json"), &integrity).unwrap();
+    std::fs::write(root.join("signature.ed25519"), signature.as_ref()).unwrap();
 
     let archive = root.with_extension("gnplugin");
     let mut zip = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
@@ -396,6 +404,110 @@ async fn imported_signed_provider_runs_from_registry_and_profile_fences_after_pe
     })
     .await
     .expect("profile fencing stops the imported provider process and session");
+    host.shutdown().await;
+    server.shutdown().await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn importing_a_newer_signed_provider_version_replaces_the_live_process_config() {
+    use crate::plugin_host::{PluginApi, profile::PluginStateLayout, updates::PluginUpdateService};
+    use gamenode_platform::{
+        db::{self, SqliteSettingsStore},
+        paths::DataPaths,
+        plugin_registry::PluginPackageRegistry,
+    };
+
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(
+        directory.path(),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .unwrap();
+    let endpoint = directory.path().join("plugins.sock");
+    let paths = DataPaths::at(directory.path().join("app-data"));
+    let api = PluginApi::default();
+    let state = PluginStateLayout::managed(&paths);
+    api.set_state_layout(state.clone());
+    api.providers.profiles().update(Some("account-one"), true);
+
+    let registry = PluginPackageRegistry::open(&paths).unwrap();
+    let importer = PluginUpdateService::open(&paths).unwrap();
+    let store = SqliteSettingsStore::new(db::open(Path::new(":memory:")).unwrap());
+    let library: Arc<dyn gamenode_core::library::LibraryStore> = Arc::new(store.library_store());
+    let host = HostedProviders::bundled(
+        api.providers.clone(),
+        Arc::new(Default::default()),
+        Some(endpoint.clone()),
+        paths.clone(),
+        library,
+        None,
+    )
+    .await
+    .unwrap();
+    let server =
+        PluginApiServer::start(&tokio::runtime::Handle::current(), &endpoint, api.clone()).unwrap();
+    importer.set_lifecycle(host.lifecycle());
+
+    // First import registers and enables the provider.
+    let archive = signed_provider_archive_version(&directory.path().join("package-1.0.0"), "1.0.0");
+    let review = importer.import_review(archive).await.unwrap();
+    importer
+        .import_confirm_publisher(&review.token, &review.package.publisher_fingerprint)
+        .await
+        .unwrap();
+    let first = importer
+        .import_install(&review.token, false, &[])
+        .await
+        .unwrap();
+    assert!(first.activated, "{:?}", first.activation_error);
+    let lifecycle = host.lifecycle();
+    lifecycle.enable("fixture.plugin".into()).await.unwrap();
+    assert_eq!(
+        host.processes
+            .config("fixture")
+            .unwrap()
+            .integrity
+            .unwrap()
+            .version,
+        "1.0.0"
+    );
+
+    // Replacing the active package on disk while the provider stays registered must swap the
+    // supervised config, not keep the old version until the next desktop restart. The bundle
+    // import path installs the new component version and then calls this same registration.
+    let source = directory.path().join("package-2.0.0");
+    signed_provider_archive_version(&source, "2.0.0");
+    let installed = registry
+        .install_verified("fixture.plugin", "2.0.0", &source, true)
+        .unwrap();
+    std::fs::set_permissions(
+        installed.package_path.join("plugin"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .unwrap();
+    let registration = lifecycle.register_installed_packages().await.unwrap();
+    for outcome in &registration {
+        assert!(
+            outcome.error.is_none(),
+            "{}: {:?}",
+            outcome.plugin_id,
+            outcome.error
+        );
+    }
+    assert_eq!(
+        host.processes
+            .config("fixture")
+            .unwrap()
+            .integrity
+            .unwrap()
+            .version,
+        "2.0.0",
+        "the live slot must run the version the import just accepted"
+    );
+    lifecycle.enable("fixture.plugin".into()).await.unwrap();
+    assert!(lifecycle.enabled("fixture.plugin".into()).await.unwrap());
+
     host.shutdown().await;
     server.shutdown().await;
 }

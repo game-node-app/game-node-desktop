@@ -410,7 +410,7 @@ async fn imported_signed_provider_runs_from_registry_and_profile_fences_after_pe
 
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread")]
-async fn importing_a_newer_signed_provider_version_replaces_the_live_process_config() {
+async fn a_live_signed_provider_can_update_disable_remove_and_reinstall_without_a_restart() {
     use crate::plugin_host::{PluginApi, profile::PluginStateLayout, updates::PluginUpdateService};
     use gamenode_platform::{
         db::{self, SqliteSettingsStore},
@@ -507,6 +507,52 @@ async fn importing_a_newer_signed_provider_version_replaces_the_live_process_con
     );
     lifecycle.enable("fixture.plugin".into()).await.unwrap();
     assert!(lifecycle.enabled("fixture.plugin".into()).await.unwrap());
+
+    // Deactivation stops the supervised process and keeps the installed package and grants.
+    lifecycle.disable("fixture.plugin".into()).await.unwrap();
+    assert!(!lifecycle.enabled("fixture.plugin".into()).await.unwrap());
+    assert_eq!(host.processes.process_id("fixture").await, None);
+
+    // Activation works again in the same host.
+    lifecycle.enable("fixture.plugin".into()).await.unwrap();
+    assert!(lifecycle.enabled("fixture.plugin".into()).await.unwrap());
+    assert!(host.processes.process_id("fixture").await.is_some());
+
+    // Uninstall unregisters the plugin and removes its slot without a restart.
+    lifecycle.remove("fixture.plugin".into()).await.unwrap();
+    assert!(!lifecycle.is_registered("fixture.plugin"));
+    assert!(!lifecycle.has_process_slot("fixture.plugin"));
+    assert!(!lifecycle.enabled("fixture.plugin".into()).await.unwrap());
+    assert!(registry.active("fixture.plugin").unwrap().is_none());
+
+    // Reinstall through the same reviewed import path: it installs, applies the reviewed grants,
+    // registers, enables and starts the plugin again in this session.
+    let archive = signed_provider_archive_version(&directory.path().join("package-3.0.0"), "3.0.0");
+    let review = importer.import_review(archive).await.unwrap();
+    if review.package.trust != "trusted" {
+        importer
+            .import_confirm_publisher(&review.token, &review.package.publisher_fingerprint)
+            .await
+            .unwrap();
+    }
+    let reinstalled = importer
+        .import_install(&review.token, false, &[])
+        .await
+        .unwrap();
+    assert!(reinstalled.activated, "{:?}", reinstalled.activation_error);
+    assert!(lifecycle.is_registered("fixture.plugin"));
+    assert!(lifecycle.has_process_slot("fixture.plugin"));
+    assert!(lifecycle.enabled("fixture.plugin".into()).await.unwrap());
+    assert_eq!(
+        host.processes
+            .config("fixture")
+            .unwrap()
+            .integrity
+            .unwrap()
+            .version,
+        "3.0.0"
+    );
+    assert!(host.processes.process_id("fixture").await.is_some());
 
     host.shutdown().await;
     server.shutdown().await;

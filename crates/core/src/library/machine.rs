@@ -912,6 +912,31 @@ impl LibraryMachine {
         true
     }
 
+    /// Removes one provider and its live entries after an accepted uninstall.
+    ///
+    /// Persisted rows stay in the account cache for a later reinstall; the provider's scan state
+    /// and pending slot in a running scan are dropped so a late answer cannot bring it back. A
+    /// subsequent import calls [`Self::put_provider`] and requests a scan, which repopulates the
+    /// rows. Returns whether the provider was loaded.
+    pub fn remove_provider(&mut self, id: &str) -> bool {
+        let before = self.providers.len();
+        self.providers.retain(|provider| provider.id() != id);
+        if self.providers.len() == before {
+            return false;
+        }
+        self.entries.retain(|_, entry| entry.provider != id);
+        self.scans.remove(id);
+        self.scan_progress.remove(id);
+        if let Some(run) = &mut self.scan {
+            run.waiting.remove(id);
+            if run.waiting.is_empty() {
+                self.scan = None;
+            }
+        }
+        self.view_dirty = true;
+        true
+    }
+
     /// Whether the library is shown (an account is set, even before it is verified).
     pub fn is_active(&self) -> bool {
         !matches!(self.phase, Phase::Inactive)
@@ -997,6 +1022,7 @@ impl LibraryMachine {
         self.entries
             .values()
             .filter(|entry| entry.is_visible() && !self.excluded.contains(&entry.key))
+            .filter(|entry| self.provider(&entry.provider).is_some())
     }
 
     /// Whether the shared-games preference leaves this entry out: only entries that are shared
@@ -2139,6 +2165,11 @@ impl LibraryMachine {
         targets: std::collections::BTreeMap<String, super::target::TargetSpec>,
         now: i64,
     ) -> Vec<Effect> {
+        // An uninstalled provider is removed from the scan list and its pending slot; a late
+        // child answer must not repopulate rows the user just removed.
+        if self.provider(&provider).is_none() {
+            return vec![];
+        }
         let Some(run) = &mut self.scan else {
             return vec![];
         };

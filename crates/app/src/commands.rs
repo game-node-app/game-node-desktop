@@ -761,10 +761,14 @@ pub async fn plugin_bundle_update_review(
 #[tauri::command]
 pub async fn plugin_bundle_update_approve(
     updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    engine: tauri::State<'_, Engine>,
     bundle_id: String,
     version: String,
 ) -> Result<crate::plugin_host::bundles::BundleUpdateOutcome, String> {
-    updates.approve_bundle_update(&bundle_id, &version).await
+    let outcome = updates.approve_bundle_update(&bundle_id, &version).await?;
+    // The activated component may expose different records; refresh them in the same session.
+    engine.rescan();
+    Ok(outcome)
 }
 
 #[tauri::command]
@@ -795,13 +799,16 @@ pub async fn plugin_bundle_rollback_review(
 #[tauri::command]
 pub async fn plugin_bundle_rollback_approve(
     updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    engine: tauri::State<'_, Engine>,
     bundle_id: String,
     version: String,
     confirmed: bool,
 ) -> Result<crate::plugin_host::bundles::BundleRollbackOutcome, String> {
-    updates
+    let outcome = updates
         .approve_bundle_rollback(&bundle_id, &version, confirmed)
-        .await
+        .await?;
+    engine.rescan();
+    Ok(outcome)
 }
 
 #[tauri::command]
@@ -1302,23 +1309,33 @@ pub async fn plugin_shared_data_replace(
 #[tauri::command]
 pub async fn plugin_enable(
     lifecycle: tauri::State<'_, Arc<crate::plugin_host::runtime::ThirdPartyPluginLifecycle>>,
+    engine: tauri::State<'_, Engine>,
     plugin_id: String,
 ) -> Result<(), String> {
     lifecycle
         .enable(plugin_id)
         .await
-        .map_err(|error| error.message().to_owned())
+        .map_err(|error| error.message().to_owned())?;
+    // Enabling starts the supervised provider; scan it now so its games appear without the user
+    // having to press refresh and without a restart.
+    engine.rescan();
+    Ok(())
 }
 
 #[tauri::command]
 pub async fn plugin_disable(
     lifecycle: tauri::State<'_, Arc<crate::plugin_host::runtime::ThirdPartyPluginLifecycle>>,
+    engine: tauri::State<'_, Engine>,
     plugin_id: String,
 ) -> Result<(), String> {
     lifecycle
         .disable(plugin_id)
         .await
-        .map_err(|error| error.message().to_owned())
+        .map_err(|error| error.message().to_owned())?;
+    // The cached entries stay; publish the new provider availability so the store and warnings
+    // reflect the stop immediately.
+    engine.publish_current();
+    Ok(())
 }
 
 /// Uninstalls one plugin after applying the user's durable shared-data choice. Omitting
@@ -1326,6 +1343,7 @@ pub async fn plugin_disable(
 #[tauri::command]
 pub async fn plugin_remove(
     lifecycle: tauri::State<'_, Arc<crate::plugin_host::runtime::ThirdPartyPluginLifecycle>>,
+    engine: tauri::State<'_, Engine>,
     plugin_id: String,
     delete_data: Option<bool>,
 ) -> Result<crate::plugin_host::runtime::DurableRetentionOutcome, String> {
@@ -1335,10 +1353,13 @@ pub async fn plugin_remove(
     } else {
         DataRetention::Keep
     };
-    lifecycle
-        .remove_with_retention(plugin_id, retention)
+    let outcome = lifecycle
+        .remove_with_retention(plugin_id.clone(), retention)
         .await
-        .map_err(|error| error.message().to_owned())
+        .map_err(|error| error.message().to_owned())?;
+    // The store disappears from the running library now; its cached rows stay for a reinstall.
+    engine.remove_library_provider(&plugin_id);
+    Ok(outcome)
 }
 
 /// Reuses a reinstall's archived durable records after a separate host review. The user must
@@ -1418,13 +1439,20 @@ pub async fn plugin_storage_cleanup_apply(
 pub async fn plugin_bundle_uninstall(
     lifecycle: tauri::State<'_, Arc<crate::plugin_host::runtime::ThirdPartyPluginLifecycle>>,
     settings: tauri::State<'_, Arc<gamenode_platform::db::SqliteSettingsStore>>,
+    engine: tauri::State<'_, Engine>,
     bundle_id: String,
     delete_data: bool,
 ) -> Result<crate::plugin_host::bundles::BundleUninstallOutcome, String> {
-    lifecycle
+    let outcome = lifecycle
         .remove_bundle(bundle_id, settings.bundle_store(), delete_data)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    // Every provider component leaves the running library now; its cached rows stay for a
+    // later reinstall. Extensions are a no-op for the library.
+    for component in &outcome.removed {
+        engine.remove_library_provider(&component.plugin_id);
+    }
+    Ok(outcome)
 }
 
 #[tauri::command]

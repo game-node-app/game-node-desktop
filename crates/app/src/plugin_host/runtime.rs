@@ -2101,6 +2101,11 @@ impl ThirdPartyPluginLifecycle {
             self.processes.terminate_provider(provider_id).await;
             self.api.disconnect(provider_id).await;
         }
+        // Drop the immutable slots now, while the registration still lets us resolve them.
+        // Otherwise a reinstall accepted in this same session would collide with the old slot.
+        for provider_id in &provider_ids {
+            self.processes.unregister_config(provider_id).await;
+        }
         // Apply the choice after the producer sessions are gone, so a publication racing the
         // uninstall cannot leave a new live row behind. The registration is still available for
         // resolving the owner; it is removed below. A plugin that was installed without a unique
@@ -2235,6 +2240,12 @@ impl ThirdPartyPluginLifecycle {
         let removed = outcome.removed.clone();
         let mut failures = Vec::new();
         for component in &removed {
+            // Resolve the slots before unregistering the plugin: the mapping is the only way to
+            // find them, and an uninstall followed by a reinstall in the same session must not
+            // collide with a stale immutable configuration.
+            let slot_ids = self
+                .api
+                .third_party_provider_ids_for_plugin(&component.plugin_id);
             // Packages are gone, so the runtime must not keep a registration that could start
             // them again. A failure here is reported instead of aborting the other components.
             if let Err(error) = self
@@ -2247,6 +2258,10 @@ impl ThirdPartyPluginLifecycle {
                     version: component.version.clone(),
                     error: format!("runtime registration: {}", error.message()),
                 });
+            } else {
+                for slot_id in &slot_ids {
+                    self.processes.unregister_config(slot_id).await;
+                }
             }
         }
         let account_failures = tokio::task::spawn_blocking(move || {

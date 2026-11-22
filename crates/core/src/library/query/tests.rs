@@ -2391,12 +2391,12 @@ fn a_local_custom_cover_wins_over_the_gamenode_cover_and_survives_a_match() {
         platforms: vec![],
     };
     let cache = LibraryCache {
-        entries: vec![stored("manual", "1", "Game", true)],
+        entries: vec![stored("steam", "1", "Game", true)],
         games: vec![game(7, "7.jpg"), game(8, "8.jpg")],
         ..LibraryCache::default()
     };
     let (mut machine, _) = loaded(false, cache);
-    let key = "manual:1".to_owned();
+    let key = "steam:1".to_owned();
     machine.set_local_inference(key.clone(), Some(7), None);
     machine.replace_local_covers(std::collections::BTreeMap::from([(
         key.clone(),

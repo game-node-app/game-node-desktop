@@ -1916,3 +1916,84 @@ fn putting_a_provider_adds_it_without_losing_entries_matches_or_settings_and_req
     );
     assert!(machine.entry("steam:620").is_some(), "entries are kept");
 }
+
+#[test]
+fn removing_a_provider_drops_its_live_rows_and_a_reinstall_restores_them() {
+    let (mut machine, effects) = loaded(true, LibraryCache::default());
+    let ops = scan_ops(&effects);
+    let shop_op = ops.iter().find(|(_, id)| id == "shop").unwrap().0;
+    let steam_op = ops.iter().find(|(_, id)| id == "steam").unwrap().0;
+    scanned(
+        &mut machine,
+        shop_op,
+        "shop",
+        Ok(vec![record("1", "Shop One", "/shop/one")]),
+        10,
+    );
+    assert!(machine.entry("shop:1").is_some());
+
+    assert!(machine.remove_provider("shop"));
+    assert!(machine.provider("shop").is_none());
+    assert!(machine.entry("shop:1").is_none(), "live rows are dropped");
+    assert!(
+        !machine
+            .visible_entries()
+            .any(|entry| entry.provider == "shop")
+    );
+    assert!(!machine.remove_provider("shop"), "removal is idempotent");
+
+    // A late answer for the uninstalled provider is ignored instead of recreating its rows.
+    let effects = scanned(
+        &mut machine,
+        shop_op,
+        "shop",
+        Ok(vec![record("9", "Late", "/shop/late")]),
+        11,
+    );
+    assert!(effects.is_empty());
+    assert!(machine.entry("shop:9").is_none());
+
+    // The rest of the scan still completes.
+    scanned(&mut machine, steam_op, "steam", Ok(vec![]), 12);
+
+    // Reinstalling puts the provider back and the next scan repopulates the rows.
+    let shop = registry::tests::load(&[("shop.toml", SHOP_MANIFEST)], Platform::Linux)
+        .providers
+        .into_iter()
+        .next()
+        .unwrap();
+    machine.put_provider(shop);
+    let effects = machine.handle(Input::ScanRequested);
+    let (op, _) = scan_ops(&effects)
+        .into_iter()
+        .find(|(_, id)| id == "shop")
+        .unwrap();
+    scanned(
+        &mut machine,
+        op,
+        "shop",
+        Ok(vec![record("1", "Shop One", "/shop/one")]),
+        20,
+    );
+    assert!(machine.entry("shop:1").is_some());
+}
+
+#[test]
+fn cached_entries_of_a_provider_that_is_not_loaded_stay_hidden() {
+    let cache = LibraryCache {
+        entries: vec![stored("shop", "1", "Shop One", true)],
+        ..LibraryCache::default()
+    };
+    let (machine, _) = loaded(false, cache);
+    assert!(machine.provider("shop").is_none());
+    assert!(
+        machine.entry("shop:1").is_some(),
+        "the persisted row stays available for a reinstall"
+    );
+    assert!(
+        !machine
+            .visible_entries()
+            .any(|entry| entry.provider == "shop"),
+        "an uninstalled store cannot keep showing cached games"
+    );
+}

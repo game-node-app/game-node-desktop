@@ -503,7 +503,7 @@ impl Engine {
 
     /// Publishes the current state without holding any adapter lock. Used by the provider status
     /// observer, which runs from whichever background thread changed the account.
-    fn publish_current(&self) {
+    pub(crate) fn publish_current(&self) {
         let mut state = self.lock();
         self.publish(&mut state);
     }

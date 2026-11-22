@@ -1108,6 +1108,18 @@ impl Engine {
         self.rescan();
     }
 
+    /// Removes an uninstalled provider and its live rows from the running library.
+    ///
+    /// The persisted cache keeps the rows so a later reinstall can restore them; the library view
+    /// stops showing the store immediately, and a running scan no longer waits for it.
+    pub fn remove_library_provider(&self, id: &str) {
+        let mut state = self.lock();
+        if state.library.remove_provider(id) {
+            self.publish(&mut state);
+            tracing::info!(provider = %id, "removed an uninstalled provider from the library");
+        }
+    }
+
     fn provider_check_gate(&self, provider: &str) -> Arc<tokio::sync::Mutex<()>> {
         self.shared
             .provider_checks

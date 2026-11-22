@@ -987,6 +987,35 @@ impl ProviderProcesses {
         Ok(())
     }
 
+    /// Removes a stopped package's process slot after its package is uninstalled.
+    ///
+    /// The slot holds the immutable verified configuration. Keeping it would make a reinstall in
+    /// the same session fail with `provider process is already registered`, so an accepted
+    /// uninstall drops it after the child has been asked to stop.
+    pub(crate) async fn unregister_config(&self, provider_id: &str) {
+        let Some(slot) = self.slot(provider_id) else {
+            return;
+        };
+        {
+            let mut child = slot.child.lock().await;
+            if let Some(mut child) = child.take() {
+                if let Some(stop) = child.stop.take() {
+                    let _ = stop.send(());
+                }
+                let mut stopped = std::pin::pin!(child.stopped.notified());
+                stopped.as_mut().enable();
+                if child.running.load(Ordering::Acquire) {
+                    let _ = tokio::time::timeout(Duration::from_secs(4), stopped).await;
+                }
+            }
+        }
+        self.inner
+            .slots
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(provider_id);
+    }
+
     pub(crate) fn config(&self, provider_id: &str) -> Result<ProcessConfig, Status> {
         let slot = self
             .slot(provider_id)

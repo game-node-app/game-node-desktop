@@ -472,7 +472,7 @@ describe('bundle inventory', () => {
     expect(article).toHaveTextContent('Permissões solicitadas');
     expect(article).toHaveTextContent('Plataformas: GameCube, Wii');
     expect(article).toHaveTextContent('Persistir dados do plugin');
-    expect(article).toHaveTextContent('Aceitar e instalar');
+    expect(article).toHaveTextContent('Aceitar, instalar e ativar');
     expect(article).toHaveTextContent('Confiar neste publicador');
   });
 
@@ -523,7 +523,7 @@ describe('bundle inventory', () => {
     expect(article).toHaveTextContent('Unavailable on this system');
     expect(article).toHaveTextContent('No package target matches this system');
     expect(article).toHaveTextContent('Incompatible');
-    expect(within(article).getByRole('button', { name: 'Accept and install' })).toBeDisabled();
+    expect(within(article).getByRole('button', { name: 'Accept, install and enable' })).toBeDisabled();
 
     fireEvent.click(within(article).getByRole('button', { name: 'Trust this publisher' }));
     await waitFor(() => expect(confirm).toHaveBeenCalledWith('bundle-token', publisher));
@@ -537,8 +537,14 @@ describe('bundle inventory', () => {
     const install = vi.spyOn(commands, 'pluginBundleImportInstall').mockResolvedValue({
       bundleId: 'org.example.dolphin.bundle',
       components: [
-        { pluginId: 'org.example.dolphin', kind: 'provider', version: '0.1.0', active: true },
-        { pluginId: 'org.example.dolphin.launch', kind: 'extension', version: '0.2.0', active: false },
+        {
+          pluginId: 'org.example.dolphin', kind: 'provider', version: '0.1.0', active: true,
+          activated: true,
+        },
+        {
+          pluginId: 'org.example.dolphin.launch', kind: 'extension', version: '0.2.0', active: false,
+          activated: false,
+        },
       ],
     });
     renderInventory('en', 'account-one');
@@ -551,7 +557,7 @@ describe('bundle inventory', () => {
 
     const consent = await within(article).findByRole('checkbox');
     fireEvent.click(consent);
-    fireEvent.click(within(article).getByRole('button', { name: 'Accept and install' }));
+    fireEvent.click(within(article).getByRole('button', { name: 'Accept, install and enable' }));
 
     await waitFor(() => expect(install).toHaveBeenCalledWith('bundle-token', true, [
       { pluginId: 'org.example.dolphin', deniedPermissionIds: [] },
@@ -581,7 +587,7 @@ describe('bundle inventory', () => {
     expect(await within(article).findByText('The local catalog is rebuilt on every start.')).toBeInTheDocument();
 
     fireEvent.click(within(article).getByRole('checkbox', { name: /reviewed the declared native access/i }));
-    fireEvent.click(within(article).getByRole('button', { name: 'Accept and install' }));
+    fireEvent.click(within(article).getByRole('button', { name: 'Accept, install and enable' }));
 
     await waitFor(() => expect(install).toHaveBeenCalledWith('bundle-token', true, [
       { pluginId: 'org.example.dolphin', deniedPermissionIds: ['storage.persist'] },
@@ -748,4 +754,68 @@ describe('bundle inventory', () => {
     expect(screen.getByText('Sign in to manage community plugins.')).toBeInTheDocument();
     expect(review).not.toHaveBeenCalled();
   });
+  it('reports a compatible component that stayed installed but was not activated', async () => {
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([official]);
+    vi.spyOn(commands, 'pluginBundleImportReview').mockResolvedValue(bundleReview('trusted'));
+    vi.spyOn(commands, 'pluginBundleImportInstall').mockResolvedValue({
+      bundleId: 'org.example.dolphin.bundle',
+      components: [
+        {
+          pluginId: 'org.example.dolphin', kind: 'provider', version: '0.1.0', active: true,
+          activated: false, activationError: 'activation failed: plugin did not establish its command session',
+        },
+      ],
+    });
+    renderInventory('en', 'account-one');
+
+    const path = await screen.findByRole('textbox', { name: 'Path to signed bundle' });
+    fireEvent.change(path, { target: { value: '/packages/dolphin.gnbundle' } });
+    await userEvent.setup().type(path, '{Enter}');
+    const article = await screen.findByRole('article', { name: 'Review plugin bundle' });
+    fireEvent.click(within(article).getByRole('checkbox', { name: /reviewed the declared native access/i }));
+    fireEvent.click(within(article).getByRole('button', { name: 'Accept, install and enable' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Installed, but not activated');
+    expect(alert).toHaveTextContent('org.example.dolphin');
+    expect(alert).toHaveTextContent('plugin did not establish its command session');
+  });
+
+  it('removes playtime rows immediately after uninstalling the bundle', async () => {
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([bundle]);
+    vi.spyOn(commands, 'pluginBundleUninstall').mockResolvedValue({
+      bundleId: 'org.example.dolphin.bundle',
+      removed: [
+        { pluginId: 'org.example.dolphin', version: '0.1.0', stopped: true },
+        { pluginId: 'org.example.dolphin.launch', version: '0.2.0', stopped: false },
+      ],
+      failures: [],
+      dataRetention: 'kept',
+    });
+    vi.spyOn(commands, 'pluginPlaytimeInventory')
+      .mockResolvedValueOnce([{
+        pluginId: 'org.example.dolphin',
+        name: 'Dolphin discovery',
+        version: '0.1.0',
+        playtime: {
+          identifiesGameplay: true,
+          identifiesPauses: true,
+          withoutPauseDetection: 'disabled',
+        },
+        accountingEnabled: true,
+      }])
+      .mockResolvedValue([]);
+    renderInventory('en', 'account-one');
+
+    expect(await screen.findByRole('article', { name: 'Dolphin discovery' })).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole('button', { name: /Dolphin GameCube and Wii/ }));
+    fireEvent.click(within(await screen.findByRole('article', { name: 'Bundle details' }))
+      .getByRole('button', { name: 'Uninstall bundle' }));
+    fireEvent.click(within(await screen.findByRole('dialog'))
+      .getByRole('button', { name: 'Uninstall bundle' }));
+
+    await waitFor(() => expect(screen.queryByRole('article', { name: 'Dolphin discovery' })).not.toBeInTheDocument());
+    expect(screen.getByText('No active trusted third-party plugins declare playtime support.')).toBeInTheDocument();
+  });
+
 });

@@ -1836,7 +1836,20 @@ export interface BundleImportInstallOutcome {
     kind: 'provider' | 'extension';
     version: string;
     active: boolean;
+    /** True when the host enabled this component for the active profile right after install. */
+    activated: boolean;
+    /** Present when the component stayed installed but could not be activated. */
+    activationError?: string;
+    /** Present when the reviewed permission decisions could not be saved. */
+    permissionError?: string;
   }>;
+}
+
+export interface PluginImportInstallOutcome {
+  pluginId: string;
+  activated: boolean;
+  /** Present when the package stayed installed but could not be activated. */
+  activationError?: string;
 }
 
 export interface AvailableBundleUpdate {

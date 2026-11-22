@@ -24,6 +24,7 @@ import type {
   StorageCleanupReview,
   StorageCleanupReport,
   PluginImportReview,
+  PluginImportInstallOutcome,
   PluginBundleImportReview,
   BundleImportInstallOutcome,
   BundleComponentPermissionSubmission,
@@ -239,7 +240,7 @@ export const commands = {
     nativeCodeConsent: boolean,
     deniedPermissionIds: string[] = [],
   ) =>
-    safeInvoke<string>('plugin_import_install', {
+    safeInvoke<PluginImportInstallOutcome>('plugin_import_install', {
       token,
       nativeCodeConsent,
       deniedPermissionIds,

@@ -82,6 +82,9 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
     { version: string | undefined; reason: string; failed: true } | null
   >(null);
   const [managementError, setManagementError] = useState(false);
+  const [activationFailures, setActivationFailures] = useState<
+    Array<{ pluginId: string; error: string }>
+  >([]);
   const [savingPreferences, setSavingPreferences] = useState(false);
   const [playtimeError, setPlaytimeError] = useState(false);
   const updateEventRevision = useRef(0);
@@ -203,6 +206,7 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
     const refreshes = [
       queryClient.invalidateQueries({ queryKey: pluginQueryKeys.inventory }),
       queryClient.invalidateQueries({ queryKey: pluginQueryKeys.availableUpdates }),
+      queryClient.invalidateQueries({ queryKey: ['plugin-playtime-accounting'] }),
     ];
     if (pluginId) {
       if (profileId) {
@@ -327,6 +331,7 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
   const reviewImport = async () => {
     setBusy(true);
     setManagementError(false);
+    setActivationFailures([]);
     setImportReview(null);
     setBundleReview(null);
     setNativeCodeConsent(false);
@@ -393,6 +398,7 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
     if (!bundleReview) return;
     setBusy(true);
     setManagementError(false);
+    setActivationFailures([]);
     try {
       const componentDeniedPermissions = bundleReview.components.map((component) => ({
         pluginId: component.review.pluginId,
@@ -401,16 +407,25 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
           bundlePermissionDecisions[component.review.pluginId] ?? {},
         ),
       }));
-      await commands.pluginBundleImportInstall(
+      const outcome = await commands.pluginBundleImportInstall(
         bundleReview.token,
         bundleNativeConsent,
         componentDeniedPermissions,
+      );
+      setActivationFailures(
+        outcome.components
+          .filter((component) => component.active && !component.activated)
+          .map((component) => ({
+            pluginId: component.pluginId,
+            error: component.activationError ?? '',
+          })),
       );
       setBundleReview(null);
       setBundleNativeConsent(false);
       setBundlePermissionDecisions({});
       setArchivePath('');
-      await queryClient.invalidateQueries({ queryKey: pluginQueryKeys.inventory });
+      setSelectedPluginId(outcome.bundleId);
+      await refreshPluginHostState();
     } catch { setManagementError(true); }
     finally { setBusy(false); }
   };
@@ -439,18 +454,25 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
     if (!importReview) return;
     setBusy(true);
     setManagementError(false);
+    setActivationFailures([]);
     try {
-      await commands.pluginImportInstall(
+      const outcome = await commands.pluginImportInstall(
         importReview.token,
         nativeCodeConsent,
         deniedPermissionIds(importReview.requestedPermissions, importPermissionDecisions),
+      );
+      setActivationFailures(
+        outcome.activated
+          ? []
+          : [{ pluginId: outcome.pluginId, error: outcome.activationError ?? '' }],
       );
       setImportReview(null);
       setNativeCodeConsent(false);
       setLicenseText({});
       setImportPermissionDecisions({});
       setArchivePath('');
-      await queryClient.invalidateQueries({ queryKey: pluginQueryKeys.inventory });
+      setSelectedPluginId(outcome.pluginId);
+      await refreshPluginHostState(outcome.pluginId);
     } catch { setManagementError(true); }
     finally { setBusy(false); }
   };
@@ -580,8 +602,7 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
       {managed && selectedPlugin.version && <p className={settingsRowDescription}>{t('plugins.import.version')}: {selectedPlugin.version}</p>}
       </>}
       {managed && selectedPlugin.compatibilityDetails && <PluginCompatibilityReview details={selectedPlugin.compatibilityDetails} />}
-      {managed && selectedPlugin.pluginKind === 'extension' && selectedPlugin.runtimeAvailable !== true && <p className={settingsRowDescription} role="status">{t('plugins.import.extensionRuntimeUnavailable')}</p>}
-      {managed && selectedPlugin.pluginKind !== 'extension' && selectedPlugin.runtimeAvailable === false && <p className={settingsRowDescription} role="status">{t('plugins.import.restartRequired')}</p>}
+      {managed && selectedPlugin.pluginKind === 'extension' && selectedPlugin.status !== 'incompatible' && selectedPlugin.runtimeAvailable !== true && <p className={settingsRowDescription} role="status">{t('plugins.import.extensionRuntimeUnavailable')}</p>}
       {managed && profileId === null && <p className={settingsRowDescription} role="status">{t('plugins.signInRequired')}</p>}
       {(canManageRuntime || canManageAccount) && <div className="mt-compact flex flex-wrap gap-compact">
         {canManageRuntime && (selectedPlugin.enabled ? <button type="button" className="rounded-sm border border-border-subtle px-sm py-1 text-sm" disabled={busy} onClick={() => void setPluginEnabled(selectedPlugin.pluginId, false)}>{t('plugins.disable')}</button> : <button type="button" className="rounded-sm border border-border-subtle px-sm py-1 text-sm" disabled={busy || selectedPlugin.status === 'incompatible'} onClick={() => void setPluginEnabled(selectedPlugin.pluginId, true)}>{t('plugins.enable')}</button>)}
@@ -926,6 +947,19 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
           </div>
         </article>}
       </div>
+      {activationFailures.length > 0 && (
+        <div className={`${settingsCard} mb-compact`} role="alert">
+          <p className={settingsRowTitle}>{t('plugins.import.activationPartial')}</p>
+          <ul className="mt-compact flex flex-col gap-1">
+            {activationFailures.map((failure) => (
+              <li key={failure.pluginId} className={settingsRowDescription}>
+                <span className="break-all">{failure.pluginId}</span>
+                {failure.error ? `: ${failure.error}` : ''}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       <div className={`${settingsCard} mb-compact`}>
         <p className={`${settingsRowDescription} mb-compact`}>{t('plugins.updates.description')}</p>
         <label className="flex items-center gap-compact text-sm">

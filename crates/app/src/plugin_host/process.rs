@@ -340,7 +340,9 @@ struct Slot {
 struct Inner {
     api: ProviderApi,
     endpoint: PathBuf,
-    slots: HashMap<String, Slot>,
+    /// Process slots for every composed package. The startup composition fills the map; an
+    /// explicitly accepted import may add one package without replacing this shared manager.
+    slots: std::sync::RwLock<HashMap<String, Arc<Slot>>>,
     shutdown: watch::Sender<bool>,
     activation: std::sync::RwLock<Option<super::profile::PluginStateLayout>>,
     /// Providers the user stopped for this run. Work is refused with a stable error until an
@@ -390,10 +392,10 @@ impl ProviderProcesses {
             }
             slots.insert(
                 config.provider_id.clone(),
-                Slot {
+                Arc::new(Slot {
                     config: std::sync::Mutex::new(config),
                     child: Mutex::new(None),
-                },
+                }),
             );
         }
         let (shutdown, _) = watch::channel(false);
@@ -401,7 +403,7 @@ impl ProviderProcesses {
             inner: Arc::new(Inner {
                 api,
                 endpoint,
-                slots,
+                slots: std::sync::RwLock::new(slots),
                 shutdown,
                 activation: std::sync::RwLock::new(activation),
                 stopped: std::sync::Mutex::new(std::collections::BTreeSet::new()),
@@ -411,6 +413,57 @@ impl ProviderProcesses {
             manager.spawn_profile_shutdown()?;
         }
         Ok(manager)
+    }
+
+    /// Adds one verified package configuration to this shared process manager after construction.
+    ///
+    /// Composition state (endpoint, shutdown signal, profile fence and activation layout) is
+    /// reused, so a package accepted through the import review can start without rebuilding the
+    /// host or restarting the desktop. The provider must already be registered with the API, and
+    /// a duplicate slot is rejected instead of silently replacing a running package.
+    pub(crate) fn register_config(&self, config: ProcessConfig) -> Result<(), Status> {
+        if !self.inner.api.registered(&config.provider_id) || config.startup_timeout.is_zero() {
+            return Err(Status::invalid_argument(
+                "invalid provider process configuration",
+            ));
+        }
+        let mut slots = self
+            .inner
+            .slots
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if slots.contains_key(&config.provider_id) {
+            return Err(Status::already_exists(
+                "provider process is already registered",
+            ));
+        }
+        slots.insert(
+            config.provider_id.clone(),
+            Arc::new(Slot {
+                config: std::sync::Mutex::new(config),
+                child: Mutex::new(None),
+            }),
+        );
+        Ok(())
+    }
+
+    fn slot(&self, provider_id: &str) -> Option<Arc<Slot>> {
+        self.inner
+            .slots
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(provider_id)
+            .cloned()
+    }
+
+    fn slot_ids(&self) -> Vec<String> {
+        self.inner
+            .slots
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keys()
+            .cloned()
+            .collect()
     }
 
     /// Reap every third-party process when its account profile is fenced. The receiver does not
@@ -447,7 +500,7 @@ impl ProviderProcesses {
     }
 
     pub fn has_provider(&self, id: &str) -> bool {
-        self.inner.slots.contains_key(id)
+        self.slot(id).is_some()
     }
 
     pub(crate) fn extension_runtime_available(&self, slot_id: &str) -> bool {
@@ -521,9 +574,7 @@ impl ProviderProcesses {
             return Err(Status::unavailable(PLUGIN_STOPPED));
         }
         let slot = self
-            .inner
-            .slots
-            .get(provider_id)
+            .slot(provider_id)
             .ok_or_else(|| Status::not_found("provider process is not registered"))?;
         if extension.is_some() != self.inner.api.is_extension(provider_id) {
             return Err(Status::failed_precondition(
@@ -875,7 +926,7 @@ impl ProviderProcesses {
                 .close_configuration_before_stop(provider_id)
                 .await;
         }
-        if let Some(slot) = self.inner.slots.get(provider_id) {
+        if let Some(slot) = self.slot(provider_id) {
             let mut child = slot.child.lock().await;
             if let Some(mut child) = child.take() {
                 if child.is_extension {
@@ -907,9 +958,7 @@ impl ProviderProcesses {
             ));
         }
         let slot = self
-            .inner
-            .slots
-            .get(provider_id)
+            .slot(provider_id)
             .ok_or_else(|| Status::not_found("provider process is not registered"))?;
         let mut child = slot.child.lock().await;
         if let Some(child) = child.as_mut() {
@@ -940,9 +989,7 @@ impl ProviderProcesses {
 
     pub(crate) fn config(&self, provider_id: &str) -> Result<ProcessConfig, Status> {
         let slot = self
-            .inner
-            .slots
-            .get(provider_id)
+            .slot(provider_id)
             .ok_or_else(|| Status::not_found("provider process is not registered"))?;
         Ok(slot
             .config
@@ -965,7 +1012,7 @@ impl ProviderProcesses {
         // Send correlated Close acknowledgements while provider command sessions are still
         // serviceable. Broadcasting shutdown first would let supervisors tear down those sessions
         // before the configuration windows could be fenced.
-        let provider_ids: Vec<_> = self.inner.slots.keys().cloned().collect();
+        let provider_ids = self.slot_ids();
         for provider_id in &provider_ids {
             let _ = self
                 .inner
@@ -983,9 +1030,7 @@ impl ProviderProcesses {
     }
 
     pub async fn process_id(&self, provider_id: &str) -> Option<u32> {
-        self.inner
-            .slots
-            .get(provider_id)?
+        self.slot(provider_id)?
             .child
             .lock()
             .await

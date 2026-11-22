@@ -61,15 +61,28 @@ pub enum PlaytimeAccountingMode {
     ApplicationOpen,
 }
 
+/// Signed gameplay/pause declarations. Manifests keep the documented snake_case keys; the
+/// review and inventory DTOs the UI consumes use camelCase, so both spellings are accepted on
+/// input and only camelCase is emitted.
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, serde::Serialize)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PlaytimeCapabilities {
-    #[serde(default)]
+    #[serde(default, alias = "identifies_gameplay")]
     pub identifies_gameplay: bool,
-    #[serde(default)]
+    #[serde(default, alias = "identifies_pauses")]
     pub identifies_pauses: bool,
-    #[serde(default)]
+    #[serde(default, alias = "without_pause_detection")]
     pub without_pause_detection: PlaytimeAccountingMode,
+}
+
+impl PlaytimeCapabilities {
+    /// Whether a signed manifest actually declares playtime support. Packages that declare
+    /// nothing stay installed without a playtime inventory row or accounting toggle.
+    pub fn declares_support(&self) -> bool {
+        self.identifies_gameplay
+            || self.identifies_pauses
+            || self.without_pause_detection != PlaytimeAccountingMode::Disabled
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]

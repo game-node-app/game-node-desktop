@@ -382,3 +382,22 @@ uninstall stops and removes every component. Existing `.gnplugin` imports are un
 The manifest is consumed as data only. Package hashing/signature verification, publisher
 fingerprint confirmation, schema ownership validation, target environment requirements,
 and install/activation transactions are separate validation stages.
+
+## Review, installation and activation
+
+An import is one explicit user decision. The review shows the signed identity, publisher
+fingerprint, license, compatibility, native access, content platforms and permission requests.
+Confirming the review installs the package under the pinned publisher key and applies the
+reviewed optional-permission decisions to the active GameNode profile.
+
+An accepted import also registers and enables the reviewed components immediately: the host
+composes the verified process slot into the running runtime, so the plugin is usable without
+restarting GameNode. Required permissions are always granted; denied optional permissions stay
+denied and are never re-granted implicitly. For a bundle every compatible component is enabled;
+a component that is unavailable on this host is installed inactive.
+
+If registration or activation fails, the package and its saved grants remain installed. The
+import result reports `activated: false` with the component error, inventory keeps the package
+installed but disabled, and the host never claims that a component is running. Retry activation
+from the plugin settings after fixing the cause; nothing about an activation failure rolls back
+the installation.

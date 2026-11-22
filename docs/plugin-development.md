@@ -125,6 +125,92 @@ switching, restart, disable and removal. Settings/configuration have separate ty
 contracts. The GameNode UI contains host-owned activation and permission surfaces; it does not
 embed or execute plugin frontend code.
 
+## Bundling a provider and an extension
+
+A `.gnbundle` distributes several signed `.gnplugin` packages as one download, one publisher
+review and one Stores entry. Use it when one product ships more than one component, such as a
+discovery provider plus a launch extension. The archive layout, signature domain and limits are in
+[the package manifest](plugin-package-manifest.md#plugin-bundles); a bundle never merges the
+components' identities, permissions, API ranges or lifecycle.
+
+Build the components first, then the envelope (the paths below are the plugin repository's own):
+
+```sh
+python3 scripts/plugin-package.py keygen --development --private-key /tmp/plugin-keys/dev.pem
+python3 scripts/plugin-package.py pack --source provider/package \
+  --private-key /tmp/plugin-keys/dev.pem --output dist/provider.gnplugin
+python3 scripts/plugin-package.py pack --source launch/package \
+  --private-key /tmp/plugin-keys/dev.pem --output dist/launch.gnplugin
+python3 scripts/plugin-package.py bundle \
+  --component dist/provider.gnplugin \
+  --component dist/launch.gnplugin \
+  --id org.example.product.bundle \
+  --name "Example product" \
+  --version 0.1.0 \
+  --private-key /tmp/plugin-keys/dev.pem \
+  --output dist/product-0.1.0-linux-x64.gnbundle
+python3 scripts/plugin-package.py bundle-verify dist/product-0.1.0-linux-x64.gnbundle
+sha256sum dist/*.gnplugin dist/*.gnbundle
+```
+
+Every component must be signed by the bundle publisher key; mixed publishers, duplicate plugin
+ids, nested bundles and oversized or case-colliding entries fail before any registry write.
+`keygen --development` marks the artifacts as development builds; it is not a production
+publisher identity. Keep the private key outside Git and publish the recorded SHA-256 values with
+the download.
+
+Import the `.gnbundle` from the Stores settings. The host stages and validates every component and
+shows one aggregated review: the bundle identity, one publisher fingerprint, grouped licenses,
+and each component's compatibility, permissions and reasons. Confirming the fingerprint grants
+nothing. Install activates every compatible component atomically; a platform- or API-incompatible
+component is installed unavailable without blocking its siblings. The inventory then shows one
+bundle row with each component's status and its own enable/disable control. One uninstall action
+stops and removes every component and applies one keep-or-delete choice to each component's
+private data and durable shared records.
+
+### Dolphin acceptance (Linux x86_64, 2026-11-21)
+
+The sibling `gamenode-plugin-dolphin-emu` repository delivers the real acceptance artifact; its
+`README.md` and `TASKS.md` own the plugin-side build, signing and remaining launch work. The
+desktop acceptance for the signed bundle is the host test
+`plugin_host::bundles::tests::the_real_dolphin_bundle_is_one_review_one_inventory_entry_and_one_uninstall`:
+
+```sh
+DOLPHIN_BUNDLE_PATH=/path/to/gamenode-plugin-dolphin-emu/dist/dolphin-emu-0.1.0-linux-x64.gnbundle \
+CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target-dolphin-acceptance \
+CARGO_NET_OFFLINE=true CARGO_INCREMENTAL=0 \
+cargo test --locked -p gamenode-app --lib -- the_real_dolphin_bundle
+```
+
+| Item | Accepted value |
+| --- | --- |
+| Host revision | `971a8a8` (test commit `8cff197`) |
+| Dolphin revision | `83c3d94` |
+| Bundle | `dev.richmont.gamenode.dolphin-emu.bundle` 0.1.0 |
+| Bundle SHA-256 | `2718d7fd4a42359e63b03f46622758570cdf2acb6e57096acaaf1ca85b0070b3` |
+| Provider | `dev.richmont.gamenode.dolphin-emu` 0.1.0 (`e7243b68…f14`) |
+| Extension | `dev.richmont.gamenode.dolphin-emu-launch` 0.1.0 (`56670c46…f8e`) |
+| Publisher | `richmont-dolphin-emu-development` (`SHA256:27a81cf6a123d11e8e1438f1ceb4d8f7b706aeb4841a120e39b09d246389b24c`) |
+
+The test passes with one aggregated review for both components and one publisher confirmation,
+one install of both components, one inventory row reporting the provider installed and the
+extension installed with its runtime available, and one uninstall that stops and removes both
+components. Keep leaves the signed-in profile's private namespace archived and inert; a reinstall
+followed by Delete removes only that profile's namespace. The provider's own
+`DOLPHIN_PLUGIN_ROOTS` discovery was exercised at the host level and reported the expected
+six-character disc record.
+
+Durable catalog acceptance (`add-durable-shared-data` 6.3 / `add-plugin-bundles` 7.2) remains open:
+the host composes managed third-party registrations with an empty `package_digest`
+(`HostedProviders::bundled` in `crates/app/src/plugin_host/runtime.rs`), while durable shared-data
+publisher metadata requires a 32-byte package digest (`validate_publication` in
+`crates/app/src/plugin_host/shared_data.rs`). The plugin's `DataPublish` is therefore rejected and
+no durable row is created. A diagnostic that filled a test-only 32-byte digest reached the pool
+and proved the consumer/restart/revocation path, so the remaining work is the host registration
+field, not the plugin contract. The Windows bundle cross-build is also open: both Dolphin
+manifests currently declare only Linux x86_64, and native Windows acceptance is the Lamarck
+(GameNode Core) handoff tracked as task 7.2-win.
+
 ## RPC inventory and API 1.6 status
 
 The mounted `PluginHost` service has `OpenSession`, the legacy `SubmitDiscovery`, and API 1.6

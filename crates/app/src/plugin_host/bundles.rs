@@ -5171,7 +5171,7 @@ mod tests {
             BundleDataRetention::Keep,
             Some(BundlePrivateData {
                 root: &data_root,
-                profile_id: profile,
+                profile_id: &profile,
             }),
         )
         .await
@@ -5235,7 +5235,7 @@ mod tests {
             BundleDataRetention::Delete,
             Some(BundlePrivateData {
                 root: &data_root,
-                profile_id: profile,
+                profile_id: &profile,
             }),
         )
         .await
@@ -5348,6 +5348,354 @@ mod tests {
                 .components
                 .len(),
             1
+        );
+    }
+
+    /// The real Dolphin development publisher key. The bundle acceptance asserts that the signed
+    /// artifact is verified against exactly this key, so a re-signed artifact with another
+    /// publisher cannot pass unnoticed.
+    #[cfg(target_os = "linux")]
+    const DOLPHIN_PUBLISHER_PUBLIC_KEY: &str = "9MJsveQ7SI656O7ykweL/Y+WN1pye9EJ9W+yaQZmidw=";
+
+    #[cfg(target_os = "linux")]
+    fn dolphin_bundle_artifact() -> Option<PathBuf> {
+        let Some(path) = std::env::var_os("DOLPHIN_BUNDLE_PATH") else {
+            eprintln!(
+                "skipping the real Dolphin bundle acceptance: set DOLPHIN_BUNDLE_PATH to \
+                 gamenode-plugin-dolphin-emu/dist/dolphin-0.1.0-linux-x64.gnbundle"
+            );
+            return None;
+        };
+        let path = PathBuf::from(path);
+        assert!(
+            path.is_file(),
+            "DOLPHIN_BUNDLE_PATH must point at the signed .gnbundle artifact: {path:?}"
+        );
+        Some(path)
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_real_dolphin_bundle_is_one_review_one_inventory_entry_and_one_uninstall() {
+        use crate::plugin_host::{
+            PluginApiServer,
+            runtime::{HostedProviders, ProviderRuntime},
+        };
+        use gamenode_platform::plugin_storage::{DurableStore, QUOTA_BYTES, namespace_dir};
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::Arc;
+
+        let Some(artifact) = dolphin_bundle_artifact() else {
+            return;
+        };
+        let publisher_key: [u8; 32] = base64::engine::general_purpose::STANDARD
+            .decode(DOLPHIN_PUBLISHER_PUBLIC_KEY)
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let fingerprint = publisher_trust::key_fingerprint(&publisher_key);
+
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let paths = DataPaths::at(directory.path().join("app-data"));
+        let api = PluginApi::default();
+        let state = PluginStateLayout::managed(&paths);
+        api.set_state_layout(state.clone());
+        api.providers
+            .profiles()
+            .update(Some("dolphin-emu-account"), true);
+        let registry = PluginPackageRegistry::open(&paths).unwrap();
+        let settings = SqliteSettingsStore::open(&paths.database_file()).unwrap();
+        let endpoint = paths.data_dir().join("plugins.sock");
+
+        // The same lifecycle the application builds before the host composes its runtime; import
+        // only needs an authenticated profile and the signed registry.
+        let preliminary = Arc::new(ThirdPartyPluginLifecycle::new(
+            api.providers.clone(),
+            ProviderProcesses::new_for_lifecycle(
+                api.providers.clone(),
+                endpoint.clone(),
+                vec![],
+                state.clone(),
+            )
+            .unwrap(),
+            state.clone(),
+            registry.clone(),
+            ManagedPackageLifecycle::new(registry.clone()),
+        ));
+        let service = PluginUpdateService::open(&paths).unwrap();
+        service.set_lifecycle(preliminary);
+        service.set_profiles(api.providers.profiles());
+        service.set_bundle_store(settings.bundle_store());
+
+        // 7.1: one aggregated review for both signed components, pinned to the development key.
+        let review = service
+            .bundle_import_review(artifact.clone())
+            .await
+            .unwrap();
+        assert_eq!(review.bundle.id, "dev.richmont.gamenode.dolphin-emu.bundle");
+        assert_eq!(review.bundle.name, "Dolphin GameCube and Wii");
+        assert_eq!(review.bundle.version, "0.1.0");
+        assert_eq!(
+            review.bundle.publisher_key_id,
+            "richmont-dolphin-emu-development"
+        );
+        assert_eq!(review.bundle.publisher_fingerprint, fingerprint);
+        assert_eq!(review.trust, "untrusted");
+        assert_eq!(review.license.expressions, ["GPL-3.0-only"]);
+        assert_eq!(review.components.len(), 2);
+        let provider_review = review
+            .components
+            .iter()
+            .find(|component| component.review.plugin_id == "dev.richmont.gamenode.dolphin-emu")
+            .expect("the provider is reviewed as one component");
+        assert_eq!(provider_review.kind, "provider");
+        assert_eq!(provider_review.review.version, "0.1.0");
+        assert_eq!(provider_review.review.compatibility, "compatible");
+        assert_eq!(
+            provider_review.availability,
+            BundleComponentAvailability::Available
+        );
+        let provider_permissions = provider_review
+            .review
+            .requested_permissions
+            .iter()
+            .map(|permission| permission.id.as_str())
+            .collect::<BTreeSet<_>>();
+        for expected in [
+            "provider.context.read",
+            "library.discovery",
+            "data.publish",
+            "storage.persist",
+        ] {
+            assert!(
+                provider_permissions.contains(expected),
+                "the review shows {expected}: {provider_permissions:?}"
+            );
+        }
+        let launch_review = review
+            .components
+            .iter()
+            .find(|component| {
+                component.review.plugin_id == "dev.richmont.gamenode.dolphin-emu-launch"
+            })
+            .expect("the extension is reviewed as one component");
+        assert_eq!(launch_review.kind, "extension");
+        assert_eq!(launch_review.review.version, "0.1.0");
+        assert_eq!(launch_review.review.compatibility, "compatible");
+        assert_eq!(
+            launch_review.availability,
+            BundleComponentAvailability::Available
+        );
+
+        // One publisher confirmation covers the bundle; then the reviewed archive installs.
+        service
+            .bundle_import_confirm_publisher(&review.token, &fingerprint)
+            .await
+            .unwrap();
+        let installed = service
+            .bundle_import_install(&review.token, false)
+            .await
+            .unwrap();
+        assert_eq!(
+            installed.bundle_id,
+            "dev.richmont.gamenode.dolphin-emu.bundle"
+        );
+        assert_eq!(installed.components.len(), 2);
+        assert!(
+            installed
+                .components
+                .iter()
+                .all(|component| component.active)
+        );
+        assert_eq!(
+            registry
+                .active("dev.richmont.gamenode.dolphin-emu")
+                .unwrap()
+                .map(|installed| installed.version),
+            Some("0.1.0".to_owned())
+        );
+        assert_eq!(
+            registry
+                .active("dev.richmont.gamenode.dolphin-emu-launch")
+                .unwrap()
+                .map(|installed| installed.version),
+            Some("0.1.0".to_owned())
+        );
+
+        // 7.2 inventory: recompose the host from the registry exactly as on startup.
+        let library: Arc<dyn gamenode_core::library::LibraryStore> = Arc::new(
+            SqliteSettingsStore::open(&paths.database_file())
+                .unwrap()
+                .library_store(),
+        );
+        let host = HostedProviders::bundled(
+            api.providers.clone(),
+            Arc::new(Default::default()),
+            Some(endpoint.clone()),
+            paths.clone(),
+            library,
+            None,
+        )
+        .await
+        .unwrap();
+        let server =
+            PluginApiServer::start(&tokio::runtime::Handle::current(), &endpoint, api.clone())
+                .unwrap();
+        let inventory_service = PluginUpdateService::open(&paths).unwrap();
+        inventory_service.set_lifecycle(host.lifecycle());
+        inventory_service.set_profiles(api.providers.profiles());
+        inventory_service.set_bundle_store(settings.bundle_store());
+        let inventory = inventory_service.managed_inventory().await.unwrap();
+        assert_eq!(inventory.len(), 1, "{inventory:#?}");
+        let entry = &inventory[0];
+        assert_eq!(entry.plugin_kind, "bundle");
+        assert_eq!(entry.plugin_id, "dev.richmont.gamenode.dolphin-emu.bundle");
+        assert_eq!(entry.name, "Dolphin GameCube and Wii");
+        assert_eq!(entry.version, "0.1.0");
+        assert_eq!(
+            entry.bundle_publisher_fingerprint.as_deref(),
+            Some(fingerprint.as_str())
+        );
+        let components = entry.bundle_components.as_ref().unwrap();
+        assert_eq!(components.len(), 2);
+        let provider_component = components
+            .iter()
+            .find(|component| component.plugin_id == "dev.richmont.gamenode.dolphin-emu")
+            .unwrap();
+        assert_eq!(provider_component.plugin_kind, "provider");
+        assert_eq!(provider_component.version, "0.1.0");
+        assert_eq!(provider_component.status, "installed");
+        assert_eq!(provider_component.runtime_available, Some(true));
+        assert_eq!(
+            provider_component.publisher_fingerprint.as_deref(),
+            Some(fingerprint.as_str())
+        );
+        let launch_component = components
+            .iter()
+            .find(|component| component.plugin_id == "dev.richmont.gamenode.dolphin-emu-launch")
+            .unwrap();
+        assert_eq!(launch_component.plugin_kind, "extension");
+        assert_eq!(launch_component.version, "0.1.0");
+        assert_eq!(
+            launch_component.status, "installed",
+            "the extension target is compatible and the runtime is composed on Linux"
+        );
+        assert_eq!(launch_component.runtime_available, Some(true));
+
+        // Keep: both packages and the mapping disappear; the private namespace turns inert.
+        let data_root = state.plugin_data_root().unwrap().to_path_buf();
+        let signed_in = api
+            .providers
+            .profiles()
+            .require()
+            .expect("the acceptance host is signed in");
+        let profile = signed_in.profile_id().to_owned();
+        let provider_namespace = namespace_dir(
+            &data_root,
+            &fingerprint,
+            "dev.richmont.gamenode.dolphin-emu",
+            &profile,
+        );
+        let mut private_store = DurableStore::open(&provider_namespace).unwrap();
+        private_store
+            .put("saved", b"value", 1, None, 100, QUOTA_BYTES)
+            .unwrap();
+        drop(private_store);
+        std::fs::write(
+            provider_namespace.join("plugin-persistence.sqlite3"),
+            b"provider persistence",
+        )
+        .unwrap();
+        let kept = host
+            .lifecycle()
+            .remove_bundle(
+                "dev.richmont.gamenode.dolphin-emu.bundle".into(),
+                settings.bundle_store(),
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(kept.data_retention, "kept");
+        assert_eq!(kept.removed.len(), 2, "{kept:#?}");
+        assert!(kept.failures.is_empty(), "{kept:#?}");
+        assert!(provider_namespace.is_dir());
+        let kept_store = DurableStore::open_existing(&provider_namespace)
+            .unwrap()
+            .expect("the kept namespace remains on disk");
+        assert_eq!(kept_store.archived_usage().unwrap().records, 1);
+        assert!(kept_store.get("saved", 100).unwrap().is_none());
+        assert_eq!(
+            std::fs::read(provider_namespace.join("plugin-persistence.sqlite3")).unwrap(),
+            b"provider persistence"
+        );
+        assert!(
+            settings
+                .bundle_store()
+                .bundle("dev.richmont.gamenode.dolphin-emu.bundle")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            registry
+                .versions("dev.richmont.gamenode.dolphin-emu")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            registry
+                .versions("dev.richmont.gamenode.dolphin-emu-launch")
+                .unwrap()
+                .is_empty()
+        );
+        host.shutdown().await;
+        server.shutdown().await;
+
+        // Delete: reinstall the same artifact and uninstall again through the named removal path.
+        let second_review = service.bundle_import_review(artifact).await.unwrap();
+        service
+            .bundle_import_confirm_publisher(
+                &second_review.token,
+                &second_review.bundle.publisher_fingerprint,
+            )
+            .await
+            .unwrap();
+        service
+            .bundle_import_install(&second_review.token, false)
+            .await
+            .unwrap();
+        let deleted = uninstall_bundle(
+            "dev.richmont.gamenode.dolphin-emu.bundle",
+            registry.clone(),
+            settings.bundle_store(),
+            &RecordingStopper::default(),
+            BundleDataRetention::Delete,
+            Some(BundlePrivateData {
+                root: &data_root,
+                profile_id: &profile,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(deleted.data_retention, "deleted");
+        assert_eq!(deleted.removed.len(), 2, "{deleted:#?}");
+        assert!(deleted.failures.is_empty(), "{deleted:#?}");
+        assert!(
+            !provider_namespace.exists(),
+            "Delete removes only the signed-in profile's private namespace"
+        );
+        assert!(
+            registry
+                .versions("dev.richmont.gamenode.dolphin-emu")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            settings
+                .bundle_store()
+                .bundle("dev.richmont.gamenode.dolphin-emu.bundle")
+                .unwrap()
+                .is_none()
         );
     }
 }

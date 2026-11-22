@@ -35,6 +35,12 @@ confirmation, signature/integrity validation, license display and permission rev
 `plugin_host::updates::tests::mvp_example_packages_use_production_import_and_consent_validators`.
 That test signs fixtures derived from these manifests; it does not execute the examples.
 
+A product that ships a provider and an extension together can package both `.gnplugin` components
+into one signed `.gnbundle` with `scripts/plugin-package.py bundle` and verify it with
+`bundle-verify`. See [bundling a provider and an extension](../../docs/plugin-development.md#bundling-a-provider-and-an-extension)
+and the [bundle format](../../docs/plugin-package-manifest.md#plugin-bundles) for the commands,
+limits and import behavior.
+
 Run `python3 scripts/check-plugin-conformance.py` from the repository root after touching the
 protocol, an example manifest, or the served-method tables. See
 [`docs/plugin-development.md`](../../docs/plugin-development.md#conformance-checks-for-examples-and-the-public-surface).

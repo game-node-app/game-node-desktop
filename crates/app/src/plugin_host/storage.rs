@@ -1231,6 +1231,64 @@ impl Namespace<'_> {
             None => Ok(false),
         }
     }
+
+    /// The runtime executable approval of `runtime_id`, revoked or active.
+    pub fn runtime_approval_for(
+        &mut self,
+        runtime_id: &str,
+    ) -> Result<Option<gamenode_platform::plugin_storage::RuntimeApproval>, Status> {
+        match self.durable(false)? {
+            Some(store) => store.runtime_approval_for(runtime_id).map_err(unavailable),
+            None => Ok(None),
+        }
+    }
+
+    /// The runtime executable approval with this id, revoked or active.
+    pub fn runtime_approval_by_id(
+        &mut self,
+        id: &str,
+    ) -> Result<Option<gamenode_platform::plugin_storage::RuntimeApproval>, Status> {
+        match self.durable(false)? {
+            Some(store) => store.runtime_approval_by_id(id).map_err(unavailable),
+            None => Ok(None),
+        }
+    }
+
+    /// Every runtime executable approval in this plugin/profile namespace.
+    #[cfg(test)]
+    pub fn runtime_approvals(
+        &mut self,
+    ) -> Result<Vec<gamenode_platform::plugin_storage::RuntimeApproval>, Status> {
+        match self.durable(false)? {
+            Some(store) => store.runtime_approvals().map_err(unavailable),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// Records a runtime executable approval, replacing the earlier one of the same runtime.
+    /// `guard` is checked right before the change.
+    pub fn save_runtime_approval(
+        &mut self,
+        approval: &gamenode_platform::plugin_storage::RuntimeApproval,
+        guard: &CommitGuard,
+    ) -> Result<(), Status> {
+        guard()?;
+        let store = self
+            .durable(true)?
+            .ok_or_else(|| Status::unavailable("plugin storage is unavailable"))?;
+        store.save_runtime_approval(approval).map_err(unavailable)
+    }
+
+    /// Revokes a runtime executable approval. Returns whether it was active.
+    pub fn revoke_runtime_approval(&mut self, runtime_id: &str) -> Result<bool, Status> {
+        let now = self.now;
+        match self.durable(false)? {
+            Some(store) => store
+                .revoke_runtime_approval(runtime_id, now)
+                .map_err(unavailable),
+            None => Ok(false),
+        }
+    }
 }
 
 #[cfg(all(test, unix))]

@@ -1827,6 +1827,23 @@ pub async fn plugin_folder_approval_answer(
     Ok(())
 }
 
+/// Answers a pending runtime picker. A null, empty or malformed selection declines it.
+#[tauri::command]
+pub async fn plugin_runtime_selection_answer(
+    bridge: tauri::State<'_, Arc<crate::plugin_host::runtime_access::RuntimeApprovalBridge>>,
+    id: String,
+    selected_executable: Option<String>,
+) -> Result<(), String> {
+    if selected_executable
+        .as_ref()
+        .is_some_and(|path| path.is_empty() || path.len() > 32 * 1024 || path.contains('\0'))
+    {
+        return Err("invalid runtime selection".into());
+    }
+    bridge.answer(&id, selected_executable);
+    Ok(())
+}
+
 /// Lists file and logical-library root approvals in one plugin's active account profile.
 #[tauri::command]
 pub async fn plugin_folder_approvals(

@@ -3,9 +3,48 @@ use gamenode_core::library::LibraryStore as _;
 use gamenode_plugin_sdk::proto::{
     ExtensionNamespacePatch, ExtensionPatch, ExtensionPayload, extension_namespace_patch::Operation,
 };
-use gamenode_plugin_sdk::resources::{RuntimeArgumentTemplate as SdkArgument, RuntimeSpec};
+use gamenode_plugin_sdk::resources::{
+    RuntimeArgumentTemplate as SdkArgument, RuntimeExecutableHints, RuntimeSpec,
+};
 use prost_types::{Struct, Value, value::Kind};
 use sha2::{Digest, Sha256};
+use std::sync::Mutex as StdMutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use tonic::Code;
+
+use super::super::mutations::mutation_owner;
+use crate::plugin_host::runtime_access::{InstalledProgram, RuntimeAccessRequest, RuntimeApprover};
+
+#[derive(Default)]
+pub(super) struct FakeRuntimeApprover {
+    chosen: StdMutex<Option<std::path::PathBuf>>,
+    requests: StdMutex<Vec<RuntimeAccessRequest>>,
+    decline: AtomicBool,
+    /// Revokes a grant or changes the profile while the picker is open.
+    race: StdMutex<Option<(ProviderApi, Option<&'static str>)>>,
+}
+
+#[tonic::async_trait]
+impl RuntimeApprover for FakeRuntimeApprover {
+    async fn choose_executable(
+        &self,
+        request: RuntimeAccessRequest,
+    ) -> Result<Option<std::path::PathBuf>, Status> {
+        self.requests.lock().unwrap().push(request);
+        let race = self.race.lock().unwrap().clone();
+        if let Some((api, permission)) = race {
+            if let Some(permission) = permission {
+                api.revoke_session_permission("fixture", permission).await;
+            } else {
+                api.profiles().update(Some("changed"), true);
+            }
+        }
+        if self.decline.load(Ordering::SeqCst) {
+            return Ok(None);
+        }
+        Ok(self.chosen.lock().unwrap().clone())
+    }
+}
 
 struct PersistentRuntimeHost {
     database: std::sync::Arc<gamenode_platform::db::SqliteSettingsStore>,
@@ -189,6 +228,40 @@ fn runtime(handle: String) -> RuntimeSpec {
 }
 
 impl Fixture {
+    /// Connects a runtime picker that approves `path`.
+    pub(super) fn runtime_approving(&self, path: &std::path::Path) -> Arc<FakeRuntimeApprover> {
+        let approver = Arc::new(FakeRuntimeApprover::default());
+        *approver.chosen.lock().unwrap() = Some(path.to_path_buf());
+        self.files.set_runtime_approver(approver.clone());
+        approver
+    }
+
+    pub(super) fn runtime_request(
+        &self,
+        name: &str,
+        hints: &[&str],
+        key: &str,
+        expected_revision: u64,
+    ) -> RuntimeRequestAccessRequest {
+        RuntimeRequestAccessRequest {
+            mutation: Some(self.mutation(key, expected_revision)),
+            runtime: Some(RuntimeRecord {
+                name: name.into(),
+                version: "1.0".into(),
+                platform: "linux".into(),
+                supported_formats: vec!["rom".into()],
+                argument_template: vec![RuntimeArgumentTemplate {
+                    value: Some(runtime_argument_template::Value::Literal("--safe".into())),
+                }],
+                ..Default::default()
+            }),
+            hints: Some(RuntimeAccessHints {
+                executable_names: hints.iter().map(|hint| (*hint).into()).collect(),
+                desktop_ids: Vec::new(),
+            }),
+        }
+    }
+
     /// A fixture with one approved installation folder holding `emulator`, registered as the
     /// caller's runtime. The returned path is the installation folder.
     pub(super) async fn approved_runtime(
@@ -504,4 +577,362 @@ async fn runtime_namespace_patches_are_owner_checked_revisioned_and_preserve_old
             .revision,
         3
     );
+}
+
+fn executable_in(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join(name);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+#[tokio::test]
+async fn a_runtime_request_prompts_once_creates_the_owned_runtime_and_returns_no_path() {
+    let fixture = Fixture::new(&[
+        cap::GAME_RUNTIME_CREATE,
+        cap::GAME_RUNTIME_READ,
+        cap::FILES_READ,
+    ])
+    .await;
+    let dir = fixture.game_dir("runtime", &[("dolphin-emu", b"binary")]);
+    let executable = executable_in(&dir, "dolphin-emu");
+    let host = fixture.with_host();
+    host.installed_programs
+        .lock()
+        .unwrap()
+        .push(InstalledProgram {
+            display_name: "Dolphin Emulator".into(),
+            executable: executable.to_string_lossy().into_owned(),
+            desktop_file: "/usr/share/applications/dolphin-emu.desktop".into(),
+            package_id: "dolphin-emu;2503-1;x86_64;extra".into(),
+            package_manager: "pacman".into(),
+        });
+    let approver = fixture.runtime_approving(&executable);
+
+    let reply = fixture
+        .client()
+        .runtimes_request_access(fixture.runtime_request(
+            "Dolphin",
+            &["dolphin-emu"],
+            "request-runtime-1",
+            0,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    let runtime = reply.runtime.expect("created runtime");
+    assert_eq!(reply.outcome, MutationOutcome::Applied as i32);
+    assert!(!runtime.id.is_empty());
+    assert!(runtime.executable_handle.is_empty());
+    assert_eq!(runtime.name, "Dolphin");
+    assert!(!format!("{runtime:?}").contains(&dir.to_string_lossy().to_string()));
+
+    let requests = approver.requests.lock().unwrap().clone();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].plugin_id, "fixture.plugin");
+    assert_eq!(requests[0].candidates[0].path, executable.to_string_lossy());
+    assert_eq!(requests[0].candidates[0].display_name, "Dolphin Emulator");
+    assert_eq!(requests[0].candidates[0].version, "2503-1");
+
+    // The ordinary read projection still gives no executable handle.
+    let read = fixture
+        .host
+        .resources()
+        .unwrap()
+        .runtime_get(&runtime.id, None)
+        .await
+        .unwrap();
+    assert!(read.executable_handle.is_empty());
+
+    // The host can resolve the approved program for a launch, and the plugin does not get the
+    // path through the runtime record.
+    let caller = fixture.caller();
+    assert_eq!(
+        fixture
+            .resource_api
+            .resolve_runtime_executable(&caller, &runtime.id)
+            .await
+            .unwrap(),
+        executable.canonicalize().unwrap().to_str().unwrap()
+    );
+    let approvals = fixture
+        .resource_api
+        .in_namespace(&caller, |namespace| namespace.runtime_approvals())
+        .await
+        .unwrap();
+    assert_eq!(approvals.len(), 1);
+    assert_eq!(approvals[0].runtime_id, runtime.id);
+    assert!(approvals[0].revoked_at.is_none());
+
+    // The same key is answered from the recorded outcome without a second prompt.
+    let replay = fixture
+        .client()
+        .runtimes_request_access(fixture.runtime_request(
+            "Dolphin",
+            &["dolphin-emu"],
+            "request-runtime-1",
+            0,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(replay.outcome, MutationOutcome::Applied as i32);
+    assert_eq!(replay.runtime.unwrap().id, runtime.id);
+    assert_eq!(approver.requests.lock().unwrap().len(), 1);
+
+    // A different key returns the valid owned runtime without prompting as well.
+    let reused = fixture
+        .client()
+        .runtimes_request_access(fixture.runtime_request(
+            "Dolphin",
+            &["dolphin-emu"],
+            "request-runtime-2",
+            0,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(reused.outcome, MutationOutcome::AlreadyApplied as i32);
+    assert_eq!(reused.runtime.unwrap().id, runtime.id);
+    assert_eq!(approver.requests.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn the_sdk_runtime_request_access_helper_sends_the_picker_request_without_a_handle() {
+    let fixture = Fixture::new(&[cap::GAME_RUNTIME_CREATE, cap::FILES_READ]).await;
+    let dir = fixture.game_dir("runtime", &[("dolphin-emu", b"binary")]);
+    let executable = executable_in(&dir, "dolphin-emu");
+    fixture.with_host();
+    let approver = fixture.runtime_approving(&executable);
+    let sdk = fixture.host.resources().unwrap();
+    let spec = RuntimeSpec {
+        name: "Dolphin via SDK".into(),
+        version: "1.0".into(),
+        executable_handle: String::new(),
+        supported_formats: vec!["rom".into()],
+        platform: "linux".into(),
+        argument_template: vec![SdkArgument::Literal("--safe".into())],
+        extensions: Default::default(),
+    };
+    let reply = sdk
+        .runtime_request_access(
+            spec,
+            RuntimeExecutableHints {
+                executable_names: vec!["dolphin-emu".into()],
+                desktop_ids: Vec::new(),
+            },
+            0,
+            "sdk-runtime-request",
+        )
+        .await
+        .unwrap();
+    assert_eq!(reply.outcome, MutationOutcome::Applied as i32);
+    assert!(reply.runtime.unwrap().executable_handle.is_empty());
+    assert_eq!(approver.requests.lock().unwrap().len(), 1);
+
+    let refused = sdk
+        .runtime_request_access(
+            RuntimeSpec {
+                name: "Bad".into(),
+                version: "1.0".into(),
+                executable_handle: "plugin-supplied-handle".into(),
+                supported_formats: vec!["rom".into()],
+                platform: "linux".into(),
+                argument_template: Vec::new(),
+                extensions: Default::default(),
+            },
+            RuntimeExecutableHints::default(),
+            0,
+            "sdk-runtime-handle",
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code(), Code::InvalidArgument);
+    assert_eq!(approver.requests.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn an_unavailable_packagekit_inventory_still_offers_manual_browse() {
+    let fixture = Fixture::new(&[cap::GAME_RUNTIME_CREATE, cap::FILES_READ]).await;
+    let dir = fixture.game_dir("runtime", &[("dolphin-emu", b"binary")]);
+    let executable = executable_in(&dir, "dolphin-emu");
+    let host = fixture.with_host();
+    host.inventory_down.store(true, Ordering::SeqCst);
+    let approver = fixture.runtime_approving(&executable);
+    let reply = fixture
+        .client()
+        .runtimes_request_access(fixture.runtime_request(
+            "Dolphin",
+            &["dolphin-emu"],
+            "inventory-down",
+            0,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(reply.outcome, MutationOutcome::Applied as i32);
+    let requests = approver.requests.lock().unwrap().clone();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].candidates.is_empty());
+}
+
+#[tokio::test]
+async fn a_declined_runtime_request_creates_no_runtime_or_approval() {
+    let fixture = Fixture::new(&[cap::GAME_RUNTIME_CREATE, cap::FILES_READ]).await;
+    let dir = fixture.game_dir("runtime", &[("dolphin-emu", b"binary")]);
+    let executable = executable_in(&dir, "dolphin-emu");
+    fixture.with_host();
+    let approver = fixture.runtime_approving(&executable);
+    approver.decline.store(true, Ordering::SeqCst);
+    let caller = fixture.caller();
+    let owner = mutation_owner(&caller);
+
+    let status = fixture
+        .client()
+        .runtimes_request_access(fixture.runtime_request(
+            "Dolphin",
+            &["dolphin-emu"],
+            "declined-runtime",
+            0,
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::PermissionDenied);
+    assert!(
+        fixture
+            .resource_api
+            .library
+            .host()
+            .unwrap()
+            .runtime_resources(owner)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        fixture
+            .resource_api
+            .in_namespace(&caller, |namespace| namespace.runtime_approvals())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn a_changed_executable_refuses_launch_and_requires_fresh_approval() {
+    let fixture = Fixture::new(&[
+        cap::GAME_RUNTIME_CREATE,
+        cap::GAME_RUNTIME_READ,
+        cap::FILES_READ,
+    ])
+    .await;
+    let dir = fixture.game_dir("runtime", &[("dolphin-emu", b"binary")]);
+    let executable = executable_in(&dir, "dolphin-emu");
+    fixture.with_host();
+    let approver = fixture.runtime_approving(&executable);
+    let caller = fixture.caller();
+    let runtime = fixture
+        .client()
+        .runtimes_request_access(fixture.runtime_request(
+            "Dolphin",
+            &["dolphin-emu"],
+            "first-approval",
+            0,
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .runtime
+        .unwrap();
+    assert_eq!(
+        fixture
+            .resource_api
+            .resolve_runtime_executable(&caller, &runtime.id)
+            .await
+            .unwrap(),
+        executable.canonicalize().unwrap().to_str().unwrap()
+    );
+
+    std::fs::write(&executable, b"replaced binary").unwrap();
+    let refused = fixture
+        .resource_api
+        .resolve_runtime_executable(&caller, &runtime.id)
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code(), Code::FailedPrecondition);
+    assert!(!refused.message().contains(dir.to_string_lossy().as_ref()));
+
+    // The next request reapproves the same runtime; the user sees the picker again.
+    let reapproved = fixture
+        .client()
+        .runtimes_request_access(fixture.runtime_request(
+            "Dolphin",
+            &["dolphin-emu"],
+            "second-approval",
+            1,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(reapproved.outcome, MutationOutcome::Applied as i32);
+    let reapproved = reapproved.runtime.unwrap();
+    assert_eq!(reapproved.id, runtime.id);
+    assert_eq!(reapproved.revision, runtime.revision + 1);
+    assert_eq!(approver.requests.lock().unwrap().len(), 2);
+    assert_eq!(
+        fixture
+            .resource_api
+            .resolve_runtime_executable(&caller, &reapproved.id)
+            .await
+            .unwrap(),
+        executable.canonicalize().unwrap().to_str().unwrap()
+    );
+}
+
+#[tokio::test]
+async fn a_grant_revoked_or_profile_changed_while_the_picker_is_open_creates_nothing() {
+    for (permission, profile_change) in [(Some(cap::GAME_RUNTIME_CREATE), false), (None, true)] {
+        let fixture = Fixture::new(&[cap::GAME_RUNTIME_CREATE, cap::FILES_READ]).await;
+        let dir = fixture.game_dir("runtime", &[("dolphin-emu", b"binary")]);
+        let executable = executable_in(&dir, "dolphin-emu");
+        fixture.with_host();
+        let approver = fixture.runtime_approving(&executable);
+        *approver.race.lock().unwrap() = Some((fixture.api.clone(), permission));
+        let caller = fixture.caller();
+        let owner = mutation_owner(&caller);
+        let status = fixture
+            .client()
+            .runtimes_request_access(fixture.runtime_request(
+                "Dolphin",
+                &["dolphin-emu"],
+                if profile_change {
+                    "changed-profile"
+                } else {
+                    "revoked-grant"
+                },
+                0,
+            ))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                status.code(),
+                Code::PermissionDenied | Code::FailedPrecondition
+            ),
+            "{status:?}"
+        );
+        assert!(
+            fixture
+                .resource_api
+                .library
+                .host()
+                .unwrap()
+                .runtime_resources(owner)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(approver.requests.lock().unwrap().len(), 1);
+    }
 }

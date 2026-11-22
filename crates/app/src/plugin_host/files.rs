@@ -355,6 +355,7 @@ impl RootApprover for RootApprovalBridge {
 pub struct FileAccess {
     pub(crate) reserved: Reserved,
     approver: Mutex<Option<Arc<dyn RootApprover>>>,
+    runtime_approver: Mutex<Option<Arc<dyn super::runtime_access::RuntimeApprover>>>,
     sealer: Sealer,
     waiting: Mutex<HashSet<[u8; 32]>>,
     canonical: Mutex<HashMap<String, (Instant, Option<PathBuf>)>>,
@@ -372,6 +373,7 @@ impl FileAccess {
         Self {
             reserved,
             approver: Mutex::default(),
+            runtime_approver: Mutex::default(),
             sealer: Sealer::new(),
             waiting: Mutex::default(),
             canonical: Mutex::default(),
@@ -386,6 +388,24 @@ impl FileAccess {
 
     pub(crate) fn approver(&self) -> Option<Arc<dyn RootApprover>> {
         self.approver
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
+    /// Connects the runtime picker. Until it is set, a plugin cannot request a new runtime
+    /// approval (existing approved runtimes keep launching).
+    pub fn set_runtime_approver(&self, approver: Arc<dyn super::runtime_access::RuntimeApprover>) {
+        *self
+            .runtime_approver
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(approver);
+    }
+
+    pub(crate) fn runtime_approver(
+        &self,
+    ) -> Option<Arc<dyn super::runtime_access::RuntimeApprover>> {
+        self.runtime_approver
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .clone()

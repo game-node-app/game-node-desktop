@@ -44,6 +44,7 @@ pub mod resource_leases;
 pub mod resources;
 pub mod retention;
 pub mod runtime;
+pub mod runtime_access;
 pub mod saves;
 pub mod services;
 pub mod shared_data;

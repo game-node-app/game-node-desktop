@@ -12,6 +12,7 @@ use gamenode_core::library::{
     ApprovedFileReference, LaunchPlanResource, RuntimeArgumentTemplate as CoreArgument,
     RuntimeContentBinding, RuntimeExtension, RuntimeMutation, RuntimeProvenance, RuntimeResource,
 };
+use gamenode_platform::plugin_storage::RuntimeApproval;
 use gamenode_plugin_protocol::{
     capability as cap,
     extensions::{MAX_EXTENSION_BYTES, validate_payload},
@@ -24,7 +25,11 @@ use super::{
     CursorBinding, CursorError, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, ResourceApi, Scope,
     json_to_struct, struct_to_json,
 };
+use crate::plugin_host::files::APPROVAL_TIMEOUT;
 use crate::plugin_host::provider::ResourceCaller;
+use crate::plugin_host::runtime_access::{
+    RuntimeAccessRequest, RuntimeHints, inspect_executable, suggestions, validate_approval,
+};
 use crate::plugin_host::sharing_policy::AccessDecision;
 
 const MAX_RUNTIME_ID_BYTES: usize = 128;
@@ -334,7 +339,9 @@ impl ResourceApi {
         .await
     }
 
-    /// Revalidates a durable ref and creates a session-bound handle for a response.
+    /// Revalidates a durable ref and creates a session-bound handle for a response. A runtime
+    /// approved through the host picker has no executable handle: the plugin never receives a
+    /// path or a file token for it.
     async fn session_handle(
         &self,
         caller: &ResourceCaller,
@@ -350,6 +357,12 @@ impl ResourceApi {
         let session = caller.session_id.clone();
         let reference_for_open = reference.clone();
         self.in_namespace(caller, move |namespace| {
+            if namespace
+                .runtime_approval_by_id(&reference_for_open.approval_id)?
+                .is_some()
+            {
+                return Ok(String::new());
+            }
             let opened = super::files::open_approval(
                 &files,
                 &feed,
@@ -373,13 +386,15 @@ impl ResourceApi {
     }
 
     /// Resolves a durable host reference to a path only after checking that the approval still
-    /// belongs to this plugin/profile and that the target remains inside its approved root.
+    /// belongs to this plugin/profile and that the target remains inside its approved root. A
+    /// picker-approved runtime is revalidated by identity, size and digest instead.
     async fn resolve_reference_path(
         &self,
         caller: &ResourceCaller,
         reference: ApprovedFileReference,
         target: Option<(u64, String)>,
         host_initiated: bool,
+        expected_runtime: Option<String>,
     ) -> Result<ResolvedRuntimePath, Status> {
         if !reference.validate() {
             return Err(Status::failed_precondition(
@@ -390,6 +405,23 @@ impl ResourceApi {
         let feed = self.library.clone();
         let reference_for_open = reference.clone();
         let resolve = move |namespace: &mut crate::plugin_host::storage::Namespace<'_>| {
+            if let Some(approval) =
+                namespace.runtime_approval_by_id(&reference_for_open.approval_id)?
+            {
+                if expected_runtime.as_deref() != Some(approval.runtime_id.as_str()) {
+                    return Err(Status::failed_precondition(
+                        "the runtime approval does not belong to this runtime",
+                    ));
+                }
+                let path = validate_approval(&approval, &files.reserved)?;
+                return Ok(ResolvedRuntimePath {
+                    path,
+                    resource: LaunchPlanResource {
+                        id: format!("runtime-approval:{}", approval.id),
+                        revision: approval.approved_at.max(1) as u64,
+                    },
+                });
+            }
             let opened = super::files::open_approval(
                 &files,
                 &feed,
@@ -589,7 +621,13 @@ impl ResourceApi {
             ));
         }
         let executable = self
-            .resolve_reference_path(caller, runtime.executable.clone(), None, context.is_none())
+            .resolve_reference_path(
+                caller,
+                runtime.executable.clone(),
+                None,
+                context.is_none(),
+                Some(runtime.id.clone()),
+            )
             .await?;
         let mut resources = vec![executable.resource.clone()];
         let mut content_path = None;
@@ -636,6 +674,7 @@ impl ResourceApi {
                     binding.content,
                     Some((game_id, installation_id.to_owned())),
                     context.is_none(),
+                    None,
                 )
                 .await?;
             resources.push(content.resource);
@@ -701,7 +740,13 @@ impl ResourceApi {
             .await?
             .ok_or_else(|| Status::unavailable("the approved runtime binding is unavailable"))?;
         let resolved = self
-            .resolve_reference_path(caller, runtime.executable, None, false)
+            .resolve_reference_path(
+                caller,
+                runtime.executable,
+                None,
+                false,
+                Some(runtime.id.clone()),
+            )
             .await?;
         Ok(resolved.path)
     }
@@ -714,8 +759,9 @@ impl ResourceApi {
         observed_at: i64,
         provenance: RuntimeProvenance,
         extensions: BTreeMap<String, RuntimeExtension>,
+        require_executable_handle: bool,
     ) -> Result<RuntimeResource, Status> {
-        runtime_request_shape(&request, true)?;
+        runtime_request_shape(&request, require_executable_handle)?;
         let runtime = RuntimeResource {
             id,
             name: request.name,
@@ -962,6 +1008,310 @@ impl ResourceApi {
         }
     }
 
+    /// The host-side name/platform/formats identity a runtime request reuses.
+    fn same_runtime_shape(existing: &RuntimeResource, request: &RuntimeRecord) -> bool {
+        let mut left = existing.supported_formats.clone();
+        left.sort();
+        left.dedup();
+        let mut right = request.supported_formats.clone();
+        right.sort();
+        right.dedup();
+        existing.name == request.name && existing.platform == request.platform && left == right
+    }
+
+    /// Lets the user approve one exact program for an owned runtime. The plugin sends a spec and
+    /// text hints only; every path stays in the host.
+    pub(super) async fn request_runtime_access(
+        &self,
+        request: Request<RuntimeRequestAccessRequest>,
+    ) -> Result<Response<RuntimeMutationReply>, Status> {
+        let request = request.into_inner();
+        let mutation = request
+            .mutation
+            .as_ref()
+            .ok_or_else(|| Status::invalid_argument("mutation is required"))?;
+        let context = mutation
+            .context
+            .as_ref()
+            .ok_or_else(|| Status::invalid_argument("context is required"))?;
+        let caller = self
+            .providers
+            .authorize_resource(Some(context), cap::GAME_RUNTIME_CREATE)?;
+        if caller.namespace.is_none() {
+            return Err(Status::failed_precondition(
+                "official providers use trusted host adapters",
+            ));
+        }
+        let key = mutation_key(mutation)?;
+        let runtime_request = request
+            .runtime
+            .ok_or_else(|| Status::invalid_argument("runtime is required"))?;
+        if !runtime_request.executable_handle.is_empty() {
+            return Err(Status::invalid_argument(
+                "the host chooses the runtime executable; executable_handle must be empty",
+            ));
+        }
+        runtime_request_shape(&runtime_request, false)?;
+        if !runtime_request.id.is_empty() && !valid_id(&runtime_request.id) {
+            return Err(Status::invalid_argument("invalid runtime id"));
+        }
+        let hints = request.hints.unwrap_or_default();
+        let hints = RuntimeHints {
+            executable_names: hints.executable_names,
+            desktop_ids: hints.desktop_ids,
+        };
+        if !hints.validate() {
+            return Err(Status::invalid_argument("invalid runtime executable hints"));
+        }
+        let extensions = runtime_extension_payloads(&runtime_request)?;
+        let hash = request_hash(&[
+            "runtime-request-access",
+            &runtime_request.id,
+            &runtime_request.name,
+            &runtime_request.version,
+            "",
+            &runtime_request.platform,
+            &runtime_request.supported_formats.join("\0"),
+            &format!("{:?}", runtime_request.argument_template),
+            &format!("{:?}", extensions),
+            &hints.executable_names.join("\0"),
+            &hints.desktop_ids.join("\0"),
+            &mutation.expected_revision.to_string(),
+        ]);
+        {
+            let lock = self.mutations.lock.lock().await;
+            if let Some(replay) = self.mutations.replay(&caller, key, hash)? {
+                let runtime = self
+                    .library
+                    .host()
+                    .ok_or_else(unavailable)?
+                    .runtime_resource(mutation_owner(&caller), replay.resource_id.clone())
+                    .await?
+                    .ok_or_else(|| Status::not_found("runtime not found"))?;
+                drop(lock);
+                return Ok(Response::new(RuntimeMutationReply {
+                    runtime: Some(Self::runtime_proto_shared(runtime)?),
+                    outcome: replay.outcome,
+                }));
+            }
+        }
+
+        let host = self.library.host().ok_or_else(unavailable)?;
+        let owner = mutation_owner(&caller);
+        let runtimes = host.runtime_resources(owner.clone()).await?;
+        let existing = if runtime_request.id.is_empty() {
+            runtimes
+                .iter()
+                .find(|runtime| Self::same_runtime_shape(runtime, &runtime_request))
+                .cloned()
+        } else {
+            runtimes
+                .iter()
+                .find(|runtime| runtime.id == runtime_request.id)
+                .cloned()
+        };
+        if let Some(current) = existing.as_ref() {
+            if mutation.expected_revision != 0 && current.revision != mutation.expected_revision {
+                return Ok(Response::new(RuntimeMutationReply {
+                    runtime: None,
+                    outcome: MutationOutcome::RevisionConflict as i32,
+                }));
+            }
+            let runtime_id = current.id.clone();
+            let approval = self
+                .in_namespace(&caller, move |namespace| {
+                    namespace.runtime_approval_for(&runtime_id)
+                })
+                .await?;
+            let reserved = self.files.reserved.clone();
+            let valid = match approval {
+                Some(approval) => tokio::task::spawn_blocking(move || {
+                    validate_approval(&approval, &reserved).is_ok()
+                })
+                .await
+                .unwrap_or(false),
+                None => {
+                    // A runtime registered from an already approved file handle stays reusable:
+                    // resolve it once with the same checks a launch would apply.
+                    self.resolve_reference_path(
+                        &caller,
+                        current.executable.clone(),
+                        None,
+                        false,
+                        Some(current.id.clone()),
+                    )
+                    .await
+                    .is_ok()
+                }
+            };
+            if valid {
+                let reply = super::mutations::reply(
+                    &current.id,
+                    current.revision,
+                    MutationOutcome::AlreadyApplied,
+                );
+                let lock = self.mutations.lock.lock().await;
+                self.mutations.remember(&caller, key, hash, &reply);
+                drop(lock);
+                return Ok(Response::new(RuntimeMutationReply {
+                    runtime: Some(Self::runtime_proto_shared(current.clone())?),
+                    outcome: MutationOutcome::AlreadyApplied as i32,
+                }));
+            }
+        } else if mutation.expected_revision != 0 {
+            return Ok(Response::new(RuntimeMutationReply {
+                runtime: None,
+                outcome: MutationOutcome::RevisionConflict as i32,
+            }));
+        }
+
+        let resolver = caller.namespace.as_ref().ok_or_else(|| {
+            Status::failed_precondition("official providers use trusted host adapters")
+        })?;
+        let identity = resolver.identity().clone();
+        let _waiting = self
+            .files
+            .begin_approval(*resolver.storage_owner().key())
+            .ok_or_else(|| Status::aborted("a plugin approval is already waiting for the user"))?;
+        let approver = self.files.runtime_approver().ok_or_else(|| {
+            Status::failed_precondition("runtime approval is not available in this build")
+        })?;
+        let programs = match self.library.host() {
+            Some(host) => host.installed_programs().await.unwrap_or_default(),
+            None => Vec::new(),
+        };
+        let candidates = suggestions(&programs, &hints);
+        let chosen = tokio::time::timeout(
+            APPROVAL_TIMEOUT,
+            approver.choose_executable(RuntimeAccessRequest {
+                plugin_id: identity.plugin_id.clone(),
+                publisher_fingerprint: identity.publisher_fingerprint.clone(),
+                runtime_name: runtime_request.name.clone(),
+                runtime_version: runtime_request.version.clone(),
+                platform: runtime_request.platform.clone(),
+                supported_formats: runtime_request.supported_formats.clone(),
+                hints: hints.clone(),
+                candidates,
+            }),
+        )
+        .await
+        .map_err(|_| Status::deadline_exceeded("the user did not answer in time"))??
+        .ok_or_else(|| {
+            Status::permission_denied("the user declined to approve a runtime program")
+        })?;
+
+        // The user took their time: the grants and the account profile may have changed.
+        let fresh = self
+            .providers
+            .authorize_resource(Some(context), cap::GAME_RUNTIME_CREATE)?;
+        if fresh.profile_epoch != caller.profile_epoch {
+            return Err(Status::failed_precondition(
+                "account profile changed while the approval was open",
+            ));
+        }
+        let fresh_identity = fresh
+            .namespace
+            .as_ref()
+            .map(|namespace| namespace.identity().clone())
+            .ok_or_else(|| Status::failed_precondition("the plugin identity changed"))?;
+        if fresh_identity != identity {
+            return Err(Status::failed_precondition("the plugin identity changed"));
+        }
+        let reserved = self.files.reserved.clone();
+        let inspected = tokio::task::spawn_blocking(move || inspect_executable(&chosen, &reserved))
+            .await
+            .map_err(|_| Status::internal("the program could not be inspected"))??;
+
+        let mut approval_bytes = [0_u8; 16];
+        getrandom::fill(&mut approval_bytes)
+            .map_err(|_| Status::internal("no source of randomness"))?;
+        let approval_id: String = approval_bytes
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let runtime_id = match existing.as_ref() {
+            Some(current) => current.id.clone(),
+            None if runtime_request.id.is_empty() => format!("runtime-{}", runtime_id()?),
+            None => runtime_request.id.clone(),
+        };
+        let now = unix_now();
+        let approval = RuntimeApproval {
+            id: approval_id.clone(),
+            runtime_id: runtime_id.clone(),
+            path: inspected.path,
+            volume: inspected.volume,
+            node: inspected.node,
+            size: inspected.size,
+            digest: inspected.digest,
+            approved_at: now,
+            revoked_at: None,
+        };
+        let revision = existing
+            .as_ref()
+            .map(|current| current.revision.saturating_add(1))
+            .unwrap_or(1);
+        let core = Self::runtime_core(
+            runtime_request.clone(),
+            ApprovedFileReference {
+                approval_id,
+                relative_path: Vec::new(),
+            },
+            runtime_id.clone(),
+            revision,
+            now,
+            runtime_provenance(&caller),
+            extensions,
+            false,
+        )?;
+        self.authorize_commit(context, cap::GAME_RUNTIME_CREATE, caller.grant_revision)?;
+        let result = host.save_runtime_resource(owner.clone(), core).await?;
+        let (outcome, revision, commit) = mutation_outcome(result);
+        if !commit {
+            let reply = super::mutations::reply(&runtime_id, revision, outcome);
+            return Ok(Response::new(RuntimeMutationReply {
+                runtime: None,
+                outcome: reply.outcome,
+            }));
+        }
+        let profiles = self.providers.profiles();
+        let epoch = fresh.profile_epoch;
+        let guard: crate::plugin_host::library::CommitGuard = Box::new(move || {
+            if profiles.epoch() == epoch {
+                Ok(())
+            } else {
+                Err(Status::failed_precondition("account profile changed"))
+            }
+        });
+        self.in_namespace(&fresh, move |namespace| {
+            namespace.save_runtime_approval(&approval, &guard)
+        })
+        .await?;
+        let reply = super::mutations::reply(&runtime_id, revision, outcome);
+        {
+            let lock = self.mutations.lock.lock().await;
+            if let Some(replay) = self.mutations.replay(&fresh, key, hash)? {
+                drop(lock);
+                let replay_runtime = host
+                    .runtime_resource(owner, replay.resource_id.clone())
+                    .await?
+                    .ok_or_else(|| Status::not_found("runtime not found"))?;
+                return Ok(Response::new(RuntimeMutationReply {
+                    runtime: Some(Self::runtime_proto_shared(replay_runtime)?),
+                    outcome: replay.outcome,
+                }));
+            }
+            self.mutations.remember(&fresh, key, hash, &reply);
+        }
+        let saved = host
+            .runtime_resource(owner, runtime_id)
+            .await?
+            .ok_or_else(|| Status::internal("saved runtime disappeared"))?;
+        Ok(Response::new(RuntimeMutationReply {
+            runtime: Some(Self::runtime_proto_shared(saved)?),
+            outcome: outcome as i32,
+        }))
+    }
+
     pub(super) async fn register_runtime(
         &self,
         request: Request<RuntimeRegisterRequest>,
@@ -1034,6 +1384,7 @@ impl ResourceApi {
             unix_now(),
             runtime_provenance(&caller),
             extensions,
+            true,
         )?;
         let host = self.library.host().ok_or_else(unavailable)?;
         self.authorize_commit(context, cap::GAME_RUNTIME_CREATE, caller.grant_revision)?;
@@ -1355,6 +1706,14 @@ impl ResourceApi {
             self.mutations.remember(&caller, key, hash, &reply);
         }
         drop(lock);
+        if commit && caller.namespace.is_some() {
+            let runtime_id = request.resource_id.clone();
+            let _ = self
+                .in_namespace(&caller, move |namespace| {
+                    namespace.revoke_runtime_approval(&runtime_id)
+                })
+                .await;
+        }
         Ok(Response::new(reply))
     }
 

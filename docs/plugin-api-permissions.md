@@ -43,6 +43,7 @@ unserved handlers as requirements, not evidence of runtime enforcement.
 | `LibrariesRemove`, `LibrariesRemoveRoot` | `library.roots.delete` |
 | `RuntimesList`, `RuntimesGet`, `RuntimesWatch` | `game.runtime.read` |
 | `RuntimesRegister` | `game.runtime.create` |
+| `RuntimesRequestAccess` | `game.runtime.create`; the host picker approves one exact executable |
 | `RuntimesUpdate` | `game.runtime.update` |
 | `RuntimesRemove` | `game.runtime.delete` |
 | `GamesRegisterContent` | `library.discovery` |
@@ -1079,6 +1080,28 @@ handles, unavailable roots and session-start resumption. Engine fixtures in
 [`engine/tests/drm_free.rs`](../crates/app/src/engine/tests/drm_free.rs) cover overlap,
 aliases, legacy watches and revoked scan contributions. These are automated fixtures;
 they do not establish native Windows scanner or desktop-dialog acceptance.
+
+## Approved runtime executables
+
+`RuntimesRequestAccess` needs `game.runtime.create` and a third-party plugin identity. A plugin
+sends the runtime spec with an empty `executable_handle` and text hints (`executable_names`,
+`desktop_ids`); it never supplies a path. The host:
+
+- reuses a valid owned runtime with the same name, platform and supported formats without prompting;
+- suggests candidates only from host-owned official inventory (PackageKit on Linux). Third-party
+  providers cannot inject candidates, and the Windows registry/Start Menu source is not implemented
+  in this build. Manual Browse is always available;
+- validates the selected program as a regular executable, refuses a link in the final component or
+  a program inside GameNode's private data, and records volume/node identity, size and SHA-256;
+- creates the runtime only after the user approves. A cancel, decline, revoked grant, profile change
+  or disabled plugin creates nothing.
+
+The reply carries a runtime record and no path or file handle. The durable approval is scoped to the
+plugin, publisher fingerprint, account profile and runtime. Every launch rechecks that scope, the
+runtime revision and the executable identity/size/digest; a changed or missing program refuses the
+launch and requires a fresh picker approval on the next request. There is no fallback program.
+Removing the runtime also revokes its approval. Declines, cancels, changed programs and invalid
+selections are reported without a path in the status text.
 
 ## Save profiles
 

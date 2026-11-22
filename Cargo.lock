@@ -1658,6 +1658,8 @@ dependencies = [
  "serde",
  "tempfile",
  "tokio",
+ "tokio-stream",
+ "tonic",
  "tracing",
  "tracing-subscriber",
  "zbus",

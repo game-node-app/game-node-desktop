@@ -7,8 +7,8 @@ After the provider record shape and plugin identity are agreed, scanner parsing/
 ## 1. Linux package discovery plugin
 
 - [x] 1.1 Add a Linux-only `gamenode-plugin-packagekit` workspace crate and extract bounded desktop-entry parsing, executable resolution, package identity normalization, and Arch-family selection; verify fixtures cover visible Game entries, hidden/non-game entries, malformed values, duplicate packages, Arch derivatives, and other distributions.
-- [ ] 1.2 Implement PackageKit installed-file queries and pacman `-Qqo` queries behind the selected backend, with timeouts and typed failures; verify fixtures distinguish a successful empty scan from unavailable or failed backends and preserve safe argument-based process invocation.
-- [ ] 1.3 Implement the plugin with `gamenode-plugin-sdk::ProviderPlugin` for discovery only and return normalized records through `OperationResult.discovery`; verify the reference host accepts the result under `library.discovery` and rejects unsupported operations without using `PluginHost.SubmitDiscovery`.
+- [x] 1.2 Implement PackageKit installed-file queries and pacman `-Qqo` queries behind the selected backend, with timeouts and typed failures; verify fixtures distinguish a successful empty scan from unavailable or failed backends and preserve safe argument-based process invocation.
+- [x] 1.3 Implement the plugin with `gamenode-plugin-sdk::ProviderPlugin` for discovery only and return normalized records through `OperationResult.discovery`; verify the reference host accepts the result under `library.discovery` and rejects unsupported operations without using `PluginHost.SubmitDiscovery`.
 
 ## 2. Trusted provider integration and inventory
 

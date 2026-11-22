@@ -680,6 +680,39 @@ mod tests {
         assert_eq!(inventory[0].package_manager, "pacman");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn approval_rejects_directories_links_and_non_executables() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("folder");
+        std::fs::create_dir(&directory).unwrap();
+        assert!(inspect_executable(&directory, &Reserved::default()).is_err());
+
+        let plain = temp.path().join("plain");
+        std::fs::write(&plain, b"data").unwrap();
+        std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(inspect_executable(&plain, &Reserved::default()).is_err());
+
+        let executable = temp.path().join("emulator");
+        std::fs::write(&executable, b"data").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(inspect_executable(&executable, &Reserved::default()).is_ok());
+
+        let link = temp.path().join("emulator-link");
+        std::os::unix::fs::symlink(&executable, &link).unwrap();
+        assert_eq!(
+            inspect_executable(&link, &Reserved::default())
+                .unwrap_err()
+                .code(),
+            tonic::Code::PermissionDenied
+        );
+
+        let reserved = Reserved::new(std::slice::from_ref(&executable));
+        assert!(inspect_executable(&executable, &reserved).is_err());
+    }
+
     #[test]
     fn hints_reject_paths_and_controls() {
         assert!(

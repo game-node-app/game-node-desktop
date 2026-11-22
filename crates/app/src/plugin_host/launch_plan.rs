@@ -363,6 +363,80 @@ mod review_tests {
     }
 
     #[test]
+    fn a_runtime_recipe_without_a_detected_target_omits_the_base_target_resource() {
+        use crate::plugin_host::{
+            grants::PluginIdentity, library::InstallState, namespace::ExternalNamespaceResolver,
+        };
+
+        let identity = PluginIdentity {
+            plugin_id: "org.example.launcher".into(),
+            publisher_fingerprint: "ab".repeat(32),
+            profile_id: "account-1".into(),
+        };
+        let namespace = ExternalNamespaceResolver::new(identity.clone(), None, 1).unwrap();
+        let caller = ResourceCaller {
+            session_id: "session".into(),
+            provider_id: String::new(),
+            declared_developer: String::new(),
+            origin: String::new(),
+            package_digest: vec![],
+            package_version: "1.0.0".into(),
+            grants: Default::default(),
+            grant_revision: 1,
+            profile_epoch: 1,
+            namespace: Some(namespace),
+        };
+        let entry = Projected {
+            installation_id: "manual:install".into(),
+            provider_id: "rom-store".into(),
+            game_id: Some(42),
+            name: "Pikmin".into(),
+            install_state: InstallState::Installed,
+            display_name: None,
+            metadata_revision: 0,
+            artwork_revision: 0,
+            revision: 7,
+        };
+        let recipe = gamenode_core::library::CustomLaunchRecipe {
+            recipe_id: "recipe-1".into(),
+            revision: 1,
+            game_id: 42,
+            installation_id: "manual:install".into(),
+            base_target_revision: 0,
+            base_launch_fingerprint: 9,
+            runtime_handle: "runtime-1".into(),
+            content_id: "content-1".into(),
+            ..Default::default()
+        };
+        let plan = make(
+            &caller,
+            &identity,
+            &entry,
+            0,
+            Some(&recipe),
+            LaunchPlanTarget::Detected { fingerprint: 0 },
+            Vec::new(),
+            String::new(),
+            LaunchEnvironmentDelta::default(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
+
+        assert!(
+            plan.resources
+                .iter()
+                .all(|resource| !resource.id.starts_with("base-target"))
+        );
+        assert!(
+            plan.resources
+                .iter()
+                .any(|resource| resource.id == "recipe:recipe-1")
+        );
+        assert_eq!(plan.target_revision, 0);
+    }
+
+    #[test]
     fn review_preserves_provenance_component_order_literals_and_environment_changes() {
         let plan = LaunchPlan {
             version: gamenode_core::library::LAUNCH_PLAN_VERSION,

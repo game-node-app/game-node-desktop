@@ -326,6 +326,22 @@ fn outcome(mutation: CustomLaunchMutation, id: &str) -> MutationReply {
     }
 }
 
+/// The revision a custom-launch action is bound to. An extension session uses the host-issued
+/// target revision, exactly like `request_action`; a provider session uses its library entry.
+fn action_revision(
+    context: &ServiceContext,
+    entry: &crate::plugin_host::library::Projected,
+) -> Option<u64> {
+    if context.session_kind() == SessionKind::Extension {
+        context
+            .target_game
+            .as_ref()
+            .and_then(|target| target.revision.parse::<u64>().ok())
+    } else {
+        Some(entry.revision)
+    }
+}
+
 impl ResourceApi {
     /// Whether the recipe keeps the entry's detected target and only overlays reviewed parameters
     /// or declared mod layers.
@@ -918,7 +934,7 @@ impl ResourceApi {
         }
         let (_entry_key, entry) =
             self.action_target(&caller, context, &request.game_id, &request.installation_id)?;
-        if entry.revision != request.expected_revision {
+        if action_revision(context, &entry) != Some(request.expected_revision) {
             return Err(Status::failed_precondition("library entry changed"));
         }
         let game_id = game_id(&request.game_id)?
@@ -1049,7 +1065,7 @@ impl ResourceApi {
             .ok_or_else(|| Status::unauthenticated("resource context required"))?;
         let (entry_key, entry) =
             self.action_target(&caller, context, &request.game_id, &request.installation_id)?;
-        if entry.revision != request.expected_revision {
+        if action_revision(context, &entry) != Some(request.expected_revision) {
             return Err(Status::failed_precondition("library entry changed"));
         }
         let host = self
@@ -1234,5 +1250,45 @@ impl ResourceApi {
         self.mutations.remember(&caller, key, hash, &reply);
         drop(lock);
         Ok(Response::new(reply))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugin_host::library::{InstallState, Projected};
+
+    fn entry() -> Projected {
+        Projected {
+            installation_id: "steam:3".into(),
+            provider_id: "steam".into(),
+            game_id: Some(3),
+            name: "Game".into(),
+            install_state: InstallState::Installed,
+            display_name: None,
+            metadata_revision: 0,
+            artwork_revision: 0,
+            revision: 7,
+        }
+    }
+
+    #[test]
+    fn an_extension_custom_launch_uses_the_session_target_revision() {
+        let mut context = ServiceContext {
+            session_kind: SessionKind::Extension as i32,
+            ..Default::default()
+        };
+        context.target_game = Some(TargetGameContext {
+            game_id: "3".into(),
+            installation_id: "steam:3".into(),
+            profile_id: "profile-1".into(),
+            revision: "100".into(),
+        });
+        // The library entry revision and the host-issued target revision differ on a real
+        // extension; Propose/Request must use the same value as request_action.
+        assert_eq!(action_revision(&context, &entry()), Some(100));
+
+        context.session_kind = SessionKind::Provider as i32;
+        assert_eq!(action_revision(&context, &entry()), Some(7));
     }
 }

@@ -349,6 +349,9 @@ pub struct PackageImportReview {
     pub permission_ids: Vec<String>,
     pub requested_permissions: Vec<ImportPermissionReview>,
     pub native_access: Vec<String>,
+    /// Signed content platforms, such as `gamecube` or `wii`. Empty for manifests that predate
+    /// the declaration.
+    pub supported_platforms: Vec<String>,
     /// Signed playtime behavior shown before the package is installed.
     pub playtime: PlaytimeCapabilities,
     pub compatibility: String,
@@ -363,6 +366,9 @@ pub struct ImportPermissionReview {
     pub required: bool,
     pub scope: String,
     pub reason: String,
+    /// Signed disclosure of what the plugin loses when this optional permission is denied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub impact_if_disabled: Option<String>,
 }
 
 /// One component inside a bundle import review. The embedded review is exactly what importing the
@@ -412,6 +418,15 @@ pub struct BundleImportReview {
     pub pinned_fingerprint: Option<String>,
     pub license: BundleLicenseSummary,
     pub components: Vec<BundleComponentReview>,
+}
+
+/// One component's optional permissions the user disabled in a grouped import review. The host
+/// validates the ids against that component's reviewed requests before installing anything.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BundleComponentDeniedPermissions {
+    pub plugin_id: String,
+    pub denied_permission_ids: Vec<String>,
 }
 
 /// One component's permission decisions submitted from a grouped review. The expected values are
@@ -501,6 +516,10 @@ pub struct BundleImportInstalledComponent {
     pub kind: String,
     pub version: String,
     pub active: bool,
+    /// Present when this component was installed but its reviewed permission decisions could not
+    /// be saved. Every sibling still reports its own outcome.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_error: Option<String>,
 }
 
 /// A reviewed bundle release ready to install. The work directory holds the exact downloaded
@@ -622,9 +641,11 @@ fn package_import_review(
                 required: item.required,
                 scope: item.scope.clone(),
                 reason: item.reason.clone(),
+                impact_if_disabled: item.impact_if_disabled.clone(),
             })
             .collect(),
         native_access: manifest.native_access.clone(),
+        supported_platforms: manifest.supported_platforms.clone(),
         playtime: manifest.playtime,
         compatibility,
         compatibility_reason,
@@ -743,6 +764,41 @@ fn bundle_license_summary(components: &[BundleComponentReview]) -> BundleLicense
         expressions,
         components: licenses,
     }
+}
+
+/// Validates the optional permissions a user disabled in one package review. The ids must name
+/// that package's reviewed requests; a required permission can never be denied, and a repeated id
+/// is rejected rather than silently collapsed. Nothing is written here.
+fn denied_permission_set(
+    requested: &[ImportPermissionReview],
+    denied: &[String],
+) -> Result<BTreeSet<String>, String> {
+    let mut denied_set = BTreeSet::new();
+    for id in denied {
+        let Some(permission) = requested.iter().find(|permission| &permission.id == id) else {
+            return Err(format!(
+                "permission `{id}` is not requested by this package and cannot be denied"
+            ));
+        };
+        if permission.required {
+            return Err(format!(
+                "required permission `{id}` cannot be denied or disabled"
+            ));
+        }
+        if !denied_set.insert(id.clone()) {
+            return Err(format!("permission `{id}` is denied more than once"));
+        }
+    }
+    Ok(denied_set)
+}
+
+/// One just-installed package's reviewed decisions, expressed in the host's typed grant scopes so
+/// they can be submitted through the ordinary permission-review path.
+struct ImportPermissionPlan {
+    profile_id: String,
+    publisher_fingerprint: String,
+    grant_revision: u64,
+    decisions: Vec<super::grants::PermissionDecision>,
 }
 
 /// User-facing updater. Periodic checks only fetch and authenticate feed metadata. Package
@@ -1022,12 +1078,15 @@ impl PluginUpdateService {
             .map_err(|_| "license viewer worker failed".to_owned())?
     }
 
-    /// Imports a reviewed, compatible package as the selected version but leaves account
-    /// activation disabled. No process is registered or executed by this operation.
+    /// Imports a reviewed, compatible package as the selected version and applies the review's
+    /// optional-permission decisions to the active profile. Every optional permission is granted
+    /// unless the user denied it and every required permission is granted. No process is registered
+    /// or executed by this operation.
     pub async fn import_install(
         &self,
         token: &str,
         native_code_consent: bool,
+        denied_permission_ids: &[String],
     ) -> Result<String, String> {
         let lifecycle = self
             .lifecycle
@@ -1055,6 +1114,11 @@ impl PluginUpdateService {
         if !pending.review.package.native_access.is_empty() && !native_code_consent {
             return Err("explicit native-code consent is required for this package".into());
         }
+        // Unknown or required denials are rejected before any registry write.
+        let denied = denied_permission_set(
+            &pending.review.package.requested_permissions,
+            denied_permission_ids,
+        )?;
         let registry = self.registry.clone();
         let plugin_lookup = pending.review.package.plugin_id.clone();
         let already_installed =
@@ -1080,14 +1144,108 @@ impl PluginUpdateService {
             return Err("publisher trust changed; review the package again".into());
         }
         let package_path = pending.package_path.clone();
+        let plugin_id = pending.review.package.plugin_id.clone();
+        let publisher_fingerprint = pending.review.package.publisher_fingerprint.clone();
+        let reviewed_permissions = !pending.review.package.requested_permissions.is_empty();
         self.packages
             .install_candidate(package_path, key, EmulationPolicy::RequireNative, true)
             .await
             .map_err(|error| error.to_string())?;
-        let pending = imports.remove(token).expect("pending import still exists");
-        let plugin_id = pending.review.package.plugin_id.clone();
-        drop(pending);
+        imports.remove(token);
+        drop(imports);
+        if reviewed_permissions {
+            self.apply_install_permission_review(&plugin_id, &publisher_fingerprint, &denied)
+                .await?;
+        }
         Ok(plugin_id)
+    }
+
+    /// Resolves reviewed optional-permission decisions into the host's typed grant scopes for one
+    /// just-installed package in the active profile. Required permissions are always granted and a
+    /// denied optional permission is never silently re-granted.
+    async fn import_permission_plan(
+        &self,
+        plugin_id: &str,
+        publisher_fingerprint: &str,
+        denied: &BTreeSet<String>,
+    ) -> Result<ImportPermissionPlan, String> {
+        let lifecycle = self
+            .lifecycle
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| "managed plugin runtime is unavailable".to_owned())?;
+        let snapshot = lifecycle
+            .installed_permission_snapshot(plugin_id.to_owned(), publisher_fingerprint.to_owned())
+            .await
+            .map_err(|error| error.message().to_owned())?;
+        let mut decisions = Vec::new();
+        for request in &snapshot.requested_permissions {
+            // A host-unknown optional permission has no enforceable scope, so it stays
+            // unsupported rather than being presented as granted.
+            if request.allowed_scopes.is_empty() {
+                continue;
+            }
+            let granted = request.required || !denied.contains(&request.permission_id);
+            for scope in &request.allowed_scopes {
+                decisions.push(super::grants::PermissionDecision {
+                    permission_id: request.permission_id.clone(),
+                    scope: scope.clone(),
+                    granted,
+                });
+            }
+        }
+        Ok(ImportPermissionPlan {
+            profile_id: snapshot.profile_id,
+            publisher_fingerprint: snapshot.publisher_fingerprint,
+            grant_revision: snapshot.grant_revision,
+            decisions,
+        })
+    }
+
+    /// Submits one package's reviewed decisions through the same permission-review path the
+    /// activation review uses. A failure is reported instead of leaving a denied permission
+    /// granted.
+    async fn apply_install_permission_review(
+        &self,
+        plugin_id: &str,
+        publisher_fingerprint: &str,
+        denied: &BTreeSet<String>,
+    ) -> Result<(), String> {
+        let plan = self
+            .import_permission_plan(plugin_id, publisher_fingerprint, denied)
+            .await
+            .map_err(|error| {
+                format!(
+                    "plugin {plugin_id} was installed but its permission review failed: {error}"
+                )
+            })?;
+        if plan.decisions.is_empty() {
+            return Ok(());
+        }
+        let lifecycle = self
+            .lifecycle
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| "managed plugin runtime is unavailable".to_owned())?;
+        lifecycle
+            .replace_installed_permissions(
+                &self.activations,
+                plugin_id.to_owned(),
+                plan.profile_id,
+                plan.publisher_fingerprint,
+                plan.grant_revision,
+                plan.decisions,
+            )
+            .await
+            .map(|_| ())
+            .map_err(|error| {
+                format!(
+                    "plugin {plugin_id} was installed but its permission decisions were not saved: {}",
+                    error.message()
+                )
+            })
     }
 
     /// Stages, verifies and reviews a user-selected bundle without executing component code.
@@ -1244,11 +1402,13 @@ impl PluginUpdateService {
     /// native-code consent must cover a component that declares native access, and the archive on
     /// disk is re-verified against the reviewed component report before any registry write. The
     /// safety rules match [`Self::import_install`]; the difference is only that one bundle approval
-    /// installs all components atomically.
+    /// installs all components atomically and then applies each component's optional-permission
+    /// decisions to the active profile.
     pub async fn bundle_import_install(
         &self,
         token: &str,
         native_code_consent: bool,
+        component_denied_permissions: &[BundleComponentDeniedPermissions],
     ) -> Result<BundleImportInstallOutcome, String> {
         let lifecycle = self
             .lifecycle
@@ -1281,6 +1441,33 @@ impl PluginUpdateService {
             && !native_code_consent
         {
             return Err("explicit native-code consent is required for this bundle".into());
+        }
+        // Every component denial names a reviewed component, and every denied id is one of that
+        // component's optional requests. This runs before any registry write.
+        let mut denials: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for submission in component_denied_permissions {
+            let Some(component) = pending
+                .review
+                .components
+                .iter()
+                .find(|component| component.review.plugin_id == submission.plugin_id)
+            else {
+                return Err(format!(
+                    "plugin `{}` is not part of this bundle review",
+                    submission.plugin_id
+                ));
+            };
+            if denials.contains_key(&submission.plugin_id) {
+                return Err(format!(
+                    "component {} appears more than once in one grouped import review",
+                    submission.plugin_id
+                ));
+            }
+            let denied = denied_permission_set(
+                &component.review.requested_permissions,
+                &submission.denied_permission_ids,
+            )?;
+            denials.insert(submission.plugin_id.clone(), denied);
         }
         let private_dir = self.trust_dir.clone();
         let plugin_ids = pending
@@ -1322,13 +1509,77 @@ impl PluginUpdateService {
         )
         .await
         .map_err(|error| error.to_string())?;
+        let reviewed_components = pending.review.components.clone();
         imports.remove(token);
+        drop(imports);
+        let mut permission_errors = BTreeMap::new();
+        let mut submissions = Vec::new();
+        for component in &installed.components {
+            let Some(reviewed) = reviewed_components
+                .iter()
+                .find(|reviewed| reviewed.review.plugin_id == component.plugin_id)
+            else {
+                continue;
+            };
+            if reviewed.review.requested_permissions.is_empty() {
+                continue;
+            }
+            let denied = denials
+                .get(&component.plugin_id)
+                .cloned()
+                .unwrap_or_default();
+            if !component.active {
+                if !denied.is_empty() {
+                    permission_errors.insert(
+                        component.plugin_id.clone(),
+                        "the component is installed but not active on this host; its permission decisions cannot be saved yet"
+                            .to_owned(),
+                    );
+                }
+                continue;
+            }
+            match self
+                .import_permission_plan(
+                    &component.plugin_id,
+                    &reviewed.review.publisher_fingerprint,
+                    &denied,
+                )
+                .await
+            {
+                Ok(plan) if plan.decisions.is_empty() => {}
+                Ok(plan) => submissions.push(BundleComponentPermissionSubmission {
+                    plugin_id: component.plugin_id.clone(),
+                    expected_profile_id: plan.profile_id,
+                    expected_publisher_fingerprint: plan.publisher_fingerprint,
+                    expected_revision: plan.grant_revision,
+                    decisions: plan.decisions,
+                }),
+                Err(error) => {
+                    permission_errors.insert(
+                        component.plugin_id.clone(),
+                        format!("permission review failed: {error}"),
+                    );
+                }
+            }
+        }
+        if !submissions.is_empty() {
+            let result = self.apply_installed_bundle_permissions(submissions).await?;
+            for outcome in result.components {
+                if let Some(error) = outcome.error {
+                    permission_errors.insert(
+                        outcome.plugin_id,
+                        format!("permission decisions were not saved: {error}"),
+                    );
+                }
+            }
+        }
         Ok(BundleImportInstallOutcome {
             bundle_id: installed.bundle.bundle_id,
             components: installed
                 .components
                 .into_iter()
                 .map(|component| BundleImportInstalledComponent {
+                    permission_error: permission_errors.remove(&component.plugin_id),
                     plugin_id: component.plugin_id,
                     kind: component.kind,
                     version: component.version,
@@ -1345,6 +1596,24 @@ impl PluginUpdateService {
     pub async fn apply_bundle_permissions(
         &self,
         submissions: Vec<BundleComponentPermissionSubmission>,
+    ) -> Result<BundlePermissionResult, String> {
+        self.apply_bundle_permissions_with(submissions, true).await
+    }
+
+    /// The same per-component application for components a reviewed bundle import just installed
+    /// and pinned. Their providers are registered only when the host next composes the runtime,
+    /// so the installed-and-trusted package verification stands in for the registration check.
+    async fn apply_installed_bundle_permissions(
+        &self,
+        submissions: Vec<BundleComponentPermissionSubmission>,
+    ) -> Result<BundlePermissionResult, String> {
+        self.apply_bundle_permissions_with(submissions, false).await
+    }
+
+    async fn apply_bundle_permissions_with(
+        &self,
+        submissions: Vec<BundleComponentPermissionSubmission>,
+        require_registration: bool,
     ) -> Result<BundlePermissionResult, String> {
         const MAX_COMPONENTS: usize = 8;
         if submissions.is_empty() {
@@ -1364,10 +1633,16 @@ impl PluginUpdateService {
                 ));
             }
         }
+        let lifecycle = self
+            .lifecycle
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| "managed plugin runtime is unavailable".to_owned())?;
         let mut components = Vec::with_capacity(submissions.len());
         for submission in submissions {
-            let outcome = match self
-                .replace_permissions(
+            let result = if require_registration {
+                self.replace_permissions(
                     submission.plugin_id.clone(),
                     submission.expected_profile_id,
                     submission.expected_publisher_fingerprint,
@@ -1375,7 +1650,19 @@ impl PluginUpdateService {
                     submission.decisions,
                 )
                 .await
-            {
+            } else {
+                lifecycle
+                    .replace_installed_permissions(
+                        &self.activations,
+                        submission.plugin_id.clone(),
+                        submission.expected_profile_id,
+                        submission.expected_publisher_fingerprint,
+                        submission.expected_revision,
+                        submission.decisions,
+                    )
+                    .await
+            };
+            let outcome = match result {
                 Ok(snapshot) => BundleComponentPermissionOutcome {
                     plugin_id: submission.plugin_id,
                     snapshot: Some(snapshot),
@@ -3377,9 +3664,11 @@ mod review_tests {
                 required: false,
                 scope: scope.into(),
                 reason: "Read selected files".into(),
+                impact_if_disabled: None,
             }],
             playtime: PlaytimeCapabilities::default(),
             native_access: native.iter().map(|value| (*value).to_owned()).collect(),
+            supported_platforms: vec![],
             targets: vec![Target {
                 os: "linux".into(),
                 arch: "x86_64".into(),
@@ -3414,6 +3703,7 @@ mod review_tests {
             required: true,
             scope: "https://example.org".into(),
             reason: "Fetch metadata".into(),
+            impact_if_disabled: None,
         });
         after.publisher.key_id = "key-2".into();
         after.publisher.public_key = "different-key".into();
@@ -3476,6 +3766,39 @@ mod review_tests {
         }];
         write_available(&path, &cache).unwrap();
         assert_eq!(read_available(&path).unwrap(), cache);
+    }
+
+    #[test]
+    fn import_decision_inputs_use_camel_case_fields_and_omit_absent_impact() {
+        let permission = ImportPermissionReview {
+            id: "network.fetch".into(),
+            required: false,
+            scope: "https://api.example.com".into(),
+            reason: "Fetch metadata".into(),
+            impact_if_disabled: Some("Metadata stays unavailable".into()),
+        };
+        let value = serde_json::to_value(&permission).unwrap();
+        assert_eq!(value["impactIfDisabled"], "Metadata stays unavailable");
+        let absent = ImportPermissionReview {
+            impact_if_disabled: None,
+            ..permission
+        };
+        assert!(
+            serde_json::to_value(&absent)
+                .unwrap()
+                .get("impactIfDisabled")
+                .is_none()
+        );
+
+        let denial = BundleComponentDeniedPermissions {
+            plugin_id: "org.example.plugin".into(),
+            denied_permission_ids: vec!["network.fetch".into()],
+        };
+        let value = serde_json::to_value(&denial).unwrap();
+        assert_eq!(value["pluginId"], "org.example.plugin");
+        assert_eq!(value["deniedPermissionIds"][0], "network.fetch");
+        let parsed: BundleComponentDeniedPermissions = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed, denial);
     }
 }
 
@@ -3829,6 +4152,162 @@ pub(super) mod tests {
         );
     }
 
+    /// A package that discloses content platforms and what each permission loses when disabled.
+    fn disclosure_permissions() -> Vec<serde_json::Value> {
+        vec![
+            serde_json::json!({
+                "id": "storage.persist", "required": true, "scope": "own-provider",
+                "reason": "Store plugin preferences",
+                "impact_if_disabled": "Preferences are lost between sessions"
+            }),
+            serde_json::json!({
+                "id": "network.fetch", "required": false, "scope": "https://api.example.com",
+                "reason": "Fetch remote metadata",
+                "impact_if_disabled": "Remote artwork and metadata stay unavailable"
+            }),
+        ]
+    }
+
+    #[tokio::test]
+    async fn import_review_exposes_content_platforms_and_permission_impact() {
+        let base = tempfile::tempdir().unwrap();
+        let paths = gamenode_platform::paths::DataPaths::at(base.path().join("app"));
+        let service = import_service(&paths);
+        let key = ring::signature::Ed25519KeyPair::from_seed_unchecked(&[44; 32]).unwrap();
+        let package = base.path().join("disclosures");
+        let mut manifest = fixture_manifest("1.0.0", disclosure_permissions());
+        manifest["supported_platforms"] = serde_json::json!(["gamecube", "wii"]);
+        signed_package_from_manifest(&package, &key, &manifest);
+
+        let review = service
+            .import_review(archive_package(&package))
+            .await
+            .unwrap();
+        assert_eq!(review.package.supported_platforms, ["gamecube", "wii"]);
+        assert_eq!(
+            review.package.requested_permissions[0]
+                .impact_if_disabled
+                .as_deref(),
+            Some("Preferences are lost between sessions")
+        );
+        assert_eq!(
+            review.package.requested_permissions[1]
+                .impact_if_disabled
+                .as_deref(),
+            Some("Remote artwork and metadata stay unavailable")
+        );
+        // The command surface keeps camelCase field names for the Tauri IPC boundary.
+        let serialized = serde_json::to_value(&review.package).unwrap();
+        assert_eq!(
+            serialized["supportedPlatforms"],
+            serde_json::json!(["gamecube", "wii"])
+        );
+        assert_eq!(
+            serialized["requestedPermissions"][0]["impactIfDisabled"],
+            "Preferences are lost between sessions"
+        );
+    }
+
+    #[tokio::test]
+    async fn import_install_grants_reviewed_permissions_except_denied_optionals() {
+        use crate::plugin_host::grants::PermissionState;
+
+        let base = tempfile::tempdir().unwrap();
+        let paths = gamenode_platform::paths::DataPaths::at(base.path().join("app"));
+        let service = import_service(&paths);
+        let key = ring::signature::Ed25519KeyPair::from_seed_unchecked(&[45; 32]).unwrap();
+        let package = base.path().join("reviewed-decisions");
+        signed_package_from_manifest(
+            &package,
+            &key,
+            &fixture_manifest("1.0.0", disclosure_permissions()),
+        );
+        let imported = import_review_and_pin(&service, &package).await;
+
+        let plugin_id = service
+            .import_install(&imported.token, false, &["network.fetch".to_owned()])
+            .await
+            .unwrap();
+        assert_eq!(plugin_id, "org.example.update");
+
+        let lifecycle = service
+            .lifecycle
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .unwrap();
+        let snapshot = lifecycle
+            .installed_permission_snapshot(
+                plugin_id.clone(),
+                imported.package.publisher_fingerprint.clone(),
+            )
+            .await
+            .unwrap();
+        assert!(snapshot.grant_revision > 0);
+        let state = |permission_id: &str| {
+            snapshot
+                .effective_grants
+                .iter()
+                .find(|grant| grant.permission_id == permission_id)
+                .map(|grant| grant.state.clone())
+        };
+        assert_eq!(state("storage.persist"), Some(PermissionState::Granted));
+        assert_eq!(state("network.fetch"), Some(PermissionState::Denied));
+    }
+
+    #[tokio::test]
+    async fn import_install_rejects_required_and_unknown_denials_before_installing() {
+        let base = tempfile::tempdir().unwrap();
+        let paths = gamenode_platform::paths::DataPaths::at(base.path().join("app"));
+        let service = import_service(&paths);
+        let key = ring::signature::Ed25519KeyPair::from_seed_unchecked(&[46; 32]).unwrap();
+        let package = base.path().join("rejected-decisions");
+        signed_package_from_manifest(
+            &package,
+            &key,
+            &fixture_manifest("1.0.0", disclosure_permissions()),
+        );
+        let imported = import_review_and_pin(&service, &package).await;
+        for (denied, message) in [
+            (vec!["storage.persist".to_owned()], "required permission"),
+            (vec!["files.read".to_owned()], "not requested"),
+            (
+                vec!["network.fetch".to_owned(), "network.fetch".to_owned()],
+                "more than once",
+            ),
+        ] {
+            let error = service
+                .import_install(&imported.token, false, &denied)
+                .await
+                .unwrap_err();
+            assert!(error.contains(message), "{error}");
+            assert!(
+                service
+                    .registry
+                    .active("org.example.update")
+                    .unwrap()
+                    .is_none(),
+                "a rejected denial must not install anything"
+            );
+        }
+
+        // The same reviewed token still installs when the decisions are valid.
+        assert_eq!(
+            service
+                .import_install(&imported.token, false, &[])
+                .await
+                .unwrap(),
+            "org.example.update"
+        );
+        assert!(
+            service
+                .registry
+                .active("org.example.update")
+                .unwrap()
+                .is_some()
+        );
+    }
+
     pub(in crate::plugin_host) fn signed_package_with_permissions(
         root: &Path,
         version: &str,
@@ -3863,11 +4342,15 @@ pub(super) mod tests {
         permissions: Vec<serde_json::Value>,
         playtime: Option<serde_json::Value>,
     ) {
-        fs::create_dir_all(root.join("bin")).unwrap();
-        fs::create_dir_all(root.join("licenses")).unwrap();
-        fs::write(root.join("bin/plugin"), b"fixture executable").unwrap();
-        fs::write(root.join("licenses/LICENSE"), b"fixture license").unwrap();
-        let mut manifest_value = serde_json::json!({
+        let mut manifest_value = fixture_manifest(version, permissions);
+        if let Some(playtime) = playtime {
+            manifest_value["playtime"] = playtime;
+        }
+        signed_package_from_manifest(root, key, &manifest_value);
+    }
+
+    fn fixture_manifest(version: &str, permissions: Vec<serde_json::Value>) -> serde_json::Value {
+        serde_json::json!({
             "schema": 1,
             "id": "org.example.update",
             "kind": "provider",
@@ -3879,13 +4362,25 @@ pub(super) mod tests {
             "targets": [{"os": "linux", "arch": "x86_64", "abi": "gnu", "entrypoint": "bin/plugin"}],
             "publisher": {
                 "key_id": "fixture-key",
-                "public_key": base64::engine::general_purpose::STANDARD.encode(key.public_key().as_ref())
+                "public_key": ""
             },
             "license": {"expression": "MIT", "files": ["licenses/LICENSE"]}
-        });
-        if let Some(playtime) = playtime {
-            manifest_value["playtime"] = playtime;
-        }
+        })
+    }
+
+    fn signed_package_from_manifest(
+        root: &Path,
+        key: &ring::signature::Ed25519KeyPair,
+        manifest_value: &serde_json::Value,
+    ) {
+        fs::create_dir_all(root.join("bin")).unwrap();
+        fs::create_dir_all(root.join("licenses")).unwrap();
+        fs::write(root.join("bin/plugin"), b"fixture executable").unwrap();
+        fs::write(root.join("licenses/LICENSE"), b"fixture license").unwrap();
+        let mut manifest_value = manifest_value.clone();
+        manifest_value["publisher"]["public_key"] = serde_json::Value::String(
+            base64::engine::general_purpose::STANDARD.encode(key.public_key().as_ref()),
+        );
         let manifest = serde_json::to_vec(&manifest_value).unwrap();
         fs::write(root.join("plugin.json"), &manifest).unwrap();
         let files = [
@@ -4375,7 +4870,7 @@ pub(super) mod tests {
             );
             assert!(
                 service
-                    .import_install(&review.token, false)
+                    .import_install(&review.token, false, &[])
                     .await
                     .unwrap_err()
                     .contains("confirm the publisher")
@@ -4387,7 +4882,10 @@ pub(super) mod tests {
                 .unwrap();
             assert_eq!(pinned.package.trust, "trusted");
             assert_eq!(
-                service.import_install(&review.token, false).await.unwrap(),
+                service
+                    .import_install(&review.token, false, &[])
+                    .await
+                    .unwrap(),
                 plugin_id
             );
 
@@ -4468,7 +4966,10 @@ pub(super) mod tests {
         signed_package(&v1, "1.0.0", &key);
         let imported = import_review_and_pin(&service, &v1).await;
         assert_eq!(
-            service.import_install(&imported.token, true).await.unwrap(),
+            service
+                .import_install(&imported.token, true, &[])
+                .await
+                .unwrap(),
             plugin_id
         );
         assert_eq!(
@@ -4560,7 +5061,10 @@ pub(super) mod tests {
         let current = base.join("current");
         signed_package(&current, "2.0.0", &key);
         let imported = import_review_and_pin(&service, &current).await;
-        service.import_install(&imported.token, true).await.unwrap();
+        service
+            .import_install(&imported.token, true, &[])
+            .await
+            .unwrap();
         service
     }
 
@@ -4620,6 +5124,7 @@ pub(super) mod tests {
                 required: false,
                 scope: "https://api.example.com".into(),
                 reason: "Fetch metadata".into(),
+                impact_if_disabled: None,
             });
         let error = service
             .approve_rollback("org.example.update", "1.0.0", true, None)
@@ -4665,7 +5170,10 @@ pub(super) mod tests {
         let current_package = base.path().join("current");
         signed_package(&current_package, "2.0.0", &current_key);
         let imported = import_review_and_pin(&service, &current_package).await;
-        service.import_install(&imported.token, true).await.unwrap();
+        service
+            .import_install(&imported.token, true, &[])
+            .await
+            .unwrap();
         assert_eq!(
             service
                 .rollback_versions("org.example.update")

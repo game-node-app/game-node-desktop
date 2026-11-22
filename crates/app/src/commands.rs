@@ -651,8 +651,11 @@ pub async fn plugin_import_install(
     updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
     token: String,
     native_code_consent: bool,
+    denied_permission_ids: Vec<String>,
 ) -> Result<String, String> {
-    updates.import_install(&token, native_code_consent).await
+    updates
+        .import_install(&token, native_code_consent, &denied_permission_ids)
+        .await
 }
 
 #[tauri::command]
@@ -688,9 +691,12 @@ pub async fn plugin_bundle_import_install(
     updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
     token: String,
     native_code_consent: bool,
+    component_denied_permissions: Vec<
+        crate::plugin_host::updates::BundleComponentDeniedPermissions,
+    >,
 ) -> Result<crate::plugin_host::updates::BundleImportInstallOutcome, String> {
     updates
-        .bundle_import_install(&token, native_code_consent)
+        .bundle_import_install(&token, native_code_consent, &component_denied_permissions)
         .await
 }
 

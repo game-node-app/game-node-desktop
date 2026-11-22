@@ -488,6 +488,53 @@ impl ThirdPartyPluginLifecycle {
         })
     }
 
+    /// Reads the permission review of a package that was just installed through a reviewed import
+    /// but whose provider is not registered for the active account yet. It resolves the same
+    /// verified manifest and grant store as [`Self::permission_snapshot`], so an import decision is
+    /// expressed in host-enforced scopes rather than manifest text.
+    pub(crate) async fn installed_permission_snapshot(
+        &self,
+        plugin_id: String,
+        publisher_fingerprint: String,
+    ) -> Result<PluginPermissionSnapshot, Status> {
+        let profile = self.api.profiles().require()?;
+        let requested_permissions = self
+            .managed_permission_requests(&plugin_id, &publisher_fingerprint)
+            .await?;
+        let profile_epoch = profile.epoch();
+        let identity = super::grants::PluginIdentity {
+            plugin_id: plugin_id.clone(),
+            publisher_fingerprint: publisher_fingerprint.clone(),
+            profile_id: profile.profile_id().to_owned(),
+        };
+        let state = self.state.clone();
+        let account = profile.clone();
+        let (grant_revision, effective_grants) = tokio::task::spawn_blocking(move || {
+            let grants = state
+                .open_grants(&account)
+                .map_err(|error| Status::internal(format!("plugin grants unavailable: {error}")))?;
+            Ok::<_, Status>((
+                grants.revision(&identity),
+                grants.effective_grants(&identity),
+            ))
+        })
+        .await
+        .map_err(|_| Status::internal("plugin permission worker failed"))??;
+        if !self.api.profiles().is_current(profile_epoch) {
+            return Err(Status::failed_precondition(
+                "plugin profile changed while reading permissions",
+            ));
+        }
+        Ok(PluginPermissionSnapshot {
+            plugin_id,
+            publisher_fingerprint,
+            profile_id: profile.profile_id().to_owned(),
+            grant_revision,
+            requested_permissions,
+            effective_grants,
+        })
+    }
+
     /// Observe the registered, trusted publisher and the active profile together. Package
     /// signature verification uses the captured immutable installed version on a worker.
     pub(crate) async fn observe_sharing_identity(
@@ -636,6 +683,54 @@ impl ThirdPartyPluginLifecycle {
         expected_revision: u64,
         decisions: Vec<super::grants::PermissionDecision>,
     ) -> Result<PluginPermissionSnapshot, Status> {
+        self.replace_reviewed_permissions(
+            activations,
+            plugin_id,
+            expected_profile_id,
+            expected_publisher_fingerprint,
+            expected_revision,
+            decisions,
+            true,
+        )
+        .await
+    }
+
+    /// Applies a reviewed import's permission decisions to the active profile. The package was
+    /// installed and publisher-pinned by the import, but its provider is only registered when the
+    /// host next composes the runtime, so the registration check is replaced by the installed and
+    /// trusted package verification the commit already performs.
+    pub(super) async fn replace_installed_permissions(
+        &self,
+        activations: &tokio::sync::Mutex<()>,
+        plugin_id: String,
+        expected_profile_id: String,
+        expected_publisher_fingerprint: String,
+        expected_revision: u64,
+        decisions: Vec<super::grants::PermissionDecision>,
+    ) -> Result<PluginPermissionSnapshot, Status> {
+        self.replace_reviewed_permissions(
+            activations,
+            plugin_id,
+            expected_profile_id,
+            expected_publisher_fingerprint,
+            expected_revision,
+            decisions,
+            false,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn replace_reviewed_permissions(
+        &self,
+        activations: &tokio::sync::Mutex<()>,
+        plugin_id: String,
+        expected_profile_id: String,
+        expected_publisher_fingerprint: String,
+        expected_revision: u64,
+        decisions: Vec<super::grants::PermissionDecision>,
+        require_registration: bool,
+    ) -> Result<PluginPermissionSnapshot, Status> {
         let profiles = self.api.profiles();
         let profile = profiles.require()?;
         if profile.profile_id() != expected_profile_id {
@@ -681,7 +776,10 @@ impl ThirdPartyPluginLifecycle {
             // Match the shared-data commit's lock order. The package was verified outside these
             // locks. Recheck its immutable version and trusted publisher before saving.
             let publisher = lock_publisher_identity();
-            if registered_publisher(&api, &identity.plugin_id)? != identity.publisher_fingerprint {
+            if require_registration
+                && registered_publisher(&api, &identity.plugin_id)?
+                    != identity.publisher_fingerprint
+            {
                 return Err(Status::failed_precondition("plugin identity changed"));
             }
             let current = trusted_managed_package(
@@ -3416,8 +3514,10 @@ mod managed_runtime_tests {
                 required: true,
                 scope: "provider session".into(),
                 reason: "Open a provider session".into(),
+                impact_if_disabled: None,
             }],
             native_access: vec![],
+            supported_platforms: vec![],
             targets: vec![target.clone()],
             publisher: super::super::package::Publisher {
                 key_id: "publisher-key".into(),

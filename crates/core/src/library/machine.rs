@@ -937,6 +937,26 @@ impl LibraryMachine {
         true
     }
 
+    /// Removes the provider a plugin package contributes after an accepted uninstall.
+    ///
+    /// The installed plugin id is not necessarily the provider id: a package such as
+    /// `dev.example.dolphin-emu` can contribute `dolphin-emu`. The composed provider records the
+    /// package as its discovery plugin, so uninstall resolves the store through that instead of
+    /// assuming both ids match. Returns whether a provider was loaded.
+    pub fn remove_provider_for_plugin(&mut self, plugin_id: &str) -> bool {
+        let providers: Vec<String> = self
+            .providers
+            .iter()
+            .filter(|provider| provider.discovery_plugin() == Some(plugin_id))
+            .map(|provider| provider.id().to_owned())
+            .collect();
+        let mut removed = false;
+        for provider in providers {
+            removed |= self.remove_provider(&provider);
+        }
+        removed
+    }
+
     /// Whether the library is shown (an account is set, even before it is verified).
     pub fn is_active(&self) -> bool {
         !matches!(self.phase, Phase::Inactive)

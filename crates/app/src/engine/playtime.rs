@@ -114,6 +114,27 @@ impl Playtime {
         }
     }
 }
+
+/// Package-manager games declare an exact executable (for example `/usr/bin/0ad`) while their
+/// install root is the shared `/usr/bin`. Without this exact policy the tracker matches every
+/// process under `/usr/bin`, so a long-running shell can be attributed to an arbitrary package.
+/// The field only narrows process matching; it is not launch authority.
+fn package_executable_policy(
+    entry: &gamenode_core::library::StoredEntry,
+) -> Option<(String, gamenode_core::drm_free::ProcessPolicy)> {
+    let executable = entry.fields.get("executable")?.trim();
+    if executable.is_empty() {
+        return None;
+    }
+    Some((
+        entry.key.clone(),
+        gamenode_core::drm_free::ProcessPolicy::Explicit {
+            gameplay: vec![executable.to_owned()],
+            launchers: Vec::new(),
+        },
+    ))
+}
+
 impl Engine {
     pub(super) fn start_playtime(&self) -> Result<(), StorageError> {
         let store = &self.shared.ports.playtime;
@@ -182,27 +203,25 @@ impl Engine {
                 self.load_sync_summary(account);
             }
         }
-        state.playtime.tracker.set_policies(
-            state
-                .local
-                .registrations
-                .iter()
-                .filter(|r| !r.removed)
-                .map(|r| (r.key(), r.process_policy()))
-                .chain(
-                    state
-                        .local
-                        .registrations
-                        .iter()
-                        .filter(|r| !r.removed)
-                        .filter_map(|r| {
-                            r.transferred_from
-                                .clone()
-                                .map(|key| (key, gamenode_core::drm_free::ProcessPolicy::Ignored))
-                        }),
-                )
-                .collect(),
-        );
+        // Package-manager entries share a broad install root such as `/usr/bin`, so a prefix
+        // match would attribute any process under that root (a shell, for example) to an
+        // arbitrary package. A declared executable is an exact process policy and takes
+        // precedence over that broad root. Local registrations are inserted last and still win.
+        let mut policies = std::collections::BTreeMap::new();
+        for entry in state.library.installed_entries() {
+            if let Some((key, policy)) = package_executable_policy(entry) {
+                policies.insert(key, policy);
+            }
+        }
+        for registration in state.local.registrations.iter().filter(|r| !r.removed) {
+            policies.insert(registration.key(), registration.process_policy());
+        }
+        for registration in state.local.registrations.iter().filter(|r| !r.removed) {
+            if let Some(key) = &registration.transferred_from {
+                policies.insert(key.clone(), gamenode_core::drm_free::ProcessPolicy::Ignored);
+            }
+        }
+        state.playtime.tracker.set_policies(policies);
         let effects = state.playtime.tracker.update(
             TrackInput::Library {
                 account: account.clone(),
@@ -1079,6 +1098,62 @@ fn runtime_track_effects(
             },
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gamenode_core::drm_free::ProcessPolicy;
+    use gamenode_core::library::StoredEntry;
+    use std::collections::BTreeMap;
+
+    fn package_entry(key: &str, executable: Option<&str>) -> StoredEntry {
+        let mut fields = BTreeMap::new();
+        if let Some(executable) = executable {
+            fields.insert("executable".to_owned(), executable.to_owned());
+        }
+        StoredEntry {
+            key: key.to_owned(),
+            provider: "packagekit".to_owned(),
+            store_id: key.trim_start_matches("packagekit:").to_owned(),
+            name: None,
+            install_dir: "/usr/bin".to_owned(),
+            fields,
+            installed: true,
+            target: None,
+            owned: false,
+            shared: false,
+            first_seen: 0,
+            last_seen: 0,
+        }
+    }
+
+    #[test]
+    fn package_manager_entries_get_an_exact_executable_policy() {
+        let entry = package_entry("packagekit:0ad", Some("/usr/bin/0ad"));
+        assert_eq!(
+            package_executable_policy(&entry),
+            Some((
+                "packagekit:0ad".to_owned(),
+                ProcessPolicy::Explicit {
+                    gameplay: vec!["/usr/bin/0ad".to_owned()],
+                    launchers: Vec::new(),
+                },
+            ))
+        );
+    }
+
+    #[test]
+    fn entries_without_an_executable_keep_the_existing_root_match() {
+        assert_eq!(
+            package_executable_policy(&package_entry("packagekit:0ad", None)),
+            None
+        );
+        assert_eq!(
+            package_executable_policy(&package_entry("packagekit:0ad", Some("  "))),
+            None
+        );
+    }
 }
 
 /// The totals that can be submitted right now: the entry is known, its provider reports playtime

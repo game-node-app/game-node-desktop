@@ -29,7 +29,7 @@ pub const ENTRY_OVERHEAD_BYTES: u64 = 64;
 /// The longest an entry may live before it expires (30 days).
 pub const MAX_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
 
-const SCHEMA_VERSION: i64 = 14;
+const SCHEMA_VERSION: i64 = 15;
 const STORE_FILE: &str = "storage.sqlite3";
 /// Longest directory name derived from an identity before it is replaced by a digest.
 const MAX_COMPONENT_BYTES: usize = 120;
@@ -47,6 +47,8 @@ pub enum PluginStorageError {
     Protected,
     #[error("the entry is archived and needs a reviewed reuse")]
     Archived,
+    #[error("a publisher migration needs two different identities")]
+    InvalidMigration,
 }
 
 impl From<rusqlite::Error> for PluginStorageError {
@@ -142,6 +144,227 @@ pub fn namespace_archived_usage(
         Some(store) => store.archived_usage().map(Some),
         None => Ok(None),
     }
+}
+
+/// One source entry as read for a migration copy. Values never leave this module.
+struct ExportEntry {
+    key: String,
+    value: Vec<u8>,
+    expires_at: Option<i64>,
+    last_used_at: i64,
+    user_protected: bool,
+}
+
+fn export_entries(conn: &Connection) -> Result<Vec<ExportEntry>, PluginStorageError> {
+    let mut statement = conn.prepare(
+        "SELECT key, value, expires_at, last_used_at, user_protected
+         FROM entries WHERE archived = 0",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok(ExportEntry {
+            key: row.get(0)?,
+            value: row.get(1)?,
+            expires_at: row.get(2)?,
+            last_used_at: row.get(3)?,
+            user_protected: row.get::<_, i64>(4)? != 0,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+fn stored_keys(conn: &Connection) -> Result<std::collections::HashSet<String>, PluginStorageError> {
+    let mut statement = conn.prepare("SELECT key FROM entries")?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+    rows.collect::<Result<std::collections::HashSet<_>, _>>()
+        .map_err(Into::into)
+}
+
+/// Reviews the private data a re-trusted publisher identity could receive from its predecessor.
+///
+/// Only the old identity's live, unexpired entries are candidates. Expired rows and rows retained
+/// by an uninstall are reported, never copied: the latter need the separate reviewed reuse. A key
+/// the new identity already holds is a conflict. Values and paths are never returned and nothing is
+/// created or changed.
+pub fn migration_preview(
+    root: &Path,
+    source_publisher: &str,
+    source_plugin: &str,
+    source_profile: &str,
+    target_publisher: &str,
+    target_plugin: &str,
+    target_profile: &str,
+    now: i64,
+) -> Result<PrivateMigrationPreview, PluginStorageError> {
+    let source_dir = namespace_dir(root, source_publisher, source_plugin, source_profile);
+    let target_dir = namespace_dir(root, target_publisher, target_plugin, target_profile);
+    if source_dir == target_dir {
+        return Err(PluginStorageError::InvalidMigration);
+    }
+    let mut preview = PrivateMigrationPreview::default();
+    let target_keys = match DurableStore::open_existing(&target_dir)? {
+        Some(store) => {
+            let usage = store.store_usage(now)?;
+            preview.target_records = usage
+                .categories
+                .iter()
+                .map(|category| category.records)
+                .sum::<u64>()
+                .saturating_add(usage.archived_records);
+            preview.target_logical_bytes = usage.logical_bytes;
+            stored_keys(&store.conn)?
+        }
+        None => Default::default(),
+    };
+    let Some(source_store) = DurableStore::open_existing(&source_dir)? else {
+        return Ok(preview);
+    };
+    preview.source_present = true;
+    preview.archived_records = source_store.archived_usage()?.records;
+    for entry in export_entries(&source_store.conn)? {
+        if entry.expires_at.is_some_and(|at| at <= now) {
+            preview.expired_records += 1;
+            continue;
+        }
+        let size = charge(&entry.key, entry.value.len());
+        preview.records += 1;
+        preview.logical_bytes = preview.logical_bytes.saturating_add(size);
+        if entry.user_protected {
+            preview.protected_records += 1;
+        }
+        if target_keys.contains(&entry.key) {
+            preview.conflict_records += 1;
+        } else {
+            preview.eligible_records += 1;
+            preview.eligible_bytes = preview.eligible_bytes.saturating_add(size);
+        }
+    }
+    Ok(preview)
+}
+
+/// Copies one private namespace's live entries to a re-trusted publisher identity in one
+/// transaction.
+///
+/// Keys the new identity already holds are skipped as conflicts and expired rows are not copied;
+/// archived rows stay behind for the separate reuse review. The source keeps every row, and each
+/// copy records the old publisher fingerprint so a reviewed rollback removes exactly these copies.
+/// Blocking: call this on the storage worker.
+pub fn migrate_namespace(
+    root: &Path,
+    source_publisher: &str,
+    source_plugin: &str,
+    source_profile: &str,
+    target_publisher: &str,
+    target_plugin: &str,
+    target_profile: &str,
+    now: i64,
+) -> Result<PrivateMigrationOutcome, PluginStorageError> {
+    let source_dir = namespace_dir(root, source_publisher, source_plugin, source_profile);
+    let target_dir = namespace_dir(root, target_publisher, target_plugin, target_profile);
+    if source_dir == target_dir {
+        return Err(PluginStorageError::InvalidMigration);
+    }
+    let Some(source_store) = DurableStore::open_existing(&source_dir)? else {
+        return Ok(PrivateMigrationOutcome::default());
+    };
+    let entries = export_entries(&source_store.conn)?;
+    let archived_records = source_store.archived_usage()?.records;
+    let mut target = DurableStore::open(&target_dir)?;
+    let mut revision = target.high_water()?;
+    let mut outcome = PrivateMigrationOutcome {
+        source_present: true,
+        archived_records,
+        ..PrivateMigrationOutcome::default()
+    };
+    let tx = target
+        .conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let mut keys = stored_keys(&tx)?;
+    for entry in entries {
+        if entry.expires_at.is_some_and(|at| at <= now) {
+            outcome.expired_records += 1;
+            continue;
+        }
+        if keys.contains(&entry.key) {
+            outcome.conflict_records += 1;
+            continue;
+        }
+        revision = revision.saturating_add(1);
+        let size = charge(&entry.key, entry.value.len());
+        tx.execute(
+            "INSERT INTO entries
+                 (key, value, revision, expires_at, last_used_at, user_protected, migrated_from)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                entry.key.as_str(),
+                entry.value.as_slice(),
+                revision as i64,
+                entry.expires_at,
+                entry.last_used_at,
+                i64::from(entry.user_protected),
+                source_publisher,
+            ],
+        )?;
+        keys.insert(entry.key);
+        outcome.copied_records += 1;
+        outcome.copied_bytes = outcome.copied_bytes.saturating_add(size);
+    }
+    if outcome.copied_records > 0 {
+        tx.execute(
+            "UPDATE meta SET revision = MAX(revision, ?1) WHERE id = 1",
+            [revision as i64],
+        )?;
+    }
+    tx.commit()?;
+    Ok(outcome)
+}
+
+/// Removes one migration's copies from the new publisher identity after a reviewed rollback.
+///
+/// Only entries tagged with the old fingerprint are removed, and a copy the user protected since
+/// the migration stays. The old identity's original namespace is never touched. `None` means the
+/// new identity never wrote a durable store. Blocking: call this on the storage worker.
+pub fn revert_migrated_namespace(
+    root: &Path,
+    target_publisher: &str,
+    target_plugin: &str,
+    target_profile: &str,
+    source_publisher: &str,
+) -> Result<Option<PrivateMigrationRevert>, PluginStorageError> {
+    let dir = namespace_dir(root, target_publisher, target_plugin, target_profile);
+    let Some(mut store) = DurableStore::open_existing(&dir)? else {
+        return Ok(None);
+    };
+    let revision = store.high_water()?.saturating_add(1);
+    let tx = store
+        .conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let (records, bytes): (i64, i64) = tx.query_row(
+        "SELECT COUNT(*), COALESCE(SUM(length(CAST(key AS BLOB)) + length(value) + ?2), 0)
+         FROM entries WHERE migrated_from = ?1 AND user_protected = 0",
+        params![source_publisher, ENTRY_OVERHEAD_BYTES as i64],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let removed = tx.execute(
+        "DELETE FROM entries WHERE migrated_from = ?1 AND user_protected = 0",
+        [source_publisher],
+    )? as u64;
+    let kept: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM entries WHERE migrated_from = ?1 AND user_protected = 1",
+        [source_publisher],
+        |row| row.get(0),
+    )?;
+    if removed > 0 {
+        tx.execute(
+            "UPDATE meta SET revision = MAX(revision, ?1) WHERE id = 1",
+            [revision as i64],
+        )?;
+    }
+    tx.commit()?;
+    Ok(Some(PrivateMigrationRevert {
+        removed_records: records.max(0) as u64,
+        reclaimed_bytes: bytes.max(0) as u64,
+        kept_protected_records: kept.max(0) as u64,
+    }))
 }
 
 /// Removes one plugin/profile private namespace directory. Only that profile directory is
@@ -249,6 +472,61 @@ pub struct CleanupOutcome {
 pub struct RetentionPolicy {
     pub max_age_seconds: u64,
     pub max_bytes: u64,
+}
+
+/// Logical metadata of one live private entry for a reviewed publisher migration. It never
+/// carries a value or a filesystem path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrivateMigrationEntry {
+    pub key: String,
+    pub size_bytes: u64,
+    pub expires_at: Option<i64>,
+    pub last_used_at: i64,
+    pub user_protected: bool,
+}
+
+/// What one private namespace of a re-trusted publisher holds for a migration preview. Values and
+/// paths are never part of it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PrivateMigrationPreview {
+    /// Whether the old identity ever wrote a durable private store.
+    pub source_present: bool,
+    /// Live, unexpired entries of the old identity.
+    pub records: u64,
+    pub logical_bytes: u64,
+    /// Entries that can be copied: live, unexpired and absent from the new identity.
+    pub eligible_records: u64,
+    pub eligible_bytes: u64,
+    /// Keys the new identity already holds (live or archived), so copying would overwrite them.
+    pub conflict_records: u64,
+    pub expired_records: u64,
+    /// Rows retained by an uninstall; they need the separate reviewed reuse before migration.
+    pub archived_records: u64,
+    pub protected_records: u64,
+    /// What the new identity already holds, for context. Never a physical size.
+    pub target_records: u64,
+    pub target_logical_bytes: u64,
+}
+
+/// The measured result of copying one private namespace to a re-trusted publisher identity.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PrivateMigrationOutcome {
+    pub source_present: bool,
+    pub copied_records: u64,
+    pub copied_bytes: u64,
+    pub conflict_records: u64,
+    pub expired_records: u64,
+    pub archived_records: u64,
+}
+
+/// The measured result of removing one migration's copies from the new identity. The old
+/// identity's original entries are never touched.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PrivateMigrationRevert {
+    pub removed_records: u64,
+    pub reclaimed_bytes: u64,
+    /// Migrated entries the user protected since the migration; rollback keeps them.
+    pub kept_protected_records: u64,
 }
 
 /// The result of a write that did not fail.
@@ -513,6 +791,29 @@ impl DurableStore {
                 "BEGIN IMMEDIATE;
                  {add_column}
                  PRAGMA user_version = 14;
+                 COMMIT;"
+            ))?;
+        }
+        if version < 15 {
+            // Host-only publisher migration. A copied entry names the old publisher fingerprint so
+            // a reviewed rollback can remove exactly the copies without touching the original
+            // namespace or a value the old identity never held. A plugin can neither set nor read
+            // this marker.
+            let has_migrated_from = conn
+                .prepare("PRAGMA table_info(entries)")?
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<Vec<_>, _>>()?
+                .iter()
+                .any(|name| name == "migrated_from");
+            let add_column = if has_migrated_from {
+                ""
+            } else {
+                "ALTER TABLE entries ADD COLUMN migrated_from TEXT;"
+            };
+            conn.execute_batch(&format!(
+                "BEGIN IMMEDIATE;
+                 {add_column}
+                 PRAGMA user_version = 15;
                  COMMIT;"
             ))?;
         }

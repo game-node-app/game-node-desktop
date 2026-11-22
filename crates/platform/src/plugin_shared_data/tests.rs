@@ -1427,3 +1427,199 @@ fn a_reviewed_reclaim_removes_only_one_owners_unprotected_archived_rows() {
     assert_eq!(store.usage(&other_owner, 110).unwrap().records, 1);
     assert!(!other.record.archived);
 }
+
+#[test]
+fn migration_source_reports_records_without_changing_the_pool() {
+    let dir = TempDir::new().unwrap();
+    let mut store = SharedDataStore::open(dir.path()).unwrap();
+    let old = owner(1, 1);
+    let new = owner(2, 1);
+    let old_provenance = provenance("old");
+    let resource = publish(
+        &mut store,
+        old,
+        record(
+            "org.example.catalog",
+            Some("disc-1"),
+            r#"{"title":"Dolphin"}"#,
+            &old_provenance,
+            100,
+        ),
+    );
+    publish(
+        &mut store,
+        old,
+        record(
+            "org.example.notes",
+            None,
+            r#"{"text":"hello"}"#,
+            &old_provenance,
+            100,
+        ),
+    );
+    let revision_before = store.pool_revision().unwrap();
+
+    let source = store.migration_source(&old, 100).unwrap();
+    assert_eq!(source.records.len(), 2);
+    assert!(source.logical_bytes > 0);
+    assert_eq!(source.expired_records, 0);
+    assert_eq!(source.archived_records, 0);
+    assert_eq!(source.records[0].schema_id, "org.example.catalog.v1");
+    assert_eq!(store.pool_revision().unwrap(), revision_before);
+    assert_eq!(store.usage(&new, 100).unwrap().records, 0);
+    assert!(
+        store
+            .get_any(&resource.record.record_id, 100)
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
+fn migration_copies_records_with_original_provenance_and_keeps_the_source() {
+    let dir = TempDir::new().unwrap();
+    let mut store = SharedDataStore::open(dir.path()).unwrap();
+    let old = owner(1, 1);
+    let new = owner(2, 1);
+    let old_provenance = provenance("old");
+    let first = publish(
+        &mut store,
+        old,
+        record(
+            "org.example.catalog",
+            Some("disc-1"),
+            r#"{"title":"Dolphin"}"#,
+            &old_provenance,
+            100,
+        ),
+    );
+    publish(
+        &mut store,
+        old,
+        record(
+            "org.example.notes",
+            None,
+            r#"{"text":"hello"}"#,
+            &old_provenance,
+            100,
+        ),
+    );
+
+    let ids = store
+        .migration_source(&old, 100)
+        .unwrap()
+        .records
+        .into_iter()
+        .map(|record| record.record_id)
+        .collect::<Vec<_>>();
+    let outcome = store.migrate_records(&old, &new, &ids, 100).unwrap();
+    assert_eq!(outcome.copied.len(), 2);
+    assert!(outcome.skipped.is_empty());
+    assert_ne!(outcome.copied[0].record_id, first.record.record_id);
+
+    let migrated = store
+        .list_dataset(&new, "org.example.catalog", 100)
+        .unwrap();
+    assert_eq!(migrated.records.len(), 1);
+    let copy = &migrated.records[0];
+    assert_eq!(copy.fields_json, r#"{"title":"Dolphin"}"#);
+    assert_eq!(
+        copy.provenance, old_provenance,
+        "the original source is preserved"
+    );
+    assert_eq!(
+        copy.provenance.source_publisher_fingerprint,
+        "publisher-old"
+    );
+    assert_eq!(copy.revision, 1);
+    assert_eq!(copy.record_id, outcome.copied[0].record_id);
+    assert_eq!(store.usage(&new, 100).unwrap().records, 2);
+
+    let original = store
+        .list_dataset(&old, "org.example.catalog", 100)
+        .unwrap();
+    assert_eq!(original.records.len(), 1, "the source data is untouched");
+    assert_eq!(original.records[0].record_id, first.record.record_id);
+    assert_eq!(store.usage(&old, 100).unwrap().records, 2);
+
+    assert!(matches!(
+        store.migrate_records(&old, &old, &ids, 100),
+        Err(SharedDataError::InvalidMigration)
+    ));
+}
+
+#[test]
+fn migration_reports_conflicts_and_rollback_drops_only_unprotected_copies() {
+    let dir = TempDir::new().unwrap();
+    let mut store = SharedDataStore::open(dir.path()).unwrap();
+    let old = owner(1, 1);
+    let new = owner(2, 1);
+    let old_provenance = provenance("old");
+    let new_provenance = provenance("new");
+    publish(
+        &mut store,
+        old,
+        record(
+            "org.example.catalog",
+            Some("disc-1"),
+            r#"{"title":"Old"}"#,
+            &old_provenance,
+            100,
+        ),
+    );
+    publish(
+        &mut store,
+        old,
+        record(
+            "org.example.notes",
+            None,
+            r#"{"text":"old"}"#,
+            &old_provenance,
+            100,
+        ),
+    );
+    let own = publish(
+        &mut store,
+        new,
+        record(
+            "org.example.catalog",
+            Some("disc-1"),
+            r#"{"title":"New"}"#,
+            &new_provenance,
+            100,
+        ),
+    );
+
+    let ids = store
+        .migration_source(&old, 100)
+        .unwrap()
+        .records
+        .into_iter()
+        .map(|record| record.record_id)
+        .collect::<Vec<_>>();
+    let outcome = store.migrate_records(&old, &new, &ids, 100).unwrap();
+    assert_eq!(outcome.copied.len(), 1, "only the non-conflicting record");
+    assert_eq!(outcome.skipped.len(), 1);
+    assert_eq!(outcome.skipped[0].reason, "conflict");
+    let migrated_id = outcome.copied[0].record_id.clone();
+    assert!(
+        store
+            .set_user_protected(&new, &migrated_id, true, 100)
+            .unwrap()
+    );
+
+    // The protected copy and the new identity's own record stay; the other copy is removed.
+    let reverted = store
+        .revert_migrated(&new, "publisher-old", "old", 100)
+        .unwrap();
+    assert_eq!(reverted.removed_records, 0);
+    assert_eq!(reverted.kept_protected_records, 1);
+    assert!(store.get(&new, &migrated_id, 100).unwrap().is_some());
+    assert!(
+        store
+            .get(&new, &own.record.record_id, 100)
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(store.usage(&old, 100).unwrap().records, 2);
+}

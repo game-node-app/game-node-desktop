@@ -465,6 +465,11 @@ pool.
   settings surface may show the managed files and their measured allocation (see
   `docs/plugin-shared-data.md`); that accounting is a host command, not a route, so a plugin
   cannot read it.
+- **Publisher key change.** A changed publisher fingerprint is a new identity for both the private
+  store and the pool. Old records do not become readable and old grants do not apply. A designed
+  re-trust may be followed by a host-only, explicitly confirmed migration of compatible data; there
+  is no plugin RPC for its preview, apply or rollback, secrets and grants are never migrated, and
+  the new identity needs fresh sharing and retention reviews.
 
 ## Files
 

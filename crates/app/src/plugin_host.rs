@@ -31,6 +31,7 @@ pub mod launch_supervisor;
 pub mod library;
 pub mod login;
 pub mod managed_packages;
+pub mod migration;
 pub mod namespace;
 pub mod network;
 pub mod notifications;

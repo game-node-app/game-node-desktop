@@ -9,5 +9,6 @@ export const pluginQueryKeys = {
     ['plugin-shared-data-policies', profileId, pluginId, ...(publisherFingerprint ? [publisherFingerprint] : [])] as const,
   durableUsage: (pluginId: string, profileId: string) =>
     ['plugin-durable-usage', profileId, pluginId] as const,
+  storageLocations: ['plugin-storage-locations'] as const,
   configuration: (pluginId: string) => ['plugin-configuration', pluginId] as const,
 };

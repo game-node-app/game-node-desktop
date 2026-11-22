@@ -1350,6 +1350,19 @@ pub async fn plugin_storage_cleanup_review(
         .map_err(|error| error.message().to_owned())
 }
 
+/// Host-only physical accounting of the active profile's plugin data. This is host
+/// administration: it is a Tauri command only, never a plugin RPC, and no plugin reply ever
+/// carries a physical path.
+#[tauri::command]
+pub async fn plugin_storage_locations(
+    lifecycle: tauri::State<'_, Arc<crate::plugin_host::runtime::ThirdPartyPluginLifecycle>>,
+) -> Result<crate::plugin_host::cleanup::PluginStorageAccounting, String> {
+    lifecycle
+        .storage_locations()
+        .await
+        .map_err(|error| error.message().to_owned())
+}
+
 /// Applies one confirmed, single-use cleanup review. Only the selected owner candidates are
 /// pruned; an unconfirmed or stale call changes nothing and needs a new review.
 #[tauri::command]

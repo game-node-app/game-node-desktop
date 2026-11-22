@@ -657,6 +657,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         commands::plugin_private_reuse,
         commands::plugin_storage_cleanup_review,
         commands::plugin_storage_cleanup_apply,
+        commands::plugin_storage_locations,
         commands::plugin_enable,
         commands::plugin_disable,
         commands::plugin_remove,

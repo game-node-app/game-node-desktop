@@ -23,6 +23,7 @@ import {
   useSnapshot,
   type PluginInfo,
 } from '../../../api';
+import { useAuth } from '../../../api/useSnapshot';
 import {
   Button,
   Pill,
@@ -39,6 +40,7 @@ import { providerLabel } from '../../../i18n/providerLabel';
 import { IconBox, SettingsPanel } from '../components';
 import { providerIcon } from '../StoreAccountCard';
 import { PluginInventory } from '../PluginInventory';
+import { PluginStorageAdmin } from '../PluginStorageAdmin';
 
 export const PLUGIN_INVENTORY_QUERY_KEY = ['plugin-inventory'] as const;
 
@@ -133,6 +135,10 @@ export const PluginsPanel: React.FC = () => {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const { data: storeAccounts } = useSnapshot((snapshot) => snapshot.storeAccounts);
+  const auth = useAuth().auth;
+  const profileId = typeof auth === 'object' && auth !== null && 'signedIn' in auth
+    ? auth.signedIn.user.id
+    : null;
   const [origin, setOrigin] = useState<OriginFilter>('all');
   const [pendingProvider, setPendingProvider] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -463,6 +469,8 @@ export const PluginsPanel: React.FC = () => {
           );
         })
       )} />
+
+      <PluginStorageAdmin profileId={profileId} />
 
       <div className="flex items-start gap-compact rounded-md border border-border-subtle bg-surface p-sm text-xs leading-note text-text-secondary">
         <IconInfoCircle

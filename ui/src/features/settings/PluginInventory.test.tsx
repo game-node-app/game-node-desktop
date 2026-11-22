@@ -784,8 +784,37 @@ describe('PluginInventory', () => {
     await userEvent.setup().keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     fireEvent.click(trigger);
+    expect(within(await screen.findByRole('dialog'))
+      .getByRole('radio', { name: 'Keep private data for the signed-in account (recommended)' })
+    ).toBeChecked();
     fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Remove' }));
-    await waitFor(() => expect(remove).toHaveBeenCalledWith(managed.pluginId));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(managed.pluginId, false));
+  });
+
+  it('applies the single-plugin Keep/Delete choice to the private data', async () => {
+    const managed: PluginInfo = {
+      ...plugin, source: 'community', pluginId: 'org.example.community',
+      publisherFingerprint: `SHA256:${'d'.repeat(64)}`, runtimeAvailable: true, enabled: false,
+    };
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([managed]);
+    vi.spyOn(commands, 'pluginUpdatePreferences').mockResolvedValue({ periodicChecks: false });
+    vi.spyOn(commands, 'pluginUpdateAvailable').mockResolvedValue([]);
+    vi.spyOn(commands, 'pluginPermissionSnapshot').mockResolvedValue({
+      pluginId: managed.pluginId, publisherFingerprint: managed.publisherFingerprint!,
+      profileId: 'account-one', grantRevision: 1, requestedPermissions: [], effectiveGrants: [],
+    });
+    const remove = vi.spyOn(commands, 'pluginRemove').mockResolvedValue(undefined);
+    renderInventory('en', 'account-one');
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove' }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('radio', {
+      name: 'Delete private data for the signed-in account',
+    }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove' }));
+
+    await waitFor(() =>
+      expect(remove).toHaveBeenCalledWith('org.example.community', true));
   });
 
   it('caches host permission revisions and configuration metadata without plugin preferences', async () => {

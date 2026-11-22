@@ -46,6 +46,12 @@ impl DurableSharedPool {
         }
     }
 
+    /// The application data folder holding the pool file. Host administration measures the file
+    /// here; no plugin reply ever carries this path.
+    pub(crate) fn data_dir(&self) -> Option<&std::path::Path> {
+        self.dir.as_deref()
+    }
+
     /// Durable records go below `dir` (the application data folder).
     pub fn new(dir: impl Into<PathBuf>) -> Self {
         Self {

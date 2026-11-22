@@ -59,6 +59,7 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
   const [archivePath, setArchivePath] = useState('');
   const [scopeChoices, setScopeChoices] = useState<Record<string, boolean>>({});
   const [confirmRemove, setConfirmRemove] = useState(false);
+  const [deletePluginData, setDeletePluginData] = useState(false);
   const [confirmRemoveBundle, setConfirmRemoveBundle] = useState(false);
   const [deleteBundleData, setDeleteBundleData] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -457,8 +458,9 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
     setBusy(true);
     setManagementError(false);
     try {
-      await commands.pluginRemove(selectedPlugin.pluginId);
+      await commands.pluginRemove(selectedPlugin.pluginId, deletePluginData);
       setConfirmRemove(false);
+      setDeletePluginData(false);
       setSelectedPluginId(null);
       await refreshPluginHostState(selectedPlugin.pluginId);
     } catch {
@@ -522,7 +524,10 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
       {managed && profileId === null && <p className={settingsRowDescription} role="status">{t('plugins.signInRequired')}</p>}
       {(canManageRuntime || canManageAccount) && <div className="mt-compact flex flex-wrap gap-compact">
         {canManageRuntime && (selectedPlugin.enabled ? <button type="button" className="rounded-sm border border-border-subtle px-sm py-1 text-sm" disabled={busy} onClick={() => void setPluginEnabled(selectedPlugin.pluginId, false)}>{t('plugins.disable')}</button> : <button type="button" className="rounded-sm border border-border-subtle px-sm py-1 text-sm" disabled={busy || selectedPlugin.status === 'incompatible'} onClick={() => void setPluginEnabled(selectedPlugin.pluginId, true)}>{t('plugins.enable')}</button>)}
-        {canManageAccount && <button type="button" className="rounded-sm border border-warning px-sm py-1 text-sm" disabled={busy} onClick={() => setConfirmRemove(true)}>{t('plugins.remove')}</button>}
+        {canManageAccount && <button type="button" className="rounded-sm border border-warning px-sm py-1 text-sm" disabled={busy} onClick={() => {
+          setDeletePluginData(false);
+          setConfirmRemove(true);
+        }}>{t('plugins.remove')}</button>}
       </div>}
       {managed && profileId && permissionSnapshot && permissionSnapshot.pluginId === selectedPlugin.pluginId && <div className="mt-compact border-t border-border-subtle pt-compact" aria-label={t('plugins.permissionScopes')}>
         <p className={settingsRowTitle}>{t('plugins.permissionScopes')}</p>
@@ -1000,6 +1005,27 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
           </AppModal.Header>
           <AppModal.Body>
             <p className={settingsRowDescription}>{t('plugins.removeConfirm')}</p>
+            <fieldset className="mt-compact flex flex-col gap-1">
+              <legend className={settingsRowTitle}>{t('plugins.bundle.retention.title')}</legend>
+              <label className="flex items-start gap-compact text-sm">
+                <input
+                  type="radio"
+                  name="plugin-data-retention"
+                  checked={!deletePluginData}
+                  onChange={() => setDeletePluginData(false)}
+                />
+                <span>{t('plugins.bundle.retention.keepChoice')}</span>
+              </label>
+              <label className="flex items-start gap-compact text-sm">
+                <input
+                  type="radio"
+                  name="plugin-data-retention"
+                  checked={deletePluginData}
+                  onChange={() => setDeletePluginData(true)}
+                />
+                <span>{t('plugins.bundle.retention.deleteChoice')}</span>
+              </label>
+            </fieldset>
             <div className="flex justify-end gap-compact">
               <button type="button" className="rounded-sm border border-border-subtle px-sm py-1 text-sm" onClick={() => setConfirmRemove(false)}>{t('plugins.cancel')}</button>
               <button type="button" className="rounded-sm border border-warning px-sm py-1 text-sm" disabled={busy} onClick={() => void removePlugin()}>{t('plugins.remove')}</button>

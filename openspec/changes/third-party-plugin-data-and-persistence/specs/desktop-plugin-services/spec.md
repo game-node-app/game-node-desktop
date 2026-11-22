@@ -122,3 +122,18 @@ The host MUST provide a host-only, reviewed cleanup of unused or large plugin da
 #### Scenario: Protected and unselected data
 - **WHEN** a reviewed cleanup prunes one owner
 - **THEN** protected records and unselected owners, stores and archived rows are unchanged, and the per-namespace automatic retention rules still apply
+
+### Requirement: Plugin storage accounting is host administration
+The host MUST report managed physical plugin data locations, their measured on-disk allocation and overhead, the quota-charged logical bytes and the effective retention limits to its own settings surface. Accounting MUST be host-only: no plugin RPC or wire message carries a managed path, and plugin usage stays logical. Slow work MUST run off the UI thread without blocking unrelated settings. Without a host policy editor the screen shows the effective limits read-only.
+
+#### Scenario: The user opens the storage accounting screen
+- **WHEN** the signed-in user opens the host plugin settings
+- **THEN** the screen lists each managed private or durable file with its physical allocation, the logical bytes it holds, the effective limits and whether the file is shared pool-wide
+
+#### Scenario: A plugin asks for its usage
+- **WHEN** a plugin reads private or durable usage through ResourceHost
+- **THEN** it receives record counts, logical bytes, estimates and limits only, never a managed path or an administrative cleanup identifier
+
+#### Scenario: A slow review runs while the user navigates
+- **WHEN** storage accounting or a cleanup review is still running
+- **THEN** the rest of the plugin settings stays usable and nothing is deleted without the confirmed, single-use review

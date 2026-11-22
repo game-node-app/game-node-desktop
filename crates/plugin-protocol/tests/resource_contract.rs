@@ -257,6 +257,42 @@ fn endpoint_field_policy_covers_all_current_services_and_marks_future_routes() {
 }
 
 #[test]
+fn host_storage_administration_is_not_a_plugin_route() {
+    // Physical-path accounting and reviewed cleanup are host administration. No plugin service
+    // advertises them and no wire message can carry a managed path, so plugin IPC cannot reach
+    // those values.
+    let proto = include_str!("../proto/plugin.proto");
+    for forbidden in [
+        "StorageCleanup",
+        "StorageLocations",
+        "storage_cleanup",
+        "storage_locations",
+        "physical_path",
+    ] {
+        assert!(
+            !proto.contains(forbidden),
+            "{forbidden} must not appear in the plugin wire contract"
+        );
+    }
+
+    let descriptors = FileDescriptorSet::decode(DESCRIPTOR).unwrap();
+    for file in &descriptors.file {
+        for service in &file.service {
+            for method in &service.method {
+                let name = method.name.as_deref().unwrap_or_default();
+                let lowered = name.to_ascii_lowercase();
+                assert!(
+                    !lowered.contains("cleanup")
+                        && !lowered.contains("storagelocation")
+                        && !lowered.contains("storagelocations"),
+                    "{name} must not be a plugin route"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn domain_catalog_matches_generated_contracts_and_operation_grants() {
     let catalog: Value = serde_json::from_str(DOMAIN_CATALOG).unwrap();
     assert_eq!(catalog["api"], "1.6");

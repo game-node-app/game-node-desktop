@@ -20,6 +20,9 @@ import type {
   PluginSharedDataPolicyUpdate,
   PluginDurableUsage,
   PluginDurableDeletion,
+  PluginStorageAccounting,
+  StorageCleanupReview,
+  StorageCleanupReport,
   PluginImportReview,
   PluginBundleImportReview,
   BundleImportInstallOutcome,
@@ -300,9 +303,29 @@ export const commands = {
       expectedProfileId,
       confirmed,
     }),
+  pluginStorageLocations: () =>
+    safeInvoke<PluginStorageAccounting>('plugin_storage_locations', undefined, () => ({
+      profileId: '',
+      locations: [],
+      pool: null,
+      privateRootBytes: 0,
+    })),
+  pluginStorageCleanupReview: () =>
+    safeInvoke<StorageCleanupReview>('plugin_storage_cleanup_review', undefined, () => ({
+      token: 'mock-cleanup-review',
+      generatedAt: 0,
+      candidates: [],
+    })),
+  pluginStorageCleanupApply: (token: string, candidateIds: string[], confirmed: boolean) =>
+    safeInvoke<StorageCleanupReport>('plugin_storage_cleanup_apply', {
+      token,
+      candidateIds,
+      confirmed,
+    }),
   pluginEnable: (pluginId: string) => safeInvoke<void>('plugin_enable', { pluginId }),
   pluginDisable: (pluginId: string) => safeInvoke<void>('plugin_disable', { pluginId }),
-  pluginRemove: (pluginId: string) => safeInvoke<void>('plugin_remove', { pluginId }),
+  pluginRemove: (pluginId: string, deleteData = false) =>
+    safeInvoke<void>('plugin_remove', { pluginId, deleteData }),
   pluginBundleImportReview: (archivePath: string) =>
     safeInvoke<PluginBundleImportReview>('plugin_bundle_import_review', { archivePath }),
   pluginBundleImportConfirmPublisher: (token: string, confirmedFingerprint: string) =>

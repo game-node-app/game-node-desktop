@@ -185,8 +185,10 @@ fn safe_key(key: &std::ffi::OsStr) -> bool {
             | "LANG"
             | "DISPLAY"
             | "WAYLAND_DISPLAY"
+            | "XAUTHORITY"
             | "DBUS_SESSION_BUS_ADDRESS"
-    ) || key.starts_with("LC_")
+    ) || key.starts_with("QT_")
+        || key.starts_with("LC_")
         || key.starts_with("XDG_")
 }
 
@@ -341,6 +343,22 @@ mod tests {
     fn helper() -> Option<std::path::PathBuf> {
         std::env::var_os("GAMENODE_TEST_HELPER_BINARY").map(Into::into)
     }
+    #[test]
+    fn the_helper_preserves_the_desktop_session_environment() {
+        for key in [
+            "DISPLAY",
+            "WAYLAND_DISPLAY",
+            "XAUTHORITY",
+            "QT_QPA_PLATFORM",
+            "XDG_RUNTIME_DIR",
+            "DBUS_SESSION_BUS_ADDRESS",
+        ] {
+            assert!(safe_key(std::ffi::OsStr::new(key)), "{key}");
+        }
+        assert!(!safe_key(std::ffi::OsStr::new("STEAM_SESSION")));
+        assert!(!safe_key(std::ffi::OsStr::new("TAURI_PLUGIN_TOKEN")));
+    }
+
     fn shell(script: &str) -> CustomLaunchCommand {
         let registration = gamenode_platform::installations::LinuxInstallations
             .inspect("/bin/sh")

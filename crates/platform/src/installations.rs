@@ -68,6 +68,8 @@ fn safe_game_environment_key(key: &std::ffi::OsStr) -> bool {
             || key == "LANG"
             || key == "DISPLAY"
             || key == "WAYLAND_DISPLAY"
+            || key == "XAUTHORITY"
+            || key.starts_with("QT_")
             || key.starts_with("LC_")
             || key.starts_with("XDG_")
             || key == "DBUS_SESSION_BUS_ADDRESS"
@@ -903,6 +905,15 @@ mod custom_launch_tests {
         assert!(safe_game_environment_key(std::ffi::OsStr::new("PATH")));
         #[cfg(not(windows))]
         assert!(safe_game_environment_key(std::ffi::OsStr::new("HOME")));
+        #[cfg(not(windows))]
+        {
+            assert!(safe_game_environment_key(std::ffi::OsStr::new(
+                "XAUTHORITY"
+            )));
+            assert!(safe_game_environment_key(std::ffi::OsStr::new(
+                "QT_QPA_PLATFORM"
+            )));
+        }
         assert!(!safe_game_environment_key(std::ffi::OsStr::new(
             "STEAM_SESSION"
         )));

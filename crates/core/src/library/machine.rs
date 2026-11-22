@@ -407,6 +407,11 @@ pub enum Input {
     CloseMatch,
     /// The dialog's search text changed. Nothing is sent until [`Input::SearchMatch`].
     SetMatchQuery(String),
+    /// Narrow the dialog's candidates and results to the entry's declared platform, or show the
+    /// complete answer again. The already-received answer is filtered locally; nothing is sent.
+    SetMatchPlatformFilter {
+        enabled: bool,
+    },
     SearchMatch,
     MatchSearched {
         op: u64,
@@ -1305,6 +1310,7 @@ impl LibraryMachine {
                 self.set_match_query(text);
                 vec![]
             }
+            Input::SetMatchPlatformFilter { enabled } => self.set_match_platform_filter(enabled),
             Input::CatalogSearched { games } => {
                 self.catalog_searched(games);
                 vec![]

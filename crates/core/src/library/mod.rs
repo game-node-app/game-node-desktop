@@ -58,7 +58,8 @@ pub use layout::{
 };
 pub use machine::{Access, Effect, Input, LibraryMachine, ScanOutcome};
 pub use match_dialog::{
-    CandidateOption, MatchDialogView, MatchOption, MatchReason, SearchFailure, SearchResultItem,
+    CandidateOption, MatchDialogView, MatchOption, MatchPlatformFilter, MatchReason, SearchFailure,
+    SearchResultItem,
 };
 pub use matching::{MatchSource, MatchStatus};
 pub use membership::{EntryStatus, GameStatus, Membership, StandingView};

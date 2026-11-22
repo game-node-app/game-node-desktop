@@ -147,6 +147,57 @@ fn opening_prefills_the_detected_title_and_searches_it() {
 }
 
 #[test]
+fn opening_a_dump_searches_its_record_title_instead_of_the_file_name() {
+    let mut cache = LibraryCache::default();
+    cache
+        .entries
+        .push(stored("steam", "GPIE01", "Pikmin (USA) (Rev 1)", true));
+    cache.games = vec![platform_record(500, "Pikmin", 2001, &["NGC"])];
+    let (mut machine, _) = loaded(false, cache);
+    let op = machine.scan.as_ref().unwrap().op;
+    let mut scanned = record(
+        "GPIE01",
+        "Pikmin (USA) (Rev 1)",
+        "/games/Pikmin (USA) (Rev 1)",
+    );
+    scanned
+        .fields
+        .insert("platform".to_owned(), "gamecube".to_owned());
+    scanned
+        .fields
+        .insert("title".to_owned(), "Pikmin".to_owned());
+    machine.handle(Input::ProviderScanned {
+        op,
+        provider: "steam".to_owned(),
+        result: Ok(vec![scanned]),
+        targets: Default::default(),
+        now: NOW,
+    });
+    machine.handle(Input::SetAccess {
+        access: Access::Verified,
+        now: NOW,
+    });
+
+    let effects = open(&mut machine, "GPIE01");
+    let sent = searches(&effects);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(
+        sent[0].1, "Pikmin",
+        "the record title, not the tagged file name"
+    );
+
+    let view = dialog(&mut machine);
+    assert_eq!(view.query, "Pikmin");
+    assert_eq!(view.detected_name, "Pikmin (USA) (Rev 1)");
+    assert_eq!(
+        view.platform_filter
+            .as_ref()
+            .map(|filter| filter.platform.as_str()),
+        Some("gamecube")
+    );
+}
+
+#[test]
 fn search_results_show_title_year_and_cover_and_can_be_picked() {
     let mut machine = library();
     let (op, _) = searches(&open(&mut machine, "570")).remove(0);

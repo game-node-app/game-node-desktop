@@ -204,13 +204,45 @@ fn game_summary(record: &GameRecord) -> GameSummary {
 }
 
 pub(super) fn search_query(entry: &StoredEntry) -> String {
-    entry
-        .name
-        .as_deref()
+    let title = entry
+        .fields
+        .get("title")
+        .map(String::as_str)
+        .or(entry.name.as_deref())
         .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .unwrap_or(&entry.store_id)
-        .to_owned()
+        .filter(|text| !text.is_empty())
+        .unwrap_or(entry.store_id.as_str());
+    without_release_tags(title).unwrap_or_else(|| title.to_owned())
+}
+
+/// Drops trailing `(...)`/`[...]` groups, which dump names use for region, revision, language
+/// and disc metadata (`Pikmin (USA) (Rev 1)`). The original text is kept when nothing would
+/// remain, so a title that is only a group is never emptied.
+fn without_release_tags(text: &str) -> Option<String> {
+    let mut end = text.len();
+    loop {
+        let trimmed = text[..end].trim_end();
+        let Some(close) = trimmed.chars().last() else {
+            break;
+        };
+        let open = match close {
+            ')' => '(',
+            ']' => '[',
+            _ => break,
+        };
+        let Some(position) = trimmed.rfind(open) else {
+            break;
+        };
+        if position == 0 || !trimmed[..position].ends_with(char::is_whitespace) {
+            break;
+        }
+        let candidate = trimmed[..position].trim_end();
+        if candidate.is_empty() {
+            break;
+        }
+        end = candidate.len();
+    }
+    (end != text.len()).then(|| text[..end].trim_end().to_owned())
 }
 
 pub(super) fn detected_years(entry: &StoredEntry) -> Vec<i32> {

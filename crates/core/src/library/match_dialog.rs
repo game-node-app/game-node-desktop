@@ -185,7 +185,7 @@ impl LibraryMachine {
         let Some(entry) = self.entries.get(key) else {
             return vec![];
         };
-        let query = entry.name.clone().unwrap_or_else(|| entry.store_id.clone());
+        let query = search_query(entry);
         let platform =
             MatchPlatformFilter::derived(entry.fields.get("platform").map(String::as_str));
         self.dialog = Some(MatchDialog {

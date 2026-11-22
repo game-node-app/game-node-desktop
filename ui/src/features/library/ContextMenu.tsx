@@ -96,8 +96,6 @@ export const ContextMenu: React.FC = () => {
   const summary = summarizeSelection(selected, rows);
   const row = rows.find((candidate) => candidate.key === entryKey) ?? null;
   const detail = library?.detail && library.detail.row.key === entryKey ? library.detail : null;
-  const playAvailable = library?.actions?.play === 'available';
-  const installAvailable = library?.actions?.install === 'available';
 
   useEffect(() => {
     if (!isOpen || !row || isMulti || getMatchedGameId(row.status) == null) {
@@ -109,10 +107,12 @@ export const ContextMenu: React.FC = () => {
     let cancelled = false;
     const load = async () => {
       const [play, install] = await Promise.all([
-        row.installed && playAvailable
+        // A provider without its own launch rule (for example a ROM store) relies on an
+        // extension for Play, so an installed row must still offer the extension action.
+        row.installed
           ? commands.availablePluginExtensions('play')
           : Promise.resolve([]),
-        !row.installed && installAvailable
+        !row.installed
           ? commands.availablePluginExtensions('install')
           : Promise.resolve([]),
       ]);
@@ -131,7 +131,7 @@ export const ContextMenu: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [isOpen, isMulti, row?.key, row?.installed, row?.status, playAvailable, installAvailable]);
+  }, [isOpen, isMulti, row?.key, row?.installed, row?.status]);
 
   useEffect(() => {
     if (!isOpen) {

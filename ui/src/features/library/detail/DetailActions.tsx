@@ -5,11 +5,13 @@ import {
   IconStar,
   IconStarFilled,
 } from '@tabler/icons-react';
+import { useEffect, useState } from 'react';
 import {
   commands,
   type Actions,
   type DetailView,
   type GameToolView,
+  type PluginInfo,
 } from '../../../api';
 import { Button, IconButton } from '../../../components/ui';
 import { formatSessionTime } from '../../../hooks/useSessionClock';
@@ -56,6 +58,9 @@ export function DetailActions({
     (typeof actions?.install === 'object' &&
       actions.install.disabled !== 'noInstallRule');
   const installPrimary = !row.installed && installHasRule;
+  const [playExtensions, setPlayExtensions] = useState<PluginInfo[]>([]);
+  const [startingExtension, setStartingExtension] = useState(false);
+  const [extensionError, setExtensionError] = useState(false);
   const playReason =
     actions && actions.play !== 'available'
       ? formatReason(actions.play.disabled, t)
@@ -64,6 +69,39 @@ export function DetailActions({
     actions && actions.install !== 'available'
       ? formatReason(actions.install.disabled, t)
       : '';
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!row.installed || gameId == null || playReady) {
+      setPlayExtensions([]);
+      return;
+    }
+    void commands
+      .availablePluginExtensions('play')
+      .then((extensions) => {
+        if (!cancelled) setPlayExtensions(extensions);
+      })
+      .catch(() => {
+        if (!cancelled) setPlayExtensions([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [row.installed, row.key, gameId, playReady]);
+
+  const startWithExtension = async () => {
+    const plugin = playExtensions[0];
+    if (!plugin) return;
+    setStartingExtension(true);
+    setExtensionError(false);
+    try {
+      await commands.startExtensionAction(row.key, plugin.pluginId, 'play');
+    } catch {
+      setExtensionError(true);
+    } finally {
+      setStartingExtension(false);
+    }
+  };
 
   return (
     <div className="flex flex-col gap-[8px]">
@@ -105,6 +143,17 @@ export function DetailActions({
               />
             )}
           </>
+        ) : playExtensions.length > 0 && !playReady ? (
+          <Button
+            variant="primary"
+            fullWidth
+            data-testid="detail-extension-play-btn"
+            disabled={startingExtension}
+            leftIcon={IconPlayerPlayFilled}
+            onClick={() => void startWithExtension()}
+          >
+            {t('Library::Start with extension')} · {playExtensions[0].name}
+          </Button>
         ) : (
           <Button
             variant="primary"
@@ -173,9 +222,14 @@ export function DetailActions({
         />
       </div>
 
-      {!isRunning && !installPrimary && !playReady && playReason && (
+      {!isRunning && !installPrimary && !playReady && playExtensions.length === 0 && playReason && (
         <div data-testid="detail-play-reason" className="text-xs text-warning">
           {playReason}
+        </div>
+      )}
+      {extensionError && (
+        <div data-testid="detail-extension-error" className="text-xs text-danger">
+          {t('Library::The extension could not be started.')}
         </div>
       )}
       {!isRunning && installPrimary && !installAvailable && installReason && (

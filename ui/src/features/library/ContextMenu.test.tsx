@@ -113,7 +113,11 @@ describe('ContextMenu', () => {
       rows: [target],
       selected: ['steam:1'],
       detail: detailFor(target),
-      actions: singleActions,
+      // A ROM store has no native launch; the extension is what makes Play possible.
+      actions: {
+        ...singleActions,
+        play: { disabled: 'noLaunchRule' as const },
+      },
     });
     const extension = {
       providerId: 'extension:org.example.helper',

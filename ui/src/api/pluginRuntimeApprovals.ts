@@ -26,6 +26,16 @@ export interface RuntimeSelectionPrompt {
   candidates: RuntimeExecutableCandidate[];
 }
 
+/** One active runtime executable approval, as the plugin settings list shows it. */
+export interface PluginRuntimeApproval {
+  /** The owned runtime this approval belongs to. */
+  runtimeId: string;
+  /** The canonical executable path the user approved. */
+  path: string;
+  /** Unix seconds. */
+  approvedAt: number;
+}
+
 export function cleanRuntimeSelection(raw: unknown): RuntimeSelectionPrompt | null {
   if (!raw || typeof raw !== 'object') return null;
   const row = raw as Record<string, unknown>;

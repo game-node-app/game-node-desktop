@@ -1894,6 +1894,29 @@ pub async fn plugin_library_root_set_watching(
         .await
 }
 
+/// Lists active runtime program approvals in one plugin's active account profile.
+#[tauri::command]
+pub async fn plugin_runtime_approvals(
+    approvals: tauri::State<'_, Arc<crate::plugin_host::runtime_approvals::PluginRuntimeApprovals>>,
+    plugin_id: String,
+    publisher_fingerprint: String,
+) -> Result<Vec<crate::plugin_host::runtime_approvals::PluginRuntimeApproval>, String> {
+    approvals.list(&plugin_id, &publisher_fingerprint).await
+}
+
+/// Revokes one runtime program approval, so the next Play asks for a fresh program.
+#[tauri::command]
+pub async fn plugin_runtime_revoke(
+    approvals: tauri::State<'_, Arc<crate::plugin_host::runtime_approvals::PluginRuntimeApprovals>>,
+    plugin_id: String,
+    publisher_fingerprint: String,
+    runtime_id: String,
+) -> Result<bool, String> {
+    approvals
+        .revoke(&plugin_id, &publisher_fingerprint, &runtime_id)
+        .await
+}
+
 /// Lists declared shared emulator resources and the host-resolved affected games for review.
 #[tauri::command]
 pub async fn plugin_shared_resource_reviews(

@@ -523,6 +523,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             plugin_api.library.clone(),
         ),
     );
+    let runtime_approval_settings = Arc::new(
+        gamenode_app::plugin_host::runtime_approvals::PluginRuntimeApprovals::new(
+            plugin_api.storage.clone(),
+            plugin_api.providers.profiles(),
+        ),
+    );
     if let Some(server) = plugin_api_server.as_ref() {
         engine.set_selected_launch_api(server.resource_api());
     }
@@ -547,6 +553,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     builder = builder.manage(root_approvals);
     builder = builder.manage(runtime_approvals);
     builder = builder.manage(folder_approvals);
+    builder = builder.manage(runtime_approval_settings);
     builder = builder.manage(shared_resources);
     builder = builder.manage(plugin_approvals);
     builder = builder.manage(plugin_updates.clone());
@@ -724,6 +731,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         commands::plugin_folder_revoke,
         commands::plugin_folder_change,
         commands::plugin_library_root_set_watching,
+        commands::plugin_runtime_approvals,
+        commands::plugin_runtime_revoke,
         commands::plugin_shared_resource_reviews,
         commands::plugin_shared_resource_accept,
         commands::plugin_shared_resource_revoke,

@@ -266,6 +266,7 @@ service ResourceHost {
   rpc RuntimesList (DomainListRequest) returns (RuntimesListReply);
   rpc RuntimesGet (DomainGetRequest) returns (RuntimeRecordReply);
   rpc RuntimesWatch (DomainWatchRequest) returns (stream RuntimeRecordEvent);
+  rpc RuntimesRequestAccess (RuntimeRequestAccessRequest) returns (RuntimeMutationReply);
   rpc RuntimesRegister (RuntimeRegisterRequest) returns (RuntimeMutationReply);
   rpc RuntimesUpdate (RuntimeUpdateRequest) returns (RuntimeMutationReply);
   rpc RuntimesRemove (DomainRemoveRequest) returns (MutationReply);
@@ -420,6 +421,21 @@ message LibraryRecordReply { LibraryRecord library = 1; uint64 revision = 2; }
 message LibraryRecordEvent { uint64 revision = 1; string event_type = 2; LibraryRecord library = 3; }
 message LibraryMutationReply { string resource_id = 1; uint64 revision = 2; MutationOutcome outcome = 3; }
 message RuntimeRegisterRequest { MutationContext mutation = 1; RuntimeRecord runtime = 2; }
+// Asks the host to let the user choose, validate and approve one exact executable as a runtime.
+// `runtime.executable_handle` must be empty: the plugin supplies a spec and text hints only, never
+// a path or a handle. The host shows its picker, validates the chosen program, creates the owned
+// runtime and answers with an ordinary runtime record whose executable handle stays empty. A
+// valid existing owned runtime for the same name/platform/formats is returned without a prompt.
+// Declining the picker creates nothing. The request is idempotent for its key.
+message RuntimeAccessHints {
+  repeated string executable_names = 1;
+  repeated string desktop_ids = 2;
+}
+message RuntimeRequestAccessRequest {
+  MutationContext mutation = 1;
+  RuntimeRecord runtime = 2;
+  RuntimeAccessHints hints = 3;
+}
 message RuntimeUpdateRequest {
   MutationContext mutation = 1;
   RuntimeRecord runtime = 2;

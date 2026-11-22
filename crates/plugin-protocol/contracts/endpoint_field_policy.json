@@ -487,6 +487,19 @@
       "wire_service": "ResourceHost"
     },
     {
+      "route": "/gamenode.plugin.v1.Runtimes/RequestAccess",
+      "request_policy": "Typed runtime name/version/platform/formats/argv template with an empty executable handle plus text executable/desktop hints",
+      "response_policy": "Typed runtime id/revision/status with no executable path or handle",
+      "extension_or_opaque_policy": "Descriptive namespaced metadata only; executable choice, identity and digest stay host-owned",
+      "access_model": "game.runtime.create; creator scope; the host picker approves one exact host-validated executable",
+      "status": "protobuf_contract",
+      "wire_method": "RuntimesRequestAccess",
+      "request_type": "RuntimeRequestAccessRequest",
+      "response_type": "RuntimeMutationReply",
+      "permission": "game.runtime.create",
+      "wire_service": "ResourceHost"
+    },
+    {
       "route": "/gamenode.plugin.v1.Runtimes/Register",
       "request_policy": "Typed runtime name/version/platform/formats/argv template and approved executable handle",
       "response_policy": "Typed runtime id/revision/status",

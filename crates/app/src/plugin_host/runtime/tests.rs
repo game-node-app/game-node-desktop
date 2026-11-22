@@ -23,6 +23,22 @@ source = "fixture"
 [scan]
 "#;
 
+#[test]
+fn installed_package_digest_hashes_the_signed_integrity_manifest() {
+    use sha2::Digest as _;
+    let directory = tempfile::tempdir().unwrap();
+    let bytes = b"signed integrity manifest";
+    std::fs::write(directory.path().join("integrity.json"), bytes).unwrap();
+
+    let digest = installed_package_digest(directory.path()).unwrap();
+    assert_eq!(digest.len(), 32);
+    assert_eq!(digest, sha2::Sha256::digest(bytes).to_vec());
+    assert!(
+        installed_package_digest(&directory.path().join("missing")).is_err(),
+        "a package without its signed manifest has no digest"
+    );
+}
+
 #[cfg(target_os = "linux")]
 fn signed_provider_archive(root: &Path) -> PathBuf {
     use base64::Engine as _;

@@ -1873,6 +1873,18 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// The digest of the signed `integrity.json` that authenticated this installed package tree.
+///
+/// The registry stores the verified tree rather than the original archive. The signed integrity
+/// manifest is the stable package identity: it lists every payload digest and is itself covered by
+/// the package signature, so shared-record provenance can name a 32-byte package digest without
+/// trusting a caller-supplied value.
+fn installed_package_digest(root: &Path) -> std::io::Result<Vec<u8>> {
+    use sha2::Digest as _;
+    let bytes = std::fs::read(root.join("integrity.json"))?;
+    Ok(sha2::Sha256::digest(&bytes).to_vec())
+}
+
 impl HostedProviders {
     pub async fn bundled(
         api: ProviderApi,
@@ -2097,6 +2109,12 @@ impl HostedProviders {
                 Some(services) => services.clone(),
                 None => Arc::new(super::provider::ExtensionServices),
             };
+            let package_root = installed.package_path.clone();
+            let package_digest =
+                tokio::task::spawn_blocking(move || installed_package_digest(&package_root))
+                    .await
+                    .map_err(|_| Status::internal("installed package digest worker failed"))?
+                    .map_err(|_| Status::internal("installed package integrity is unavailable"))?;
             let registration = Registration {
                 provider_id: provider_id.clone(),
                 plugin_id: installed.plugin_id.clone(),
@@ -2112,7 +2130,7 @@ impl HostedProviders {
                     publisher_fingerprint: publisher_fingerprint.clone(),
                 },
                 declared_developer: report.manifest.name.clone(),
-                package_digest: Vec::new(),
+                package_digest,
                 playtime: report.manifest.playtime,
                 capabilities: config.manifest_capabilities.clone(),
                 shared_catalog: false,

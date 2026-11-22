@@ -103,5 +103,65 @@ class PluginPackageToolTests(unittest.TestCase):
                 tool.verify_archive(unsafe)
 
 
+class ReviewFieldValidationTests(unittest.TestCase):
+    def _manifest(self, **extra) -> bytes:
+        manifest = {
+            "schema": 1,
+            "id": "org.example.fixture",
+            "kind": "provider",
+            "provider_id": "fixture-provider",
+            "name": "Fixture Provider",
+            "version": "1.0.0",
+            "api": {"min": "1.6.0", "max": "1.6.0"},
+            "targets": [{
+                "os": "linux",
+                "arch": "x86_64",
+                "abi": "gnu",
+                "entrypoint": "bin/linux-x64/plugin",
+            }],
+            "publisher": {
+                "key_id": "fixture-dev",
+                "public_key": base64.b64encode(b"\0" * 32).decode(),
+            },
+            "license": {"expression": "MIT", "files": ["licenses/LICENSE"]},
+        }
+        manifest.update(extra)
+        return json.dumps(manifest).encode("utf-8")
+
+    def _permission(self, **extra) -> dict:
+        return {
+            "id": "library.discovery",
+            "required": False,
+            "scope": "own-provider",
+            "reason": "Read the fixture library",
+            **extra,
+        }
+
+    def test_accepts_supported_platforms_and_bounded_impacts(self):
+        manifest = self._manifest(
+            supported_platforms=["gamecube", "wii"],
+            permissions=[self._permission(impact_if_disabled="Discovery stops.")],
+        )
+        parsed = tool._load_manifest(manifest)
+        self.assertEqual(parsed["supported_platforms"], ["gamecube", "wii"])
+        self.assertEqual(
+            parsed["permissions"][0]["impact_if_disabled"], "Discovery stops."
+        )
+
+    def test_rejects_invalid_platforms_and_impacts(self):
+        cases = [
+            {"supported_platforms": ["GameCube"]},
+            {"supported_platforms": ["gamecube", "gamecube"]},
+            {"supported_platforms": [f"platform-{index}" for index in range(17)]},
+            {"permissions": [self._permission(impact_if_disabled="")]},
+            {"permissions": [self._permission(impact_if_disabled="bad\x01text")]},
+            {"permissions": [self._permission(impact_if_disabled="x" * 513)]},
+        ]
+        for extra in cases:
+            with self.subTest(extra=extra):
+                with self.assertRaises(tool.PackageError):
+                    tool._load_manifest(self._manifest(**extra))
+
+
 if __name__ == "__main__":
     unittest.main()

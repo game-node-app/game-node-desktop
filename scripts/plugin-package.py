@@ -63,6 +63,45 @@ def _safe_name(name: str) -> str:
     return normalized
 
 
+PLATFORM_ID = re.compile(r"^[a-z0-9._-]{1,64}$")
+
+
+def _validate_review_fields(manifest: dict) -> None:
+    """Validate the optional review fields shared with the Rust manifest parser."""
+    platforms = manifest.get("supported_platforms")
+    if platforms is not None:
+        if not isinstance(platforms, list) or len(platforms) > 16:
+            raise PackageError("supported_platforms must be a list of at most 16 values")
+        seen: set[str] = set()
+        for platform in platforms:
+            if (
+                not isinstance(platform, str)
+                or not PLATFORM_ID.fullmatch(platform)
+                or platform in seen
+            ):
+                raise PackageError(
+                    "supported_platforms must contain unique lowercase identifiers"
+                )
+            seen.add(platform)
+    permissions = manifest.get("permissions")
+    if permissions is not None:
+        if not isinstance(permissions, list):
+            raise PackageError("permissions must be a list")
+        for permission in permissions:
+            if not isinstance(permission, dict):
+                raise PackageError("each permission must be an object")
+            impact = permission.get("impact_if_disabled")
+            if impact is not None and (
+                not isinstance(impact, str)
+                or not impact.strip()
+                or len(impact.encode("utf-8")) > 512
+                or any(ord(char) < 32 or ord(char) == 127 for char in impact)
+            ):
+                raise PackageError(
+                    "permission impact_if_disabled must be non-empty bounded plain text"
+                )
+
+
 def _load_manifest(raw: bytes) -> dict:
     if len(raw) > MAX_METADATA:
         raise PackageError("plugin.json exceeds the 4 MiB metadata limit")
@@ -85,6 +124,7 @@ def _load_manifest(raw: bytes) -> dict:
     license_info = manifest.get("license")
     if not isinstance(license_info, dict) or not license_info.get("files"):
         raise PackageError("plugin.json must declare local license files")
+    _validate_review_fields(manifest)
     return manifest
 
 

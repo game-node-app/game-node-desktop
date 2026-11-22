@@ -11,6 +11,7 @@ import { useI18n } from '../../i18n';
 import { RememberedConfirmations } from './RememberedConfirmations';
 import { PluginBundleDetails } from './PluginBundleDetails';
 import { PluginFolderApprovals } from './PluginFolderApprovals';
+import { PluginRuntimeApprovals } from './PluginRuntimeApprovals';
 import { PluginSharedResources } from './PluginSharedResources';
 import { PluginDurableUsage } from './PluginDurableUsage';
 import { PluginCompatibilityReview } from './PluginCompatibilityReview';
@@ -575,20 +576,48 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
   };
 
   const details = selectedPlugin && (isBundle ? (
-    <PluginBundleDetails
-      bundle={selectedPlugin}
-      profileId={profileId}
-      busy={busy}
-      onToggleEnabled={setPluginEnabled}
-      onRequestUninstall={() => {
-        setBundleUninstallOutcome(null);
-        setBundleUninstallError(false);
-        setDeleteBundleData(false);
-        setConfirmRemoveBundle(true);
-      }}
-      uninstallOutcome={bundleUninstallOutcome}
-      uninstallError={bundleUninstallError}
-    />
+    <>
+      <PluginBundleDetails
+        bundle={selectedPlugin}
+        profileId={profileId}
+        busy={busy}
+        onToggleEnabled={setPluginEnabled}
+        onRequestUninstall={() => {
+          setBundleUninstallOutcome(null);
+          setBundleUninstallError(false);
+          setDeleteBundleData(false);
+          setConfirmRemoveBundle(true);
+        }}
+        uninstallOutcome={bundleUninstallOutcome}
+        uninstallError={bundleUninstallError}
+      />
+      {(selectedPlugin.bundleComponents ?? []).map((component) => {
+        // A bundle itself has no approvals: each component owns its own namespace, and the
+        // bundle publisher authenticates every one of them.
+        const componentPublisher = selectedPlugin.bundlePublisherFingerprint
+          ?? selectedPlugin.publisherFingerprint
+          ?? component.publisherFingerprint;
+        if (!componentPublisher) return null;
+        return (
+          <section
+            key={component.pluginId}
+            className={`${settingsCard} flex flex-col`}
+            aria-label={t('plugins.bundle.approvalsFor', { name: component.name })}
+          >
+            <h3 className={settingsRowTitle}>{component.name}</h3>
+            <p className={settingsRowDescription}>{t('plugins.bundle.approvalsDescription')}</p>
+            <PluginFolderApprovals
+              pluginId={component.pluginId}
+              publisherFingerprint={componentPublisher}
+            />
+            <PluginRuntimeApprovals
+              pluginId={component.pluginId}
+              publisherFingerprint={componentPublisher}
+            />
+          </section>
+        );
+      })}
+    </>
   ) : (
     <article className={renderCards ? "flex flex-col gap-sm" : `${settingsCard} self-start`} aria-label={t('plugins.details')}>
       {!renderCards && <>
@@ -702,6 +731,10 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
             publisherFingerprint={selectedPlugin.publisherFingerprint}
           />
           <PluginFolderApprovals
+            pluginId={selectedPlugin.pluginId}
+            publisherFingerprint={selectedPlugin.publisherFingerprint}
+          />
+          <PluginRuntimeApprovals
             pluginId={selectedPlugin.pluginId}
             publisherFingerprint={selectedPlugin.publisherFingerprint}
           />

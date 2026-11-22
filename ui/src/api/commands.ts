@@ -58,6 +58,7 @@ import type {
 } from './ports';
 import type { RememberedConfirmation } from './pluginConfirmations';
 import type { PluginFolderApproval } from './pluginFolderApprovals';
+import type { PluginRuntimeApproval } from './pluginRuntimeApprovals';
 import type { PluginSharedResourceReview } from './sharedResources';
 import type { PluginConfigurationModes, PluginConfigurationStatus, PluginSettingsContext, PluginSettingsReply, PluginSettingsValue } from './pluginSettings';
 import { createDefaultSnapshot } from './types';
@@ -494,6 +495,18 @@ export const commands = {
   pluginLibraryRootSetWatching: (pluginId: string, publisherFingerprint: string, id: string, watching: boolean) =>
     safeInvoke<boolean>(
       'plugin_library_root_set_watching', { pluginId, publisherFingerprint, id, watching }, () => false,
+    ),
+
+  /** Active runtime program approvals of one plugin in the active profile. */
+  pluginRuntimeApprovals: (pluginId: string, publisherFingerprint: string) =>
+    safeInvoke<PluginRuntimeApproval[]>(
+      'plugin_runtime_approvals', { pluginId, publisherFingerprint }, () => [],
+    ),
+
+  /** Revokes a runtime program approval, so the next Play asks for a fresh program. */
+  pluginRuntimeRevoke: (pluginId: string, publisherFingerprint: string, runtimeId: string) =>
+    safeInvoke<boolean>(
+      'plugin_runtime_revoke', { pluginId, publisherFingerprint, runtimeId }, () => false,
     ),
 
   /** Declared shared emulator resources and the host-resolved games affected by each. */

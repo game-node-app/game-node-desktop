@@ -1060,4 +1060,25 @@ describe('PluginInventory', () => {
     await waitFor(() => expect(inventory.mock.calls.length).toBeGreaterThan(1));
   });
 
+  it('renders folder and program approvals for a standalone plugin with its own identity', async () => {
+    const fingerprint = 'ab'.repeat(32);
+    const managed: PluginInfo = {
+      ...plugin,
+      pluginId: 'community.example.emulator',
+      pluginKind: 'extension',
+      source: 'community',
+      publisherFingerprint: fingerprint,
+      runtimeAvailable: true,
+    };
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([managed]);
+    const folders = vi.spyOn(commands, 'pluginFolderApprovals').mockResolvedValue([]);
+    const runtimes = vi.spyOn(commands, 'pluginRuntimeApprovals').mockResolvedValue([]);
+    renderInventory('en', 'account-one');
+
+    expect(await screen.findByRole('region', { name: 'Folder access and library roots' })).toBeInTheDocument();
+    expect(await screen.findByRole('region', { name: 'Approved runtime programs' })).toBeInTheDocument();
+    await waitFor(() => expect(folders).toHaveBeenCalledWith(managed.pluginId, fingerprint));
+    expect(runtimes).toHaveBeenCalledWith(managed.pluginId, fingerprint);
+  });
+
 });

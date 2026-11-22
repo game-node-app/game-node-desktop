@@ -74,6 +74,7 @@ import type {
 import type { PluginNotice } from '../api/pluginNotices';
 import type { PluginConfirmation, RememberedConfirmation } from '../api/pluginConfirmations';
 import type { PluginFolderApproval, RootConfirmationPrompt, RootSelectionPrompt } from '../api/pluginFolderApprovals';
+import type { PluginRuntimeApproval } from '../api/pluginRuntimeApprovals';
 import type { RuntimeSelectionPrompt } from '../api/pluginRuntimeApprovals';
 
 type Listener = (snapshot: Snapshot) => void;
@@ -2197,6 +2198,14 @@ export function createMockHost(options: {
         revoked: false, declaredByPlugin: true, logicalLibrary: true, libraryId: 'mock-library', watching: true,
       },
     ],
+  ]]);
+  const runtimeApprovals = new Map<string, PluginRuntimeApproval[]>([[
+    'org.example.dolphin.launch',
+    [{
+      runtimeId: 'mock-dolphin-runtime',
+      path: '/usr/bin/dolphin-emu',
+      approvedAt: 1_760_000_000,
+    }],
   ]]);
   let periodicPluginChecks = false;
   const mockUpdatePlugin = 'community.example.save-sync';
@@ -4823,6 +4832,17 @@ export function createMockHost(options: {
         const current = before.find((item) => item.id === args.id && item.logicalLibrary);
         if (!current) return false;
         folderApprovals.set(pluginId, before.map((item) => item.id === args.id ? { ...item, watching: args.watching === true } : item));
+        return true;
+      }
+      if (cmd === 'plugin_runtime_approvals') {
+        return structuredClone(runtimeApprovals.get(String(args.pluginId ?? '')) ?? []);
+      }
+      if (cmd === 'plugin_runtime_revoke') {
+        const pluginId = String(args.pluginId ?? '');
+        const before = runtimeApprovals.get(pluginId) ?? [];
+        const next = before.filter((item) => item.runtimeId !== args.runtimeId);
+        if (next.length === before.length) return false;
+        runtimeApprovals.set(pluginId, next);
         return true;
       }
       if (cmd === 'plugin_remembered_confirmations') {

@@ -818,4 +818,27 @@ describe('bundle inventory', () => {
     expect(screen.getByText('No active trusted third-party plugins declare playtime support.')).toBeInTheDocument();
   });
 
+  it('renders folder and program approvals for each bundle component with the component ids', async () => {
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([bundle]);
+    const folders = vi.spyOn(commands, 'pluginFolderApprovals').mockResolvedValue([]);
+    const runtimes = vi.spyOn(commands, 'pluginRuntimeApprovals').mockResolvedValue([]);
+    renderInventory('en', 'account-one');
+
+    fireEvent.click(await screen.findByRole('button', { name: /Dolphin GameCube and Wii/ }));
+    const discovery = await screen.findByRole('region', { name: 'Approvals for Dolphin discovery' });
+    const launch = await screen.findByRole('region', { name: 'Approvals for Dolphin launch' });
+    expect(within(discovery).getByRole('region', { name: 'Folder access and library roots' })).toBeInTheDocument();
+    expect(within(discovery).getByRole('region', { name: 'Approved runtime programs' })).toBeInTheDocument();
+    expect(within(launch).getByRole('region', { name: 'Folder access and library roots' })).toBeInTheDocument();
+    expect(within(launch).getByRole('region', { name: 'Approved runtime programs' })).toBeInTheDocument();
+
+    await waitFor(() => expect(folders).toHaveBeenCalledWith('org.example.dolphin', publisher));
+    expect(folders).toHaveBeenCalledWith('org.example.dolphin.launch', publisher);
+    expect(runtimes).toHaveBeenCalledWith('org.example.dolphin', publisher);
+    expect(runtimes).toHaveBeenCalledWith('org.example.dolphin.launch', publisher);
+    // A bundle has no namespace of its own, so no bundle-level approvals are requested.
+    expect(folders).not.toHaveBeenCalledWith('org.example.dolphin.bundle', publisher);
+    expect(runtimes).not.toHaveBeenCalledWith('org.example.dolphin.bundle', publisher);
+  });
+
 });

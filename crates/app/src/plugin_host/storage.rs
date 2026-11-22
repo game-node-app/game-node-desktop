@@ -1254,8 +1254,7 @@ impl Namespace<'_> {
         }
     }
 
-    /// Every runtime executable approval in this plugin/profile namespace.
-    #[cfg(test)]
+    /// Every runtime executable approval in this plugin/profile namespace, revoked or active.
     pub fn runtime_approvals(
         &mut self,
     ) -> Result<Vec<gamenode_platform::plugin_storage::RuntimeApproval>, Status> {

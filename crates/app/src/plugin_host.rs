@@ -45,6 +45,7 @@ pub mod resources;
 pub mod retention;
 pub mod runtime;
 pub mod runtime_access;
+pub mod runtime_approvals;
 pub mod saves;
 pub mod services;
 pub mod shared_data;

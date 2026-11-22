@@ -1092,6 +1092,22 @@ impl Engine {
         self.publish_current();
         Ok(())
     }
+    /// Adds or replaces one provider in the running library and requests a scan.
+    ///
+    /// The accepted import has already registered and enabled the package with the live host;
+    /// this only makes the existing library list and scan it. A scan already running coalesces
+    /// the request into one more run, so the caller never waits for provider I/O.
+    pub fn add_library_provider(&self, provider: gamenode_core::provider::Provider) {
+        let id = provider.id().to_owned();
+        {
+            let mut state = self.lock();
+            state.library.put_provider(provider);
+            self.publish(&mut state);
+        }
+        tracing::info!(provider = %id, "added an imported provider to the library");
+        self.rescan();
+    }
+
     fn provider_check_gate(&self, provider: &str) -> Arc<tokio::sync::Mutex<()>> {
         self.shared
             .provider_checks

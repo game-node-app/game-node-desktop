@@ -887,6 +887,26 @@ impl LibraryMachine {
         self.providers.iter().find(|provider| provider.id() == id)
     }
 
+    /// Adds one provider to the scan list, or replaces the entry with the same id in place.
+    ///
+    /// This is the post-startup registration path for an accepted import: stored entries,
+    /// matches, settings and the running scan are untouched, and the provider keeps its existing
+    /// position when it was already known. Callers request a scan afterwards; a scan already
+    /// running coalesces that request into one more run. Returns whether the list changed.
+    pub fn put_provider(&mut self, provider: Provider) -> bool {
+        if let Some(existing) = self
+            .providers
+            .iter_mut()
+            .find(|existing| existing.id() == provider.id())
+        {
+            *existing = provider;
+        } else {
+            self.providers.push(provider);
+        }
+        self.view_dirty = true;
+        true
+    }
+
     /// Whether the library is shown (an account is set, even before it is verified).
     pub fn is_active(&self) -> bool {
         !matches!(self.phase, Phase::Inactive)

@@ -211,6 +211,37 @@ describe('Sidebar', () => {
     expect(uiStore.state.activeDestination).toBe('library');
   });
 
+  it('renders a third-party provider section from the library instead of official providers only', () => {
+    const spy = vi.spyOn(commands, 'libraryInput').mockResolvedValue();
+    const library = makeLibrary({
+      providers: [
+        {
+          id: 'dolphin-emu',
+          name: 'Dolphin GameCube and Wii',
+          count: 1,
+          installedCount: 1,
+          ownedCount: 1,
+          sharedCount: 0,
+          sharedLabel: null,
+        },
+      ],
+      total: 1,
+    });
+
+    renderSidebar({ library, localGames: emptyLocal(), signedIn: true });
+
+    const section = screen.getByTestId('sidebar-provider-dolphin-emu');
+    expect(within(section).getByRole('button', { name: 'Dolphin GameCube and Wii' })).toBeInTheDocument();
+    expect(within(section).getByText('1')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Steam' })).not.toBeInTheDocument();
+
+    fireEvent.click(within(section).getByRole('button', { name: 'Dolphin GameCube and Wii' }));
+    expect(spy).toHaveBeenNthCalledWith(1, { setScope: 'all' });
+    expect(spy).toHaveBeenNthCalledWith(2, {
+      setFilters: { ...createDefaultFilters(), stores: ['dolphin-emu'] },
+    });
+  });
+
   it('highlights exactly one store, and none when two stores are selected', () => {
     const single = makeLibrary({
       layout: {

@@ -212,6 +212,35 @@ describe('Library Feature Tests', () => {
       expect(imgs[0]).toHaveAttribute('decoding', 'async');
     });
 
+    it('renders records from a third-party provider in the grid', () => {
+      const snapshot = createDefaultSnapshot();
+      const row = {
+        ...createMockRows(1)[0],
+        key: 'dolphin-emu:GZLE01',
+        title: 'The Legend of Zelda',
+        detectedName: 'The Legend of Zelda',
+        provider: 'dolphin-emu',
+        providerName: 'Dolphin GameCube and Wii',
+      };
+      snapshot.library = makeLibrary([row], {
+        providers: [
+          {
+            id: 'dolphin-emu',
+            name: 'Dolphin GameCube and Wii',
+            count: 1,
+            installedCount: 1,
+            ownedCount: 1,
+            sharedCount: 0,
+            sharedLabel: null,
+          },
+        ],
+      });
+
+      renderWithProviders(<GameGrid />, snapshot);
+
+      expect(screen.getByText('The Legend of Zelda')).toBeInTheDocument();
+    });
+
     it('mounts only viewport rows in GameList for 500 items', () => {
       const snapshot = createDefaultSnapshot();
       snapshot.library = makeLibrary(createMockRows(500), {

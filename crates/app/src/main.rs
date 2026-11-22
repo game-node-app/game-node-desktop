@@ -169,11 +169,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let platform = gamenode_core::provider::Platform::current()
         .ok_or("GameNode Desktop supports Windows and Linux only")?;
-    let providers = gamenode_app::providers::load_bundled_with_plugins(
-        platform,
-        &gamenode_app::plugin_host::backends(platform),
-    )
-    .providers;
+    // Official manifests keep their exact order and behavior; an installed third-party provider
+    // package that passed the reviewed import is appended here, before the library exists. The
+    // registry, trust and package inspection run on blocking workers inside the composition.
+    let providers = runtime
+        .block_on(gamenode_app::plugin_host::startup::load_library_providers(
+            platform, &paths,
+        ))
+        .providers;
     let library_store = Arc::new(store.library_store());
     let layout = library_store.load_layout().unwrap_or_else(|error| {
         tracing::warn!(%error, "could not read the saved library layout; using the default");

@@ -649,13 +649,33 @@ pub async fn plugin_import_confirm_publisher(
 #[tauri::command]
 pub async fn plugin_import_install(
     updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    engine: tauri::State<'_, Engine>,
     token: String,
     native_code_consent: bool,
     denied_permission_ids: Vec<String>,
 ) -> Result<crate::plugin_host::updates::PluginImportInstallOutcome, String> {
-    updates
+    let outcome = updates
         .import_install(&token, native_code_consent, &denied_permission_ids)
-        .await
+        .await?;
+    register_installed_library_provider(&updates, &engine, &outcome.plugin_id).await;
+    Ok(outcome)
+}
+
+/// Makes a just-accepted provider package part of the running library without a restart.
+/// Registry and package reads stay on blocking workers; only the provider-list update and the
+/// scan request touch engine state.
+async fn register_installed_library_provider(
+    updates: &crate::plugin_host::updates::PluginUpdateService,
+    engine: &Engine,
+    plugin_id: &str,
+) {
+    match updates.library_provider(plugin_id).await {
+        Ok(Some(provider)) => engine.add_library_provider(provider),
+        Ok(None) => {}
+        Err(error) => {
+            tracing::warn!(%error, %plugin_id, "could not add an imported provider to the library");
+        }
+    }
 }
 
 #[tauri::command]
@@ -689,15 +709,22 @@ pub async fn plugin_bundle_import_confirm_publisher(
 #[tauri::command]
 pub async fn plugin_bundle_import_install(
     updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    engine: tauri::State<'_, Engine>,
     token: String,
     native_code_consent: bool,
     component_denied_permissions: Vec<
         crate::plugin_host::updates::BundleComponentDeniedPermissions,
     >,
 ) -> Result<crate::plugin_host::updates::BundleImportInstallOutcome, String> {
-    updates
+    let outcome = updates
         .bundle_import_install(&token, native_code_consent, &component_denied_permissions)
-        .await
+        .await?;
+    for component in &outcome.components {
+        if component.kind == "provider" && component.active {
+            register_installed_library_provider(&updates, &engine, &component.plugin_id).await;
+        }
+    }
+    Ok(outcome)
 }
 
 #[tauri::command]

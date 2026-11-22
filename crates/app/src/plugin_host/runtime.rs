@@ -2591,6 +2591,13 @@ impl HostedProviders {
         self.lifecycle.clone()
     }
 
+    /// The composed process slots. Tests use this to point a real provider at a temporary
+    /// collection without changing production configuration.
+    #[cfg(test)]
+    pub(crate) fn processes(&self) -> &ProviderProcesses {
+        &self.processes
+    }
+
     /// The composed entry for a provider, including packages registered after startup.
     fn entry(&self, id: &str) -> Option<Arc<Entry>> {
         self.entries

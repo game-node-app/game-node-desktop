@@ -366,8 +366,8 @@ describe('PluginInventory', () => {
   });
 
   it.each([
-    ['en', 'This extension is installed but cannot be started yet. Extension runtime support is not available in this release.'],
-    ['pt-BR', 'Esta extensão está instalada, mas ainda não pode ser iniciada. O suporte a runtime de extensões não está disponível nesta versão.'],
+    ['en', 'This extension is installed but its runtime could not be registered. Review the package compatibility or reinstall it.'],
+    ['pt-BR', 'Esta extensão está instalada, mas o runtime dela não pôde ser registrado. Verifique a compatibilidade do pacote ou reinstale-o.'],
   ])('explains unavailable extension runtime in %s and keeps removal available', async (locale, explanation) => {
     const extension: PluginInfo = {
       ...plugin,
@@ -568,7 +568,7 @@ describe('PluginInventory', () => {
     });
   });
 
-  it('reviews a staged package, requires exact publisher trust, and installs without starting it', async () => {
+  it('reviews a staged package, requires exact publisher trust, and installs it enabled', async () => {
     vi.spyOn(commands, 'pluginInventory').mockResolvedValue([]);
     vi.spyOn(commands, 'pluginUpdatePreferences').mockResolvedValue({ periodicChecks: false });
     vi.spyOn(commands, 'pluginUpdateAvailable').mockResolvedValue([]);
@@ -589,7 +589,7 @@ describe('PluginInventory', () => {
     const importReview = vi.spyOn(commands, 'pluginImportReview').mockResolvedValue(staged);
     const confirm = vi.spyOn(commands, 'pluginImportConfirmPublisher').mockResolvedValue({ ...staged, trust: 'trusted' });
     const viewLicense = vi.spyOn(commands, 'pluginImportLicenseText').mockResolvedValue('MIT license text available offline');
-    const install = vi.spyOn(commands, 'pluginImportInstall').mockResolvedValue(staged.pluginId);
+    const install = vi.spyOn(commands, 'pluginImportInstall').mockResolvedValue({ pluginId: staged.pluginId, activated: true });
     renderInventory('en', 'account-import');
 
     fireEvent.change(await screen.findByRole('textbox', { name: 'Path to signed bundle' }), { target: { value: '/packages/community.zip' } });
@@ -618,7 +618,7 @@ describe('PluginInventory', () => {
     expect(await screen.findByText('MIT license text available offline')).toBeInTheDocument();
     expect(viewLicense).toHaveBeenCalledWith('review-token', 'LICENSE');
 
-    const accept = within(packageReview).getByRole('button', { name: 'Accept and install' });
+    const accept = within(packageReview).getByRole('button', { name: 'Accept, install and enable' });
     expect(accept).toBeDisabled();
     expect(accept).toHaveClass('w-full');
     fireEvent.click(within(packageReview).getByRole('button', { name: 'Trust this publisher' }));
@@ -646,7 +646,7 @@ describe('PluginInventory', () => {
       compatibility: 'compatible' as const,
     };
     vi.spyOn(commands, 'pluginImportReview').mockResolvedValue(staged);
-    const install = vi.spyOn(commands, 'pluginImportInstall').mockResolvedValue(staged.pluginId);
+    const install = vi.spyOn(commands, 'pluginImportInstall').mockResolvedValue({ pluginId: staged.pluginId, activated: true });
     renderInventory('en', 'account-required');
 
     fireEvent.change(await screen.findByRole('textbox', { name: 'Path to signed bundle' }), { target: { value: '/packages/required.gnplugin' } });
@@ -657,7 +657,7 @@ describe('PluginInventory', () => {
     expect(within(review).queryByRole('switch')).not.toBeInTheDocument();
     expect(review).not.toHaveTextContent('Platforms');
 
-    const accept = within(review).getByRole('button', { name: 'Accept and install' });
+    const accept = within(review).getByRole('button', { name: 'Accept, install and enable' });
     expect(accept).toBeEnabled();
     fireEvent.click(accept);
     await waitFor(() => expect(install).toHaveBeenCalledWith('required-review', false, []));
@@ -688,7 +688,7 @@ describe('PluginInventory', () => {
     await userEvent.setup().type(screen.getByRole('textbox', { name: 'Path to signed bundle' }), '{Enter}');
     const review = await screen.findByRole('article', { name: 'Review plugin package' });
     expect(within(review).getByRole('region', { name: 'Compatibility with this system' })).toHaveTextContent('The C library family does not match');
-    expect(screen.getByRole('button', { name: 'Accept and install' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Accept, install and enable' })).toBeDisabled();
   });
 
   it('requires separate explicit consent for declared native access', async () => {
@@ -702,13 +702,13 @@ describe('PluginInventory', () => {
       nativeAccess: ['process'], playtime: { identifiesGameplay: false, identifiesPauses: false, withoutPauseDetection: 'disabled' as const },
       compatibility: 'compatible' as const,
     };
-    const install = vi.spyOn(commands, 'pluginImportInstall').mockResolvedValue(staged.pluginId);
+    const install = vi.spyOn(commands, 'pluginImportInstall').mockResolvedValue({ pluginId: staged.pluginId, activated: true });
     vi.spyOn(commands, 'pluginImportReview').mockResolvedValue(staged);
     renderInventory('en', 'account-import');
 
     fireEvent.change(await screen.findByRole('textbox', { name: 'Path to signed bundle' }), { target: { value: '/packages/native.zip' } });
     fireEvent.click(screen.getByRole('button', { name: 'Review package' }));
-    const installButton = await screen.findByRole('button', { name: 'Accept and install' });
+    const installButton = await screen.findByRole('button', { name: 'Accept, install and enable' });
     expect(installButton).toBeDisabled();
     fireEvent.click(screen.getByRole('checkbox', { name: /reviewed the declared native access/i }));
     expect(installButton).toBeEnabled();
@@ -1027,4 +1027,37 @@ describe('PluginInventory', () => {
     fireEvent.click(approve);
     await waitFor(() => expect(approveRollback).toHaveBeenCalledWith('org.example.update', '1.0.0', true));
   });
+  it('installs, enables immediately, and reports an activation failure without hiding the package', async () => {
+    const inventory = vi.spyOn(commands, 'pluginInventory').mockResolvedValue([]);
+    vi.spyOn(commands, 'pluginUpdatePreferences').mockResolvedValue({ periodicChecks: false });
+    vi.spyOn(commands, 'pluginUpdateAvailable').mockResolvedValue([]);
+    vi.spyOn(commands, 'pluginPlaytimeInventory').mockResolvedValue([]);
+    const staged = {
+      token: 'activation-review', pluginId: 'org.example.launch', name: 'Launch', version: '1.0.0',
+      publisherKeyId: 'key-launch', publisherFingerprint: 'SHA256:launch', trust: 'trusted' as const,
+      license: 'MIT', licenseFiles: [], licenseNotices: [], permissionIds: [],
+      requestedPermissions: [], nativeAccess: [],
+      playtime: { identifiesGameplay: false, identifiesPauses: false, withoutPauseDetection: 'disabled' as const },
+      compatibility: 'compatible' as const,
+    };
+    vi.spyOn(commands, 'pluginImportReview').mockResolvedValue(staged);
+    const install = vi.spyOn(commands, 'pluginImportInstall').mockResolvedValue({
+      pluginId: staged.pluginId,
+      activated: false,
+      activationError: 'activation failed: packaged provider executable could not start',
+    });
+    renderInventory('en', 'account-import');
+
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Path to signed bundle' }), { target: { value: '/packages/launch.zip' } });
+    await userEvent.setup().type(screen.getByRole('textbox', { name: 'Path to signed bundle' }), '{Enter}');
+    fireEvent.click(await screen.findByRole('button', { name: 'Accept, install and enable' }));
+
+    await waitFor(() => expect(install).toHaveBeenCalledWith('activation-review', false, []));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Installed, but not activated');
+    expect(alert).toHaveTextContent('org.example.launch');
+    expect(alert).toHaveTextContent('packaged provider executable could not start');
+    await waitFor(() => expect(inventory.mock.calls.length).toBeGreaterThan(1));
+  });
+
 });

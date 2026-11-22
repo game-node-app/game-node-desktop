@@ -18,7 +18,7 @@ After the provider record shape and plugin identity are agreed, scanner parsing/
 ## 3. Platform-specific build and package delivery
 
 - [x] 3.1 Update Linux development and release launchers to build and stage `gamenode-plugin-packagekit` beside the host; verify the launcher fails clearly when the executable is missing and the Linux package verifier requires a valid executable x86-64 ELF.
-- [ ] 3.2 Keep Windows development and release commands free of the Linux-only crate and reject any packagekit executable in Windows package verification; verify Windows package fixtures and the Windows cross-build/package validation pass.
+- [x] 3.2 Keep Windows development and release commands free of the Linux-only crate and reject any packagekit executable in Windows package verification; verify Windows package fixtures and the Windows cross-build/package validation pass.
 - [x] 3.3 Update plugin-build and development documentation with the Linux package layout, supported PackageKit/pacman selection, read-only discovery, `library.discovery` grant, native access, and the fact that the plugin is not sandboxed; verify every documented command and binary name matches the scripts.
 
 ## 4. Integrated candidate

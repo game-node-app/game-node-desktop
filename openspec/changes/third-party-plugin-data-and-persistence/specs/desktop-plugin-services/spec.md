@@ -71,6 +71,19 @@ A changed publisher key MUST establish a distinct identity. Old data MUST remain
 - **WHEN** the user trusts a changed publisher key
 - **THEN** old data and grants remain inaccessible to the new identity until any separate authorized migration or grant is completed
 
+#### Scenario: The user previews and confirms a migration
+- **WHEN** the user requests a preview for a re-trusted publisher identity
+- **THEN** the host reports the old and new fingerprints, the active profile, per-dataset eligible/conflicting/incompatible counts and logical sizes, private entry counts and any rows it cannot copy, without mutating data or exposing values, paths or secrets, and requires explicit confirmation bound to that profile and epoch before copying only the compatible data
+
+#### Scenario: Migration never widens access or deletes the source
+- **WHEN** a confirmed migration copies compatible private entries and durable records
+- **THEN** the original rows keep their source/version provenance and remain in place, secrets and grants are not migrated, and the new identity needs fresh sharing and retention reviews before a consumer can read the migrated data
+
+#### Scenario: A migration is rolled back
+- **WHEN** the user confirms a rollback of one completed migration
+- **THEN** only that migration's copies are removed from the new identity, the old identity's data and copies the user protected since stay, and another profile is never affected
+
+
 ### Requirement: Shared save-resource scope requires explicit review
 The host MUST bind each shared emulator save resource to the authenticated plugin, publisher and profile and its host-resolved backing handle. The host MUST resolve the complete affected game/installation set and require explicit user consent bound to that exact set, resource and revisions before creating or changing the scope.
 

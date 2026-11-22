@@ -14,8 +14,9 @@ use super::grants::PluginIdentity;
 use super::shared_data::{DurableRecord, Provenance};
 use super::sharing_policy::SharingClass;
 use gamenode_platform::plugin_shared_data::{
-    ArchiveOutcome, OwnerScope, OwnerUsage, PruneOutcome, RecordProvenance, RecordWrite,
-    SharedDataError, SharedDataStore, SharedRecord, WriteOutcome,
+    ArchiveOutcome, MigrationOutcome, MigrationRevertOutcome, MigrationSource, OwnerScope,
+    OwnerUsage, PruneOutcome, RecordProvenance, RecordWrite, SharedDataError, SharedDataStore,
+    SharedRecord, WriteOutcome,
 };
 use gamenode_plugin_protocol::proto::CommonDataCategory;
 use serde_json::Map;
@@ -185,6 +186,51 @@ impl DurableSharedPool {
             .await
     }
 
+    /// One producer's live records and the counts a publisher migration cannot copy. `None` means
+    /// this host never persisted a record; a preview never creates the pool.
+    pub(crate) async fn migration_source(
+        self: &Arc<Self>,
+        owner: OwnerScope,
+        now: i64,
+    ) -> Result<Option<MigrationSource>, Status> {
+        self.read(move |store| store.migration_source(&owner, now))
+            .await
+    }
+
+    /// Copies one old publisher identity's durable records to its re-trusted successor after a
+    /// reviewed confirmation. The source rows stay and the copies keep the original provenance.
+    /// `None` means this host never persisted a record.
+    pub(crate) async fn migrate_owner(
+        self: &Arc<Self>,
+        source: OwnerScope,
+        target: OwnerScope,
+        record_ids: Vec<String>,
+        now: i64,
+    ) -> Result<Option<MigrationOutcome>, Status> {
+        self.mutate_opened(move |store| store.migrate_records(&source, &target, &record_ids, now))
+            .await
+    }
+
+    /// Removes one migration's durable copies from the new publisher identity after a reviewed
+    /// rollback. `None` means this host never persisted a record.
+    pub(crate) async fn revert_migrated_owner(
+        self: &Arc<Self>,
+        target: OwnerScope,
+        source_publisher_fingerprint: String,
+        source_plugin_id: String,
+        now: i64,
+    ) -> Result<Option<MigrationRevertOutcome>, Status> {
+        self.mutate_opened(move |store| {
+            store.revert_migrated(
+                &target,
+                &source_publisher_fingerprint,
+                &source_plugin_id,
+                now,
+            )
+        })
+        .await
+    }
+
     /// Reclaims one producer's archived, unprotected records in a reviewed host cleanup. `None`
     /// means this host never persisted a record.
     pub(crate) async fn reclaim_archived_owner(
@@ -343,6 +389,9 @@ fn pool_status(error: SharedDataError) -> Status {
         SharedDataError::InvalidRecord => Status::invalid_argument("shared record is invalid"),
         SharedDataError::InvalidOwner => {
             Status::failed_precondition("shared-data owner scope is invalid")
+        }
+        SharedDataError::InvalidMigration => {
+            Status::failed_precondition("a publisher migration needs two different identities")
         }
         SharedDataError::StaleProfileEpoch => {
             Status::failed_precondition("shared-data owner scope is stale")

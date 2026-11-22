@@ -1180,3 +1180,350 @@ fn a_reviewed_reclaim_drops_archived_unprotected_entries_only() {
     );
     assert!(store.get("protected", 100).unwrap().is_some());
 }
+
+#[test]
+fn a_version_fourteen_store_gains_the_host_only_migration_marker() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("ns");
+    fs::create_dir_all(&dir).unwrap();
+    let conn = Connection::open(dir.join(STORE_FILE)).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE meta (id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL) STRICT;
+         INSERT INTO meta (id, revision) VALUES (1, 7);
+         CREATE TABLE entries (
+             key TEXT PRIMARY KEY,
+             value BLOB NOT NULL,
+             revision INTEGER NOT NULL CHECK (revision >= 1),
+             expires_at INTEGER,
+             last_used_at INTEGER NOT NULL DEFAULT 0,
+             user_protected INTEGER NOT NULL DEFAULT 0,
+             archived INTEGER NOT NULL DEFAULT 0
+         ) STRICT;
+         INSERT INTO entries
+             (key, value, revision, expires_at, last_used_at, user_protected, archived)
+         VALUES ('legacy', X'00', 7, NULL, 50, 0, 0);
+         PRAGMA user_version = 14;",
+    )
+    .unwrap();
+    drop(conn);
+
+    let upgraded = store(&dir);
+    assert_eq!(upgraded.get("legacy", 100).unwrap().unwrap().revision, 7);
+    assert!(upgraded.high_water().unwrap() >= 7);
+    drop(upgraded);
+
+    let reopened = store(&dir);
+    assert!(reopened.get("legacy", 100).unwrap().is_some());
+    let marker: i64 = reopened
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('entries') WHERE name = 'migrated_from'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(marker, 1);
+}
+
+#[test]
+fn migration_preview_counts_candidates_without_writing_or_creating_a_store() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let mut source = DurableStore::open(&namespace_dir(
+        root,
+        "publisher-old",
+        "org.example",
+        "profile-1",
+    ))
+    .unwrap();
+    source
+        .put("shared", b"old", 1, None, 100, QUOTA_BYTES)
+        .unwrap();
+    source
+        .put("conflict", b"old", 2, None, 100, QUOTA_BYTES)
+        .unwrap();
+    source
+        .put("expiring", b"soon", 3, Some(150), 100, QUOTA_BYTES)
+        .unwrap();
+    source
+        .put("expired", b"gone", 4, Some(50), 40, QUOTA_BYTES)
+        .unwrap();
+    drop(source);
+    let target_dir = namespace_dir(root, "publisher-new", "org.example", "profile-1");
+    let mut target = DurableStore::open(&target_dir).unwrap();
+    target
+        .put("conflict", b"new", 1, None, 100, QUOTA_BYTES)
+        .unwrap();
+    drop(target);
+
+    // Archived rows of another profile of the same plugin are reported for that profile only.
+    let mut archived = DurableStore::open(&namespace_dir(
+        root,
+        "publisher-old",
+        "org.example",
+        "profile-2",
+    ))
+    .unwrap();
+    archived
+        .put("kept", b"kept", 1, None, 100, QUOTA_BYTES)
+        .unwrap();
+    archived.archive_entries(2).unwrap();
+    drop(archived);
+
+    let preview = migration_preview(
+        root,
+        "publisher-old",
+        "org.example",
+        "profile-1",
+        "publisher-new",
+        "org.example",
+        "profile-1",
+        100,
+    )
+    .unwrap();
+    assert!(preview.source_present);
+    assert_eq!(preview.records, 3);
+    assert_eq!(preview.eligible_records, 2, "`shared` and `expiring`");
+    assert_eq!(
+        preview.eligible_bytes,
+        charge("shared", 3) + charge("expiring", 4)
+    );
+    assert_eq!(preview.conflict_records, 1);
+    assert_eq!(
+        preview.expired_records, 1,
+        "the expired pending row is not eligible"
+    );
+    assert_eq!(
+        preview.logical_bytes,
+        charge("shared", 3) + charge("conflict", 3) + charge("expiring", 4)
+    );
+    assert_eq!(preview.target_records, 1);
+    assert_eq!(preview.target_logical_bytes, charge("conflict", 3));
+    let unchanged = DurableStore::open(&target_dir).unwrap();
+    assert_eq!(unchanged.high_water().unwrap(), 1, "a preview never writes");
+    assert_eq!(unchanged.persistence_entries(100).unwrap().len(), 1);
+
+    let archived_preview = migration_preview(
+        root,
+        "publisher-old",
+        "org.example",
+        "profile-2",
+        "publisher-new",
+        "org.example",
+        "profile-2",
+        100,
+    )
+    .unwrap();
+    assert!(archived_preview.source_present);
+    assert_eq!(archived_preview.records, 0);
+    assert_eq!(archived_preview.archived_records, 1);
+    assert_eq!(archived_preview.eligible_records, 0);
+
+    let empty = migration_preview(
+        root,
+        "publisher-old",
+        "org.example",
+        "profile-3",
+        "publisher-new",
+        "org.example",
+        "profile-3",
+        100,
+    )
+    .unwrap();
+    assert!(!empty.source_present);
+    assert!(!namespace_dir(root, "publisher-new", "org.example", "profile-3").exists());
+}
+
+#[test]
+fn migration_copies_live_entries_and_keeps_source_expired_and_conflicts() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let mut source_store = DurableStore::open(&namespace_dir(
+        root,
+        "publisher-old",
+        "org.example",
+        "profile-1",
+    ))
+    .unwrap();
+    source_store
+        .put("copy", b"value", 1, None, 100, QUOTA_BYTES)
+        .unwrap();
+    source_store
+        .put("conflict", b"old", 2, None, 100, QUOTA_BYTES)
+        .unwrap();
+    source_store
+        .put("protected", b"keep", 4, None, 100, QUOTA_BYTES)
+        .unwrap();
+    source_store.set_user_protected("protected", true).unwrap();
+    // Written last so no later write's expiry sweep removes it before the migration runs.
+    source_store
+        .put("expired", b"gone", 3, Some(90), 80, QUOTA_BYTES)
+        .unwrap();
+    let mut target_store = DurableStore::open(&namespace_dir(
+        root,
+        "publisher-new",
+        "org.example",
+        "profile-1",
+    ))
+    .unwrap();
+    target_store
+        .put("conflict", b"new", 1, None, 100, QUOTA_BYTES)
+        .unwrap();
+    drop(target_store);
+
+    let outcome = migrate_namespace(
+        root,
+        "publisher-old",
+        "org.example",
+        "profile-1",
+        "publisher-new",
+        "org.example",
+        "profile-1",
+        100,
+    )
+    .unwrap();
+    assert!(outcome.source_present);
+    assert_eq!(outcome.copied_records, 2);
+    assert_eq!(outcome.conflict_records, 1);
+    assert_eq!(outcome.expired_records, 1);
+    assert_eq!(
+        outcome.copied_bytes,
+        charge("copy", 5) + charge("protected", 4)
+    );
+
+    let target = DurableStore::open(&namespace_dir(
+        root,
+        "publisher-new",
+        "org.example",
+        "profile-1",
+    ))
+    .unwrap();
+    assert_eq!(target.get("copy", 100).unwrap().unwrap().value, b"value");
+    assert_eq!(
+        target.get("protected", 100).unwrap().unwrap().value,
+        b"keep"
+    );
+    assert_eq!(
+        target.get("conflict", 100).unwrap().unwrap().value,
+        b"new",
+        "an existing key is never overwritten"
+    );
+    assert!(target.get("expired", 100).unwrap().is_none());
+    assert!(
+        target
+            .persistence_entries(100)
+            .unwrap()
+            .iter()
+            .any(|entry| entry.key == "protected" && entry.user_protected),
+        "protection follows the copied entry"
+    );
+
+    // The old namespace and another profile stay exactly as they were.
+    let source = DurableStore::open(&namespace_dir(
+        root,
+        "publisher-old",
+        "org.example",
+        "profile-1",
+    ))
+    .unwrap();
+    assert_eq!(source.get("copy", 100).unwrap().unwrap().value, b"value");
+    assert_eq!(source.get("conflict", 100).unwrap().unwrap().value, b"old");
+    assert!(source.get("expired", 100).unwrap().is_none());
+    assert!(
+        !namespace_dir(root, "publisher-new", "org.example", "profile-2").exists(),
+        "another profile is never crossed"
+    );
+
+    assert!(matches!(
+        migrate_namespace(
+            root,
+            "publisher-old",
+            "org.example",
+            "profile-1",
+            "publisher-old",
+            "org.example",
+            "profile-1",
+            100,
+        ),
+        Err(PluginStorageError::InvalidMigration)
+    ));
+}
+
+#[test]
+fn rollback_removes_only_tagged_unprotected_copies() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let mut source_store = DurableStore::open(&namespace_dir(
+        root,
+        "publisher-old",
+        "org.example",
+        "profile-1",
+    ))
+    .unwrap();
+    source_store
+        .put("plain", b"old", 1, None, 100, QUOTA_BYTES)
+        .unwrap();
+    source_store
+        .put("protected", b"old", 2, None, 100, QUOTA_BYTES)
+        .unwrap();
+    drop(source_store);
+    migrate_namespace(
+        root,
+        "publisher-old",
+        "org.example",
+        "profile-1",
+        "publisher-new",
+        "org.example",
+        "profile-1",
+        100,
+    )
+    .unwrap();
+
+    // A key the new identity wrote itself must survive a rollback, and a migrated key the user
+    // protects since then must stay too.
+    let target_dir = namespace_dir(root, "publisher-new", "org.example", "profile-1");
+    let mut target = DurableStore::open(&target_dir).unwrap();
+    target
+        .put("own", b"new", 10, None, 100, QUOTA_BYTES)
+        .unwrap();
+    assert!(target.set_user_protected("protected", true).unwrap());
+    drop(target);
+
+    let reverted = revert_migrated_namespace(
+        root,
+        "publisher-new",
+        "org.example",
+        "profile-1",
+        "publisher-old",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(reverted.removed_records, 1);
+    assert_eq!(reverted.reclaimed_bytes, charge("plain", 3));
+    assert_eq!(reverted.kept_protected_records, 1);
+
+    let target = DurableStore::open(&target_dir).unwrap();
+    assert!(target.get("plain", 100).unwrap().is_none());
+    assert!(target.get("protected", 100).unwrap().is_some());
+    assert!(target.get("own", 100).unwrap().is_some());
+    let source = DurableStore::open(&namespace_dir(
+        root,
+        "publisher-old",
+        "org.example",
+        "profile-1",
+    ))
+    .unwrap();
+    assert!(source.get("plain", 100).unwrap().is_some());
+    assert!(source.get("protected", 100).unwrap().is_some());
+    assert!(
+        revert_migrated_namespace(
+            root,
+            "publisher-new",
+            "org.example",
+            "profile-2",
+            "publisher-old",
+        )
+        .unwrap()
+        .is_none()
+    );
+}

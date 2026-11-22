@@ -462,6 +462,11 @@ pool.
   component they removed.
 - **No paths.** Replies and errors carry logical sizes, counts, limits and timestamps only. The
   physical pool file and the private plugin stores are never exposed to plugins.
+- **Publisher key change.** A changed publisher fingerprint is a new identity for both the private
+  store and the pool. Old records do not become readable and old grants do not apply. A designed
+  re-trust may be followed by a host-only, explicitly confirmed migration of compatible data; there
+  is no plugin RPC for its preview, apply or rollback, secrets and grants are never migrated, and
+  the new identity needs fresh sharing and retention reviews.
 
 ## Files
 

@@ -164,6 +164,8 @@ pub enum SharedDataError {
     StaleProfileEpoch,
     #[error("archived shared data requires an explicit host reuse decision")]
     ArchivedRecordExists,
+    #[error("a publisher migration needs two different owner scopes")]
+    InvalidMigration,
 }
 
 /// Host-resolved ownership. The opaque key is derived by the host from the authenticated plugin,
@@ -348,6 +350,75 @@ pub struct OwnerUsage {
     pub protected_records: u64,
     /// SQLite page allocation for the whole pool; shared across owners.
     pub physical_bytes_estimate: u64,
+}
+
+/// One owner's live records as a reviewed publisher migration sees them: logical metadata only,
+/// never a payload or a path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordMetadata {
+    pub record_id: String,
+    pub dataset_id: String,
+    pub resource_id: Option<String>,
+    pub class: String,
+    pub schema_id: String,
+    pub schema_version: u32,
+    pub observed_at: i64,
+    pub received_at: i64,
+    pub updated_at: i64,
+    pub expires_at: Option<i64>,
+    pub sequence: u64,
+    pub size_bytes: u64,
+    pub user_protected: bool,
+}
+
+/// Everything the old publisher identity holds in the durable pool for one migration preview.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MigrationSource {
+    /// Live, unexpired records; archived and expired rows are only counted.
+    pub records: Vec<RecordMetadata>,
+    pub expired_records: u64,
+    pub archived_records: u64,
+    pub logical_bytes: u64,
+}
+
+/// One record copied into the new publisher identity. Provenance keeps the original source.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MigratedRecord {
+    pub source_record_id: String,
+    pub record_id: String,
+    pub dataset_id: String,
+    pub resource_id: Option<String>,
+    pub schema_id: String,
+    pub schema_version: u32,
+    pub size_bytes: u64,
+}
+
+/// Why one candidate record was not copied. Nothing changed for it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MigrationSkip {
+    pub source_record_id: String,
+    pub dataset_id: String,
+    pub resource_id: Option<String>,
+    /// `conflict` or `over_quota`.
+    pub reason: String,
+}
+
+/// The result of copying one old publisher identity's records to its successor.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MigrationOutcome {
+    pub copied: Vec<MigratedRecord>,
+    pub skipped: Vec<MigrationSkip>,
+    pub pool_revision: u64,
+}
+
+/// The result of removing one migration's copies. The old identity's rows stay.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MigrationRevertOutcome {
+    pub removed_records: u64,
+    pub reclaimed_bytes: u64,
+    /// Copies the user protected since the migration; rollback keeps them.
+    pub kept_protected_records: u64,
+    pub pool_revision: u64,
 }
 
 /// The host-owned durable public pool.
@@ -801,6 +872,178 @@ impl SharedDataStore {
         Ok(PruneOutcome {
             removed_records: 0,
             reclaimed_bytes: 0,
+            pool_revision,
+        })
+    }
+
+    /// Reads one owner's live records and the counts of rows that a migration cannot copy, without
+    /// loading or disclosing a payload. Host-only: the caller binds the owner from authenticated
+    /// identity. Blocking: call this on the storage worker.
+    pub fn migration_source(
+        &self,
+        owner: &OwnerScope,
+        now: i64,
+    ) -> Result<MigrationSource, SharedDataError> {
+        validate_now(now)?;
+        check_owner(&self.conn, owner, now, false)?;
+        let (expired_records, archived_records, logical_bytes): (i64, i64, i64) =
+            self.conn.query_row(
+                "SELECT
+                     COALESCE(SUM(CASE WHEN archived = 0 AND expires_at IS NOT NULL
+                                        AND expires_at <= ?2 THEN 1 ELSE 0 END), 0),
+                     COALESCE(SUM(CASE WHEN archived = 1 THEN 1 ELSE 0 END), 0),
+                     COALESCE(SUM(CASE WHEN archived = 0
+                                        AND (expires_at IS NULL OR expires_at > ?2)
+                                   THEN logical_bytes ELSE 0 END), 0)
+                 FROM shared_records WHERE owner_key = ?1",
+                params![owner.key(), now],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+        let mut statement = self.conn.prepare(&format!(
+            "SELECT {RECORD_COLUMNS} FROM shared_records
+             WHERE owner_key = ?1 AND archived = 0
+               AND (expires_at IS NULL OR expires_at > ?2)
+             ORDER BY dataset_id ASC, received_at ASC, record_id ASC"
+        ))?;
+        let records = statement
+            .query_map(params![owner.key(), now], record_from)?
+            .map(|record| record.map(metadata_from))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(MigrationSource {
+            records,
+            expired_records: expired_records.max(0) as u64,
+            archived_records: archived_records.max(0) as u64,
+            logical_bytes: logical_bytes.max(0) as u64,
+        })
+    }
+
+    /// Copies one owner's live records to another owner after a reviewed publisher re-trust.
+    ///
+    /// This is the host's migration, never a plugin route. Provenance keeps the original source
+    /// identity and package version, and the old owner's rows stay untouched. A record whose
+    /// dataset and resource already exist on the new owner is skipped as a conflict, and a record
+    /// that would exceed the new owner's byte limit is skipped as over quota; neither changes
+    /// anything. One transaction covers every copy. Blocking: call this on the storage worker.
+    pub fn migrate_records(
+        &mut self,
+        source: &OwnerScope,
+        target: &OwnerScope,
+        record_ids: &[String],
+        now: i64,
+    ) -> Result<MigrationOutcome, SharedDataError> {
+        validate_now(now)?;
+        if source.key() == target.key() {
+            return Err(SharedDataError::InvalidMigration);
+        }
+        let selected: std::collections::BTreeSet<&str> =
+            record_ids.iter().map(String::as_str).collect();
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let records = records_for_owner(&tx, source, now)?
+            .into_iter()
+            .filter(|record| selected.contains(record.record_id.as_str()))
+            .collect::<Vec<_>>();
+        let max_bytes = effective_max_bytes(retention_policy(&tx, target)?);
+        let mut usage = usage_excluding(&tx, target, now, None)?;
+        // Creating the successor owner row only happens on the confirmed mutation.
+        check_owner(&tx, target, now, true)?;
+        let mut outcome = MigrationOutcome {
+            copied: Vec::new(),
+            skipped: Vec::new(),
+            pool_revision: 0,
+        };
+        for record in records {
+            if record.resource_id.is_some() && resource_exists(&tx, target, &record)? {
+                outcome.skipped.push(MigrationSkip {
+                    source_record_id: record.record_id,
+                    dataset_id: record.dataset_id,
+                    resource_id: record.resource_id,
+                    reason: "conflict".to_owned(),
+                });
+                continue;
+            }
+            if usage.saturating_add(record.size_bytes) > max_bytes {
+                outcome.skipped.push(MigrationSkip {
+                    source_record_id: record.record_id,
+                    dataset_id: record.dataset_id,
+                    resource_id: record.resource_id,
+                    reason: "over_quota".to_owned(),
+                });
+                continue;
+            }
+            let pool_revision = advance_pool(&tx)?;
+            let record_id = format!("durable-{pool_revision:016x}");
+            insert_migrated_record(&tx, target, &record_id, &record, pool_revision, now)?;
+            usage = usage.saturating_add(record.size_bytes);
+            outcome.copied.push(MigratedRecord {
+                source_record_id: record.record_id,
+                record_id,
+                dataset_id: record.dataset_id,
+                resource_id: record.resource_id,
+                schema_id: record.schema_id,
+                schema_version: record.schema_version,
+                size_bytes: record.size_bytes,
+            });
+            outcome.pool_revision = pool_revision;
+        }
+        if outcome.pool_revision == 0 {
+            outcome.pool_revision = current_pool_revision(&tx)?;
+        }
+        tx.commit()?;
+        Ok(outcome)
+    }
+
+    /// Removes one migration's copies from the new publisher identity after a reviewed rollback.
+    ///
+    /// A copy is identified by the original provenance the migration preserved, so the new
+    /// identity's own publications are never touched, and the old identity's rows are never
+    /// touched either. A copy the user protected since the migration stays. Blocking: call this on
+    /// the storage worker.
+    pub fn revert_migrated(
+        &mut self,
+        target: &OwnerScope,
+        source_publisher_fingerprint: &str,
+        source_plugin_id: &str,
+        now: i64,
+    ) -> Result<MigrationRevertOutcome, SharedDataError> {
+        validate_now(now)?;
+        validate_text(source_publisher_fingerprint, MAX_IDENTIFIER_BYTES)?;
+        validate_text(source_plugin_id, MAX_IDENTIFIER_BYTES)?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        check_owner(&tx, target, now, false)?;
+        let (records, bytes): (i64, i64) = tx.query_row(
+            "SELECT COUNT(*), COALESCE(SUM(logical_bytes), 0) FROM shared_records
+             WHERE owner_key = ?1 AND source_publisher_fingerprint = ?2
+               AND source_plugin_id = ?3 AND user_protected = 0",
+            params![target.key(), source_publisher_fingerprint, source_plugin_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let removed = tx.execute(
+            "DELETE FROM shared_records
+             WHERE owner_key = ?1 AND source_publisher_fingerprint = ?2
+               AND source_plugin_id = ?3 AND user_protected = 0",
+            params![target.key(), source_publisher_fingerprint, source_plugin_id],
+        )? as u64;
+        let kept: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM shared_records
+             WHERE owner_key = ?1 AND source_publisher_fingerprint = ?2
+               AND source_plugin_id = ?3 AND user_protected = 1",
+            params![target.key(), source_publisher_fingerprint, source_plugin_id],
+            |row| row.get(0),
+        )?;
+        let pool_revision = if removed > 0 {
+            advance_pool(&tx)?
+        } else {
+            current_pool_revision(&tx)?
+        };
+        tx.commit()?;
+        Ok(MigrationRevertOutcome {
+            removed_records: records.max(0) as u64,
+            reclaimed_bytes: bytes.max(0) as u64,
+            kept_protected_records: kept.max(0) as u64,
             pool_revision,
         })
     }
@@ -1326,6 +1569,108 @@ fn record_by_id(
             record_from,
         )
         .optional()?)
+}
+
+fn metadata_from(record: SharedRecord) -> RecordMetadata {
+    RecordMetadata {
+        record_id: record.record_id,
+        dataset_id: record.dataset_id,
+        resource_id: record.resource_id,
+        class: record.class,
+        schema_id: record.schema_id,
+        schema_version: record.schema_version,
+        observed_at: record.observed_at,
+        received_at: record.received_at,
+        updated_at: record.updated_at,
+        expires_at: record.expires_at,
+        sequence: record.sequence,
+        size_bytes: record.size_bytes,
+        user_protected: record.user_protected,
+    }
+}
+
+fn records_for_owner(
+    conn: &Connection,
+    owner: &OwnerScope,
+    now: i64,
+) -> Result<Vec<SharedRecord>, SharedDataError> {
+    let mut statement = conn.prepare(&format!(
+        "SELECT {RECORD_COLUMNS} FROM shared_records
+         WHERE owner_key = ?1 AND archived = 0
+           AND (expires_at IS NULL OR expires_at > ?2)
+         ORDER BY dataset_id ASC, received_at ASC, record_id ASC"
+    ))?;
+    let records = statement
+        .query_map(params![owner.key(), now], record_from)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(records)
+}
+
+fn resource_exists(
+    conn: &Connection,
+    target: &OwnerScope,
+    record: &SharedRecord,
+) -> Result<bool, SharedDataError> {
+    let Some(resource_id) = record.resource_id.as_deref() else {
+        return Ok(false);
+    };
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM shared_records
+         WHERE owner_key = ?1 AND dataset_id = ?2 AND resource_id = ?3)",
+        params![target.key(), record.dataset_id, resource_id],
+        |row| row.get(0),
+    )?)
+}
+
+/// Inserts one copied record under the new owner with a new host record id, its own initial
+/// revision and the original provenance and observation metadata.
+fn insert_migrated_record(
+    conn: &Connection,
+    target: &OwnerScope,
+    record_id: &str,
+    record: &SharedRecord,
+    pool_revision: u64,
+    now: i64,
+) -> Result<(), SharedDataError> {
+    conn.execute(
+        "INSERT INTO shared_records
+             (record_id, owner_key, dataset_id, resource_id, category, class,
+              schema_id, schema_version, fields_json, opaque_payload,
+              source_plugin_id, source_publisher_fingerprint, source_profile_id,
+              declared_developer, origin, package_version, package_digest,
+              observed_at, received_at, updated_at, expires_at, sequence,
+              source_observation_id, revision, pool_revision, logical_bytes,
+              user_protected, archived)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
+                 ?17, ?18, ?19, ?19, ?20, ?21, ?22, 1, ?23, ?24, 0, 0)",
+        params![
+            record_id,
+            target.key(),
+            record.dataset_id,
+            record.resource_id,
+            record.category,
+            record.class,
+            record.schema_id,
+            i64::from(record.schema_version),
+            record.fields_json,
+            record.opaque_payload,
+            record.provenance.source_plugin_id,
+            record.provenance.source_publisher_fingerprint,
+            record.provenance.source_profile_id,
+            record.provenance.declared_developer,
+            record.provenance.origin,
+            record.provenance.package_version,
+            record.provenance.package_digest,
+            record.observed_at,
+            now,
+            record.expires_at,
+            record.sequence as i64,
+            record.source_observation_id,
+            pool_revision as i64,
+            record.size_bytes as i64,
+        ],
+    )?;
+    Ok(())
 }
 
 fn record_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<SharedRecord> {

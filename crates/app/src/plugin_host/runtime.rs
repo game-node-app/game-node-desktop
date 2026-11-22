@@ -263,6 +263,8 @@ pub struct ThirdPartyPluginLifecycle {
     private_storage: Mutex<Option<Arc<super::storage::PluginStorage>>>,
     /// Single-use host-wide cleanup reviews.
     cleanup_reviews: super::cleanup::CleanupReviews,
+    /// Single-use reviewed publisher-migration previews.
+    migration_reviews: super::migration::MigrationReviews,
     #[cfg(test)]
     sharing_commit_hook: Mutex<Option<SharingCommitHook>>,
     #[cfg(test)]
@@ -345,6 +347,7 @@ impl ThirdPartyPluginLifecycle {
             mutation: tokio::sync::Mutex::new(()),
             private_storage: Mutex::new(None),
             cleanup_reviews: super::cleanup::CleanupReviews::default(),
+            migration_reviews: super::migration::MigrationReviews::default(),
             #[cfg(test)]
             sharing_commit_hook: Mutex::new(None),
             #[cfg(test)]
@@ -376,6 +379,16 @@ impl ThirdPartyPluginLifecycle {
     /// The issued host-wide cleanup reviews; single-use and bound to the active profile.
     pub(crate) fn cleanup_reviews(&self) -> &super::cleanup::CleanupReviews {
         &self.cleanup_reviews
+    }
+
+    /// The issued publisher-migration previews; single-use and bound to the active profile.
+    pub(crate) fn migration_reviews(&self) -> &super::migration::MigrationReviews {
+        &self.migration_reviews
+    }
+
+    /// The private trust directory, read by the reviewed migration preview for publisher history.
+    pub(crate) fn trust_dir(&self) -> std::path::PathBuf {
+        self.state.trust_dir()
     }
 
     pub async fn enabled(&self, plugin_id: String) -> Result<bool, Status> {

@@ -333,6 +333,108 @@ impl PluginStorage {
         .await
     }
 
+    /// Host-only preview of a reviewed publisher migration: what the old identity's private
+    /// namespace could hand to its re-trusted successor. `None` means this host has no private
+    /// data folder. Nothing is created or changed.
+    pub async fn publisher_migration_preview(
+        &self,
+        source: &ExternalNamespaceResolver,
+        target: &ExternalNamespaceResolver,
+    ) -> Result<Option<durable::PrivateMigrationPreview>, Status> {
+        let Some(root) = self.root.clone() else {
+            return Ok(None);
+        };
+        let source = source.identity().clone();
+        let target = target.identity().clone();
+        let now = (self.clock)();
+        tokio::task::spawn_blocking(move || {
+            durable::migration_preview(
+                &root,
+                &source.publisher_fingerprint,
+                &source.plugin_id,
+                &source.profile_id,
+                &target.publisher_fingerprint,
+                &target.plugin_id,
+                &target.profile_id,
+                now,
+            )
+        })
+        .await
+        .map_err(|_| Status::unavailable("plugin storage is unavailable"))?
+        .map(Some)
+        .map_err(storage_status)
+    }
+
+    /// Host-only copy of one old publisher identity's private entries to its re-trusted successor.
+    /// The source keeps every entry, conflicts and expired rows are reported instead of copied, and
+    /// the target's cached namespace is dropped so a live session reopens the migrated file.
+    pub async fn migrate_publisher_data(
+        &self,
+        source: &ExternalNamespaceResolver,
+        target: &ExternalNamespaceResolver,
+    ) -> Result<durable::PrivateMigrationOutcome, Status> {
+        let Some(root) = self.root.clone() else {
+            return Err(Status::failed_precondition(
+                "private plugin data is unavailable on this host",
+            ));
+        };
+        let source = source.identity().clone();
+        let target_identity = target.identity().clone();
+        let target_owner = *target.storage_owner().key();
+        let now = (self.clock)();
+        let outcome = tokio::task::spawn_blocking(move || {
+            durable::migrate_namespace(
+                &root,
+                &source.publisher_fingerprint,
+                &source.plugin_id,
+                &source.profile_id,
+                &target_identity.publisher_fingerprint,
+                &target_identity.plugin_id,
+                &target_identity.profile_id,
+                now,
+            )
+        })
+        .await
+        .map_err(|_| Status::unavailable("plugin storage is unavailable"))?
+        .map_err(storage_status)?;
+        self.namespaces
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&target_owner);
+        Ok(outcome)
+    }
+
+    /// Host-only rollback of one publisher migration's private copies. Only entries tagged with the
+    /// old fingerprint are removed; the old identity's namespace and later plugin writes stay.
+    pub async fn revert_publisher_migration(
+        &self,
+        target: &ExternalNamespaceResolver,
+        source_publisher_fingerprint: String,
+    ) -> Result<Option<durable::PrivateMigrationRevert>, Status> {
+        let Some(root) = self.root.clone() else {
+            return Ok(None);
+        };
+        let target_identity = target.identity().clone();
+        let target_owner = *target.storage_owner().key();
+        let outcome = tokio::task::spawn_blocking(move || {
+            durable::revert_migrated_namespace(
+                &root,
+                &target_identity.publisher_fingerprint,
+                &target_identity.plugin_id,
+                &target_identity.profile_id,
+                &source_publisher_fingerprint,
+            )
+        })
+        .await
+        .map_err(|_| Status::unavailable("plugin storage is unavailable"))?
+        .map_err(storage_status)?;
+        self.namespaces
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&target_owner);
+        Ok(outcome)
+    }
+
     /// Host-only: deletes one plugin/profile private namespace directory and reports the logical
     /// bytes it held. Another profile, plugin, publisher, game file or backup archive is never
     /// touched. The namespace slot is evicted and its cached connection closed first.
@@ -489,6 +591,9 @@ fn storage_status(error: PluginStorageError) -> Status {
         PluginStorageError::Archived => Status::failed_precondition(
             "archived plugin data requires a reviewed reuse before it can be read or replaced",
         ),
+        PluginStorageError::InvalidMigration => {
+            Status::failed_precondition("a publisher migration needs two different identities")
+        }
         other => unavailable(other),
     }
 }

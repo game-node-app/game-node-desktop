@@ -285,6 +285,48 @@ The host-wide path does not weaken automatic retention: each namespace still
 applies its own policy, and a cleanup only acts on an owner the user selected and
 confirmed.
 
+### Publisher key change and reviewed data migration
+
+A changed publisher key is a new identity: the private store directory, the
+durable pool owner and the secret slots all derive from the publisher
+fingerprint, so the new key cannot read the old data and old grants do not apply.
+The re-trust record keeps the replaced fingerprint (bounded, oldest first) for a
+reviewed migration; a prior key is never trusted again automatically.
+
+`plugin_publisher_migration_preview` is host administration, not a plugin RPC.
+It reads only logical metadata and returns the plugin, old/new fingerprints and
+every earlier fingerprint, the active profile and epoch, and per-dataset
+eligible/conflicting/incompatible-schema counts and logical bytes, plus private
+entry counts, expired/archived rows and what the new identity already holds. It
+never returns a value, a physical path, a raw owner key or secret material, and
+it creates or changes nothing. The single-use token is bound to that identity,
+profile and epoch.
+
+A durable record is compatible when the new active package declares its
+`schema_id` at the record's version or newer. An undeclared schema stays
+compatible when the host serves that dataset or the schema belongs to the
+plugin's own reverse-domain namespace; a foreign or newer-version schema is
+reported instead of copied. Private key/value entries are opaque and eligible
+when live and unexpired.
+
+`plugin_publisher_migration_apply` requires `confirmed: true`, the token and the
+expected profile id. Each store is copied in one transaction: private entries and
+durable records keep the original provenance/version, the old owner's rows stay,
+an existing target key or dataset/resource is reported as a conflict, and the
+report separates conflicts, over-quota skips and incompatible schemas. A partial
+failure is returned per store (`private_persistence`, `durable_shared`) and still
+consumes the review. Secrets, activation grants, sharing policies and retention
+limits are never copied; the new identity needs its own current sharing and
+retention reviews, and a reinstall or consumer cannot see the migrated data
+through an old grant.
+
+`plugin_publisher_migration_cancel` drops a preview without changing data.
+`plugin_publisher_migration_rollback` removes only that migration's copies: the
+private store tags them with the old fingerprint and the durable pool recognizes
+the preserved old provenance. The old identity's data stays, copies the user
+protected since stay, and another profile is never touched. Settings screens for
+this review belong to task 1.19.
+
 ### Other reserved routes
 
 The remaining writes and reads in this table are `UNIMPLEMENTED`. Grants and

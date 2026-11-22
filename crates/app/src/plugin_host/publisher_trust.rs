@@ -20,6 +20,9 @@ use thiserror::Error;
 
 const FILE_NAME: &str = "publisher-keys.json";
 const MAX_STORE_BYTES: u64 = 1024 * 1024;
+/// How many replaced fingerprints one plugin's trust entry remembers for a reviewed data
+/// migration. The oldest are dropped first.
+const MAX_PRIOR_FINGERPRINTS: usize = 8;
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Error)]
@@ -65,6 +68,11 @@ struct StoreFile {
 #[serde(deny_unknown_fields)]
 struct PinnedPublisher {
     fingerprint: String,
+    /// Fingerprints this plugin was pinned to before the current one. Re-trust records the key it
+    /// replaced so the host can offer a reviewed data migration from the old identity. Schema 1
+    /// entries have no history.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    prior_fingerprints: Vec<String>,
 }
 
 /// Durable map from external plugin IDs to user-pinned Ed25519 key fingerprints.
@@ -98,14 +106,19 @@ impl PublisherTrustStore {
                 }
                 let document: StoreFile = serde_json::from_slice(&bytes)
                     .map_err(|error| TrustStoreError::InvalidStore(error.to_string()))?;
-                if document.schema != 1 {
+                if !(1..=2).contains(&document.schema) {
                     return Err(TrustStoreError::InvalidStore(
                         "unsupported schema version".into(),
                     ));
                 }
                 for (plugin_id, publisher) in &document.publishers {
                     validate_plugin_id(plugin_id)?;
-                    if !is_fingerprint(&publisher.fingerprint) {
+                    if !is_fingerprint(&publisher.fingerprint)
+                        || publisher
+                            .prior_fingerprints
+                            .iter()
+                            .any(|prior| !is_fingerprint(prior))
+                    {
                         return Err(TrustStoreError::InvalidStore(
                             "malformed publisher fingerprint".into(),
                         ));
@@ -166,6 +179,7 @@ impl PublisherTrustStore {
             plugin_id.to_owned(),
             PinnedPublisher {
                 fingerprint: candidate.clone(),
+                prior_fingerprints: Vec::new(),
             },
         );
         self.persist(&next)?;
@@ -173,7 +187,8 @@ impl PublisherTrustStore {
         Ok(candidate)
     }
 
-    /// Replaces a pinned key only after explicit confirmation of its new fingerprint.
+    /// Replaces a pinned key only after explicit confirmation of its new fingerprint. The key it
+    /// replaces is remembered for a reviewed data migration, never trusted automatically.
     pub fn retrust_key(
         &mut self,
         plugin_id: &str,
@@ -182,9 +197,9 @@ impl PublisherTrustStore {
     ) -> Result<String, TrustStoreError> {
         validate_plugin_id(plugin_id)?;
         let candidate = fingerprint(public_key)?;
-        if !self.publishers.contains_key(plugin_id) {
+        let Some(previous) = self.publishers.get(plugin_id) else {
             return Err(TrustStoreError::ConfirmationRequired);
-        }
+        };
         if !constant_time_eq(candidate.as_bytes(), confirmed_new_fingerprint.as_bytes()) {
             return Err(TrustStoreError::FingerprintMismatch);
         }
@@ -193,6 +208,7 @@ impl PublisherTrustStore {
             plugin_id.to_owned(),
             PinnedPublisher {
                 fingerprint: candidate.clone(),
+                prior_fingerprints: remember_prior(previous, &candidate),
             },
         );
         self.persist(&next)?;
@@ -220,16 +236,30 @@ impl PublisherTrustStore {
         let mut next = self.publishers.clone();
         for plugin_id in plugin_ids {
             validate_plugin_id(plugin_id)?;
+            let prior_fingerprints = next
+                .get(plugin_id)
+                .map(|previous| remember_prior(previous, &candidate))
+                .unwrap_or_default();
             next.insert(
                 plugin_id.clone(),
                 PinnedPublisher {
                     fingerprint: candidate.clone(),
+                    prior_fingerprints,
                 },
             );
         }
         self.persist(&next)?;
         self.publishers = next;
         Ok(candidate)
+    }
+
+    /// Fingerprints the plugin was pinned to before its current key, oldest first. The host uses
+    /// this only to offer a reviewed data migration; a prior key is never trusted automatically.
+    pub fn prior_fingerprints(&self, plugin_id: &str) -> Vec<String> {
+        self.publishers
+            .get(plugin_id)
+            .map(|publisher| publisher.prior_fingerprints.clone())
+            .unwrap_or_default()
     }
 
     /// Returns whether a candidate key is exactly the key the user approved.
@@ -250,7 +280,7 @@ impl PublisherTrustStore {
             .ok_or_else(|| TrustStoreError::InvalidStore("store has no parent directory".into()))?;
         ensure_private_dir(parent)?;
         let data = serde_json::to_vec(&StoreFile {
-            schema: 1,
+            schema: 2,
             publishers: publishers.clone(),
         })
         .map_err(|error| TrustStoreError::InvalidStore(error.to_string()))?;
@@ -291,6 +321,19 @@ impl PublisherTrustStore {
         ensure_private_file(&self.path)?;
         Ok(())
     }
+}
+
+fn remember_prior(previous: &PinnedPublisher, new_fingerprint: &str) -> Vec<String> {
+    let mut prior = previous.prior_fingerprints.clone();
+    if !prior.contains(&previous.fingerprint) {
+        prior.push(previous.fingerprint.clone());
+    }
+    prior.retain(|fingerprint| fingerprint != new_fingerprint);
+    if prior.len() > MAX_PRIOR_FINGERPRINTS {
+        let excess = prior.len() - MAX_PRIOR_FINGERPRINTS;
+        prior.drain(0..excess);
+    }
+    prior
 }
 
 fn fingerprint(public_key: &[u8]) -> Result<String, TrustStoreError> {
@@ -514,6 +557,74 @@ mod tests {
             .unwrap();
         assert!(store.is_pinned("org.example.plugin", &new).unwrap());
         assert!(!store.is_pinned("org.example.plugin", &old).unwrap());
+        assert_eq!(
+            store.prior_fingerprints("org.example.plugin"),
+            vec![old_fingerprint.clone()]
+        );
+        drop(store);
+
+        // The replaced key is remembered across reopening so a reviewed migration can be offered.
+        let store = PublisherTrustStore::open(directory.path()).unwrap();
+        assert_eq!(
+            store.prior_fingerprints("org.example.plugin"),
+            vec![old_fingerprint.clone()]
+        );
+        assert!(store.prior_fingerprints("org.example.unknown").is_empty());
+        assert_eq!(
+            store.inspect("org.example.plugin", &new).unwrap(),
+            KeyStatus::Trusted {
+                fingerprint: new_fingerprint,
+            }
+        );
+    }
+
+    #[test]
+    fn a_schema_one_store_still_loads_without_migration_history() {
+        let directory = tempdir().unwrap();
+        let key = [3; 32];
+        let fingerprint = key_fingerprint(&key);
+        fs::write(
+            directory.path().join(FILE_NAME),
+            format!(r#"{{"schema":1,"publishers":{{"org.example.plugin":{{"fingerprint":"{fingerprint}"}}}}}}"#),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(
+                directory.path().join(FILE_NAME),
+                fs::Permissions::from_mode(0o600),
+            )
+            .unwrap();
+        }
+        let store = PublisherTrustStore::open(directory.path()).unwrap();
+        assert!(store.is_pinned("org.example.plugin", &key).unwrap());
+        assert!(store.prior_fingerprints("org.example.plugin").is_empty());
+    }
+
+    #[test]
+    fn repeated_retrust_keeps_a_bounded_oldest_first_history() {
+        let directory = tempdir().unwrap();
+        let mut store = PublisherTrustStore::open(directory.path()).unwrap();
+        let first = [1; 32];
+        let first_fingerprint = key_fingerprint(&first);
+        store
+            .confirm_first_key("org.example.plugin", &first, &first_fingerprint)
+            .unwrap();
+        let mut previous = first;
+        let mut expected = Vec::new();
+        for byte in 2..=11u8 {
+            let next = [byte; 32];
+            store
+                .retrust_key("org.example.plugin", &next, &key_fingerprint(&next))
+                .unwrap();
+            expected.push(key_fingerprint(&previous));
+            previous = next;
+        }
+        let history = store.prior_fingerprints("org.example.plugin");
+        assert_eq!(history.len(), MAX_PRIOR_FINGERPRINTS);
+        assert_eq!(history, expected[expected.len() - MAX_PRIOR_FINGERPRINTS..]);
+        assert!(!history.contains(&key_fingerprint(&previous)));
     }
 
     #[test]

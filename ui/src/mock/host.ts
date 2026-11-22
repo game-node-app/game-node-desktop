@@ -1115,6 +1115,89 @@ function createVariantRows(): Row[] {
   ];
 }
 
+/**
+ * The third-party provider of the plugin lifecycle fixture (`?plugins=lifecycle`).
+ * The library name is the store shortcut label; the plugin manifest name is longer.
+ */
+export const MOCK_LIFECYCLE_PROVIDER = {
+  id: 'dolphin',
+  name: 'Dolphin',
+} satisfies ProviderRef;
+export const MOCK_LIFECYCLE_PLUGIN_ID = 'org.example.dolphin';
+export const MOCK_LIFECYCLE_PLUGIN_NAME = 'Dolphin GameCube and Wii';
+
+/**
+ * Two emulator records on the first install and a third after the reinstall, so a live
+ * rescan changes the store count instead of restoring a cached number.
+ */
+function createLifecycleRows(includeReinstalled: boolean): Row[] {
+  const rows: Row[] = [
+    {
+      key: 'dolphin:pikmin',
+      title: 'Pikmin',
+      detectedName: 'Pikmin',
+      matchedName: 'Pikmin',
+      provider: MOCK_LIFECYCLE_PROVIDER.id,
+      providerName: MOCK_LIFECYCLE_PROVIDER.name,
+      installed: true,
+      owned: false,
+      shared: false,
+      running: false,
+      status: { matched: { gameId: 400, source: 'automatic' } },
+      coverFile: 'mock-4.svg',
+      playtime: { seconds: 2 * 3600, source: 'internal', lastPlayedAt: NOW - 3 * DAY },
+      releaseYear: 2001,
+      addedAt: NOW - 6 * DAY,
+      isFavorite: false,
+      hidden: false,
+      gamenode: null,
+    },
+    {
+      key: 'dolphin:metroid',
+      title: 'Metroid Prime',
+      detectedName: 'Metroid Prime',
+      matchedName: 'Metroid Prime',
+      provider: MOCK_LIFECYCLE_PROVIDER.id,
+      providerName: MOCK_LIFECYCLE_PROVIDER.name,
+      installed: true,
+      owned: false,
+      shared: false,
+      running: false,
+      status: { matched: { gameId: 410, source: 'automatic' } },
+      coverFile: 'mock-2.svg',
+      playtime: { seconds: 90 * 60, source: 'internal', lastPlayedAt: null },
+      releaseYear: 2002,
+      addedAt: NOW - 7 * DAY,
+      isFavorite: false,
+      hidden: false,
+      gamenode: null,
+    },
+  ];
+  if (includeReinstalled) {
+    rows.push({
+      key: 'dolphin:fzero',
+      title: 'F-Zero GX',
+      detectedName: 'F-Zero GX',
+      matchedName: 'F-Zero GX',
+      provider: MOCK_LIFECYCLE_PROVIDER.id,
+      providerName: MOCK_LIFECYCLE_PROVIDER.name,
+      installed: true,
+      owned: false,
+      shared: false,
+      running: false,
+      status: { matched: { gameId: 420, source: 'automatic' } },
+      coverFile: 'mock-9.svg',
+      playtime: { seconds: 45 * 60, source: 'internal', lastPlayedAt: NOW - DAY },
+      releaseYear: 2003,
+      addedAt: NOW - 2 * DAY,
+      isFavorite: false,
+      hidden: false,
+      gamenode: null,
+    });
+  }
+  return rows;
+}
+
 /** The tracking conflict behind the DRM-free `?claim=1` fixture. */
 function applyClaimFixture(local: Snapshot['localGames']) {
   local.pendingClaim = {
@@ -1938,6 +2021,8 @@ export function createMockHost(options: {
   syncFirstRun?: boolean;
   /** What the mock executable picker does: accept a file, cancel, report a failure, or reject a path outside the game folder. */
   toolPick?: 'accept' | 'cancel' | 'fail' | 'outside';
+  /** A signed third-party provider whose install, enable, disable, remove and reinstall are live. */
+  pluginLifecycle?: boolean;
 } = {}) {
   const listeners = new Set<Listener>();
   const progressListeners = new Set<ProgressListener>();
@@ -2080,7 +2165,13 @@ export function createMockHost(options: {
   });
   const mockBundlePublisher = `SHA256:${'ef'.repeat(32)}`;
   const mockPluginEnabled = new Map<string, boolean>();
-  let mockBundleInstalled = true;
+  // A bundle fixture would duplicate the lifecycle plugin's Dolphin card and name.
+  let mockBundleInstalled = options.pluginLifecycle !== true;
+  /** The live signed-provider fixture: installed, enabled and scanned into the library. */
+  let lifecycleInstalled = options.pluginLifecycle === true;
+  let lifecycleEnabled = true;
+  let lifecycleExtraRow = false;
+  let lifecycleAccountingEnabled = true;
   let mockBundleVersion = '0.2.0';
   let mockBundleRollbackVersion: string | undefined;
   let mockBundleUpdateReview: BundleUpdateReview | undefined;
@@ -2170,6 +2261,22 @@ export function createMockHost(options: {
       bundleComponents: components,
     };
   };
+  /** The signed provider card whose lifecycle follows the live library in this fixture. */
+  const mockLifecyclePlugin = (): PluginInfo => ({
+    providerId: MOCK_LIFECYCLE_PROVIDER.id,
+    pluginId: MOCK_LIFECYCLE_PLUGIN_ID,
+    pluginKind: 'provider',
+    name: MOCK_LIFECYCLE_PLUGIN_NAME,
+    version: '0.1.0',
+    source: 'community',
+    status: lifecycleEnabled ? 'installed' : 'unavailable',
+    capabilities: ['provider.context.read', 'library.discovery', 'storage.persist'],
+    session: lifecycleEnabled ? 'active' : 'stopped',
+    enabled: lifecycleEnabled,
+    runtimeAvailable: true,
+    publisherFingerprint: mockBundlePublisher,
+    nativeAccess: ['files'],
+  });
   const mockBundleReview = (): PluginBundleImportReview => ({
     token: 'mock-bundle-review',
     bundle: {
@@ -2371,10 +2478,14 @@ export function createMockHost(options: {
   const epicEnabled = platform !== 'linux';
   // The manual provider only exists in the comprehensive fixture; the default store list stays
   // at the three stores so its counts and sidebar are unchanged.
-  const queryProviders: ProviderRef[] = options.variantLibrary
-    ? [...MOCK_PROVIDERS, { id: 'manual', name: 'DRM-free' }]
-    : MOCK_PROVIDERS;
-  const baseRows = options.firstRun || options.emptyLibrary
+  // Mutable because an accepted uninstall drops a provider from the running library and a
+  // reinstall adds it back while the same snapshot consumer stays mounted.
+  let queryProviders: ProviderRef[] = options.pluginLifecycle
+    ? [...MOCK_PROVIDERS, MOCK_LIFECYCLE_PROVIDER]
+    : options.variantLibrary
+      ? [...MOCK_PROVIDERS, { id: 'manual', name: 'DRM-free' }]
+      : MOCK_PROVIDERS;
+  const standardRows: Row[] = options.firstRun || options.emptyLibrary
     ? []
     : options.largeLibrary
       ? createLargeLibraryRows()
@@ -2383,6 +2494,9 @@ export function createMockHost(options: {
         : options.noInstalledLibrary
           ? allRows.map((row) => ({ ...row, installed: false }))
           : allRows;
+  const baseRows = options.pluginLifecycle
+    ? [...standardRows, ...createLifecycleRows(false)]
+    : standardRows;
   const initialScope: LibraryScope = options.noInstalledLibrary ? 'installed' : 'all';
   let rows = structuredClone(baseRows);
   /** The match dialog's complete answer, before the mock's platform narrowing. */
@@ -2520,6 +2634,13 @@ export function createMockHost(options: {
     for (const provider of storeIds) {
       if (scenarios[provider] === 'notConnected') {
         next = installedOnlyRows(next, provider);
+      }
+    }
+    if (options.pluginLifecycle) {
+      // The account cache may be replayed while signing in; keep the live provider state.
+      next = next.filter((row) => row.provider !== MOCK_LIFECYCLE_PROVIDER.id);
+      if (lifecycleInstalled) {
+        next.push(...structuredClone(createLifecycleRows(lifecycleExtraRow)));
       }
     }
     return next;
@@ -4771,13 +4892,69 @@ export function createMockHost(options: {
             nativeAccess: ['files', 'process', 'dbus'],
           };
           const plugins = [steamPlugin, packageManagerPlugin, communityPlugin, communitySaveSyncPlugin];
+          if (options.pluginLifecycle && lifecycleInstalled) plugins.push(mockLifecyclePlugin());
           if (mockBundleInstalled) plugins.push(mockBundleEntry());
           return plugins;
         }
         const plugins = [steamPlugin, epicPlugin, communityPlugin, communitySaveSyncPlugin];
+        if (options.pluginLifecycle && lifecycleInstalled) plugins.push(mockLifecyclePlugin());
         if (mockBundleInstalled) plugins.push(mockBundleEntry());
         return plugins;
       }
+      if (cmd === 'plugin_playtime_inventory') {
+        if (!options.pluginLifecycle || !lifecycleInstalled) return [];
+        return [{
+          pluginId: MOCK_LIFECYCLE_PLUGIN_ID,
+          name: MOCK_LIFECYCLE_PLUGIN_NAME,
+          version: '0.1.0',
+          playtime: {
+            identifiesGameplay: true,
+            identifiesPauses: false,
+            withoutPauseDetection: 'application_open' as const,
+          },
+          accountingEnabled: lifecycleAccountingEnabled,
+        }];
+      }
+      if (cmd === 'plugin_playtime_set_accounting') {
+        if (String(args.pluginId ?? '') === MOCK_LIFECYCLE_PLUGIN_ID) {
+          lifecycleAccountingEnabled = args.enabled === true;
+        }
+        return undefined;
+      }
+      if (cmd === 'plugin_permission_snapshot') {
+        const pluginId = String(args.pluginId ?? '');
+        return {
+          pluginId,
+          publisherFingerprint: pluginId === MOCK_LIFECYCLE_PLUGIN_ID ? mockBundlePublisher : '',
+          profileId: String(args.expectedAccountId ?? ''),
+          grantRevision: 0,
+          requestedPermissions: [],
+          effectiveGrants: [],
+        };
+      }
+      if (cmd === 'plugin_shared_data_snapshot') {
+        const pluginId = String(args.pluginId ?? '');
+        return {
+          pluginId,
+          publisherFingerprint: pluginId === MOCK_LIFECYCLE_PLUGIN_ID ? mockBundlePublisher : '',
+          profileId: String(args.expectedProfileId ?? ''),
+          policyRevision: 0,
+          commonCategories: [],
+          selectedRecordIds: [],
+          catalog: [],
+          sourcePolicies: [],
+        };
+      }
+      if (cmd === 'plugin_configuration_state') {
+        return { pluginId: String(args.pluginId ?? ''), available: false, revision: null };
+      }
+      if (cmd === 'plugin_configuration_modes') {
+        return {
+          externalDeclared: false, externalAuthorized: false,
+          declarativeDeclared: false, declarativeAuthorized: false,
+        };
+      }
+      if (cmd === 'plugin_shared_resource_reviews') return [];
       if (cmd === 'plugin_durable_usage') {
         const pluginId = String(args.pluginId ?? '');
         const profileId = String(args.expectedProfileId ?? '');
@@ -4849,7 +5026,23 @@ export function createMockHost(options: {
       }
       if (cmd === 'plugin_import_install') {
         if (args.token !== 'mock-package-review') throw new Error('plugin import review expired');
-        return 'org.example.dolphin';
+        if (options.pluginLifecycle) {
+          // The accepted import registers the same provider again and its scan publishes a
+          // fresh count, so the mounted sidebar and grid update without a restart.
+          lifecycleInstalled = true;
+          lifecycleEnabled = true;
+          lifecycleExtraRow = true;
+          if (!queryProviders.some((provider) => provider.id === MOCK_LIFECYCLE_PROVIDER.id)) {
+            queryProviders = [...queryProviders, MOCK_LIFECYCLE_PROVIDER];
+          }
+          rows = [
+            ...rows.filter((row) => row.provider !== MOCK_LIFECYCLE_PROVIDER.id),
+            ...structuredClone(createLifecycleRows(true)),
+          ];
+          lifecycleAccountingEnabled = true;
+          publish();
+        }
+        return { pluginId: MOCK_LIFECYCLE_PLUGIN_ID, activated: true };
       }
       if (cmd === 'plugin_import_license_text') {
         return 'MIT License\n\nPermission is hereby granted, free of charge, to any person obtaining a copy.';
@@ -4982,12 +5175,31 @@ export function createMockHost(options: {
         };
       }
       if (cmd === 'plugin_enable' || cmd === 'plugin_disable') {
-        mockPluginEnabled.set(String(args.pluginId ?? ''), cmd === 'plugin_enable');
+        const pluginId = String(args.pluginId ?? '');
+        mockPluginEnabled.set(pluginId, cmd === 'plugin_enable');
+        if (options.pluginLifecycle && pluginId === MOCK_LIFECYCLE_PLUGIN_ID) {
+          // Disabling stops the provider but keeps its cached rows, matching the host: only an
+          // uninstall removes the store from the running library.
+          lifecycleEnabled = cmd === 'plugin_enable';
+        }
         publish();
         return undefined;
       }
       if (cmd === 'plugin_remove') {
-        if (args.deleteData === true) durableUsage.delete(String(args.pluginId ?? ''));
+        const pluginId = String(args.pluginId ?? '');
+        if (options.pluginLifecycle && pluginId === MOCK_LIFECYCLE_PLUGIN_ID) {
+          lifecycleInstalled = false;
+          lifecycleEnabled = true;
+          queryProviders = queryProviders.filter(
+            (provider) => provider.id !== MOCK_LIFECYCLE_PROVIDER.id,
+          );
+          rows = rows.filter((row) => row.provider !== MOCK_LIFECYCLE_PROVIDER.id);
+          pruneSelectionToRows();
+          if (args.deleteData === true) durableUsage.delete(pluginId);
+          publish();
+          return undefined;
+        }
+        if (args.deleteData === true) durableUsage.delete(pluginId);
         return undefined;
       }
       if (cmd === 'custom_launch_ids') return [];
@@ -5634,6 +5846,9 @@ export function mockHostOptionsFromSearch(
     variantLibrary: requestedParams.get('library') === 'variants',
     emptyLibrary: requestedParams.get('library') === 'empty',
     noInstalledLibrary: requestedParams.get('library') === 'no-installed',
+    // `?plugins=lifecycle` exposes a signed Dolphin provider whose install, enable, disable,
+    // remove and reinstall update the same running library.
+    pluginLifecycle: requestedParams.get('plugins') === 'lifecycle',
     discoveries: requestedParams.get('discoveries') === '1',
     claim: requestedParams.get('claim') === '1',
     startScanning: requestedParams.get('scanning') === '1',

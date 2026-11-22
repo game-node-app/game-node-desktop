@@ -5,6 +5,9 @@ import {
   MOCK_COLLECTIONS,
   MOCK_COVER_WALL,
   MOCK_HIDDEN_KEY,
+  MOCK_LIFECYCLE_PLUGIN_ID,
+  MOCK_LIFECYCLE_PLUGIN_NAME,
+  MOCK_LIFECYCLE_PROVIDER,
   MOCK_LIMIT_COLLECTION_NAME,
   mockHostOptionsFromSearch,
 } from './host';
@@ -18,6 +21,7 @@ import {
   type PluginDurableDeletion,
   type PluginDurableUsage,
   type PluginInfo,
+  type PluginPlaytimeInfo,
   type Row,
   type Snapshot,
 } from '../api/types';
@@ -502,6 +506,122 @@ describe('UI mock host', () => {
     expect(plugins.find((plugin) => plugin.providerId === 'epic')?.session).toBe('active');
     expect(snapshot.storeAccounts.find((account) => account.provider === 'epic')?.canCheck)
       .toBe(true);
+  });
+
+  it('maps the plugin lifecycle fixture from the documented query', () => {
+    expect(mockHostOptionsFromSearch('?plugins=lifecycle')).toMatchObject({
+      pluginLifecycle: true,
+    });
+    expect(mockHostOptionsFromSearch('?plugins=other').pluginLifecycle).toBe(false);
+  });
+
+  it('removes an uninstalled provider and its live rows, then restores the rescan count', async () => {
+    const host = createMockHost({ pluginLifecycle: true });
+    let snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.library!.providers.find(
+      (provider) => provider.id === MOCK_LIFECYCLE_PROVIDER.id,
+    )).toMatchObject({
+      name: MOCK_LIFECYCLE_PROVIDER.name,
+      count: 2,
+      installedCount: 2,
+    });
+    expect(snapshot.library!.rows.filter(
+      (row) => row.provider === MOCK_LIFECYCLE_PROVIDER.id,
+    )).toHaveLength(2);
+    expect((await host.invoke('plugin_inventory') as PluginInfo[]).find(
+      (plugin) => plugin.pluginId === MOCK_LIFECYCLE_PLUGIN_ID,
+    )).toMatchObject({ status: 'installed', session: 'active', enabled: true });
+
+    await host.invoke('plugin_remove', {
+      pluginId: MOCK_LIFECYCLE_PLUGIN_ID,
+      deleteData: false,
+    });
+    snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.library!.providers.some(
+      (provider) => provider.id === MOCK_LIFECYCLE_PROVIDER.id,
+    )).toBe(false);
+    expect(snapshot.library!.rows.some(
+      (row) => row.provider === MOCK_LIFECYCLE_PROVIDER.id,
+    )).toBe(false);
+    expect((await host.invoke('plugin_inventory') as PluginInfo[]).some(
+      (plugin) => plugin.pluginId === MOCK_LIFECYCLE_PLUGIN_ID,
+    )).toBe(false);
+
+    expect(await host.invoke('plugin_import_install', {
+      token: 'mock-package-review',
+      nativeCodeConsent: false,
+      deniedPermissionIds: [],
+    })).toEqual({ pluginId: MOCK_LIFECYCLE_PLUGIN_ID, activated: true });
+
+    snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.library!.providers.find(
+      (provider) => provider.id === MOCK_LIFECYCLE_PROVIDER.id,
+    )).toMatchObject({ count: 3, installedCount: 3 });
+    expect(snapshot.library!.rows.filter(
+      (row) => row.provider === MOCK_LIFECYCLE_PROVIDER.id,
+    )).toHaveLength(3);
+    expect(snapshot.library!.rows.some((row) => row.key === 'dolphin:fzero')).toBe(true);
+    expect((await host.invoke('plugin_inventory') as PluginInfo[]).find(
+      (plugin) => plugin.pluginId === MOCK_LIFECYCLE_PLUGIN_ID,
+    )).toMatchObject({ status: 'installed', session: 'active', enabled: true });
+  });
+
+  it('drops playtime accounting rows with an uninstalled plugin and restores them on reinstall', async () => {
+    const host = createMockHost({ pluginLifecycle: true });
+    expect(await host.invoke('plugin_playtime_inventory')).toEqual([{
+      pluginId: MOCK_LIFECYCLE_PLUGIN_ID,
+      name: MOCK_LIFECYCLE_PLUGIN_NAME,
+      version: '0.1.0',
+      playtime: {
+        identifiesGameplay: true,
+        identifiesPauses: false,
+        withoutPauseDetection: 'application_open',
+      },
+      accountingEnabled: true,
+    }] satisfies PluginPlaytimeInfo[]);
+
+    await host.invoke('plugin_remove', {
+      pluginId: MOCK_LIFECYCLE_PLUGIN_ID,
+      deleteData: false,
+    });
+    expect(await host.invoke('plugin_playtime_inventory')).toEqual([]);
+
+    await host.invoke('plugin_import_install', {
+      token: 'mock-package-review',
+      nativeCodeConsent: false,
+      deniedPermissionIds: [],
+    });
+    expect(await host.invoke('plugin_playtime_inventory')).toHaveLength(1);
+  });
+
+  it('keeps cached provider games when its plugin is disabled and restores the active state on enable', async () => {
+    const host = createMockHost({ pluginLifecycle: true });
+    await host.invoke('plugin_disable', { pluginId: MOCK_LIFECYCLE_PLUGIN_ID });
+
+    let snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.library!.providers.find(
+      (provider) => provider.id === MOCK_LIFECYCLE_PROVIDER.id,
+    )).toMatchObject({ count: 2, installedCount: 2 });
+    expect(snapshot.library!.rows.filter(
+      (row) => row.provider === MOCK_LIFECYCLE_PROVIDER.id,
+    )).toHaveLength(2);
+    expect((await host.invoke('plugin_inventory') as PluginInfo[]).find(
+      (plugin) => plugin.pluginId === MOCK_LIFECYCLE_PLUGIN_ID,
+    )).toMatchObject({
+      status: 'unavailable',
+      session: 'stopped',
+      enabled: false,
+      runtimeAvailable: true,
+    });
+
+    await host.invoke('plugin_enable', { pluginId: MOCK_LIFECYCLE_PLUGIN_ID });
+    snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.library!.rows.filter(
+      (row) => row.provider === MOCK_LIFECYCLE_PROVIDER.id,
+    )).toHaveLength(2);
+    expect((await host.invoke('plugin_inventory') as PluginInfo[]).find(
+      (plugin) => plugin.pluginId === MOCK_LIFECYCLE_PLUGIN_ID,
+    )).toMatchObject({ status: 'installed', session: 'active', enabled: true });
   });
 
   it.each(['en', 'pt-BR'] as const)('keeps Steam account and PC ports state together in the %s snapshot', async (locale) => {

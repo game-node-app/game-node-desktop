@@ -366,6 +366,7 @@ without touching the native host:
 | Unavailable watched folder | `?watches=unavailable` seeds `D:\Jogos` and the unavailable `E:\Itch`; `?library=variants` also includes them |
 | Pending backup changes | Settings › **Backups**, change the destination, the automatic switch or the copies kept; the changed dots and unsaved bar appear until **Save changes** or **Revert** (no fixture is pre-dirty) |
 | Stopped community plugin | Settings › **Plugins**; **Prateleira Local** starts stopped. **Start** creates its session and **Stop** stops it again |
+| Live third-party plugin lifecycle | `?plugins=lifecycle` adds a signed Dolphin provider with two games. Settings › **Plugins** › **Details** removes it from the sidebar and library immediately; **Accept, install and enable** in the import form reinstalls it, and the rescan adds a third game. **Disable** marks the plugin unavailable but keeps its cached games visible |
 | Nightly cache | Settings › **Tools** › **Download cache**; 0.8.0-pre1 is the Nightly row and 0.7.9 is In use |
 | Non-Windows mode | `?platform=linux` hides the General › Startup card, the Epic card and the Windows-only Tools/ports surfaces, and makes DRM-free games and Backups report that they are unavailable |
 

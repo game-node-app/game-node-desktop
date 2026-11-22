@@ -6,7 +6,9 @@ use crate::plugin_host::{
     PluginApiServer,
     provider::{Registration, RegistrationKind, RegistrationOrigin},
 };
+use gamenode_core::library::{Effect, Input, LastAccount, LibraryCache, LibraryMachine};
 use gamenode_plugin_protocol::capability as cap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 use std::{
@@ -66,6 +68,11 @@ fn signed_provider_archive_version(root: &Path, version: &str) -> PathBuf {
             "required": false,
             "scope": "own provider catalog",
             "reason": "Submit the fixture catalog"
+        }, {
+            "id": cap::DISCOVERY,
+            "required": false,
+            "scope": "own-provider",
+            "reason": "Discover the fixture's games"
         }],
         "targets": [{
             "os": "linux",
@@ -81,7 +88,7 @@ fn signed_provider_archive_version(root: &Path, version: &str) -> PathBuf {
     }))
     .unwrap();
     let executable = format!(
-        "#!/bin/sh\nexport GAMENODE_TEST_PLUGIN_PROCESS=fixture\nexport GAMENODE_TEST_PLUGIN_MODE=provider-catalog\nexec '{}' --exact plugin_host::process::tests::fixture_process --nocapture\n",
+        "#!/bin/sh\nexport GAMENODE_TEST_PLUGIN_PROCESS=fixture\nexport GAMENODE_TEST_PLUGIN_MODE=provider-catalog\nexport GAMENODE_TEST_PLUGIN_VERSION={version}\nexec '{}' --exact plugin_host::process::tests::fixture_process --nocapture\n",
         std::env::current_exe().unwrap().display()
     );
     let license = b"fixture license";
@@ -327,16 +334,23 @@ async fn imported_signed_provider_runs_from_registry_and_profile_fences_after_pe
         .permission_snapshot("fixture.plugin".into())
         .await
         .unwrap();
-    let scope = snapshot.requested_permissions[0]
-        .allowed_scopes
-        .iter()
-        .next()
-        .unwrap()
-        .clone();
-    let decision = |granted| PermissionDecision {
-        permission_id: cap::CATALOG.into(),
-        scope: scope.clone(),
-        granted,
+    let decisions = |catalog_granted: bool| {
+        snapshot
+            .requested_permissions
+            .iter()
+            .flat_map(|request| {
+                request
+                    .allowed_scopes
+                    .iter()
+                    .map(move |scope| PermissionDecision {
+                        permission_id: request.permission_id.clone(),
+                        scope: scope.clone(),
+                        // The test revokes only the catalog grant; discovery stays usable so the
+                        // signed child can keep its session while the catalog fence is exercised.
+                        granted: catalog_granted || request.permission_id != cap::CATALOG,
+                    })
+            })
+            .collect::<Vec<_>>()
     };
     let activation = tokio::sync::Mutex::new(());
     let granted = lifecycle
@@ -346,7 +360,7 @@ async fn imported_signed_provider_runs_from_registry_and_profile_fences_after_pe
             snapshot.profile_id.clone(),
             snapshot.publisher_fingerprint.clone(),
             snapshot.grant_revision,
-            vec![decision(true)],
+            decisions(true),
         )
         .await
         .unwrap();
@@ -376,7 +390,7 @@ async fn imported_signed_provider_runs_from_registry_and_profile_fences_after_pe
             granted.profile_id,
             granted.publisher_fingerprint,
             granted.grant_revision,
-            vec![decision(false)],
+            decisions(false),
         )
         .await
         .unwrap();
@@ -406,6 +420,90 @@ async fn imported_signed_provider_runs_from_registry_and_profile_fences_after_pe
     .expect("profile fencing stops the imported provider process and session");
     host.shutdown().await;
     server.shutdown().await;
+}
+
+/// Starts the running library for one account, as the app does when a profile signs in.
+#[cfg(target_os = "linux")]
+fn start_library_machine() -> LibraryMachine {
+    let mut machine = LibraryMachine::new(Vec::new(), Default::default());
+    let effects = machine.handle(Input::AccountChanged(Some(LastAccount {
+        id: "fixture-account".to_owned(),
+        name: "Fixture Account".to_owned(),
+    })));
+    let op = effects
+        .iter()
+        .find_map(|effect| match effect {
+            Effect::LoadCache { op, .. } => Some(*op),
+            _ => None,
+        })
+        .expect("the account load starts with a cache read");
+    machine.handle(Input::Loaded {
+        op,
+        result: Ok(LibraryCache::default()),
+    });
+    machine
+}
+
+/// Drives the library's scan effects through the live provider host, mirroring the engine's
+/// `RunScan` path without a second runtime or a restart.
+#[cfg(target_os = "linux")]
+async fn scan_library(
+    machine: &mut LibraryMachine,
+    runtime: &dyn ProviderRuntime,
+    effects: Vec<Effect>,
+    now: i64,
+) {
+    let mut queue: VecDeque<Effect> = effects.into();
+    while let Some(effect) = queue.pop_front() {
+        let Effect::RunScan { op, provider } = effect else {
+            continue;
+        };
+        let result = match runtime
+            .execute(&provider, ProviderOperation::Discover)
+            .await
+        {
+            Ok(completion) => completion
+                .result
+                .discovery
+                .filter(|discovery| discovery.provider_id == provider)
+                .map(|discovery| {
+                    gamenode_core::provider::record::finish_records(
+                        &provider,
+                        discovery
+                            .records
+                            .into_iter()
+                            .map(|record| gamenode_core::provider::RawRecord {
+                                id: Some(record.id),
+                                name: Some(record.name),
+                                install_dir: Some(record.install_dir),
+                                fields: record.fields.into_iter().collect(),
+                            })
+                            .collect(),
+                        &[],
+                    )
+                })
+                .ok_or_else(|| "provider discovery returned no observations".to_owned()),
+            Err(status) => Err(status.message().to_owned()),
+        };
+        queue.extend(machine.handle(Input::ProviderScanned {
+            op,
+            provider,
+            result,
+            targets: BTreeMap::new(),
+            now,
+        }));
+    }
+}
+
+/// The composed record one scan should have written for the fixture version.
+#[cfg(target_os = "linux")]
+fn fixture_key(version: &str) -> String {
+    format!("fixture:fixture-game-v{version}")
+}
+
+#[cfg(target_os = "linux")]
+fn fixture_name(version: &str) -> String {
+    format!("Fixture Game {version}")
 }
 
 #[cfg(target_os = "linux")]
@@ -473,6 +571,58 @@ async fn a_live_signed_provider_can_update_disable_remove_and_reinstall_without_
         "1.0.0"
     );
 
+    // The import adds the provider to the already running library, exactly as the desktop's
+    // post-import callback does, and a scan through the live host lists its store and game.
+    let imported_provider = crate::plugin_host::startup::installed_provider_from_registry(
+        gamenode_core::provider::Platform::Linux,
+        registry.clone(),
+        state.trust_dir(),
+        "fixture.plugin",
+    )
+    .await
+    .unwrap()
+    .expect("the imported provider composes for the library");
+    assert_eq!(
+        imported_provider.discovery_plugin(),
+        Some("fixture.plugin"),
+        "the plugin id and the provider id are deliberately different"
+    );
+    let mut library = start_library_machine();
+    library.put_provider(imported_provider);
+    let effects = library.handle(Input::ScanRequested);
+    scan_library(&mut library, host.as_ref(), effects, 100).await;
+
+    let v1 = fixture_key("1.0.0");
+    let entry = library
+        .entry(&v1)
+        .expect("the live scan added the imported provider's record");
+    assert_eq!(entry.name.as_deref(), Some(fixture_name("1.0.0").as_str()));
+    assert!(entry.installed);
+    assert_eq!(
+        library
+            .scan_state("fixture")
+            .and_then(|state| state.last_success_at),
+        Some(100)
+    );
+    assert!(library.visible_entries().any(|entry| entry.key == v1));
+    let view = library.view().expect("the library view is available");
+    assert!(
+        view.providers
+            .iter()
+            .any(|provider| provider.id == "fixture" && provider.count == 1),
+        "{:?}",
+        view.providers
+    );
+    assert_eq!(
+        library
+            .query("")
+            .rows
+            .iter()
+            .map(|row| row.key.as_str())
+            .collect::<Vec<_>>(),
+        [v1.as_str()]
+    );
+
     // Replacing the active package on disk while the provider stays registered must swap the
     // supervised config, not keep the old version until the next desktop restart. The bundle
     // import path installs the new component version and then calls this same registration.
@@ -508,22 +658,149 @@ async fn a_live_signed_provider_can_update_disable_remove_and_reinstall_without_
     lifecycle.enable("fixture.plugin".into()).await.unwrap();
     assert!(lifecycle.enabled("fixture.plugin".into()).await.unwrap());
 
+    // The updated package contributes the new record, and the same machine's next scan replaces
+    // the old rows instead of waiting for a restart.
+    let updated_provider = crate::plugin_host::startup::installed_provider_from_registry(
+        gamenode_core::provider::Platform::Linux,
+        registry.clone(),
+        state.trust_dir(),
+        "fixture.plugin",
+    )
+    .await
+    .unwrap()
+    .expect("the updated provider composes for the library");
+    library.put_provider(updated_provider);
+    let effects = library.handle(Input::ScanRequested);
+    scan_library(&mut library, host.as_ref(), effects, 101).await;
+    let v2 = fixture_key("2.0.0");
+    assert!(
+        library.entry(&v1).is_some_and(|entry| !entry.installed),
+        "the fresh scan marks the provider's previous rows uninstalled"
+    );
+    assert!(
+        !library.visible_entries().any(|entry| entry.key == v1),
+        "the old record leaves the visible game list"
+    );
+    let entry = library
+        .entry(&v2)
+        .expect("the updated provider's record is live");
+    assert_eq!(entry.name.as_deref(), Some(fixture_name("2.0.0").as_str()));
+    assert_eq!(
+        library
+            .scan_state("fixture")
+            .and_then(|state| state.last_success_at),
+        Some(101)
+    );
+    assert_eq!(
+        library
+            .query("")
+            .rows
+            .iter()
+            .map(|row| row.key.as_str())
+            .collect::<Vec<_>>(),
+        [v2.as_str()]
+    );
+
     // Deactivation stops the supervised process and keeps the installed package and grants.
     lifecycle.disable("fixture.plugin".into()).await.unwrap();
     assert!(!lifecycle.enabled("fixture.plugin".into()).await.unwrap());
     assert_eq!(host.processes.process_id("fixture").await, None);
+    assert!(
+        !host.connected("fixture"),
+        "the store session reflects the stop"
+    );
+    // The library keeps the cached rows and store card across the stop.
+    assert!(library.entry(&v2).is_some());
+    assert!(library.visible_entries().any(|entry| entry.key == v2));
+    assert!(
+        library
+            .view()
+            .expect("the library view is available")
+            .providers
+            .iter()
+            .any(|provider| provider.id == "fixture" && provider.count == 1),
+        "the stopped store keeps its cached card"
+    );
 
-    // Activation works again in the same host.
+    // Activation works again in the same host and a fresh scan refreshes the rows.
     lifecycle.enable("fixture.plugin".into()).await.unwrap();
     assert!(lifecycle.enabled("fixture.plugin".into()).await.unwrap());
     assert!(host.processes.process_id("fixture").await.is_some());
+    let effects = library.handle(Input::ScanRequested);
+    scan_library(&mut library, host.as_ref(), effects, 102).await;
+    assert_eq!(
+        library
+            .scan_state("fixture")
+            .and_then(|state| state.last_success_at),
+        Some(102)
+    );
+    assert_eq!(
+        library
+            .entry(&v2)
+            .expect("the re-enabled provider's record is live")
+            .name
+            .as_deref(),
+        Some(fixture_name("2.0.0").as_str())
+    );
 
-    // Uninstall unregisters the plugin and removes its slot without a restart.
+    // Uninstall unregisters the plugin and removes its slot without a restart. A scan requested
+    // just before the uninstall is still waiting for its answer.
+    let pending = library.handle(Input::ScanRequested);
+    let pending_scan = pending
+        .iter()
+        .find_map(|effect| match effect {
+            Effect::RunScan { op, provider } if provider == "fixture" => Some(*op),
+            _ => None,
+        })
+        .expect("the uninstall interrupts a running scan");
     lifecycle.remove("fixture.plugin".into()).await.unwrap();
     assert!(!lifecycle.is_registered("fixture.plugin"));
     assert!(!lifecycle.has_process_slot("fixture.plugin"));
     assert!(!lifecycle.enabled("fixture.plugin".into()).await.unwrap());
     assert!(registry.active("fixture.plugin").unwrap().is_none());
+
+    // The store and its rows leave the running library immediately.
+    library.remove_provider_for_plugin("fixture.plugin");
+    assert!(library.provider("fixture").is_none());
+    assert!(library.entry(&v2).is_none(), "its live rows are dropped");
+    assert!(library.scan_state("fixture").is_none());
+    assert!(
+        !library
+            .visible_entries()
+            .any(|entry| entry.provider == "fixture")
+    );
+    assert!(
+        !library
+            .view()
+            .expect("the library view is available")
+            .providers
+            .iter()
+            .any(|provider| provider.id == "fixture"),
+        "the store leaves the sidebar projection"
+    );
+    assert_eq!(library.query("").total, 0);
+    assert!(library.query("").rows.is_empty());
+
+    // A late answer for the uninstalled provider is ignored instead of recreating its store.
+    let late = library.handle(Input::ProviderScanned {
+        op: pending_scan,
+        provider: "fixture".into(),
+        result: Ok(gamenode_core::provider::record::finish_records(
+            "fixture",
+            vec![gamenode_core::provider::RawRecord {
+                id: Some("fixture-game-late".into()),
+                name: Some("Late Fixture Game".into()),
+                install_dir: Some("/fixtures/Late Fixture Game".into()),
+                fields: Default::default(),
+            }],
+            &[],
+        )),
+        targets: BTreeMap::new(),
+        now: 103,
+    });
+    assert!(late.is_empty(), "{late:?}");
+    assert!(library.entry("fixture:fixture-game-late").is_none());
+    assert_eq!(library.query("").total, 0);
 
     // Reinstall through the same reviewed import path: it installs, applies the reviewed grants,
     // registers, enables and starts the plugin again in this session.
@@ -553,6 +830,41 @@ async fn a_live_signed_provider_can_update_disable_remove_and_reinstall_without_
         "3.0.0"
     );
     assert!(host.processes.process_id("fixture").await.is_some());
+
+    // The reinstalled provider returns to the same library machine and repopulates the store and
+    // rows with the new package's data.
+    let reinstalled_provider = crate::plugin_host::startup::installed_provider_from_registry(
+        gamenode_core::provider::Platform::Linux,
+        registry.clone(),
+        state.trust_dir(),
+        "fixture.plugin",
+    )
+    .await
+    .unwrap()
+    .expect("the reinstalled provider composes for the library");
+    library.put_provider(reinstalled_provider);
+    let effects = library.handle(Input::ScanRequested);
+    scan_library(&mut library, host.as_ref(), effects, 104).await;
+    let v3 = fixture_key("3.0.0");
+    assert!(library.provider("fixture").is_some());
+    assert!(library.entry(&v3).is_some());
+    let view = library.view().expect("the library view is available");
+    assert!(
+        view.providers
+            .iter()
+            .any(|provider| provider.id == "fixture" && provider.count == 1),
+        "{:?}",
+        view.providers
+    );
+    assert_eq!(
+        library
+            .query("")
+            .rows
+            .iter()
+            .map(|row| row.key.as_str())
+            .collect::<Vec<_>>(),
+        [v3.as_str()]
+    );
 
     host.shutdown().await;
     server.shutdown().await;
@@ -701,12 +1013,20 @@ async fn official_linux_providers_remain_composed_across_managed_registry_states
                     .permission_snapshot("fixture.plugin".into())
                     .await
                     .unwrap();
-                let scope = snapshot.requested_permissions[0]
-                    .allowed_scopes
+                let decisions = snapshot
+                    .requested_permissions
                     .iter()
-                    .next()
-                    .unwrap()
-                    .clone();
+                    .flat_map(|request| {
+                        request
+                            .allowed_scopes
+                            .iter()
+                            .map(move |scope| PermissionDecision {
+                                permission_id: request.permission_id.clone(),
+                                scope: scope.clone(),
+                                granted: true,
+                            })
+                    })
+                    .collect::<Vec<_>>();
                 let activation = tokio::sync::Mutex::new(());
                 lifecycle
                     .replace_permissions(
@@ -715,11 +1035,7 @@ async fn official_linux_providers_remain_composed_across_managed_registry_states
                         snapshot.profile_id,
                         snapshot.publisher_fingerprint,
                         snapshot.grant_revision,
-                        vec![PermissionDecision {
-                            permission_id: cap::CATALOG.into(),
-                            scope,
-                            granted: true,
-                        }],
+                        decisions,
                     )
                     .await
                     .unwrap();

@@ -50,6 +50,25 @@ impl ProviderPlugin for ChildPlugin {
         }
         assert_eq!(host.provider_context().await?.provider_id, "fixture");
         if std::env::var("GAMENODE_TEST_PLUGIN_MODE").as_deref() == Ok("provider-catalog")
+            && command.operation == ProviderOperation::Discover as i32
+        {
+            let version = std::env::var("GAMENODE_TEST_PLUGIN_VERSION").unwrap_or_default();
+            return Ok(OperationResult {
+                disposition: OperationDisposition::Completed as i32,
+                discovery: Some(DiscoveryResult {
+                    provider_id: "fixture".into(),
+                    records: vec![DiscoveryRecord {
+                        id: format!("fixture-game-v{version}"),
+                        name: format!("Fixture Game {version}"),
+                        install_dir: format!("/fixtures/Fixture Game {version}"),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            });
+        }
+        if std::env::var("GAMENODE_TEST_PLUGIN_MODE").as_deref() == Ok("provider-catalog")
             && command.operation == ProviderOperation::SyncCatalog as i32
         {
             let completion = host
@@ -108,7 +127,11 @@ async fn fixture_process() {
     }
     let capabilities: &[&str] =
         if std::env::var("GAMENODE_TEST_PLUGIN_MODE").as_deref() == Ok("provider-catalog") {
-            &[capability::CONTEXT, capability::CATALOG]
+            &[
+                capability::CONTEXT,
+                capability::CATALOG,
+                capability::DISCOVERY,
+            ]
         } else {
             &[capability::CONTEXT]
         };

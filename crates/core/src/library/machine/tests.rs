@@ -1979,6 +1979,44 @@ fn removing_a_provider_drops_its_live_rows_and_a_reinstall_restores_them() {
 }
 
 #[test]
+fn removing_a_provider_by_plugin_id_resolves_the_composed_provider_id() {
+    let (mut machine, effects) = loaded(false, LibraryCache::default());
+    let (op, _) = scan_ops(&effects)[0].clone();
+    scanned(
+        &mut machine,
+        op,
+        "steam",
+        Ok(vec![record("620", "Portal 2", "/g/Portal 2")]),
+        10,
+    );
+    assert_eq!(
+        machine.providers()[0].discovery_plugin(),
+        Some("org.gamenode.plugin.steam-discovery"),
+        "the installed plugin id is not the provider id"
+    );
+    assert!(machine.entry("steam:620").is_some());
+
+    assert!(machine.remove_provider_for_plugin("org.gamenode.plugin.steam-discovery"));
+    assert!(machine.provider("steam").is_none());
+    assert!(
+        machine.entry("steam:620").is_none(),
+        "live rows are dropped"
+    );
+    assert!(
+        !machine
+            .visible_entries()
+            .any(|entry| entry.provider == "steam")
+    );
+    assert!(
+        !machine.remove_provider_for_plugin("org.gamenode.plugin.steam-discovery"),
+        "removal is idempotent"
+    );
+
+    // An unknown plugin id changes nothing.
+    assert!(!machine.remove_provider_for_plugin("dev.example.unknown"));
+}
+
+#[test]
 fn cached_entries_of_a_provider_that_is_not_loaded_stay_hidden() {
     let cache = LibraryCache {
         entries: vec![stored("shop", "1", "Shop One", true)],

@@ -1110,11 +1110,14 @@ impl Engine {
 
     /// Removes an uninstalled provider and its live rows from the running library.
     ///
-    /// The persisted cache keeps the rows so a later reinstall can restore them; the library view
-    /// stops showing the store immediately, and a running scan no longer waits for it.
+    /// Commands pass the installed plugin id, which may differ from the provider id a package
+    /// contributes (for example `dolphin-emu`); the machine resolves the store by its discovery
+    /// plugin. A direct provider id is still accepted. The persisted cache keeps the rows so a
+    /// later reinstall can restore them; the library view stops showing the store immediately,
+    /// and a running scan no longer waits for it.
     pub fn remove_library_provider(&self, id: &str) {
         let mut state = self.lock();
-        if state.library.remove_provider(id) {
+        if state.library.remove_provider_for_plugin(id) || state.library.remove_provider(id) {
             self.publish(&mut state);
             tracing::info!(provider = %id, "removed an uninstalled provider from the library");
         }

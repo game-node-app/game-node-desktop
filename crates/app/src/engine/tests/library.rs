@@ -3053,6 +3053,41 @@ async fn creating_a_collection_from_the_dialog_relists_and_selects_it() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn uninstalling_a_plugin_removes_its_provider_by_plugin_id_without_a_restart() {
+    let h = harness(FakeApi::new(), FakeCreds::with(None));
+    assert!(
+        h.engine.lock().library.provider("steam").is_some(),
+        "the bundled provider is loaded before the uninstall"
+    );
+
+    // The command passes the installed plugin id; the provider id is `steam`. The store must
+    // leave the running library even though the two ids differ.
+    h.engine
+        .remove_library_provider("org.gamenode.plugin.steam-discovery");
+    {
+        let state = h.engine.lock();
+        assert!(
+            state.library.provider("steam").is_none(),
+            "the uninstalled store leaves the running library"
+        );
+        assert!(
+            state.library.provider("packagekit").is_some(),
+            "the other stores stay loaded"
+        );
+    }
+
+    // A direct provider id still works, and an unknown id changes nothing.
+    h.engine.remove_library_provider("packagekit");
+    h.engine.remove_library_provider("dev.example.unknown");
+    let state = h.engine.lock();
+    assert!(state.library.provider("packagekit").is_none());
+    assert!(
+        state.library.providers().is_empty(),
+        "the unknown id added nothing"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_shared_games_preference_updates_the_library_without_a_sync() {
     let mut h = harness(FakeApi::new(), FakeCreds::with(None));
     h.signed_out().await;

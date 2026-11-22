@@ -200,16 +200,33 @@ followed by Delete removes only that profile's namespace. The provider's own
 `DOLPHIN_PLUGIN_ROOTS` discovery was exercised at the host level and reported the expected
 six-character disc record.
 
-Durable catalog acceptance (`add-durable-shared-data` 6.3 / `add-plugin-bundles` 7.2) remains open:
-the host composes managed third-party registrations with an empty `package_digest`
-(`HostedProviders::bundled` in `crates/app/src/plugin_host/runtime.rs`), while durable shared-data
-publisher metadata requires a 32-byte package digest (`validate_publication` in
-`crates/app/src/plugin_host/shared_data.rs`). The plugin's `DataPublish` is therefore rejected and
-no durable row is created. A diagnostic that filled a test-only 32-byte digest reached the pool
-and proved the consumer/restart/revocation path, so the remaining work is the host registration
-field, not the plugin contract. The Windows bundle cross-build is also open: both Dolphin
-manifests currently declare only Linux x86_64, and native Windows acceptance is the Lamarck
-(GameNode Core) handoff tracked as task 7.2-win.
+Durable catalog acceptance (`add-durable-shared-data` 6.3 / `add-plugin-bundles` 7.2, Linux) is
+the host test
+`plugin_host::runtime::tests::the_real_dolphin_provider_publishes_a_durable_catalog_read_with_it_stopped`:
+
+```sh
+DOLPHIN_BUNDLE_PATH=/path/to/gamenode-plugin-dolphin-emu/dist/dolphin-emu-0.1.0-linux-x64.gnbundle \
+CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target-dolphin-acceptance \
+CARGO_NET_OFFLINE=true CARGO_INCREMENTAL=0 \
+cargo test --locked -p gamenode-app --lib -- the_real_dolphin_provider_publishes
+```
+
+It installs the same signed artifact, grants `provider.context.read`, `library.discovery`,
+`data.publish` and `storage.persist`, and runs the provider through the production
+`HostedProviders::bundled` registration with `DOLPHIN_PLUGIN_ROOTS` pointing at a temporary
+collection. `Discover` lists `GZLE01` / `The Legend of Zelda` / `gamecube`, and the provider's own
+`PERSISTENT` `DataPublish` writes the `dev.richmont.gamenode.dolphin-emu.catalog.v1` row
+(`disc_id`/`title`/`platform`/`content_id`). Provenance names a 32-byte `package_digest` equal to
+`installed_package_digest` (SHA-256 of the installed signed `integrity.json`) and the active
+profile. A consumer under the exact source/recipient/dataset policy reads only those fields with
+`PERSISTENT` durability while the provider process is stopped, a fresh broker over the reopened
+pool reads the same record, and revoking the policy fences the watch and reads. No path or reserved
+field is projected.
+
+The Dolphin repository still has no Windows target (both manifests declare only `linux/x86_64`),
+so there is no Windows bundle to cross-build; native Windows acceptance remains the Lamarck
+(GameNode Core) handoff tracked as task 7.2-win. `add-plugin-bundles` 7.2 therefore stays open on
+that clause with the complete Linux evidence recorded in its task note.
 
 ## RPC inventory and API 1.6 status
 

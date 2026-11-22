@@ -21,6 +21,11 @@ function launchLabel(pluginId: string): string {
     : pluginId;
 }
 
+function launchMethodLabel(recipe: LaunchRecipeOption): string {
+  const summary = recipe.summary?.trim();
+  return summary ? summary : launchLabel(recipe.pluginId);
+}
+
 export const LaunchRecipeSelector: React.FC<Props> = ({ entryKey }) => {
   const { t } = useI18n();
   const [choices, setChoices] = React.useState<LaunchRecipeChoices | null>(null);
@@ -118,7 +123,7 @@ export const LaunchRecipeSelector: React.FC<Props> = ({ entryKey }) => {
               {selectedOption
                 ? t('Library::Custom launch method: {}').replace(
                     '{}',
-                    launchLabel(selectedOption.pluginId),
+                    launchMethodLabel(selectedOption),
                   )
                 : t('Library::The selected recipe changed or is unavailable. Choose another recipe or return to the detected default.')}
             </div>
@@ -141,7 +146,7 @@ export const LaunchRecipeSelector: React.FC<Props> = ({ entryKey }) => {
                   onClick={() => void choose(recipe)}
                   className="self-start rounded-xs border border-border-subtle bg-transparent px-2.5 py-1 text-xs font-medium text-text-default transition-colors hover:bg-surface disabled:opacity-45"
                 >
-                  {launchLabel(recipe.pluginId)}
+                  {launchMethodLabel(recipe)}
                 </button>
               );
             })}

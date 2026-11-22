@@ -366,6 +366,8 @@ export interface LaunchRecipeOption {
   publisherFingerprint: string;
   recipeId: string;
   recipeRevision: number;
+  /** Runtime/version and launch arguments; empty when the host cannot summarize it. */
+  summary?: string;
 }
 
 export interface LaunchRecipeSelection {

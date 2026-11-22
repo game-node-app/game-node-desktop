@@ -1024,12 +1024,18 @@ impl LibraryStore for SqliteLibraryStore {
         let Some((installation_id, target_json)) = entry else {
             return Ok(LaunchRecipeSelectionWrite::RecipeMissing);
         };
-        let Some(target_json) = target_json else {
-            return Ok(LaunchRecipeSelectionWrite::Conflict);
+        // A ROM store reports no detected target. Revision zero is a valid selection there; a
+        // runtime recipe is the launch. A provider with a target still needs that exact revision.
+        let target_revision = match target_json {
+            Some(target_json) => {
+                let target: gamenode_core::library::DetectedTarget =
+                    serde_json::from_str(&target_json).map_err(failed)?;
+                target.revision
+            }
+            None if expected_target_revision == 0 => 0,
+            None => return Ok(LaunchRecipeSelectionWrite::Conflict),
         };
-        let target: gamenode_core::library::DetectedTarget =
-            serde_json::from_str(&target_json).map_err(failed)?;
-        if target.revision != expected_target_revision
+        if target_revision != expected_target_revision
             || selection.base_target_revision != expected_target_revision
             || selection.entry_key.is_empty()
             || selection.owner_key.is_empty()

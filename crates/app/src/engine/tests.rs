@@ -1811,3 +1811,37 @@ async fn corrupt_artwork_is_replaced_and_failures_can_be_retried() {
     );
     assert_eq!(std::fs::read(dir.path().join("7.jpg")).unwrap(), bytes);
 }
+
+#[test]
+fn runtime_launch_summary_shows_the_runtime_and_content_argument() {
+    use gamenode_core::library::{
+        ApprovedFileReference, CustomLaunchRecipe, RuntimeArgumentTemplate, RuntimeResource,
+    };
+
+    let runtime = RuntimeResource {
+        id: "runtime-1".into(),
+        name: "Dolphin".into(),
+        version: "2609".into(),
+        executable: ApprovedFileReference::default(),
+        platform: "linux".into(),
+        supported_formats: vec!["gamecube-rom".into()],
+        launch_arguments: vec![
+            RuntimeArgumentTemplate::Literal("-b".into()),
+            RuntimeArgumentTemplate::Literal("-e".into()),
+            RuntimeArgumentTemplate::ContentPath,
+        ],
+        revision: 1,
+        observed_at: 0,
+        provenance: Default::default(),
+        extensions: Default::default(),
+    };
+    let recipe = CustomLaunchRecipe {
+        runtime_handle: "runtime-1".into(),
+        ..CustomLaunchRecipe::default()
+    };
+
+    assert_eq!(
+        super::runtime_launch_summary(Some(&runtime), &recipe, "Pikmin (USA) (Rev 1).rvz"),
+        "Dolphin 2609 — -b -e Pikmin (USA) (Rev 1).rvz"
+    );
+}

@@ -66,6 +66,34 @@ describe('LaunchRecipeSelector', () => {
     expect(screen.queryByTestId('use-detected-default')).not.toBeInTheDocument();
   });
 
+  it('shows the runtime and launch arguments when the host provides a summary', async () => {
+    const summary = 'Dolphin 2609 — -b -e Pikmin (USA) (Rev 1).rvz';
+    let selected: LaunchRecipeChoices['selected'] = null;
+    vi.spyOn(commands, 'launchRecipeChoices').mockImplementation(async () => ({
+      targetRevision: 7,
+      detectedDefaultAvailable: false,
+      selected,
+      recipes: [{ ...recipe, summary }],
+    }));
+    vi.spyOn(commands, 'selectLaunchRecipe').mockImplementation(async () => {
+      selected = selection();
+    });
+    const user = userEvent.setup();
+
+    render(
+      <I18nProvider initialLocale="en">
+        <LaunchRecipeSelector entryKey="steam:620" />
+      </I18nProvider>,
+    );
+
+    const button = await screen.findByRole('button', { name: summary });
+    expect(button).not.toHaveTextContent('proton-9');
+    await user.click(button);
+    expect(await screen.findByTestId('selected-launch-recipe-status')).toHaveTextContent(
+      summary,
+    );
+  });
+
   it('shows one method per plugin and never a recipe id', async () => {
     vi.spyOn(commands, 'launchRecipeChoices').mockResolvedValue({
       targetRevision: 7,

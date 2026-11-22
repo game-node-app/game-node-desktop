@@ -79,6 +79,45 @@ pub enum GameNodePageError {
     Browser,
 }
 
+/// A human summary of what a recipe would execute, using the host-owned runtime template and the
+/// game's detected ROM name. No path, handle or recipe id is included.
+fn runtime_launch_summary(
+    runtime: Option<&gamenode_core::library::RuntimeResource>,
+    recipe: &gamenode_core::library::CustomLaunchRecipe,
+    content_name: &str,
+) -> String {
+    let Some(runtime) = runtime else {
+        return String::new();
+    };
+    let content = if content_name.trim().is_empty() {
+        "<content>".to_owned()
+    } else {
+        content_name.trim().to_owned()
+    };
+    let mut arguments = Vec::new();
+    for argument in &runtime.launch_arguments {
+        match argument {
+            gamenode_core::library::RuntimeArgumentTemplate::Literal(value) => {
+                arguments.push(value.clone());
+            }
+            gamenode_core::library::RuntimeArgumentTemplate::ContentPath => {
+                arguments.push(content.clone());
+            }
+        }
+    }
+    arguments.extend(recipe.arguments.iter().cloned());
+    let name = if runtime.version.trim().is_empty() {
+        runtime.name.clone()
+    } else {
+        format!("{} {}", runtime.name, runtime.version)
+    };
+    if arguments.is_empty() {
+        name
+    } else {
+        format!("{} — {}", name, arguments.join(" "))
+    }
+}
+
 /// A recipe the authenticated plugin profile currently exposes for a matched library game.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -87,6 +126,9 @@ pub struct LaunchRecipeOption {
     pub publisher_fingerprint: String,
     pub recipe_id: String,
     pub recipe_revision: u64,
+    /// Human-readable runtime/version and argument summary, never opaque recipe ids.
+    #[serde(default)]
+    pub summary: String,
 }
 
 /// Selection state shown beside one library entry's detected launch target.
@@ -1409,7 +1451,7 @@ impl Engine {
         &self,
         entry_key: String,
     ) -> Result<LaunchRecipeChoices, String> {
-        let (game_id, target_revision, detected_default_available) = {
+        let (game_id, target_revision, detected_default_available, content_name) = {
             let state = self.lock();
             let entry = state
                 .library
@@ -1419,10 +1461,17 @@ impl Engine {
                 "choose a GameNode game before selecting a launch recipe".to_owned()
             })?;
             let target = entry.target.as_ref();
+            let content_name = entry
+                .fields
+                .get("rom")
+                .cloned()
+                .or_else(|| entry.name.clone())
+                .unwrap_or_default();
             (
                 game_id,
                 target.map_or(0, |target| target.revision),
                 target.is_some_and(|target| target.available),
+                content_name,
             )
         };
         let profiles = self
@@ -1455,11 +1504,18 @@ impl Engine {
                     .map_err(|error| error.to_string())?
                 {
                     if recipe.base_target_revision == target_revision && recipe.validate() {
+                        let runtime = store
+                            .runtime_resource(&owner_key, &recipe.runtime_handle)
+                            .ok()
+                            .flatten();
+                        let summary =
+                            runtime_launch_summary(runtime.as_ref(), &recipe, &content_name);
                         recipes.push(LaunchRecipeOption {
                             plugin_id: identity.plugin_id.clone(),
                             publisher_fingerprint: identity.publisher_fingerprint.clone(),
                             recipe_id: recipe.recipe_id,
                             recipe_revision: recipe.revision,
+                            summary,
                         });
                     }
                 }

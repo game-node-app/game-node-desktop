@@ -2238,6 +2238,85 @@ fn custom_launch_recipes_are_plugin_scoped_revision_checked_and_persistent() {
 }
 
 #[test]
+fn a_runtime_recipe_selection_is_saved_without_a_detected_target() {
+    use gamenode_core::library::{
+        CustomLaunchMutation, CustomLaunchRecipe, LaunchRecipeSelection, LaunchRecipeSelectionWrite,
+    };
+
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("test.sqlite3");
+    let db = SqliteSettingsStore::open(&path).unwrap();
+    let store = db.library_store();
+    store
+        .save_scan(
+            "dolphin-emu",
+            &[record("GPIE01", "Pikmin")],
+            &BTreeMap::new(),
+            100,
+        )
+        .unwrap();
+    db.conn()
+        .execute(
+            "INSERT INTO library_installations (entry_key, installation_id)
+             VALUES ('dolphin-emu:GPIE01', 'install-1')",
+            [],
+        )
+        .unwrap();
+    let recipe = CustomLaunchRecipe {
+        recipe_id: "recipe-1".into(),
+        revision: 1,
+        requester_package_version: "0.3.1".into(),
+        game_id: 2239,
+        installation_id: "install-1".into(),
+        base_target_revision: 0,
+        base_launch_fingerprint: 9,
+        runtime_handle: "runtime-1".into(),
+        content_id: "content-1".into(),
+        ..CustomLaunchRecipe::default()
+    };
+    assert_eq!(
+        store
+            .save_custom_launch_recipe("plugin-owner", &recipe)
+            .unwrap(),
+        CustomLaunchMutation::Applied { revision: 1 }
+    );
+    let selection = LaunchRecipeSelection {
+        entry_key: "dolphin-emu:GPIE01".into(),
+        owner_key: "plugin-owner".into(),
+        plugin_id: "dev.richmont.gamenode.dolphin-emu-launch".into(),
+        publisher_fingerprint: "publisher-key-fingerprint".into(),
+        recipe_id: recipe.recipe_id.clone(),
+        recipe_revision: recipe.revision,
+        base_target_revision: 0,
+        approved_plan_fingerprint: String::new(),
+    };
+    assert_eq!(
+        store.save_launch_recipe_selection(&selection, 0).unwrap(),
+        LaunchRecipeSelectionWrite::Applied
+    );
+    assert_eq!(
+        store
+            .launch_recipe_selection("dolphin-emu:GPIE01")
+            .unwrap()
+            .unwrap()
+            .base_target_revision,
+        0
+    );
+    assert_eq!(
+        store
+            .clear_launch_recipe_selection("dolphin-emu:GPIE01", 0)
+            .unwrap(),
+        LaunchRecipeSelectionWrite::Applied
+    );
+    assert!(
+        store
+            .launch_recipe_selection("dolphin-emu:GPIE01")
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
 fn selected_launch_recipe_is_revision_checked_persistent_and_never_falls_back_silently() {
     use gamenode_core::library::{
         CustomLaunchMutation, CustomLaunchRecipe, LaunchRecipeSelection,

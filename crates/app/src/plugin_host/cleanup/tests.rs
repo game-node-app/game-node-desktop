@@ -371,7 +371,7 @@ async fn storage_locations_report_physical_files_overhead_and_effective_limits()
         .find(|location| location.kind == "durable_shared" && location.plugin_id == ONE)
         .expect("one durable location");
     assert_eq!(durable.scope, "pool");
-    assert!(durable.path.ends_with("plugin-shared-data.sqlite3"));
+    assert!(durable.path.ends_with("plugin-shared-data.gnpersistence"));
     assert_eq!(durable.records, 1);
     assert_eq!(
         durable.max_bytes,

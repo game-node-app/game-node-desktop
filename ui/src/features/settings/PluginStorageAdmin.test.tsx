@@ -13,7 +13,7 @@ import { appTheme } from '../../AppProviders';
 import { I18nProvider } from '../../i18n';
 import { PluginStorageAdmin } from './PluginStorageAdmin';
 
-const poolPath = '/home/test/.local/share/gamenode/plugin-shared-data.sqlite3';
+const poolPath = '/home/test/.local/share/gamenode/plugin-shared-data.gnpersistence';
 const privatePath = '/home/test/.local/share/gamenode/plugin-data/cdcd/dev.example.producer/a/storage.sqlite3';
 
 const accounting: PluginStorageAccounting = {

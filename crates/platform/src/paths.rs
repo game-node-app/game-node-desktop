@@ -245,7 +245,7 @@ mod tests {
         );
         assert_eq!(
             paths.plugin_shared_data_file(),
-            paths.data_dir().join("plugin-shared-data.sqlite3")
+            paths.data_dir().join("plugin-shared-data.gnpersistence")
         );
         assert!(paths.tools_cache_dir().starts_with(paths.data_dir()));
         assert!(paths.tool_backups_dir().starts_with(paths.data_dir()));

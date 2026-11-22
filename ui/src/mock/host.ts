@@ -1792,7 +1792,7 @@ export function createMockHost(options: {
     maxAgeSeconds: number | null;
   }
   const mockDataDir = '/home/mock/.local/share/gamenode';
-  const mockPoolPath = `${mockDataDir}/plugin-shared-data.sqlite3`;
+  const mockPoolPath = `${mockDataDir}/plugin-shared-data.gnpersistence`;
   const mockPrivatePath = `${mockDataDir}/plugin-data/cdcdcdcdcdcdcdcd/dev.prateleira.local/mock-profile/storage.sqlite3`;
   let mockCleanupToken = 'mock-cleanup-review';
   let mockStorageEntries: MockStorageEntry[] = [

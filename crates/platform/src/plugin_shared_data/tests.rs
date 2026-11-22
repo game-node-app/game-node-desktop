@@ -73,6 +73,25 @@ fn user_version(conn: &Connection) -> i64 {
 }
 
 #[test]
+fn a_legacy_sqlite_pool_is_renamed_to_the_gnpersistence_extension() {
+    let dir = TempDir::new().unwrap();
+    let legacy = dir.path().join(LEGACY_FILE_NAME);
+    drop(Connection::open(&legacy).unwrap());
+    assert!(legacy.is_file());
+
+    let store = SharedDataStore::open_existing(dir.path())
+        .unwrap()
+        .expect("the legacy pool is migrated and opened");
+    assert!(!legacy.exists(), "the legacy file name is not left behind");
+    assert!(dir.path().join(FILE_NAME).is_file());
+    assert_eq!(
+        store.pool_revision().unwrap(),
+        0,
+        "the migrated pool keeps its schema state"
+    );
+}
+
+#[test]
 fn a_fresh_pool_has_the_current_schema_pragmas_and_no_rows() {
     let dir = TempDir::new().unwrap();
     let store = SharedDataStore::open(dir.path()).unwrap();

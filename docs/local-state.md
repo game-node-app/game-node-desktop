@@ -171,7 +171,7 @@ scans, per-account matches, the layout and sign-out.
 ## Durable shared data pool
 
 Public shared-data records a plugin publishes with `storage.persist` are stored outside the
-application database, in `plugin-shared-data.sqlite3` below the application data directory. The
+application database, in `plugin-shared-data.gnpersistence` below the application data directory. The
 file is separate from `gamenode.sqlite3` and from the private plugin stores, so a durable
 publication can outlive its producer session without making private storage public. It is created
 the first time a durable publication is accepted; a session-only publication is never written to

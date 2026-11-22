@@ -1,6 +1,6 @@
 //! Host-owned durable pool for public shared-data records.
 //!
-//! The pool lives in its own SQLite file, `plugin-shared-data.sqlite3`, below the application
+//! The pool lives in its own SQLite file, `plugin-shared-data.gnpersistence`, below the application
 //! data directory. It is separate from the application settings/library database and from the
 //! private `plugin-data` stores, so a public publication can outlive its producer session without
 //! making private storage public.
@@ -28,7 +28,9 @@ use std::path::Path;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 /// File name of the shared-data pool inside the application data directory.
-pub const FILE_NAME: &str = "plugin-shared-data.sqlite3";
+pub const FILE_NAME: &str = "plugin-shared-data.gnpersistence";
+/// Pre-release builds used the generic SQLite extension. Existing pools are renamed on open.
+pub const LEGACY_FILE_NAME: &str = "plugin-shared-data.sqlite3";
 
 /// The schema version this build writes.
 pub const CURRENT_SCHEMA_VERSION: u32 = 3;
@@ -436,13 +438,34 @@ impl SharedDataStore {
     /// Opens an existing pool without creating anything; `None` when this host never persisted a
     /// shared record.
     pub fn open_existing(data_dir: &Path) -> Result<Option<Self>, SharedDataError> {
+        Self::migrate_legacy_name(data_dir)?;
         if !data_dir.join(FILE_NAME).is_file() {
             return Ok(None);
         }
         Self::open(data_dir).map(Some)
     }
 
+    /// Renames a pre-release `plugin-shared-data.sqlite3` pool, including its WAL sidecars, before
+    /// the new name is opened. A failed rename is an error instead of silently starting empty.
+    fn migrate_legacy_name(data_dir: &Path) -> Result<(), SharedDataError> {
+        let current = data_dir.join(FILE_NAME);
+        let legacy = data_dir.join(LEGACY_FILE_NAME);
+        if current.exists() || !legacy.is_file() {
+            return Ok(());
+        }
+        fs::rename(&legacy, &current).map_err(SharedDataError::Open)?;
+        for suffix in ["-wal", "-shm"] {
+            let from = data_dir.join(format!("{LEGACY_FILE_NAME}{suffix}"));
+            if from.is_file() {
+                fs::rename(&from, data_dir.join(format!("{FILE_NAME}{suffix}")))
+                    .map_err(SharedDataError::Open)?;
+            }
+        }
+        Ok(())
+    }
+
     fn open_with(data_dir: &Path, migrations: &[Migration]) -> Result<Self, SharedDataError> {
+        Self::migrate_legacy_name(data_dir)?;
         fs::create_dir_all(data_dir).map_err(SharedDataError::Open)?;
         let mut conn = Connection::open(data_dir.join(FILE_NAME))?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;

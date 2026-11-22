@@ -29,7 +29,7 @@ gap rather than inventing a new permission model. The private durable stores
 
 ### Separate durable store
 
-Add a host-owned SQLite database (for example `plugin-shared-data.sqlite3`) with:
+Add a host-owned SQLite database (`plugin-shared-data.gnpersistence`) with:
 `shared_records` (owner key, dataset, record/resource identity, schema, revision, payload,
 provenance, observed/received/expiry times, updated time), `shared_state` (monotonic pool
 sequence) and `shared_retention` (per-owner age/byte limits). A separate database keeps the

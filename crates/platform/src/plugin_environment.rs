@@ -460,6 +460,7 @@ fn machine_name(machine: u16) -> Option<String> {
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn parses_linux_release_identity_and_preserves_unknown_fields() {
         let identity = parse_os_release(
@@ -475,6 +476,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn missing_os_release_values_remain_unknown() {
         let identity = parse_os_release("PRETTY_NAME=\"Future Linux\"\n");

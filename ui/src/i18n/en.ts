@@ -269,6 +269,7 @@ export const en = {
   "Library::Detected launch target": "Detected launch target",
   "Library::Launch method": "Launch method",
   "Library::Loading launch methods…": "Loading launch methods…",
+  "Library::Custom launch method: {}": "Custom launch method: {}",
   "Library::Custom launch recipe selected: {} · {}": "Custom launch recipe selected: {} · {}",
   "Library::The selected recipe changed or is unavailable. Choose another recipe or return to the detected default.": "The selected recipe changed or is unavailable. Choose another recipe or return to the detected default.",
   "Library::Use detected default": "Use detected default",

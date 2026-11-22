@@ -6,6 +6,21 @@ interface Props {
   entryKey: string;
 }
 
+const KNOWN_LAUNCH_LABELS: Record<string, string> = {
+  'dev.richmont.gamenode.dolphin-emu-launch': 'Dolphin',
+};
+
+/** A human label for the extension that owns a recipe; recipe ids stay internal. */
+function launchLabel(pluginId: string): string {
+  const known = KNOWN_LAUNCH_LABELS[pluginId];
+  if (known) return known;
+  const tail = pluginId.split('.').pop() ?? pluginId;
+  const words = tail.split(/[-_]/).filter(Boolean);
+  return words.length > 0
+    ? words.map((word) => word[0].toUpperCase() + word.slice(1)).join(' ')
+    : pluginId;
+}
+
 export const LaunchRecipeSelector: React.FC<Props> = ({ entryKey }) => {
   const { t } = useI18n();
   const [choices, setChoices] = React.useState<LaunchRecipeChoices | null>(null);
@@ -68,6 +83,16 @@ export const LaunchRecipeSelector: React.FC<Props> = ({ entryKey }) => {
           selected.baseTargetRevision === choices.targetRevision,
       )
     : undefined;
+  // Historical proposals from failed attempts share the plugin; the user needs one method, not
+  // one opaque recipe id per attempt. Keep the selected recipe when it still exists.
+  const visibleRecipes = React.useMemo(() => {
+    const byPlugin = new Map<string, LaunchRecipeOption>();
+    for (const recipe of choices?.recipes ?? []) {
+      if (!byPlugin.has(recipe.pluginId)) byPlugin.set(recipe.pluginId, recipe);
+    }
+    if (selectedOption) byPlugin.set(selectedOption.pluginId, selectedOption);
+    return [...byPlugin.values()];
+  }, [choices, selectedOption]);
 
   return (
     <section
@@ -91,20 +116,21 @@ export const LaunchRecipeSelector: React.FC<Props> = ({ entryKey }) => {
               data-testid="selected-launch-recipe-status"
             >
               {selectedOption
-                ? t('Library::Custom launch recipe selected: {} · {}')
-                    .replace('{}', selected.pluginId)
-                    .replace('{}', selected.recipeId)
+                ? t('Library::Custom launch method: {}').replace(
+                    '{}',
+                    launchLabel(selectedOption.pluginId),
+                  )
                 : t('Library::The selected recipe changed or is unavailable. Choose another recipe or return to the detected default.')}
             </div>
           )}
           <div className="flex flex-wrap gap-compact">
-            {choices?.recipes.map((recipe) => {
+            {visibleRecipes.map((recipe) => {
               const active =
                 recipe.pluginId === selected?.pluginId &&
                 recipe.publisherFingerprint === selected.publisherFingerprint &&
                 recipe.recipeId === selected.recipeId &&
                 recipe.recipeRevision === selected.recipeRevision &&
-                selected.baseTargetRevision === choices.targetRevision;
+                selected.baseTargetRevision === choices?.targetRevision;
               return (
                 <button
                   key={`${recipe.pluginId}:${recipe.publisherFingerprint}:${recipe.recipeId}`}
@@ -115,7 +141,7 @@ export const LaunchRecipeSelector: React.FC<Props> = ({ entryKey }) => {
                   onClick={() => void choose(recipe)}
                   className="self-start rounded-xs border border-border-subtle bg-transparent px-2.5 py-1 text-xs font-medium text-text-default transition-colors hover:bg-surface disabled:opacity-45"
                 >
-                  {recipe.pluginId} · {recipe.recipeId}
+                  {launchLabel(recipe.pluginId)}
                 </button>
               );
             })}
@@ -131,7 +157,7 @@ export const LaunchRecipeSelector: React.FC<Props> = ({ entryKey }) => {
               </button>
             )}
           </div>
-          {!selected && choices?.recipes.length === 0 && (
+          {!selected && choices && visibleRecipes.length === 0 && (
             <div className="text-xs text-text-dimmed">
               {t('Library::No custom launch recipes are available for this game.')}
             </div>
@@ -148,7 +174,7 @@ export const LaunchRecipeSelector: React.FC<Props> = ({ entryKey }) => {
           {t('Library::Launch choices could not be saved or refreshed. Check for changes and try again.')}
         </div>
       )}
-      {!loading && choices?.selected === null && choices?.recipes.length === 0 && (
+      {!loading && choices?.selected === null && choices && visibleRecipes.length === 0 && (
         <div className="sr-only" role="status">
           {choices.detectedDefaultAvailable
             ? t('Library::The detected default is selected.')

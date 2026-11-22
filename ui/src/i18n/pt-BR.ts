@@ -271,6 +271,7 @@ export const ptBR: TranslationCatalog = {
   "Library::Detected launch target": "Destino de inicialização detectado",
   "Library::Launch method": "Método de inicialização",
   "Library::Loading launch methods…": "Carregando métodos de inicialização…",
+  "Library::Custom launch method: {}": "Método de inicialização personalizado: {}",
   "Library::Custom launch recipe selected: {} · {}": "Receita de inicialização personalizada selecionada: {} · {}",
   "Library::The selected recipe changed or is unavailable. Choose another recipe or return to the detected default.": "A receita selecionada mudou ou está indisponível. Escolha outra receita ou volte ao padrão detectado.",
   "Library::Use detected default": "Usar padrão detectado",

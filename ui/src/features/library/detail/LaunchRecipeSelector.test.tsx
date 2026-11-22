@@ -54,13 +54,39 @@ describe('LaunchRecipeSelector', () => {
     await user.click(screen.getByTestId('launch-recipe-org.example.launcher-proton-9'));
     await waitFor(() => expect(choose).toHaveBeenCalledWith('steam:620', recipe, 7));
     expect(await screen.findByTestId('selected-launch-recipe-status')).toHaveTextContent(
-      'org.example.launcher · proton-9',
+      'Launcher',
     );
+    expect(
+      screen.getByTestId('selected-launch-recipe-status'),
+    ).not.toHaveTextContent('proton-9');
 
     await user.click(screen.getByRole('button', { name: defaultLabel }));
     await waitFor(() => expect(useDefault).toHaveBeenCalledWith('steam:620', 7));
     await waitFor(() => expect(choices).toHaveBeenCalledTimes(3));
     expect(screen.queryByTestId('use-detected-default')).not.toBeInTheDocument();
+  });
+
+  it('shows one method per plugin and never a recipe id', async () => {
+    vi.spyOn(commands, 'launchRecipeChoices').mockResolvedValue({
+      targetRevision: 7,
+      detectedDefaultAvailable: true,
+      selected: null,
+      recipes: [
+        recipe,
+        { ...recipe, recipeId: 'proton-10', recipeRevision: 4 },
+      ],
+    });
+    render(
+      <I18nProvider initialLocale="en">
+        <LaunchRecipeSelector entryKey="steam:620" />
+      </I18nProvider>,
+    );
+
+    const buttons = await screen.findAllByTestId(/^launch-recipe-org\.example\.launcher-/);
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0]).toHaveTextContent('Launcher');
+    expect(screen.queryByText(/proton-9/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/org\.example\.launcher/)).not.toBeInTheDocument();
   });
 
   it.each([

@@ -41,19 +41,17 @@
     failed, including the new dialog tests and
     `src/mock/host.test.ts › narrows the Dolphin match dialog by the declared platform and restores
     it on Show all` (GameCube NGC-only, Show all adds Switch, Wii and no-platform rows).
-- [x] 1.6 Run focused core/UI tests, `tsc`, the UI build, `cargo fmt`/`git diff --check` and
-  strict OpenSpec validation; rebuild the desktop and manually confirm the Pikmin GameCube vs
-  Switch case before marking the tasks complete.
-  - Verified: `npx --yes pnpm@10 --dir ui exec tsc -b` → clean; `npx --yes pnpm@10 --dir ui build`
-    → built in 6.36 s; `cargo fmt --all -- --check` → clean; `git diff --check` → clean;
-    `openspec validate --strict add-platform-aware-match-filter` → valid;
+- [ ] 1.6 Run the final focused checks and confirm the Pikmin GameCube vs Switch case in the
+  rebuilt desktop before marking this task complete.
+  - Automated evidence: `npx --yes pnpm@10 --dir ui exec tsc -b` → clean; `npx --yes pnpm@10
+    --dir ui build` → built in 6.36 s; `cargo fmt --all -- --check` → clean; `git diff --check` →
+    clean; `openspec validate --strict add-platform-aware-match-filter` → valid;
     `CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target-platform-match-filter
     CARGO_NET_OFFLINE=true CARGO_INCREMENTAL=0 cargo clippy --locked -p gamenode-core
     --all-targets` → clean.
   - The Pikmin GameCube vs Switch case is covered by the mock-host regression above (NGC-only
-    candidates/results, then Switch after Show all). No desktop browser is attached to this
-    session, so no interactive in-app confirmation and no native desktop bundle rebuild were
-    performed; the Vite UI and its mock were built and exercised by the tests instead.
+    candidates/results, then Switch after Show all). Native interactive confirmation and the
+    desktop rebuild are still pending, so this task stays open.
 
 ## Out of Scope
 

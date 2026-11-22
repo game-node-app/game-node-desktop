@@ -807,6 +807,13 @@ impl ThirdPartyPluginLifecycle {
         Ok(outcomes)
     }
 
+    /// Test-only observation that a package has a registered provider and a composed process
+    /// slot, not a half-applied registration.
+    #[cfg(test)]
+    pub(crate) fn has_process_slot(&self, plugin_id: &str) -> bool {
+        self.process_ids(plugin_id).is_ok()
+    }
+
     pub async fn enabled(&self, plugin_id: String) -> Result<bool, Status> {
         let profile = self.api.profiles().require()?;
         let state = self.state.clone();

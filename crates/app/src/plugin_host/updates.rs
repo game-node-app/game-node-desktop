@@ -5140,6 +5140,7 @@ pub(super) mod tests {
             .clone()
             .unwrap();
         assert!(lifecycle.is_registered("org.example.launch"));
+        assert!(lifecycle.has_process_slot("org.example.launch"));
         assert!(lifecycle.extension_runtime_available("org.example.launch"));
         assert!(
             lifecycle
@@ -5205,6 +5206,7 @@ pub(super) mod tests {
             .clone()
             .unwrap();
         assert!(lifecycle.is_registered("org.example.update"));
+        assert!(lifecycle.has_process_slot("org.example.update"));
         assert!(
             !lifecycle
                 .enabled("org.example.update".into())

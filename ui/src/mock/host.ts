@@ -74,6 +74,7 @@ import type {
 import type { PluginNotice } from '../api/pluginNotices';
 import type { PluginConfirmation, RememberedConfirmation } from '../api/pluginConfirmations';
 import type { PluginFolderApproval, RootConfirmationPrompt, RootSelectionPrompt } from '../api/pluginFolderApprovals';
+import type { RuntimeSelectionPrompt } from '../api/pluginRuntimeApprovals';
 
 type Listener = (snapshot: Snapshot) => void;
 type ProgressListener = (progress: PortProgress) => void;
@@ -82,6 +83,8 @@ type PluginConfirmationListener = (confirmation: unknown) => void;
 type PluginConfirmationClosedListener = (id: string) => void;
 type PluginRootPromptListener = (prompt: unknown) => void;
 type PluginRootPromptClosedListener = (id: string) => void;
+type PluginRuntimePromptListener = (prompt: unknown) => void;
+type PluginRuntimePromptClosedListener = (id: string) => void;
 
 export type MockSteamScenario =
   | 'notConnected'
@@ -2032,10 +2035,13 @@ export function createMockHost(options: {
   const rootSelectionListeners = new Set<PluginRootPromptListener>();
   const rootConfirmationListeners = new Set<PluginRootPromptListener>();
   const rootPromptClosedListeners = new Set<PluginRootPromptClosedListener>();
+  const runtimeSelectionListeners = new Set<PluginRuntimePromptListener>();
+  const runtimePromptClosedListeners = new Set<PluginRuntimePromptClosedListener>();
   /** Confirmations the fictional user left open, and what they chose to remember, by plugin. */
   const openConfirmations = new Map<string, PluginConfirmation>();
   const openRootSelections = new Map<string, RootSelectionPrompt>();
   const openRootConfirmations = new Map<string, RootConfirmationPrompt>();
+  const openRuntimeSelections = new Map<string, RuntimeSelectionPrompt>();
   const remembered = new Map<string, RememberedConfirmation[]>();
   const mockPublisher = 'cd'.repeat(32);
   /** A fictional producer with retained durable records so the cleanup surface is exercisable. */
@@ -4705,6 +4711,22 @@ export function createMockHost(options: {
       openRootSelections.delete(id);
       openRootConfirmations.delete(id);
       rootPromptClosedListeners.forEach((listener) => listener(id));
+    },
+    subscribeRuntimeSelections(listener: PluginRuntimePromptListener) {
+      runtimeSelectionListeners.add(listener);
+      return () => { runtimeSelectionListeners.delete(listener); };
+    },
+    subscribeRuntimePromptsClosed(listener: PluginRuntimePromptClosedListener) {
+      runtimePromptClosedListeners.add(listener);
+      return () => { runtimePromptClosedListeners.delete(listener); };
+    },
+    publishRuntimeSelection(prompt: RuntimeSelectionPrompt) {
+      openRuntimeSelections.set(prompt.id, prompt);
+      runtimeSelectionListeners.forEach((listener) => listener(prompt));
+    },
+    closeRuntimePrompt(id: string) {
+      openRuntimeSelections.delete(id);
+      runtimePromptClosedListeners.forEach((listener) => listener(id));
     },
     async invoke(cmd: string, args: Record<string, unknown> = {}): Promise<unknown> {
       if (cmd === 'get_snapshot') return copy();

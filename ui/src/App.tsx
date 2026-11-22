@@ -22,6 +22,7 @@ import { usePluginNotices } from './features/plugins/usePluginNotices';
 import { PluginPortSetupHost } from './features/ports/setup/PluginPortSetupHost';
 import { PluginConfirmationHost } from './features/plugins/PluginConfirmationHost';
 import { PluginFolderApprovalHost } from './features/plugins/PluginFolderApprovalHost';
+import { PluginRuntimeApprovalHost } from './features/plugins/PluginRuntimeApprovalHost';
 import { useUiStore } from './store/uiStore';
 
 // Snapshot- or store-gated overlays are split out of the startup bundle. They are
@@ -247,6 +248,7 @@ export const App: React.FC = () => {
       </LazyOverlay>
       <PluginConfirmationHost />
       <PluginFolderApprovalHost />
+      <PluginRuntimeApprovalHost />
       <PluginPortSetupHost />
       <ToastContainer />
     </div>

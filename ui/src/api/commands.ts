@@ -472,6 +472,10 @@ export const commands = {
   pluginFolderApprovalAnswer: (id: string, approved: boolean) =>
     safeInvoke<void>('plugin_folder_approval_answer', { id, approved }, () => undefined),
 
+  /** Answers the host runtime picker; null means decline and creates nothing. */
+  pluginRuntimeSelectionAnswer: (id: string, selectedExecutable: string | null) =>
+    safeInvoke<void>('plugin_runtime_selection_answer', { id, selectedExecutable }, () => undefined),
+
   pluginFolderApprovals: (pluginId: string, publisherFingerprint: string) =>
     safeInvoke<PluginFolderApproval[]>(
       'plugin_folder_approvals', { pluginId, publisherFingerprint }, () => [],

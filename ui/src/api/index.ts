@@ -4,5 +4,6 @@ export * from './useSnapshot';
 export * from './ports';
 export * from './pluginConfirmations';
 export * from './pluginFolderApprovals';
+export * from './pluginRuntimeApprovals';
 export * from './sharedResources';
 export * from './pluginNotices';

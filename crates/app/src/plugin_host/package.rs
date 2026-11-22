@@ -32,6 +32,11 @@ pub struct Manifest {
     /// updates never grant them automatically.
     #[serde(default)]
     pub native_access: Vec<String>,
+    /// Content platforms this package supports, such as `gamecube` or `wii`. These are content
+    /// families, not OS targets; the executable tuples stay in `targets`. Missing declarations
+    /// are accepted for backward compatibility.
+    #[serde(default)]
+    pub supported_platforms: Vec<String>,
     pub targets: Vec<Target>,
     pub publisher: Publisher,
     pub license: LicenseNotice,
@@ -88,6 +93,11 @@ pub struct PermissionRequest {
     pub required: bool,
     pub scope: String,
     pub reason: String,
+    /// Signed disclosure of what the plugin loses when this optional permission is denied. A
+    /// required permission cannot be denied, so the field is descriptive there. Older manifests
+    /// without it remain valid.
+    #[serde(default)]
+    pub impact_if_disabled: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, serde::Serialize, PartialEq, Eq)]
@@ -332,6 +342,19 @@ impl Manifest {
         if self.targets.is_empty() {
             return invalid("at least one target is required");
         }
+        if self.supported_platforms.len() > MAX_SUPPORTED_PLATFORMS {
+            return invalid("supported_platforms allows at most 16 entries");
+        }
+        let mut seen_platforms = std::collections::HashSet::new();
+        if self
+            .supported_platforms
+            .iter()
+            .any(|platform| !supported_platform(platform) || !seen_platforms.insert(platform))
+        {
+            return invalid(
+                "supported_platforms must contain unique lowercase identifiers of 1 to 64 bytes",
+            );
+        }
         let mut seen_targets = std::collections::HashSet::new();
         for target in &self.targets {
             let valid_abi = match target.os.as_str() {
@@ -395,6 +418,15 @@ impl Manifest {
             {
                 return invalid(
                     "permission requests require a valid id, scope, and bounded reason",
+                );
+            }
+            if let Some(impact) = &permission.impact_if_disabled
+                && (impact.trim().is_empty()
+                    || impact.len() > 512
+                    || impact.chars().any(char::is_control))
+            {
+                return invalid(
+                    "permission impact_if_disabled must be a non-empty bounded single-line disclosure",
                 );
             }
             if !permissions.insert(&permission.id) {
@@ -541,6 +573,18 @@ fn identifier(s: &str) -> bool {
         && s.len() <= 128
         && s.bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-' || b == b'_')
+}
+
+/// Content platform identifiers are lowercase, ASCII-only, and 1 to 64 bytes. The byte check
+/// also rejects control characters, uppercase variants, and non-ASCII lookalikes.
+const MAX_SUPPORTED_PLATFORMS: usize = 16;
+
+fn supported_platform(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && s.bytes().all(|b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'_' | b'-')
+        })
 }
 fn package_path(s: &str) -> bool {
     !s.is_empty()
@@ -1221,6 +1265,94 @@ mod tests {
             manifest.manifest().playtime.without_pause_detection,
             PlaytimeAccountingMode::Disabled
         );
+    }
+
+    fn manifest_value() -> serde_json::Value {
+        serde_json::from_str(VALID).unwrap()
+    }
+
+    fn parse_value(value: &serde_json::Value) -> Result<ValidatedManifest, ManifestError> {
+        Manifest::parse_json(&serde_json::to_vec(value).unwrap())
+    }
+
+    #[test]
+    fn accepts_signed_platform_and_permission_impact_disclosures() {
+        let mut value = manifest_value();
+        value["supported_platforms"] = serde_json::json!(["gamecube", "wii", "nintendo.wii-u"]);
+        value["permissions"][0]["impact_if_disabled"] =
+            serde_json::json!("GameCube and Wii games are not recognised");
+        let manifest = parse_value(&value).expect("valid impact and platform declarations");
+        assert_eq!(
+            manifest.manifest().supported_platforms,
+            ["gamecube", "wii", "nintendo.wii-u"]
+        );
+        assert_eq!(
+            manifest.manifest().permissions[0]
+                .impact_if_disabled
+                .as_deref(),
+            Some("GameCube and Wii games are not recognised")
+        );
+    }
+
+    #[test]
+    fn omitted_platforms_and_impact_stay_backward_compatible() {
+        let manifest = Manifest::parse_json(VALID.as_bytes()).unwrap();
+        assert!(manifest.manifest().supported_platforms.is_empty());
+        assert!(
+            manifest.manifest().permissions[0]
+                .impact_if_disabled
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn rejects_unsafe_platforms_and_impact_disclosures() {
+        let mut too_many = manifest_value();
+        too_many["supported_platforms"] = serde_json::json!(
+            (0..17)
+                .map(|index| format!("platform{index}"))
+                .collect::<Vec<_>>()
+        );
+        let mut duplicate = manifest_value();
+        duplicate["supported_platforms"] = serde_json::json!(["gamecube", "gamecube"]);
+        let mut uppercase = manifest_value();
+        uppercase["supported_platforms"] = serde_json::json!(["GameCube"]);
+        let mut control = manifest_value();
+        control["supported_platforms"] = serde_json::json!(["game\u{0007}cube"]);
+        let mut separator = manifest_value();
+        separator["supported_platforms"] = serde_json::json!(["game/cube"]);
+        let mut too_long = manifest_value();
+        too_long["supported_platforms"] = serde_json::json!(["p".repeat(65)]);
+        let mut empty = manifest_value();
+        empty["supported_platforms"] = serde_json::json!([""]);
+        let mut empty_impact = manifest_value();
+        empty_impact["permissions"][0]["impact_if_disabled"] = serde_json::json!("   ");
+        let mut long_impact = manifest_value();
+        long_impact["permissions"][0]["impact_if_disabled"] = serde_json::json!("i".repeat(513));
+        let mut control_impact = manifest_value();
+        control_impact["permissions"][0]["impact_if_disabled"] =
+            serde_json::json!("first line\nsecond line");
+        let mut renamed_impact = manifest_value();
+        renamed_impact["permissions"][0]["impact"] = serde_json::json!("not a declared field");
+
+        for (label, value) in [
+            ("too many platforms", too_many),
+            ("duplicate platform", duplicate),
+            ("uppercase platform", uppercase),
+            ("control character", control),
+            ("separator character", separator),
+            ("overlong platform", too_long),
+            ("empty platform", empty),
+            ("blank impact", empty_impact),
+            ("overlong impact", long_impact),
+            ("multiline impact", control_impact),
+            ("unknown permission field", renamed_impact),
+        ] {
+            assert!(
+                parse_value(&value).is_err(),
+                "accepted {label} fixture: {value}"
+            );
+        }
     }
 
     #[test]

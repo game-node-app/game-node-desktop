@@ -1441,12 +1441,14 @@ mod tests {
                 required: false,
                 scope: "published-category".into(),
                 reason: "test".into(),
+                impact_if_disabled: None,
             },
             super::super::package::PermissionRequest {
                 id: gamenode_plugin_protocol::capability::STORAGE_PERSIST.into(),
                 required: false,
                 scope: "own-provider".into(),
                 reason: "test".into(),
+                impact_if_disabled: None,
             },
         ])
         .unwrap();
@@ -1465,6 +1467,7 @@ mod tests {
             required: false,
             scope: "any-record".into(),
             reason: "test".into(),
+            impact_if_disabled: None,
         };
         assert_eq!(
             manifest_permission_requests(&[malformed]),

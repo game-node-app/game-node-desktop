@@ -183,6 +183,7 @@ fn persist_origins(fixture: &Fixture, plugin: &str, publisher: &str, approved: &
             required: false,
             scope: format!("{API_ORIGIN}, {CDN_ORIGIN}"),
             reason: "Fetch fixtures".into(),
+            impact_if_disabled: None,
         }])
         .unwrap();
     let decisions: Vec<_> = approved

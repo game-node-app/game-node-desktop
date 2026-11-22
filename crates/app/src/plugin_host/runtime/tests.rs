@@ -287,7 +287,10 @@ async fn imported_signed_provider_runs_from_registry_and_profile_fences_after_pe
         .await
         .unwrap();
     assert_eq!(
-        importer.import_install(&review.token, false).await.unwrap(),
+        importer
+            .import_install(&review.token, false, &[])
+            .await
+            .unwrap(),
         "fixture.plugin"
     );
     let imported = registry.active("fixture.plugin").unwrap().unwrap();
@@ -472,7 +475,10 @@ async fn official_linux_providers_remain_composed_across_managed_registry_states
                     .await
                     .unwrap();
                 assert_eq!(
-                    importer.import_install(&review.token, false).await.unwrap(),
+                    importer
+                        .import_install(&review.token, false, &[])
+                        .await
+                        .unwrap(),
                     "fixture.plugin",
                     "{state_name}"
                 );
@@ -1533,7 +1539,7 @@ async fn the_real_dolphin_provider_publishes_a_durable_catalog_read_with_it_stop
         .await
         .unwrap();
     let installed_bundle = service
-        .bundle_import_install(&review.token, false)
+        .bundle_import_install(&review.token, false, &[])
         .await
         .unwrap();
     assert_eq!(

@@ -2167,7 +2167,10 @@ mod tests {
         profile::PluginStateLayout,
         publisher_trust,
         runtime::{HostedProviders, PluginPermissionSnapshot, ThirdPartyPluginLifecycle},
-        updates::{BundleComponentPermissionSubmission, PluginUpdateService},
+        updates::{
+            BundleComponentDeniedPermissions, BundleComponentPermissionSubmission,
+            PluginUpdateService,
+        },
     };
     use base64::Engine as _;
     use gamenode_core::{library::LibraryStore as _, provider::Record};
@@ -2270,6 +2273,33 @@ mod tests {
             api_min: &str,
             permissions: Vec<serde_json::Value>,
         ) -> PathBuf {
+            self.component_with_platforms(
+                file,
+                kind,
+                id,
+                version,
+                os,
+                abi,
+                api_min,
+                permissions,
+                vec![],
+            )
+        }
+
+        /// The same fixture with signed content-platform disclosures.
+        #[allow(clippy::too_many_arguments)]
+        fn component_with_platforms(
+            &self,
+            file: &str,
+            kind: &str,
+            id: &str,
+            version: &str,
+            os: &str,
+            abi: &str,
+            api_min: &str,
+            permissions: Vec<serde_json::Value>,
+            supported_platforms: Vec<&str>,
+        ) -> PathBuf {
             let source = self.dir.path().join(format!("{file}-source"));
             fs::create_dir_all(source.join("bin")).unwrap();
             fs::create_dir_all(source.join("licenses")).unwrap();
@@ -2298,6 +2328,9 @@ mod tests {
                 manifest["provider_id"] = serde_json::json!("dolphin-fixture");
             }
             manifest["permissions"] = permissions.into();
+            if !supported_platforms.is_empty() {
+                manifest["supported_platforms"] = serde_json::json!(supported_platforms);
+            }
             fs::write(
                 source.join("plugin.json"),
                 serde_json::to_vec(&manifest).unwrap(),
@@ -2698,7 +2731,7 @@ mod tests {
         assert_eq!(review.components.len(), 2);
         // An unconfirmed review cannot install anything.
         let refused = service
-            .bundle_import_install(&review.token, true)
+            .bundle_import_install(&review.token, true, &[])
             .await
             .expect_err("the publisher decision comes before installation");
         assert!(
@@ -2711,7 +2744,7 @@ mod tests {
             .await
             .unwrap();
         let outcome = service
-            .bundle_import_install(&review.token, true)
+            .bundle_import_install(&review.token, true, &[])
             .await
             .unwrap();
         assert_eq!(outcome.bundle_id, "org.example.dolphin");
@@ -2737,10 +2770,302 @@ mod tests {
 
         // The approved review is single-use; a replay cannot install again.
         let replay = service
-            .bundle_import_install(&review.token, true)
+            .bundle_import_install(&review.token, true, &[])
             .await
             .expect_err("the token is consumed by the install");
         assert!(replay.contains("expired"), "{replay}");
+    }
+
+    /// The bundle review inherits each component's signed platform and permission-impact
+    /// disclosures, and the install applies one component's denial without touching its sibling.
+    #[tokio::test]
+    async fn bundle_import_install_applies_per_component_permission_decisions() {
+        let fixture = Fixture::new();
+        let provider = fixture.component_with_platforms(
+            "provider",
+            "provider",
+            "org.example.dolphin",
+            "0.1.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+            vec![
+                serde_json::json!({
+                    "id": "provider.context.read", "required": true,
+                    "scope": "provider session", "reason": "Open a provider session"
+                }),
+                serde_json::json!({
+                    "id": "storage.persist", "required": false, "scope": "own-provider",
+                    "reason": "Store plugin preferences",
+                    "impact_if_disabled": "Preferences are lost between sessions"
+                }),
+                serde_json::json!({
+                    "id": "network.fetch", "required": false,
+                    "scope": "https://api.example.com", "reason": "Fetch remote metadata",
+                    "impact_if_disabled": "Remote metadata stays unavailable"
+                }),
+            ],
+            vec!["gamecube", "wii"],
+        );
+        let launch = fixture.component_with_permissions(
+            "launch",
+            "extension",
+            "org.example.dolphin.launch",
+            "0.2.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+            vec![serde_json::json!({
+                "id": "game.launch", "required": false,
+                "scope": "approved-game-session", "reason": "Launch a game",
+                "impact_if_disabled": "Launching from the plugin is unavailable"
+            })],
+        );
+        let bundle = fixture.bundle(&[&provider, &launch]);
+
+        let paths = DataPaths::at(fixture.dir.path().join("app-data"));
+        let api = PluginApi::default();
+        let state = PluginStateLayout::managed(&paths);
+        api.set_state_layout(state.clone());
+        api.providers
+            .profiles()
+            .update(Some("bundle-account"), true);
+        let registry = PluginPackageRegistry::open(&paths).unwrap();
+        let service = review_service(&api, &paths, &state, &registry);
+        let settings =
+            SqliteSettingsStore::open(&fixture.dir.path().join("bundles.sqlite3")).unwrap();
+        service.set_bundle_store(settings.bundle_store());
+
+        let review = service.bundle_import_review(bundle).await.unwrap();
+        let provider_review = review
+            .components
+            .iter()
+            .find(|component| component.review.plugin_id == "org.example.dolphin")
+            .expect("the provider is reviewed");
+        assert_eq!(
+            provider_review.review.supported_platforms,
+            ["gamecube", "wii"]
+        );
+        assert_eq!(
+            provider_review.review.requested_permissions[1]
+                .impact_if_disabled
+                .as_deref(),
+            Some("Preferences are lost between sessions")
+        );
+        let launch_review = review
+            .components
+            .iter()
+            .find(|component| component.review.plugin_id == "org.example.dolphin.launch")
+            .expect("the extension is reviewed");
+        assert_eq!(
+            launch_review.review.requested_permissions[0]
+                .impact_if_disabled
+                .as_deref(),
+            Some("Launching from the plugin is unavailable")
+        );
+
+        service
+            .bundle_import_confirm_publisher(&review.token, &review.bundle.publisher_fingerprint)
+            .await
+            .unwrap();
+
+        // A denial must name a reviewed component and an optional permission of that component.
+        for (denials, message) in [
+            (
+                vec![BundleComponentDeniedPermissions {
+                    plugin_id: "org.example.other".into(),
+                    denied_permission_ids: vec![],
+                }],
+                "not part of this bundle review",
+            ),
+            (
+                vec![BundleComponentDeniedPermissions {
+                    plugin_id: "org.example.dolphin".into(),
+                    denied_permission_ids: vec!["provider.context.read".into()],
+                }],
+                "required permission",
+            ),
+            (
+                vec![BundleComponentDeniedPermissions {
+                    plugin_id: "org.example.dolphin".into(),
+                    denied_permission_ids: vec!["files.read".into()],
+                }],
+                "not requested",
+            ),
+        ] {
+            let error = service
+                .bundle_import_install(&review.token, false, &denials)
+                .await
+                .unwrap_err();
+            assert!(error.contains(message), "{error}");
+            assert!(
+                registry.active("org.example.dolphin").unwrap().is_none(),
+                "a rejected denial must not install anything"
+            );
+        }
+
+        let outcome = service
+            .bundle_import_install(
+                &review.token,
+                false,
+                &[
+                    BundleComponentDeniedPermissions {
+                        plugin_id: "org.example.dolphin".into(),
+                        denied_permission_ids: vec!["network.fetch".into()],
+                    },
+                    BundleComponentDeniedPermissions {
+                        plugin_id: "org.example.dolphin.launch".into(),
+                        denied_permission_ids: vec!["game.launch".into()],
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcome.components.len(), 2);
+        assert!(
+            outcome
+                .components
+                .iter()
+                .all(|component| component.permission_error.is_none()),
+            "{:?}",
+            outcome.components
+        );
+
+        let profile = api.providers.profiles().require().unwrap();
+        let grants = state.open_grants(&profile).unwrap();
+        let state_of = |plugin_id: &str, permission_id: &str| {
+            grants
+                .effective_grants(&PluginIdentity {
+                    plugin_id: plugin_id.to_owned(),
+                    publisher_fingerprint: review.bundle.publisher_fingerprint.clone(),
+                    profile_id: profile.profile_id().to_owned(),
+                })
+                .into_iter()
+                .find(|grant| grant.permission_id == permission_id)
+                .map(|grant| grant.state)
+        };
+        assert_eq!(
+            state_of("org.example.dolphin", "provider.context.read"),
+            Some(PermissionState::Granted)
+        );
+        assert_eq!(
+            state_of("org.example.dolphin", "storage.persist"),
+            Some(PermissionState::Granted)
+        );
+        assert_eq!(
+            state_of("org.example.dolphin", "network.fetch"),
+            Some(PermissionState::Denied)
+        );
+        assert_eq!(
+            state_of("org.example.dolphin.launch", "game.launch"),
+            Some(PermissionState::Denied)
+        );
+    }
+
+    /// An unavailable component is installed without an active pointer, so its denial is reported
+    /// for that component while the compatible sibling still receives its reviewed grants.
+    #[tokio::test]
+    async fn bundle_import_install_reports_a_denial_for_an_inactive_component() {
+        let fixture = Fixture::new();
+        let provider = fixture.component_with_permissions(
+            "provider",
+            "provider",
+            "org.example.dolphin",
+            "0.1.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+            vec![serde_json::json!({
+                "id": "storage.persist", "required": false, "scope": "own-provider",
+                "reason": "Store plugin preferences"
+            })],
+        );
+        // No Windows target matches the Linux host, so this component installs unavailable.
+        let launch = fixture.component_with_permissions(
+            "launch",
+            "extension",
+            "org.example.dolphin.launch",
+            "0.2.0",
+            "windows",
+            "msvc",
+            "1.6.0",
+            vec![serde_json::json!({
+                "id": "game.launch", "required": false,
+                "scope": "approved-game-session", "reason": "Launch a game"
+            })],
+        );
+        let bundle = fixture.bundle(&[&provider, &launch]);
+
+        let paths = DataPaths::at(fixture.dir.path().join("app-data"));
+        let api = PluginApi::default();
+        let state = PluginStateLayout::managed(&paths);
+        api.set_state_layout(state.clone());
+        api.providers
+            .profiles()
+            .update(Some("bundle-account"), true);
+        let registry = PluginPackageRegistry::open(&paths).unwrap();
+        let service = review_service(&api, &paths, &state, &registry);
+        let settings =
+            SqliteSettingsStore::open(&fixture.dir.path().join("bundles.sqlite3")).unwrap();
+        service.set_bundle_store(settings.bundle_store());
+
+        let review = service.bundle_import_review(bundle).await.unwrap();
+        service
+            .bundle_import_confirm_publisher(&review.token, &review.bundle.publisher_fingerprint)
+            .await
+            .unwrap();
+        let outcome = service
+            .bundle_import_install(
+                &review.token,
+                false,
+                &[BundleComponentDeniedPermissions {
+                    plugin_id: "org.example.dolphin.launch".into(),
+                    denied_permission_ids: vec!["game.launch".into()],
+                }],
+            )
+            .await
+            .unwrap();
+        let installed_provider = outcome
+            .components
+            .iter()
+            .find(|component| component.plugin_id == "org.example.dolphin")
+            .expect("the provider installed");
+        assert!(installed_provider.active);
+        assert!(installed_provider.permission_error.is_none());
+        let installed_launch = outcome
+            .components
+            .iter()
+            .find(|component| component.plugin_id == "org.example.dolphin.launch")
+            .expect("the unavailable component is still listed");
+        assert!(!installed_launch.active);
+        assert!(
+            installed_launch
+                .permission_error
+                .as_deref()
+                .is_some_and(|error| error.contains("not active")),
+            "{installed_launch:?}"
+        );
+        assert!(
+            serde_json::to_value(installed_launch).unwrap()["permissionError"]
+                .as_str()
+                .is_some_and(|error| error.contains("not active")),
+            "the IPC boundary names the per-component failure"
+        );
+
+        let profile = api.providers.profiles().require().unwrap();
+        let grants = state.open_grants(&profile).unwrap();
+        assert!(
+            grants
+                .effective_grants(&PluginIdentity {
+                    plugin_id: "org.example.dolphin".into(),
+                    publisher_fingerprint: review.bundle.publisher_fingerprint.clone(),
+                    profile_id: profile.profile_id().to_owned(),
+                })
+                .iter()
+                .any(|grant| grant.permission_id == "storage.persist"
+                    && grant.state == PermissionState::Granted),
+            "the compatible sibling keeps its reviewed grants"
+        );
     }
 
     #[tokio::test]
@@ -5496,7 +5821,7 @@ mod tests {
             .await
             .unwrap();
         let installed = service
-            .bundle_import_install(&review.token, false)
+            .bundle_import_install(&review.token, false, &[])
             .await
             .unwrap();
         assert_eq!(
@@ -5663,7 +5988,7 @@ mod tests {
             .await
             .unwrap();
         service
-            .bundle_import_install(&second_review.token, false)
+            .bundle_import_install(&second_review.token, false, &[])
             .await
             .unwrap();
         let deleted = uninstall_bundle(

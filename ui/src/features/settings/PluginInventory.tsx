@@ -2,6 +2,7 @@ import { providerLabel } from '../../i18n/providerLabel';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { open } from '@tauri-apps/plugin-dialog';
 import { useAuth } from '../../api/useSnapshot';
 import { commands, isTauriRuntime, type AvailablePluginUpdate, type BundleUninstallOutcome, type ExtensionReadinessSelection, type PluginBundleImportReview, type PluginImportReview, type PluginInfo, type PluginPermissionSnapshot, type PluginPlaytimeInfo, type PluginSharedDataSnapshot, type PluginUpdateReview } from '../../api';
 import { AppModal } from '../../components/AppModal';
@@ -57,6 +58,7 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
   const [bundleNativeConsent, setBundleNativeConsent] = useState(false);
   const [licenseText, setLicenseText] = useState<Record<string, string>>({});
   const [archivePath, setArchivePath] = useState('');
+  const [pickerError, setPickerError] = useState(false);
   const [scopeChoices, setScopeChoices] = useState<Record<string, boolean>>({});
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [deletePluginData, setDeletePluginData] = useState(false);
@@ -330,6 +332,26 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
     }
     catch { setManagementError(true); }
     finally { setBusy(false); }
+  };
+
+  const pickArchive = async () => {
+    if (busy) return;
+    setPickerError(false);
+    if (!isTauriRuntime()) return;
+    try {
+      const selected = await open({
+        multiple: false,
+        directory: false,
+        title: t('plugins.import.chooseFileTitle'),
+        filters: [{
+          name: t('plugins.import.fileFilter'),
+          extensions: ['gnbundle', 'gnplugin', 'zip'],
+        }],
+      });
+      if (typeof selected === 'string') setArchivePath(selected);
+    } catch {
+      setPickerError(true);
+    }
   };
 
   const confirmBundlePublisher = async () => {
@@ -637,10 +659,14 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
       {!renderCards && <p className={`${settingsRowDescription} mb-compact`}>{t('plugins.inventoryDescription')}</p>}
       <div className={`${settingsCard} mb-compact`}>
         <form aria-label={t('plugins.import.title')} onSubmit={(event) => { event.preventDefault(); void reviewImport(); }}>
-          <label className="block text-sm">
-            <span className={settingsRowTitle}>{t('plugins.import.title')}</span>
-            <input className="mt-1 w-full rounded-sm border border-border-subtle bg-raised px-sm py-1" value={archivePath} onChange={(event) => setArchivePath(event.currentTarget.value)} placeholder={t('plugins.import.path')} aria-label={t('plugins.import.path')} />
-          </label>
+          <div className="block text-sm">
+            <label className={settingsRowTitle} htmlFor="plugin-import-path">{t('plugins.import.title')}</label>
+            <div className="mt-1 flex gap-compact">
+              <input id="plugin-import-path" className="min-w-0 flex-1 rounded-sm border border-border-subtle bg-raised px-sm py-1" value={archivePath} onChange={(event) => setArchivePath(event.currentTarget.value)} placeholder={t('plugins.import.path')} aria-label={t('plugins.import.path')} />
+              <button type="button" className="shrink-0 rounded-sm border border-border-subtle px-sm py-1 text-sm hover:bg-[#2e2e2e]" disabled={busy} onClick={() => void pickArchive()}>{t('plugins.import.chooseFile')}</button>
+            </div>
+            {pickerError && <p className="mt-compact text-sm text-warning" role="alert">{t('plugins.import.pickFailed')}</p>}
+          </div>
           {profileId === null && <p className={`${settingsRowDescription} mt-compact`} role="status">{t('plugins.signInRequired')}</p>}
           <button type="submit" className="mt-compact rounded-sm border border-border-subtle px-sm py-1 text-sm hover:bg-[#2e2e2e]" disabled={busy || !archivePath.trim() || profileId === null}>{t('plugins.import.review')}</button>
         </form>

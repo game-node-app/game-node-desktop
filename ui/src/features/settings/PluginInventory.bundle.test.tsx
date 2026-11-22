@@ -16,6 +16,10 @@ import {
 import { I18nProvider } from '../../i18n';
 import { PluginInventory } from './PluginInventory';
 
+const openFile = vi.fn();
+vi.mock('@tauri-apps/plugin-dialog', () => ({ open: (...args: unknown[]) => openFile(...args) }));
+vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async () => () => {}) }));
+
 const publisher = `SHA256:${'ef'.repeat(32)}`;
 
 const official: PluginInfo = {
@@ -241,6 +245,7 @@ function bundleUpdateReviewFixture(rollback = false) {
 describe('bundle inventory', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    openFile.mockReset();
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   });
 
@@ -453,6 +458,24 @@ describe('bundle inventory', () => {
     expect(article).toHaveTextContent('Identificador do pacote: org.example.dolphin.bundle');
     expect(article).toHaveTextContent('Permissões solicitadas');
     expect(article).toHaveTextContent('Confiar neste publicador');
+  });
+
+  it('opens the native file picker and fills the signed package path', async () => {
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([official]);
+    openFile.mockResolvedValue('/tmp/dolphin-emu-0.1.0-linux-x64.gnbundle');
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+
+    renderInventory('en', 'account-one');
+    fireEvent.click(await screen.findByRole('button', { name: 'Choose file…' }));
+
+    await waitFor(() => expect(openFile).toHaveBeenCalledWith({
+      multiple: false,
+      directory: false,
+      title: 'Choose a signed plugin package',
+      filters: [{ name: 'Signed plugin packages', extensions: ['gnbundle', 'gnplugin', 'zip'] }],
+    }));
+    const input = screen.getByRole('textbox', { name: 'Path to signed ZIP package' });
+    await waitFor(() => expect(input).toHaveValue('/tmp/dolphin-emu-0.1.0-linux-x64.gnbundle'));
   });
 
   it('reviews a bundle with per-component permissions and compatibility behind one fingerprint', async () => {

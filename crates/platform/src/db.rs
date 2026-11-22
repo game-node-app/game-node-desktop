@@ -3159,9 +3159,9 @@ mod tests {
             }
         );
         println!(
-            "older build refusal: {error}; sha256 before {} after {}",
-            format!("{:x}", Sha256::digest(&before)),
-            format!("{:x}", Sha256::digest(std::fs::read(&path).unwrap())),
+            "older build refusal: {error}; sha256 before {:x} after {:x}",
+            Sha256::digest(&before),
+            Sha256::digest(std::fs::read(&path).unwrap()),
         );
         assert_eq!(
             std::fs::read(&path).unwrap(),

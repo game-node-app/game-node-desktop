@@ -836,9 +836,8 @@ async fn deleting_a_private_namespace_touches_one_profile_and_no_game_files() {
     assert_eq!(removed.records, 1);
     assert_eq!(removed.logical_bytes, durable::charge("kept", 5));
     assert!(
-        durable::namespace_dir(&host.root, "publisher-a", "org.example.plugin", "profile-1")
+        !durable::namespace_dir(&host.root, "publisher-a", "org.example.plugin", "profile-1")
             .is_dir()
-            == false
     );
     assert_eq!(std::fs::read(&save).unwrap(), b"game save");
     assert_eq!(std::fs::read(&backup).unwrap(), b"backup archive");

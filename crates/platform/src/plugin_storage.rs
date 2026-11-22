@@ -185,6 +185,7 @@ fn stored_keys(conn: &Connection) -> Result<std::collections::HashSet<String>, P
 /// by an uninstall are reported, never copied: the latter need the separate reviewed reuse. A key
 /// the new identity already holds is a conflict. Values and paths are never returned and nothing is
 /// created or changed.
+#[allow(clippy::too_many_arguments)] // Source and target namespace identities plus the clock.
 pub fn migration_preview(
     root: &Path,
     source_publisher: &str,
@@ -248,6 +249,7 @@ pub fn migration_preview(
 /// archived rows stay behind for the separate reuse review. The source keeps every row, and each
 /// copy records the old publisher fingerprint so a reviewed rollback removes exactly these copies.
 /// Blocking: call this on the storage worker.
+#[allow(clippy::too_many_arguments)] // Source and target namespace identities plus the clock.
 pub fn migrate_namespace(
     root: &Path,
     source_publisher: &str,

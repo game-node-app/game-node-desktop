@@ -190,7 +190,7 @@ cargo test --locked -p gamenode-app --lib -- the_real_dolphin_bundle
 | Bundle SHA-256 | `2718d7fd4a42359e63b03f46622758570cdf2acb6e57096acaaf1ca85b0070b3` |
 | Provider | `dev.richmont.gamenode.dolphin-emu` 0.1.0 (`e7243b68…f14`) |
 | Extension | `dev.richmont.gamenode.dolphin-emu-launch` 0.1.0 (`56670c46…f8e`) |
-| Publisher | `richmont-dolphin-emu-development`, fingerprint of the committed development key |
+| Publisher | `richmont-dolphin-emu-development` (`SHA256:27a81cf6a123d11e8e1438f1ceb4d8f7b706aeb4841a120e39b09d246389b24c`) |
 
 The test passes with one aggregated review for both components and one publisher confirmation,
 one install of both components, one inventory row reporting the provider installed and the

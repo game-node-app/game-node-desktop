@@ -70,6 +70,7 @@ describe('mock comprehensive and state fixtures', () => {
       'gog',
       'epic',
       'manual',
+      'dolphin',
     ]);
     expect(library.providers.find((provider) => provider.id === 'manual')).toMatchObject({
       name: 'DRM-free',

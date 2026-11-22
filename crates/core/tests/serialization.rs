@@ -4,9 +4,9 @@ use gamenode_core::Provider;
 use gamenode_core::auth::{AuthMachine, Input};
 use gamenode_core::credential::StorageMethod;
 use gamenode_core::library::{
-    CoverSize, DetailView, EntryStatus, Input as LibraryInput, LibraryFilters, MatchSource,
-    MatchStatus, Membership, Row, SelectMode, SidebarSelection, Sort, SortDirection, SortKey,
-    ViewMode,
+    CoverSize, DetailView, EntryStatus, Input as LibraryInput, LibraryFilters, MatchPlatformFilter,
+    MatchSource, MatchStatus, Membership, Row, SelectMode, SidebarSelection, Sort, SortDirection,
+    SortKey, ViewMode,
 };
 use gamenode_core::library::{FilterCounts, RowGroup, ScopeCounts, TitleSource, TitleSourceKind};
 use gamenode_core::library::{GroupBy, LibraryScope, RowGameNode};
@@ -227,6 +227,7 @@ fn test_library_input_serialization() {
         }),
         LibraryInput::OpenMatch,
         LibraryInput::CloseMatch,
+        LibraryInput::SetMatchPlatformFilter { enabled: false },
         LibraryInput::ScanRequested,
         LibraryInput::RequestCatalog,
         LibraryInput::SetFilters(LibraryFilters::default()),
@@ -430,6 +431,11 @@ fn test_library_input_serialization() {
     assert_eq!(
         serde_json::to_value(LibraryInput::ClearSelection).unwrap(),
         serde_json::json!("clearSelection")
+    );
+    // Exactly what the match dialog's platform switch sends.
+    assert_eq!(
+        serde_json::to_value(LibraryInput::SetMatchPlatformFilter { enabled: false }).unwrap(),
+        serde_json::json!({ "setMatchPlatformFilter": { "enabled": false } })
     );
 }
 
@@ -647,6 +653,23 @@ fn query_view_types_serialize_with_the_keys_the_ui_reads() {
             "status": "playing",
             "collectionIds": ["coop"],
             "entryId": "entry-1"
+        })
+    );
+
+    // The match dialog's platform narrowing is camelCase for the UI's chip and counts.
+    assert_eq!(
+        serde_json::to_value(MatchPlatformFilter {
+            platform: "gamecube".into(),
+            label: "GameCube".into(),
+            aliases: vec!["NGC".into(), "GC".into()],
+            enabled: true,
+        })
+        .unwrap(),
+        serde_json::json!({
+            "platform": "gamecube",
+            "label": "GameCube",
+            "aliases": ["NGC", "GC"],
+            "enabled": true
         })
     );
 }

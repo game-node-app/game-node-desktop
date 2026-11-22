@@ -891,6 +891,18 @@ export type SearchFailure =
   | 'rejected'
   | 'failed';
 
+/** The platform narrowing the match dialog derives from the entry's record. */
+export interface MatchPlatformFilter {
+  /** The entry's declared platform, normalized to lowercase (for example `gamecube`). */
+  platform: string;
+  /** The platform's display name (for example `GameCube`). */
+  label: string;
+  /** The catalog abbreviations an option may report for this platform. */
+  aliases: string[];
+  /** Whether options outside the platform are hidden. On by default when the platform is known. */
+  enabled: boolean;
+}
+
 export interface MatchDialogView {
   entryKey: string;
   detectedName: string;
@@ -901,6 +913,10 @@ export interface MatchDialogView {
   results: MatchOption[];
   selected: MatchOption | null;
   noResults: boolean;
+  /** The platform narrowing derived from the entry, when it declares one. */
+  platformFilter: MatchPlatformFilter | null;
+  /** How many options the active platform filter hides. */
+  filteredOut: number;
   error?: SearchFailure | null;
   searchBlocked?: Reason | null;
   current: MatchStatus;
@@ -2184,6 +2200,7 @@ export type LibraryInput =
   | 'openMatch'
   | 'closeMatch'
   | { setMatchQuery: string }
+  | { setMatchPlatformFilter: { enabled: boolean } }
   | 'searchMatch'
   | { pickMatch: { gameId: number; now: number } }
   | { selectMatch: { gameId: number } }

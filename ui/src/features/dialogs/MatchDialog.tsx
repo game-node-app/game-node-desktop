@@ -14,6 +14,7 @@ import {
   OptionCardGroup,
   Pill,
   SectionLabel,
+  Switch,
   TextInput,
   type ChecklistItem,
 } from '../../components/ui';
@@ -75,6 +76,10 @@ export const MatchDialog: React.FC = () => {
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     commands.libraryInput('searchMatch');
+  };
+
+  const handlePlatformFilter = (enabled: boolean) => {
+    commands.libraryInput({ setMatchPlatformFilter: { enabled } });
   };
 
   const handleSelect = (gameId: number) => {
@@ -275,7 +280,7 @@ export const MatchDialog: React.FC = () => {
     >
       <div className="flex min-h-0 flex-1 flex-row gap-lg">
         <div className="flex min-h-0 min-w-0 flex-[1.25] flex-col gap-sm">
-          <form onSubmit={handleSearchSubmit}>
+          <form onSubmit={handleSearchSubmit} className="flex flex-col gap-sm">
             <Field label={t('Library::Search GameNode')}>
               <TextInput
                 ref={inputRef}
@@ -288,6 +293,35 @@ export const MatchDialog: React.FC = () => {
                 }
               />
             </Field>
+            {dialog.platformFilter && (
+              <div
+                data-testid="match-platform-filter"
+                className="flex flex-wrap items-center justify-between gap-sm"
+              >
+                <Switch
+                  size="xs"
+                  data-testid="match-platform-switch"
+                  label={formatI18n(
+                    t('Library::Platform: {}'),
+                    dialog.platformFilter.label,
+                  )}
+                  checked={dialog.platformFilter.enabled}
+                  onChange={(event) =>
+                    handlePlatformFilter(event.currentTarget.checked)
+                  }
+                />
+                {dialog.platformFilter.enabled && (
+                  <button
+                    type="button"
+                    data-testid="match-show-all-btn"
+                    onClick={() => handlePlatformFilter(false)}
+                    className="rounded-sm text-xs font-normal text-brand underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+                  >
+                    {t('Library::Show all')}
+                  </button>
+                )}
+              </div>
+            )}
           </form>
 
           {dialog.searching && (
@@ -296,6 +330,32 @@ export const MatchDialog: React.FC = () => {
               className="text-xs text-text-dimmed"
             >
               {t('Library::Searching…')}
+            </div>
+          )}
+
+          {dialog.filteredOut > 0 &&
+            optionCount === 0 &&
+            !dialog.searching &&
+            !dialog.error && (
+            <div
+              data-testid="match-filtered-empty-notice"
+              className="flex flex-wrap items-center gap-1 text-xs text-warning"
+            >
+              <span>
+                {formatI18n(
+                  t('Library::No {} results'),
+                  dialog.platformFilter?.label ?? '',
+                )}
+              </span>
+              <span aria-hidden="true">—</span>
+              <button
+                type="button"
+                data-testid="match-filtered-empty-show-all"
+                onClick={() => handlePlatformFilter(false)}
+                className="rounded-sm font-normal text-brand underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+              >
+                {t('Library::Show all')}
+              </button>
             </div>
           )}
 

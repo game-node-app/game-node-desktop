@@ -20,6 +20,7 @@ import {
   type LibraryView,
   type EntryStatus,
   type MatchOption,
+  type MatchPlatformFilter,
   type PaletteEntry,
   type PluginCompatibilityDetails,
   type PluginDurableUsage,
@@ -508,10 +509,111 @@ const MOCK_SUGGESTIONS: Record<string, SuggestionView[]> = {
 };
 
 /**
+ * Content platforms the mock match fixtures declare, mirroring a provider record's
+ * `fields.platform`. Every other fixture entry behaves like a record without a platform field.
+ */
+const MOCK_ENTRY_PLATFORMS: Record<string, string> = {
+  'dolphin:pikmin': 'gamecube',
+  'dolphin:metroid': 'wii',
+};
+
+/** Catalog abbreviations per declared platform, as the host maps them. */
+const MOCK_PLATFORM_ALIASES: Record<string, { label: string; aliases: string[] }> = {
+  gamecube: { label: 'GameCube', aliases: ['NGC', 'GC', 'GCN', 'GameCube'] },
+  wii: { label: 'Wii', aliases: ['Wii'] },
+};
+
+/** The platform filter the mock derives from a fixture row, as the host derives it from fields. */
+function mockMatchPlatformFilter(rowKey: string): MatchPlatformFilter | null {
+  const platform = MOCK_ENTRY_PLATFORMS[rowKey]?.trim().toLowerCase();
+  const known = platform ? MOCK_PLATFORM_ALIASES[platform] : undefined;
+  if (!platform || !known) return null;
+  return {
+    platform,
+    label: known.label,
+    aliases: [...known.aliases],
+    enabled: true,
+  };
+}
+
+/** Whether the platform filter shows an option, mirroring the host's case-insensitive aliases. */
+function mockPlatformShows(filter: MatchPlatformFilter, option: MatchOption): boolean {
+  return (
+    !filter.enabled ||
+    option.platforms.some((platform) =>
+      filter.aliases.some((alias) => alias.toLowerCase() === platform.toLowerCase()),
+    )
+  );
+}
+
+/**
  * Three match candidates at 96/74/38%, as in the design's D01 fixture. A matched row's current
  * game replaces the first option so the dialog preselects it; every other row gets generated ids.
+ * The Dolphin fixture rows return their declared platform's releases instead, so the platform
+ * filter has an NGC, Switch, Wii and platform-less case to narrow.
  */
 function mockMatchCandidates(row: Row): MatchOption[] {
+  if (row.key === 'dolphin:pikmin') {
+    const matched = getMatchedGameId(row.status);
+    return [
+      {
+        gameId: 400,
+        name: matched === 400 ? (row.matchedName ?? 'Pikmin') : 'Pikmin',
+        releaseYear: 2001,
+        coverUrl: '/mock-covers/mock-4.svg',
+        coverFile: 'mock-4.svg',
+        current: matched === 400,
+        confidence: 96,
+        tone: 'success',
+        platforms: ['NGC'],
+        reasons: [{ titleSimilarity: { percent: 96 } }, 'storeIdRecognized'],
+      },
+      {
+        gameId: 401,
+        name: matched === 401 ? (row.matchedName ?? 'Pikmin 4') : 'Pikmin 4',
+        releaseYear: 2023,
+        coverUrl: '/mock-covers/mock-8.svg',
+        coverFile: null,
+        current: matched === 401,
+        confidence: 74,
+        tone: 'warning',
+        platforms: ['Switch'],
+        reasons: [{ titleSimilarity: { percent: 74 } }, 'storeIdRecognized'],
+      },
+    ];
+  }
+  if (row.key === 'dolphin:metroid') {
+    const matched = getMatchedGameId(row.status);
+    return [
+      {
+        gameId: 410,
+        name: matched === 410 ? (row.matchedName ?? 'Metroid Prime') : 'Metroid Prime',
+        releaseYear: 2002,
+        coverUrl: '/mock-covers/mock-2.svg',
+        coverFile: 'mock-2.svg',
+        current: matched === 410,
+        confidence: 94,
+        tone: 'success',
+        platforms: ['Wii'],
+        reasons: [{ titleSimilarity: { percent: 94 } }, 'storeIdRecognized'],
+      },
+      {
+        gameId: 411,
+        name:
+          matched === 411
+            ? (row.matchedName ?? 'Metroid Prime Remastered')
+            : 'Metroid Prime Remastered',
+        releaseYear: 2023,
+        coverUrl: '/mock-covers/mock-10.svg',
+        coverFile: null,
+        current: matched === 411,
+        confidence: 61,
+        tone: 'warning',
+        platforms: [],
+        reasons: [{ titleSimilarity: { percent: 61 } }, 'storeIdRecognized'],
+      },
+    ];
+  }
   const matched = getMatchedGameId(row.status);
   const year = row.releaseYear ?? 2024;
   return [
@@ -565,7 +667,63 @@ function mockMatchCandidates(row: Row): MatchOption[] {
 }
 
 /** The search answer's results, in the server's order and without the candidates. */
-function mockMatchResults(query: string): MatchOption[] {
+function mockMatchResults(query: string, platform: string | null): MatchOption[] {
+  if (platform === 'gamecube') {
+    return [
+      {
+        gameId: 402,
+        name: `${query} 2`,
+        releaseYear: 2004,
+        coverUrl: null,
+        coverFile: null,
+        current: false,
+        confidence: 58,
+        tone: 'warning',
+        platforms: ['NGC'],
+        reasons: [{ titleSimilarity: { percent: 58 } }],
+      },
+      {
+        gameId: 403,
+        name: `${query} 3 Deluxe`,
+        releaseYear: 2020,
+        coverUrl: null,
+        coverFile: null,
+        current: false,
+        confidence: 34,
+        tone: 'neutral',
+        platforms: ['Switch'],
+        reasons: [{ titleSimilarity: { percent: 34 } }],
+      },
+    ];
+  }
+  if (platform === 'wii') {
+    return [
+      {
+        gameId: 412,
+        name: `${query} 2: Echoes`,
+        releaseYear: 2004,
+        coverUrl: null,
+        coverFile: null,
+        current: false,
+        confidence: 77,
+        tone: 'success',
+        platforms: ['Wii'],
+        reasons: [{ titleSimilarity: { percent: 77 } }],
+      },
+      {
+        gameId: 413,
+        name: `${query} 3`,
+        releaseYear: 2007,
+        coverUrl: null,
+        coverFile: null,
+        current: false,
+        confidence: 42,
+        tone: 'neutral',
+        platforms: [],
+        reasons: [{ titleSimilarity: { percent: 42 } }],
+      },
+    ];
+  }
   return [
     {
       gameId: 2000,
@@ -908,6 +1066,48 @@ function createVariantRows(): Row[] {
       playtime: { seconds: 0, source: 'internal', lastPlayedAt: null },
       releaseYear: null,
       addedAt: NOW - 5 * DAY,
+      isFavorite: false,
+      hidden: false,
+      gamenode: null,
+    },
+    // Emulator-detected entries whose records declare a content platform. The match dialog
+    // narrows their NGC/Wii options by default and offers Show all for the other releases.
+    {
+      key: 'dolphin:pikmin',
+      title: 'Pikmin',
+      detectedName: 'Pikmin',
+      matchedName: null,
+      provider: 'dolphin',
+      providerName: 'Dolphin',
+      installed: true,
+      owned: false,
+      shared: false,
+      running: false,
+      status: 'unmatched',
+      coverFile: 'mock-4.svg',
+      playtime: { seconds: 2 * 3600, source: 'internal', lastPlayedAt: NOW - 3 * DAY },
+      releaseYear: 2001,
+      addedAt: NOW - 6 * DAY,
+      isFavorite: false,
+      hidden: false,
+      gamenode: null,
+    },
+    {
+      key: 'dolphin:metroid',
+      title: 'Metroid Prime',
+      detectedName: 'Metroid Prime',
+      matchedName: null,
+      provider: 'dolphin',
+      providerName: 'Dolphin',
+      installed: true,
+      owned: false,
+      shared: false,
+      running: false,
+      status: 'unmatched',
+      coverFile: 'mock-2.svg',
+      playtime: { seconds: 90 * 60, source: 'internal', lastPlayedAt: null },
+      releaseYear: 2002,
+      addedAt: NOW - 7 * DAY,
       isFavorite: false,
       hidden: false,
       gamenode: null,
@@ -2185,6 +2385,11 @@ export function createMockHost(options: {
           : allRows;
   const initialScope: LibraryScope = options.noInstalledLibrary ? 'installed' : 'all';
   let rows = structuredClone(baseRows);
+  /** The match dialog's complete answer, before the mock's platform narrowing. */
+  let matchAnswer: { candidates: MatchOption[]; results: MatchOption[] } = {
+    candidates: [],
+    results: [],
+  };
   /** The GameNode cover each DRM-free row had before a custom cover replaced it in the mock. */
   const mockGameNodeCovers = new Map<string, string | null>();
   let gridColumns = 1;
@@ -4020,6 +4225,37 @@ export function createMockHost(options: {
       selectedKeys = new Set([next.key]);
     }
   }
+  /**
+   * Recomputes the dialog's visible options from the complete answer and its platform filter,
+   * mirroring the host: a hidden pick yields to the best visible option.
+   */
+  function projectMatchPlatform() {
+    const dialog = snapshot.library?.matchDialog;
+    if (!dialog) return;
+    const filter = dialog.platformFilter;
+    const visible = (options: MatchOption[]) =>
+      filter && filter.enabled
+        ? options.filter((option) => mockPlatformShows(filter, option))
+        : options;
+    const candidates = visible(matchAnswer.candidates);
+    const results = visible(matchAnswer.results);
+    dialog.candidates = candidates;
+    dialog.results = results;
+    dialog.filteredOut =
+      matchAnswer.candidates.length +
+      matchAnswer.results.length -
+      candidates.length -
+      results.length;
+    const offered = [...candidates, ...results];
+    const selectedVisible = offered.some(
+      (option) => option.gameId === dialog.selected?.gameId,
+    );
+    if (!selectedVisible) {
+      dialog.selected =
+        [...offered].sort((left, right) => right.confidence - left.confidence)[0] ??
+        null;
+    }
+  }
   function libraryInput(input: LibraryInput) {
     const lib = snapshot.library;
     if (!lib) return;
@@ -4106,6 +4342,10 @@ export function createMockHost(options: {
           input.openAddForGame.coverUrl,
         );
       } else if ('setMatchQuery' in input && lib.matchDialog) lib.matchDialog.query = input.setMatchQuery;
+      else if ('setMatchPlatformFilter' in input && lib.matchDialog?.platformFilter) {
+        lib.matchDialog.platformFilter.enabled = input.setMatchPlatformFilter.enabled;
+        projectMatchPlatform();
+      }
       else if ('selectMatch' in input && lib.matchDialog) {
         const offered = [
           ...lib.matchDialog.candidates,
@@ -4170,11 +4410,15 @@ export function createMockHost(options: {
       focusedKey = null;
     } else if (input === 'openDetails') lib.layout.detailOpen = true;
     else if (input === 'catalogClear') catalogClear();
-    else if (input === 'closeMatch') lib.matchDialog = null;
+    else if (input === 'closeMatch') {
+      lib.matchDialog = null;
+      matchAnswer = { candidates: [], results: [] };
+    }
     else if (input === 'openMatch') {
       const row = rows.find((item) => item.key === lib.focused);
       if (row) {
         const candidates = mockMatchCandidates(row);
+        matchAnswer = { candidates, results: [] };
         lib.matchDialog = {
           entryKey: row.key,
           detectedName: row.detectedName,
@@ -4183,19 +4427,25 @@ export function createMockHost(options: {
           searching: false,
           candidates,
           results: [],
-          selected: candidates[0] ?? null,
+          selected: candidates.find((candidate) => candidate.current) ?? candidates[0] ?? null,
           noResults: false,
+          platformFilter: mockMatchPlatformFilter(row.key),
+          filteredOut: 0,
           current: row.status,
           canClear: typeof row.status === 'object',
         };
+        projectMatchPlatform();
       }
     } else if (input === 'searchMatch' && lib.matchDialog) {
-      lib.matchDialog.results = mockMatchResults(lib.matchDialog.query);
-      if (!lib.matchDialog.selected) {
-        const offered = [...lib.matchDialog.candidates, ...lib.matchDialog.results];
-        lib.matchDialog.selected =
-          offered.sort((left, right) => right.confidence - left.confidence)[0] ?? null;
-      }
+      matchAnswer = {
+        candidates: matchAnswer.candidates,
+        results: mockMatchResults(
+          lib.matchDialog.query,
+          lib.matchDialog.platformFilter?.platform ?? null,
+        ),
+      };
+      lib.matchDialog.results = matchAnswer.results;
+      projectMatchPlatform();
     } else if (input === 'openAdd') {
       // One run at a time: an Add while a batch is going reopens its progress.
       if (!reopenAddRun()) {

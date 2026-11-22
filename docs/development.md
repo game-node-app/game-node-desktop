@@ -403,6 +403,8 @@ default fixture; the default counts stay unchanged.
 | Marked as not a game | `steam:1302` | Wallpaper Foundry | Not-a-game note; no suggestions |
 | DRM-free running | `manual:brasa` | Brasa | Running session timer, matched `ongoing`, launch arguments, save folder, active protection and 12 backups |
 | DRM-free unmatched | `manual:drift` | Drift | Unmatched DRM-free row with two scored suggestions |
+| GameCube-emulated | `dolphin:pikmin` | Pikmin | Match dialog narrowed to NGC by default; **Show all** adds the Switch release |
+| Wii-emulated | `dolphin:metroid` | Metroid Prime | Match dialog narrowed to Wii; the platform-less release stays hidden until **Show all** |
 | Family shared, not installed | `steam:7` | Glass Garden | Install primary and the Steam Family note |
 | Hidden | `steam:900` | Hidden Harbor | Hidden until **Show hidden** |
 
@@ -552,7 +554,11 @@ Use the **Details panel** toggle and these fixtures:
 
 - **Match** — `?library=variants`, select **Neon Courier 2088**, then **Review…**.
   The ambiguous row opens three candidates at 96%, 74% and 38%; selecting one
-  changes the preview and **Match** commits it.
+  changes the preview and **Match** commits it. Select **Pikmin** (`dolphin:pikmin`)
+  or **Metroid Prime** (`dolphin:metroid`) to exercise the platform filter: the
+  dialog shows only the entry's platform (NGC or Wii) until **Show all** is used,
+  and an answer with no matching platform shows the filtered-empty notice instead
+  of a failed search. The other rows declare no platform and keep the full list.
 - **Add to GameNode** — select a matched game and choose **Add to GameNode**. The
   dialog has the five statuses and collection counts. **New collection** creates a
   collection; the name **Collection limit** answers with the localized

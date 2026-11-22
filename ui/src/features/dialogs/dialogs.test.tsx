@@ -136,6 +136,8 @@ describe('Dialogs Feature Tests', () => {
             ],
           },
           noResults: false,
+          platformFilter: null,
+          filteredOut: 0,
           canClear: true,
           current: { matched: { gameId: 102, source: 'automatic' } },
           ...overrides,
@@ -406,6 +408,126 @@ describe('Dialogs Feature Tests', () => {
       expect(screen.getByTestId('match-options-container')).toHaveTextContent(
         '1 result',
       );
+    });
+
+    const gamecubeFilter = {
+      platform: 'gamecube',
+      label: 'GameCube',
+      aliases: ['NGC', 'GC', 'GCN', 'GameCube'],
+      enabled: true,
+    };
+
+    it('shows the derived platform filter, on by default, and sends the toggle', () => {
+      const libraryInputSpy = vi.spyOn(commands, 'libraryInput');
+      const { unmount } = renderWithProviders(
+        <MatchDialog />,
+        makeMatchSnapshot({ platformFilter: gamecubeFilter, filteredOut: 1 }),
+        'en',
+      );
+
+      expect(screen.getByTestId('match-platform-filter')).toHaveTextContent(
+        'Platform: GameCube',
+      );
+      const platformSwitch = screen.getByRole('switch', {
+        name: 'Platform: GameCube',
+      });
+      expect(platformSwitch).toBeChecked();
+
+      fireEvent.click(platformSwitch);
+      expect(libraryInputSpy).toHaveBeenCalledWith({
+        setMatchPlatformFilter: { enabled: false },
+      });
+
+      fireEvent.click(screen.getByTestId('match-show-all-btn'));
+      expect(libraryInputSpy).toHaveBeenCalledWith({
+        setMatchPlatformFilter: { enabled: false },
+      });
+
+      unmount();
+
+      renderWithProviders(
+        <MatchDialog />,
+        makeMatchSnapshot({ platformFilter: gamecubeFilter }),
+        'pt-BR',
+      );
+      expect(screen.getByTestId('match-platform-filter')).toHaveTextContent(
+        'Plataforma: GameCube',
+      );
+      expect(screen.getByTestId('match-show-all-btn')).toHaveTextContent(
+        'Mostrar tudo',
+      );
+    });
+
+    it('explains a filtered-empty answer and offers show all instead of a failed search', () => {
+      const libraryInputSpy = vi.spyOn(commands, 'libraryInput');
+      const { unmount } = renderWithProviders(
+        <MatchDialog />,
+        makeMatchSnapshot({
+          candidates: [],
+          results: [],
+          selected: null,
+          platformFilter: gamecubeFilter,
+          filteredOut: 2,
+        }),
+        'en',
+      );
+
+      const notice = screen.getByTestId('match-filtered-empty-notice');
+      expect(notice).toHaveTextContent('No GameCube results');
+      expect(notice).toHaveTextContent('Show all');
+      expect(screen.queryByTestId('match-no-results-notice')).not.toBeInTheDocument();
+      expect(screen.getByTestId('match-search-input')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId('match-filtered-empty-show-all'));
+      expect(libraryInputSpy).toHaveBeenCalledWith({
+        setMatchPlatformFilter: { enabled: false },
+      });
+
+      unmount();
+
+      const pt = renderWithProviders(
+        <MatchDialog />,
+        makeMatchSnapshot({
+          candidates: [],
+          results: [],
+          selected: null,
+          platformFilter: gamecubeFilter,
+          filteredOut: 2,
+        }),
+        'pt-BR',
+      );
+      expect(screen.getByTestId('match-filtered-empty-notice')).toHaveTextContent(
+        'Nenhum resultado de GameCube',
+      );
+
+      pt.unmount();
+
+      // A failed search keeps its own error and does not look like a narrowed answer.
+      renderWithProviders(
+        <MatchDialog />,
+        makeMatchSnapshot({
+          candidates: [],
+          results: [],
+          selected: null,
+          platformFilter: gamecubeFilter,
+          filteredOut: 2,
+          error: 'failed',
+        }),
+        'en',
+      );
+      expect(screen.getByTestId('match-error-notice')).toBeInTheDocument();
+      expect(
+        screen.queryByTestId('match-filtered-empty-notice'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('shows no platform filter for an entry without a declared platform', () => {
+      renderWithProviders(<MatchDialog />, makeMatchSnapshot(), 'en');
+
+      expect(screen.queryByTestId('match-platform-filter')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('match-filtered-empty-notice'),
+      ).not.toBeInTheDocument();
     });
 
     it('renders search error notices and searchBlocked notice in en and pt-BR', () => {

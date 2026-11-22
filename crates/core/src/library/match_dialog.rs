@@ -38,12 +38,61 @@ enum Search {
     Failed(SearchFailure),
 }
 
+/// Catalog platform abbreviations accepted for a declared content platform.
+const GAMECUBE_ALIASES: &[&str] = &["NGC", "GC", "GCN", "GameCube"];
+const WII_ALIASES: &[&str] = &["Wii"];
+
+/// The platform narrowing derived from the entry's record.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatchPlatformFilter {
+    /// The entry's declared platform, normalized to lowercase (for example `gamecube`).
+    pub platform: String,
+    /// The platform's display name (for example `GameCube`).
+    pub label: String,
+    /// The catalog abbreviations an option may report for this platform.
+    pub aliases: Vec<String>,
+    /// Whether options outside the platform are hidden. On by default when the platform is known.
+    pub enabled: bool,
+}
+
+impl MatchPlatformFilter {
+    /// The filter a declared platform implies. Unknown, blank and absent declarations set no
+    /// filter, so the dialog keeps today's behavior.
+    fn derived(declared: Option<&str>) -> Option<Self> {
+        let platform = declared?.trim().to_ascii_lowercase();
+        let (label, aliases): (&str, &[&str]) = match platform.as_str() {
+            "gamecube" => ("GameCube", GAMECUBE_ALIASES),
+            "wii" => ("Wii", WII_ALIASES),
+            _ => return None,
+        };
+        Some(Self {
+            platform,
+            label: label.to_owned(),
+            aliases: aliases.iter().map(|alias| (*alias).to_owned()).collect(),
+            enabled: true,
+        })
+    }
+
+    /// Whether the option belongs to the declared platform. A disabled filter hides nothing.
+    pub fn shows(&self, option: &MatchOption) -> bool {
+        !self.enabled
+            || option.platforms.iter().any(|platform| {
+                self.aliases
+                    .iter()
+                    .any(|alias| alias.eq_ignore_ascii_case(platform))
+            })
+    }
+}
+
 /// An open dialog. Lives in the machine; the view is [`MatchDialogView`].
 #[derive(Debug)]
 pub(super) struct MatchDialog {
     key: String,
     query: String,
     search: Search,
+    /// The platform narrowing derived from the entry's record, when it declares one.
+    platform: Option<MatchPlatformFilter>,
     /// The game the preview shows. `None` while there is nothing to offer.
     selected: Option<u64>,
     /// The user selected an option, so an arriving result no longer replaces it.
@@ -107,7 +156,13 @@ pub struct MatchDialogView {
     /// The option selected for preview, with its confidence and reasons.
     pub selected: Option<MatchOption>,
     /// Set after a search that returned nothing, so the UI can say so instead of showing a blank.
+    /// The platform filter never sets this: a narrowed-empty answer is explained by
+    /// [`Self::filtered_out`] with empty lists instead.
     pub no_results: bool,
+    /// The platform narrowing derived from the entry, when it declares one.
+    pub platform_filter: Option<MatchPlatformFilter>,
+    /// How many options the active platform filter hides. `0` when it hides nothing.
+    pub filtered_out: usize,
     pub error: Option<SearchFailure>,
     /// Why searching is unavailable right now, if it is.
     pub search_blocked: Option<Reason>,
@@ -131,10 +186,13 @@ impl LibraryMachine {
             return vec![];
         };
         let query = entry.name.clone().unwrap_or_else(|| entry.store_id.clone());
+        let platform =
+            MatchPlatformFilter::derived(entry.fields.get("platform").map(String::as_str));
         self.dialog = Some(MatchDialog {
             key: key.clone(),
             query,
             search: Search::Idle,
+            platform,
             selected: None,
             manual_selection: false,
         });
@@ -158,15 +216,24 @@ impl LibraryMachine {
         self.dialog.as_ref().and_then(|dialog| dialog.selected)
     }
 
-    /// Selects the current match, else the most confident option, unless the user already
-    /// chose. Called on open and after every search answer.
+    /// Selects the current match, else the most confident option, unless the user already chose
+    /// an option the platform filter shows. A manual pick the filter hides yields to the default.
+    /// Called on open, after every search answer and when the filter toggles.
     fn apply_default_selection(&mut self) {
-        if self
+        let manual = self
             .dialog
             .as_ref()
-            .is_some_and(|dialog| dialog.manual_selection)
+            .is_some_and(|dialog| dialog.manual_selection);
+        if manual
+            && self
+                .dialog
+                .as_ref()
+                .is_some_and(|dialog| self.selection_is_visible(dialog))
         {
             return;
+        }
+        if manual && let Some(dialog) = &mut self.dialog {
+            dialog.manual_selection = false;
         }
         let selected = self.default_selection_id();
         if let Some(dialog) = &mut self.dialog {
@@ -174,12 +241,21 @@ impl LibraryMachine {
         }
     }
 
+    /// Whether the dialog's selected option is one the platform filter shows.
+    fn selection_is_visible(&self, dialog: &MatchDialog) -> bool {
+        dialog.selected.is_some_and(|game_id| {
+            self.dialog_option(dialog, game_id)
+                .is_some_and(|option| self.platform_shows(dialog, &option))
+        })
+    }
+
     fn default_selection_id(&self) -> Option<u64> {
         let dialog = self.dialog.as_ref()?;
         let entry = self.entries.get(&dialog.key)?;
         let current = self.match_status(entry);
         if let Some(game_id) = current.game_id()
-            && self.games.contains_key(&game_id)
+            && let Some(option) = self.dialog_option(dialog, game_id)
+            && self.platform_shows(dialog, &option)
         {
             return Some(game_id);
         }
@@ -196,6 +272,44 @@ impl LibraryMachine {
             }
         }
         best.map(|option| option.game_id)
+    }
+
+    /// Whether the dialog's active platform filter shows this option.
+    fn platform_shows(&self, dialog: &MatchDialog, option: &MatchOption) -> bool {
+        dialog
+            .platform
+            .as_ref()
+            .is_none_or(|filter| filter.shows(option))
+    }
+
+    /// Splits the options the dialog built into the ones the platform filter shows and the ones
+    /// it hides. A disabled or absent filter hides nothing.
+    fn split_platform_filter(
+        &self,
+        dialog: &MatchDialog,
+        options: Vec<MatchOption>,
+    ) -> (Vec<MatchOption>, Vec<MatchOption>) {
+        let Some(filter) = dialog.platform.as_ref().filter(|filter| filter.enabled) else {
+            return (options, Vec::new());
+        };
+        options.into_iter().partition(|option| filter.shows(option))
+    }
+
+    /// The option for one game, as the dialog currently knows it (from a search answer or the
+    /// cached game record).
+    fn dialog_option(&self, dialog: &MatchDialog, game_id: u64) -> Option<MatchOption> {
+        let summary = match &dialog.search {
+            Search::Done(games) => games.iter().find(|game| game.id == game_id),
+            _ => None,
+        };
+        let status = self
+            .entries
+            .get(&dialog.key)
+            .map(|entry| self.match_status(entry));
+        let candidate = status
+            .as_ref()
+            .is_some_and(|status| status.candidates().contains(&game_id));
+        self.option_for(dialog, game_id, summary, candidate)
     }
 
     /// The option for one game, scored against the dialog entry's detected title and years.
@@ -280,8 +394,19 @@ impl LibraryMachine {
         })
     }
 
-    /// The server's candidates, ordered by confidence (then title and id for determinism).
+    /// The server's candidates, ordered by confidence (then title and id for determinism), with
+    /// the ones the active platform filter hides omitted.
     fn candidate_options(&self, dialog: &MatchDialog, current: &MatchStatus) -> Vec<MatchOption> {
+        let options = self.candidate_options_unfiltered(dialog, current);
+        self.split_platform_filter(dialog, options).0
+    }
+
+    /// Every candidate the server offered, before the platform filter.
+    fn candidate_options_unfiltered(
+        &self,
+        dialog: &MatchDialog,
+        current: &MatchStatus,
+    ) -> Vec<MatchOption> {
         let mut options: Vec<MatchOption> = current
             .candidates()
             .iter()
@@ -297,8 +422,19 @@ impl LibraryMachine {
         options
     }
 
-    /// The search answer's games in the server's order, without the candidates.
+    /// The search answer's games in the server's order, without the candidates, and with the ones
+    /// the active platform filter hides omitted.
     fn result_options(&self, dialog: &MatchDialog, candidate_ids: &[u64]) -> Vec<MatchOption> {
+        let options = self.result_options_unfiltered(dialog, candidate_ids);
+        self.split_platform_filter(dialog, options).0
+    }
+
+    /// Every search result, before the platform filter.
+    fn result_options_unfiltered(
+        &self,
+        dialog: &MatchDialog,
+        candidate_ids: &[u64],
+    ) -> Vec<MatchOption> {
         let Search::Done(games) = &dialog.search else {
             return Vec::new();
         };
@@ -310,14 +446,19 @@ impl LibraryMachine {
     }
 
     /// Whether the dialog currently offers this game, so a stale selection input changes nothing.
+    /// An option the active platform filter hides is not offered.
     fn dialog_offers(&self, dialog: &MatchDialog, game_id: u64) -> bool {
         let Some(entry) = self.entries.get(&dialog.key) else {
             return false;
         };
         let status = self.match_status(entry);
-        status.game_id() == Some(game_id)
+        let offered = status.game_id() == Some(game_id)
             || status.candidates().contains(&game_id)
-            || matches!(&dialog.search, Search::Done(games) if games.iter().any(|game| game.id == game_id))
+            || matches!(&dialog.search, Search::Done(games) if games.iter().any(|game| game.id == game_id));
+        offered
+            && self
+                .dialog_option(dialog, game_id)
+                .is_some_and(|option| self.platform_shows(dialog, &option))
     }
 
     pub(super) fn close_match(&mut self) {
@@ -328,6 +469,29 @@ impl LibraryMachine {
         if let Some(dialog) = &mut self.dialog {
             dialog.query = text;
         }
+    }
+
+    /// Turns the entry's platform filter on or off. The answer is already local, so nothing is
+    /// searched again. A manual pick the new filter hides yields to the best visible option; a
+    /// visible pick is kept so the user's choice survives the toggle.
+    pub(super) fn set_match_platform_filter(&mut self, enabled: bool) -> Vec<Effect> {
+        let Some(platform) = self
+            .dialog
+            .as_ref()
+            .and_then(|dialog| dialog.platform.as_ref())
+        else {
+            return vec![];
+        };
+        if platform.enabled == enabled {
+            return vec![];
+        }
+        if let Some(dialog) = &mut self.dialog
+            && let Some(platform) = &mut dialog.platform
+        {
+            platform.enabled = enabled;
+        }
+        self.apply_default_selection();
+        vec![]
     }
 
     /// Searches GameNode for the dialog's query. A blank query searches nothing.
@@ -538,16 +702,20 @@ impl LibraryMachine {
         let dialog = self.dialog.as_ref()?;
         let entry = self.entries.get(&dialog.key)?;
         let current = self.match_status(entry);
-        let candidates = self.candidate_options(dialog, &current);
-        let results = self.result_options(dialog, current.candidates());
-        let selected = dialog.selected.and_then(|game_id| {
-            let summary = match &dialog.search {
-                Search::Done(games) => games.iter().find(|game| game.id == game_id),
-                _ => None,
-            };
-            let candidate = current.candidates().contains(&game_id);
-            self.option_for(dialog, game_id, summary, candidate)
-        });
+        let (candidates, hidden_candidates) =
+            self.split_platform_filter(dialog, self.candidate_options_unfiltered(dialog, &current));
+        let (results, hidden_results) = self.split_platform_filter(
+            dialog,
+            self.result_options_unfiltered(dialog, current.candidates()),
+        );
+        // Whether the server's answer itself was empty, regardless of what the filter hides.
+        let answer_empty = candidates.is_empty()
+            && hidden_candidates.is_empty()
+            && results.is_empty()
+            && hidden_results.is_empty();
+        let selected = dialog
+            .selected
+            .and_then(|game_id| self.dialog_option(dialog, game_id));
         let (searching, error, searched) = match &dialog.search {
             Search::Idle => (false, None, false),
             Search::Running { .. } => (true, None, false),
@@ -563,7 +731,9 @@ impl LibraryMachine {
                 .unwrap_or_default(),
             query: dialog.query.clone(),
             searching,
-            no_results: searched && results.is_empty() && candidates.is_empty(),
+            no_results: searched && answer_empty,
+            platform_filter: dialog.platform.clone(),
+            filtered_out: hidden_candidates.len() + hidden_results.len(),
             candidates,
             results,
             selected,

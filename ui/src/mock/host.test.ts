@@ -2217,6 +2217,69 @@ describe('mock match dialog selection', () => {
     expect(snapshot.library!.matchDialog!.selected?.name).toBe(result.name);
   });
 
+  it('narrows the Dolphin match dialog by the declared platform and restores it on Show all', async () => {
+    const host = createMockHost({ variantLibrary: true });
+
+    // GameCube: only the NGC candidate and result are visible by default.
+    await host.invoke('library_input', {
+      input: { select: { key: 'dolphin:pikmin', mode: 'replace' } },
+    });
+    await host.invoke('library_input', { input: 'openMatch' });
+    let snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    let dialog = snapshot.library!.matchDialog!;
+    expect(dialog.platformFilter).toEqual({
+      platform: 'gamecube',
+      label: 'GameCube',
+      aliases: ['NGC', 'GC', 'GCN', 'GameCube'],
+      enabled: true,
+    });
+    expect(dialog.candidates.map((candidate) => candidate.gameId)).toEqual([400]);
+    expect(dialog.candidates[0].platforms).toEqual(['NGC']);
+    expect(dialog.filteredOut).toBe(1);
+    expect(dialog.selected?.gameId).toBe(400);
+
+    await host.invoke('library_input', { input: 'searchMatch' });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    dialog = snapshot.library!.matchDialog!;
+    expect(dialog.results.map((result) => result.gameId)).toEqual([402]);
+    expect(dialog.filteredOut).toBe(2);
+
+    // Show all restores the complete answer.
+    await host.invoke('library_input', {
+      input: { setMatchPlatformFilter: { enabled: false } },
+    });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    dialog = snapshot.library!.matchDialog!;
+    expect(dialog.platformFilter?.enabled).toBe(false);
+    expect(dialog.candidates.map((candidate) => candidate.gameId)).toEqual([400, 401]);
+    expect(dialog.results.map((result) => result.gameId)).toEqual([402, 403]);
+    expect(dialog.filteredOut).toBe(0);
+
+    // Wii: the Wii release is visible; the platform-less remaster only with Show all.
+    await host.invoke('library_input', { input: 'closeMatch' });
+    await host.invoke('library_input', {
+      input: { select: { key: 'dolphin:metroid', mode: 'replace' } },
+    });
+    await host.invoke('library_input', { input: 'openMatch' });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    dialog = snapshot.library!.matchDialog!;
+    expect(dialog.platformFilter?.label).toBe('Wii');
+    expect(dialog.candidates.map((candidate) => candidate.gameId)).toEqual([410]);
+    expect(dialog.filteredOut).toBe(1);
+
+    // A row without a declared platform keeps the full list and shows no filter.
+    await host.invoke('library_input', { input: 'closeMatch' });
+    await host.invoke('library_input', {
+      input: { select: { key: 'steam:1', mode: 'replace' } },
+    });
+    await host.invoke('library_input', { input: 'openMatch' });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    dialog = snapshot.library!.matchDialog!;
+    expect(dialog.platformFilter).toBeNull();
+    expect(dialog.filteredOut).toBe(0);
+    expect(dialog.candidates).toHaveLength(3);
+  });
+
   it('serves backup origins, retention and the history totals for the variant fixture', async () => {
     const host = createMockHost({ variantLibrary: true });
     const snapshot = (await host.invoke('get_snapshot')) as Snapshot;

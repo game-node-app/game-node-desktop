@@ -496,6 +496,8 @@ describe('App (integration: real component tree over a fake Tauri host)', () => 
         results: [],
         selected: null,
         noResults: false,
+        platformFilter: null,
+        filteredOut: 0,
         error: null,
         searchBlocked: null,
         current: 'unmatched',

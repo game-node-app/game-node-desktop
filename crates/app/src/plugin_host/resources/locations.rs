@@ -80,6 +80,7 @@ impl Drop for StopOnDrop {
 }
 
 /// What a place is, once looked up.
+#[allow(clippy::large_enum_variant)] // A short-lived temporary, not a stored collection.
 enum Place {
     /// A folder or file below an approval.
     Handle {

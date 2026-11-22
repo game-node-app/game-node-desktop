@@ -337,8 +337,8 @@ async fn approved_save_folder_is_inspected_without_a_path_and_profiles_stay_owne
         ),
         (
             locations["size"]["logical_bytes"].as_u64().unwrap(),
-            locations["size"]["file_count"].as_u64().unwrap() as u64,
-            locations["size"]["directory_count"].as_u64().unwrap() as u64,
+            locations["size"]["file_count"].as_u64().unwrap(),
+            locations["size"]["directory_count"].as_u64().unwrap(),
             true,
         )
     );

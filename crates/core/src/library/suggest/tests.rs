@@ -44,7 +44,7 @@ fn the_search_query_prefers_a_record_title_and_drops_release_tags() {
     let plain = stored("steam", "570", "Dota 2", true);
     assert_eq!(search_query(&plain), "Dota 2");
 
-    let mut tagged = stored("steam", "1", "Sonic Adventure [b]", true);
+    let tagged = stored("steam", "1", "Sonic Adventure [b]", true);
     assert_eq!(search_query(&tagged), "Sonic Adventure");
 
     // A name that is only a release tag is kept rather than emptied.

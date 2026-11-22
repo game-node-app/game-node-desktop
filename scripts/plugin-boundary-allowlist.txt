@@ -10,7 +10,26 @@
 # Ludusavi's manifest uses `steam`/`gog` ids as data vocabulary to match DRM-free games. The parser
 # reads the id; it does not branch on a provider or talk to a store. DRM-free matching stays a Core
 # feature (proposal: "DRM-free/manual games ... stay Core features").
-crates/core/src/drm_free/identity.rs:194 provider-id-literal -- Ludusavi's `steam` manifest identity field (the paired `gog` field is the same kind of data vocabulary); read as a manifest id, never a provider branch.
+crates/core/src/drm_free/identity.rs:214 provider-id-literal -- Ludusavi's `steam` manifest identity field (the paired `gog` field is the same kind of data vocabulary); read as a manifest id, never a provider branch.
+
+# Host-owned presentation metadata selects a public achievements page, a brand icon or localized copy
+# by provider id. These lines never read store data, branch on a store backend or bypass the plugin
+# descriptors. Provider pages other than Steam's would need a descriptor field, which is a protocol
+# change tracked separately.
+crates/app/src/engine/achievements.rs:906 provider-id-literal -- Public achievements page lookup for the provider id; the app never reads store data here.
+crates/app/src/engine/achievements.rs:910 store-host -- The public Steam achievements page opened in the browser; presentation metadata, not store integration.
+ui/src/features/library/detail/format.ts:132 provider-id-literal -- Localized playtime source label; display copy only, no store access.
+ui/src/features/library/libraryControlIcons.ts:14 provider-id-literal -- Brand icon for a library row; presentation only, no store access.
+ui/src/features/settings/StoreAccountCard.tsx:39 provider-id-literal -- Brand icon for a provider card; presentation only, no store access.
+
+# The host reserves the official provider ids so a third-party package cannot claim them. This is a
+# security validation set, not store discovery, catalog or provider behavior.
+crates/app/src/plugin_host/package.rs:582 provider-id-literal -- Reserved official provider ids rejected for third-party packages; a fixed security set, not store branching.
+
+# The host-approved runtime picker offers only the official Linux package-manager provider's
+# installed programs. A third-party record that carries an `executable` field must not become a
+# runtime candidate; this is a host security scope, not store discovery or a catalog branch.
+crates/app/src/plugin_host/runtime_access.rs:254 provider-id-literal -- Official PackageKit-only runtime inventory; a host security scope, not store integration.
 
 # The UI localizes the built-in Linux package-manager provider name. It is not a store: this maps a
 # known built-in provider id to a translated label and performs no host or store branching.

@@ -1580,14 +1580,13 @@ async fn uninstall_keep_archives_private_entries_and_needs_a_reviewed_reuse() {
         fixture.read_private("org.example.other", "kept").as_deref(),
         Some(&b"other plugin"[..])
     );
-    assert_eq!(
+    assert!(
         std::fs::read(
             fixture
                 .private_dir(fixture.plugin_id, "account-two")
                 .join("storage.sqlite3")
         )
         .is_ok(),
-        true,
         "another profile is untouched"
     );
 

@@ -46,7 +46,7 @@ fn record<'a>(
 
 fn publish(store: &mut SharedDataStore, owner: OwnerScope, write: RecordWrite<'_>) -> WriteReceipt {
     match store.write(owner, write).unwrap() {
-        WriteOutcome::Stored(receipt) => receipt,
+        WriteOutcome::Stored(receipt) => *receipt,
         other => panic!("unexpected write outcome: {other:?}"),
     }
 }

@@ -419,7 +419,7 @@ async fn custom_struct_and_opaque_envelopes_project_only_granted_fields() {
         fields.keys().cloned().collect::<BTreeSet<_>>(),
         BTreeSet::from([text!(extension["projection_paths"][0]).to_string()])
     );
-    assert!(!fields.contains_key(&text!(extension["custom_fields"]["note"]).to_string()));
+    assert!(!fields.contains_key(text!(extension["custom_fields"]["note"])));
     // The example's local projection keeps the same field; it never creates authority.
     assert_eq!(
         recipes::project_custom_dataset(

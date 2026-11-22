@@ -777,6 +777,7 @@ pub enum BundleRollbackError {
 /// the versions this call created are removed, the previous active pointers are restored and the
 /// previous mapping remains current. A component version that is already installed is reused only
 /// when its verified files equal the reviewed package. No package code is executed.
+#[allow(clippy::too_many_arguments)] // The reviewed candidate, storage handles and policy context.
 pub async fn apply_bundle_update(
     archive_path: impl AsRef<Path>,
     reviewed: BundleCandidateReport,
@@ -1243,6 +1244,7 @@ async fn stop_components_at(
 /// against the archived manifest (never widening them) and make the archived mapping current. A
 /// missing component version fails before anything changes; any later failure restores the
 /// previously active pointers and leaves the current mapping in place.
+#[allow(clippy::too_many_arguments)] // The archived mapping, storage handles and policy context.
 pub async fn rollback_bundle_version(
     bundle_id: impl Into<String>,
     version: impl Into<String>,
@@ -5619,7 +5621,7 @@ mod tests {
             BundleDataRetention::Keep,
             Some(BundlePrivateData {
                 root: &data_root,
-                profile_id: &profile,
+                profile_id: profile,
             }),
         )
         .await
@@ -5683,7 +5685,7 @@ mod tests {
             BundleDataRetention::Delete,
             Some(BundlePrivateData {
                 root: &data_root,
-                profile_id: &profile,
+                profile_id: profile,
             }),
         )
         .await

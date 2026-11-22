@@ -1100,6 +1100,25 @@ fn runtime_track_effects(
         .collect()
 }
 
+/// The totals that can be submitted right now: the entry is known, its provider reports playtime
+/// and its game match exists. A pass and its summary both use this rule.
+fn submission_candidates(state: &State, totals: &[Total]) -> Vec<Candidate> {
+    totals
+        .iter()
+        .filter_map(|total| {
+            let entry = state.library.entry(&total.entry_key)?;
+            let provider = state.library.provider(&entry.provider)?;
+            provider.manifest().playtime.as_ref()?;
+            Some(Candidate {
+                provider: entry.provider.clone(),
+                game_id: state.library.match_status(entry).game_id(),
+                source: provider.source().into(),
+                total: total.clone(),
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1154,23 +1173,4 @@ mod tests {
             None
         );
     }
-}
-
-/// The totals that can be submitted right now: the entry is known, its provider reports playtime
-/// and its game match exists. A pass and its summary both use this rule.
-fn submission_candidates(state: &State, totals: &[Total]) -> Vec<Candidate> {
-    totals
-        .iter()
-        .filter_map(|total| {
-            let entry = state.library.entry(&total.entry_key)?;
-            let provider = state.library.provider(&entry.provider)?;
-            provider.manifest().playtime.as_ref()?;
-            Some(Candidate {
-                provider: entry.provider.clone(),
-                game_id: state.library.match_status(entry).game_id(),
-                source: provider.source().into(),
-                total: total.clone(),
-            })
-        })
-        .collect()
 }

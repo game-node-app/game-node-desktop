@@ -299,7 +299,7 @@ pub struct WriteReceipt {
 /// The outcome of a publication attempt.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WriteOutcome {
-    Stored(WriteReceipt),
+    Stored(Box<WriteReceipt>),
     /// The expected record revision did not match. Nothing changed.
     Conflict {
         current_revision: u64,
@@ -683,12 +683,12 @@ impl SharedDataStore {
         let record = record_by_id(&tx, &owner, &record_id, write.now)?
             .ok_or(SharedDataError::InvalidRecord)?;
         tx.commit()?;
-        Ok(WriteOutcome::Stored(WriteReceipt {
+        Ok(WriteOutcome::Stored(Box::new(WriteReceipt {
             record,
             replaced: existing.is_some(),
             pruned_records: pruned.records,
             reclaimed_bytes: pruned.bytes,
-        }))
+        })))
     }
 
     /// Reads one unexpired record only inside this owner scope.

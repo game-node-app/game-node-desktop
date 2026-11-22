@@ -190,6 +190,7 @@ fn overlaps(left: &str, right: &str) -> bool {
 
 /// Resolves a profile's proposed declarations against approvals in this plugin/profile namespace.
 /// Runs on the namespace worker.
+#[allow(clippy::too_many_arguments)] // Resolution inputs from the session, profile and declarations.
 pub(crate) fn resolve_declarations(
     files: &FileAccess,
     feed: &LibraryFeed,

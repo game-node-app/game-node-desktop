@@ -751,6 +751,7 @@ impl ResourceApi {
         Ok(resolved.path)
     }
 
+    #[allow(clippy::too_many_arguments)] // Runtime creation inputs plus the approval and provenance fields.
     fn runtime_core(
         request: RuntimeRecord,
         executable: ApprovedFileReference,

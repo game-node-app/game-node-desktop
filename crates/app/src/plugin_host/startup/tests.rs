@@ -159,6 +159,7 @@ impl Fixture {
         )
     }
 
+    #[allow(clippy::too_many_arguments)] // A test package fixture with its identity and permissions.
     fn package(
         &self,
         plugin_id: &str,

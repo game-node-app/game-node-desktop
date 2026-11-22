@@ -51,9 +51,14 @@ export function storeCountName(
   id: string,
   t: Translate,
 ): string {
+  // A known provider keeps its localized built-in name even when the engine's facet count
+  // carries the manifest text (for example PackageKit's Portuguese manifest name).
+  if (library?.providers.some((entry) => entry.id === id)) {
+    return providerName(library, id, t);
+  }
   const counted = library?.filterCounts.stores.find((store) => store.id === id);
   if (counted) return counted.name;
-  return providerName(library, id, t);
+  return providerLabel(id, undefined, t);
 }
 
 /** The header title named by the engine's title source. */

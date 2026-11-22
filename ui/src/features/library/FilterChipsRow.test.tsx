@@ -37,6 +37,42 @@ describe('FilterChipsRow', () => {
     vi.restoreAllMocks();
   });
 
+  it('localizes a known built-in store in the active filter chip', () => {
+    const active = filters((next) => {
+      next.stores = ['packagekit'];
+    });
+    const base = makeLibrary();
+    const library = makeLibrary({
+      providers: [
+        {
+          id: 'packagekit',
+          name: 'Gerenciador de pacotes Linux',
+          count: 5,
+          installedCount: 5,
+          ownedCount: 0,
+          sharedCount: 0,
+          sharedLabel: null,
+        },
+      ],
+      layout: { ...base.layout, filters: active },
+      filterCounts: {
+        ...base.filterCounts,
+        stores: [
+          {
+            id: 'packagekit',
+            name: 'Gerenciador de pacotes Linux',
+            count: 5,
+          },
+        ],
+      },
+    });
+    renderControls(<FilterChipsRow />, library);
+
+    expect(screen.getByTestId('library-filter-chip-stores')).toHaveTextContent(
+      'Store:Linux Package Manager',
+    );
+  });
+
   it('renders one joined chip per active facet with copy.md labels', () => {
     const active = filters((next) => {
       next.availability = { installed: true, owned: true, shared: false };

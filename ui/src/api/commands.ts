@@ -234,8 +234,16 @@ export const commands = {
     safeInvoke<PluginImportReview>('plugin_import_review', { archivePath }),
   pluginImportConfirmPublisher: (token: string, confirmedFingerprint: string) =>
     safeInvoke<PluginImportReview>('plugin_import_confirm_publisher', { token, confirmedFingerprint }),
-  pluginImportInstall: (token: string, nativeCodeConsent: boolean) =>
-    safeInvoke<string>('plugin_import_install', { token, nativeCodeConsent }),
+  pluginImportInstall: (
+    token: string,
+    nativeCodeConsent: boolean,
+    deniedPermissionIds: string[] = [],
+  ) =>
+    safeInvoke<string>('plugin_import_install', {
+      token,
+      nativeCodeConsent,
+      deniedPermissionIds,
+    }),
   pluginImportLicenseText: (token: string, file: string) =>
     safeInvoke<string>('plugin_import_license_text', { token, file }),
 
@@ -333,10 +341,15 @@ export const commands = {
       token,
       confirmedFingerprint,
     }),
-  pluginBundleImportInstall: (token: string, nativeCodeConsent: boolean) =>
+  pluginBundleImportInstall: (
+    token: string,
+    nativeCodeConsent: boolean,
+    componentDeniedPermissions: Array<{ pluginId: string; deniedPermissionIds: string[] }> = [],
+  ) =>
     safeInvoke<BundleImportInstallOutcome>('plugin_bundle_import_install', {
       token,
       nativeCodeConsent,
+      componentDeniedPermissions,
     }),
   pluginBundlePermissionsReplace: (submissions: BundleComponentPermissionSubmission[]) =>
     safeInvoke<BundlePermissionResult>('plugin_bundle_permissions_replace', { submissions }),

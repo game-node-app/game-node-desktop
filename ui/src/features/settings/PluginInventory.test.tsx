@@ -576,7 +576,12 @@ describe('PluginInventory', () => {
       token: 'review-token', pluginId: 'org.example.community', name: 'Community', version: '1.0.0',
       publisherKeyId: 'key-1', publisherFingerprint: 'SHA256:abc', trust: 'untrusted' as const,
       license: 'MIT', licenseFiles: ['LICENSE'], licenseNotices: [], permissionIds: ['library.read'],
-      requestedPermissions: [{ id: 'library.read', required: false, scope: 'selected-game', reason: 'Read selected game data' }],
+      requestedPermissions: [{
+        id: 'library.read', required: false, scope: 'selected-game',
+        reason: 'Read selected game data',
+        impactIfDisabled: 'Selected game details are not shown.',
+      }],
+      supportedPlatforms: ['gamecube', 'wii'],
       nativeAccess: [],
       playtime: { identifiesGameplay: true, identifiesPauses: false, withoutPauseDetection: 'application_open' as const },
       compatibility: 'compatible' as const,
@@ -587,23 +592,75 @@ describe('PluginInventory', () => {
     const install = vi.spyOn(commands, 'pluginImportInstall').mockResolvedValue(staged.pluginId);
     renderInventory('en', 'account-import');
 
-    fireEvent.change(await screen.findByRole('textbox', { name: 'Path to signed ZIP package' }), { target: { value: '/packages/community.zip' } });
-    await userEvent.setup().type(screen.getByRole('textbox', { name: 'Path to signed ZIP package' }), '{Enter}');
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Path to signed bundle' }), { target: { value: '/packages/community.zip' } });
+    await userEvent.setup().type(screen.getByRole('textbox', { name: 'Path to signed bundle' }), '{Enter}');
     expect(await screen.findByRole('article', { name: 'Review plugin package' })).toHaveTextContent('SHA256:abc');
     const packageReview = screen.getByRole('article', { name: 'Review plugin package' });
-    expect(packageReview).toHaveTextContent('library.read · selected-game · optional · Read selected game data');
+    expect(packageReview).toHaveTextContent('Platforms: GameCube, Wii');
+    expect(packageReview).toHaveTextContent('Read library');
+    expect(packageReview).toHaveTextContent('Selected game');
+    expect(packageReview).toHaveTextContent('Optional');
+    expect(packageReview).toHaveTextContent('Read selected game data');
+
+    // Optional permissions default on; turning one off explains what stops working.
+    const toggle = within(packageReview).getByRole('switch', { name: 'Allow Read library' });
+    expect(toggle).toBeChecked();
+    fireEvent.click(toggle);
+    expect(toggle).not.toBeChecked();
+    expect(within(packageReview).getByText('Selected game details are not shown.')).toBeInTheDocument();
+
+    fireEvent.click(within(packageReview).getByText('Technical details'));
     expect(packageReview).toHaveTextContent('Playtime behavior declared by this signed package');
     expect(packageReview).toHaveTextContent('Application-open time');
-    expect(within(packageReview).getByRole('note')).toHaveTextContent('This plugin cannot distinguish pauses.');
+    expect(within(packageReview).getByText(/This plugin cannot distinguish pauses/)).toBeInTheDocument();
     fireEvent.click(screen.getByText('LICENSE'));
     fireEvent.click(screen.getByRole('button', { name: 'View this license or notice offline' }));
     expect(await screen.findByText('MIT license text available offline')).toBeInTheDocument();
     expect(viewLicense).toHaveBeenCalledWith('review-token', 'LICENSE');
-    fireEvent.click(screen.getByRole('button', { name: 'Trust this publisher' }));
+
+    const accept = within(packageReview).getByRole('button', { name: 'Accept and install' });
+    expect(accept).toBeDisabled();
+    expect(accept).toHaveClass('w-full');
+    fireEvent.click(within(packageReview).getByRole('button', { name: 'Trust this publisher' }));
     await waitFor(() => expect(confirm).toHaveBeenCalledWith('review-token', 'SHA256:abc'));
-    fireEvent.click(screen.getByRole('button', { name: 'Install without starting' }));
-    await waitFor(() => expect(install).toHaveBeenCalledWith('review-token', false));
+    await waitFor(() => expect(accept).toBeEnabled());
+    fireEvent.click(accept);
+    await waitFor(() => expect(install).toHaveBeenCalledWith('review-token', false, ['library.read']));
     expect(importReview).toHaveBeenCalledWith('/packages/community.zip');
+  });
+
+  it('locks required permissions and omits an empty platform line', async () => {
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([]);
+    vi.spyOn(commands, 'pluginUpdatePreferences').mockResolvedValue({ periodicChecks: false });
+    vi.spyOn(commands, 'pluginUpdateAvailable').mockResolvedValue([]);
+    const staged = {
+      token: 'required-review', pluginId: 'org.example.required', name: 'Required', version: '1.0.0',
+      publisherKeyId: 'key-required', publisherFingerprint: 'SHA256:required', trust: 'trusted' as const,
+      license: 'MIT', licenseFiles: [], licenseNotices: [], permissionIds: ['provider.context.read'],
+      requestedPermissions: [{
+        id: 'provider.context.read', required: true, scope: 'own-provider',
+        reason: 'Read the host-issued provider context.',
+      }],
+      nativeAccess: [],
+      playtime: { identifiesGameplay: false, identifiesPauses: false, withoutPauseDetection: 'disabled' as const },
+      compatibility: 'compatible' as const,
+    };
+    vi.spyOn(commands, 'pluginImportReview').mockResolvedValue(staged);
+    const install = vi.spyOn(commands, 'pluginImportInstall').mockResolvedValue(staged.pluginId);
+    renderInventory('en', 'account-required');
+
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Path to signed bundle' }), { target: { value: '/packages/required.gnplugin' } });
+    await userEvent.setup().type(screen.getByRole('textbox', { name: 'Path to signed bundle' }), '{Enter}');
+    const review = await screen.findByRole('article', { name: 'Review plugin package' });
+    expect(review).toHaveTextContent('Provider context');
+    expect(review).toHaveTextContent('Required by the package and cannot be turned off.');
+    expect(within(review).queryByRole('switch')).not.toBeInTheDocument();
+    expect(review).not.toHaveTextContent('Platforms');
+
+    const accept = within(review).getByRole('button', { name: 'Accept and install' });
+    expect(accept).toBeEnabled();
+    fireEvent.click(accept);
+    await waitFor(() => expect(install).toHaveBeenCalledWith('required-review', false, []));
   });
 
   it('blocks installing a package whose only target mismatches the libc family', async () => {
@@ -627,11 +684,11 @@ describe('PluginInventory', () => {
       },
     });
     renderInventory('en', 'account-musl');
-    fireEvent.change(await screen.findByRole('textbox', { name: 'Path to signed ZIP package' }), { target: { value: '/packages/musl.zip' } });
-    await userEvent.setup().type(screen.getByRole('textbox', { name: 'Path to signed ZIP package' }), '{Enter}');
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Path to signed bundle' }), { target: { value: '/packages/musl.zip' } });
+    await userEvent.setup().type(screen.getByRole('textbox', { name: 'Path to signed bundle' }), '{Enter}');
     const review = await screen.findByRole('article', { name: 'Review plugin package' });
     expect(within(review).getByRole('region', { name: 'Compatibility with this system' })).toHaveTextContent('The C library family does not match');
-    expect(screen.getByRole('button', { name: 'Install without starting' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Accept and install' })).toBeDisabled();
   });
 
   it('requires separate explicit consent for declared native access', async () => {
@@ -649,14 +706,14 @@ describe('PluginInventory', () => {
     vi.spyOn(commands, 'pluginImportReview').mockResolvedValue(staged);
     renderInventory('en', 'account-import');
 
-    fireEvent.change(await screen.findByRole('textbox', { name: 'Path to signed ZIP package' }), { target: { value: '/packages/native.zip' } });
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Path to signed bundle' }), { target: { value: '/packages/native.zip' } });
     fireEvent.click(screen.getByRole('button', { name: 'Review package' }));
-    const installButton = await screen.findByRole('button', { name: 'Install without starting' });
+    const installButton = await screen.findByRole('button', { name: 'Accept and install' });
     expect(installButton).toBeDisabled();
     fireEvent.click(screen.getByRole('checkbox', { name: /reviewed the declared native access/i }));
     expect(installButton).toBeEnabled();
     fireEvent.click(installButton);
-    await waitFor(() => expect(install).toHaveBeenCalledWith('native-review', true));
+    await waitFor(() => expect(install).toHaveBeenCalledWith('native-review', true, []));
   });
 
   it('shows the old fingerprint and requires explicit re-trust when a publisher key changes', async () => {
@@ -673,8 +730,8 @@ describe('PluginInventory', () => {
     vi.spyOn(commands, 'pluginImportReview').mockResolvedValue(changed);
     const retrust = vi.spyOn(commands, 'pluginImportConfirmPublisher').mockResolvedValue({ ...changed, trust: 'trusted', pinnedFingerprint: undefined });
     renderInventory('en', 'account-import');
-    fireEvent.change(await screen.findByRole('textbox', { name: 'Path to signed ZIP package' }), { target: { value: '/packages/changed.zip' } });
-    await userEvent.setup().type(screen.getByRole('textbox', { name: 'Path to signed ZIP package' }), '{Enter}');
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Path to signed bundle' }), { target: { value: '/packages/changed.zip' } });
+    await userEvent.setup().type(screen.getByRole('textbox', { name: 'Path to signed bundle' }), '{Enter}');
 
     expect(await screen.findByText('Previously trusted fingerprint: SHA256:old')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Re-trust this changed publisher key' }));

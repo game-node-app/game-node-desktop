@@ -14,6 +14,12 @@ import { PluginFolderApprovals } from './PluginFolderApprovals';
 import { PluginSharedResources } from './PluginSharedResources';
 import { PluginDurableUsage } from './PluginDurableUsage';
 import { PluginCompatibilityReview } from './PluginCompatibilityReview';
+import { PluginImportPermissions } from './PluginImportPermissions';
+import {
+  deniedPermissionIds,
+  importPlatformLabel,
+  type ImportPermissionDecisions,
+} from './pluginImportReview';
 import { selectPluginConfiguration } from '../../api/pluginSettings';
 import { PluginConfigurationSurface } from './PluginConfigurationSurface';
 import {
@@ -59,6 +65,10 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
   const [licenseText, setLicenseText] = useState<Record<string, string>>({});
   const [archivePath, setArchivePath] = useState('');
   const [pickerError, setPickerError] = useState(false);
+  const [importPermissionDecisions, setImportPermissionDecisions] =
+    useState<ImportPermissionDecisions>({});
+  const [bundlePermissionDecisions, setBundlePermissionDecisions] =
+    useState<Record<string, ImportPermissionDecisions>>({});
   const [scopeChoices, setScopeChoices] = useState<Record<string, boolean>>({});
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [deletePluginData, setDeletePluginData] = useState(false);
@@ -322,6 +332,8 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
     setNativeCodeConsent(false);
     setBundleNativeConsent(false);
     setLicenseText({});
+    setImportPermissionDecisions({});
+    setBundlePermissionDecisions({});
     try {
       const path = archivePath.trim();
       if (path.toLowerCase().endsWith('.gnbundle')) {
@@ -343,10 +355,20 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
         multiple: false,
         directory: false,
         title: t('plugins.import.chooseFileTitle'),
-        filters: [{
-          name: t('plugins.import.fileFilter'),
-          extensions: ['gnbundle', 'gnplugin', 'zip'],
-        }],
+        filters: [
+          {
+            name: t('plugins.import.fileFilterBundle'),
+            extensions: ['gnbundle'],
+          },
+          {
+            name: t('plugins.import.fileFilterPackage'),
+            extensions: ['gnplugin'],
+          },
+          {
+            name: t('plugins.import.fileFilterAll'),
+            extensions: ['gnbundle', 'gnplugin'],
+          },
+        ],
       });
       if (typeof selected === 'string') setArchivePath(selected);
     } catch {
@@ -372,9 +394,21 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
     setBusy(true);
     setManagementError(false);
     try {
-      await commands.pluginBundleImportInstall(bundleReview.token, bundleNativeConsent);
+      const componentDeniedPermissions = bundleReview.components.map((component) => ({
+        pluginId: component.review.pluginId,
+        deniedPermissionIds: deniedPermissionIds(
+          component.review.requestedPermissions,
+          bundlePermissionDecisions[component.review.pluginId] ?? {},
+        ),
+      }));
+      await commands.pluginBundleImportInstall(
+        bundleReview.token,
+        bundleNativeConsent,
+        componentDeniedPermissions,
+      );
       setBundleReview(null);
       setBundleNativeConsent(false);
+      setBundlePermissionDecisions({});
       setArchivePath('');
       await queryClient.invalidateQueries({ queryKey: pluginQueryKeys.inventory });
     } catch { setManagementError(true); }
@@ -406,10 +440,15 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
     setBusy(true);
     setManagementError(false);
     try {
-      await commands.pluginImportInstall(importReview.token, nativeCodeConsent);
+      await commands.pluginImportInstall(
+        importReview.token,
+        nativeCodeConsent,
+        deniedPermissionIds(importReview.requestedPermissions, importPermissionDecisions),
+      );
       setImportReview(null);
       setNativeCodeConsent(false);
       setLicenseText({});
+      setImportPermissionDecisions({});
       setArchivePath('');
       await queryClient.invalidateQueries({ queryKey: pluginQueryKeys.inventory });
     } catch { setManagementError(true); }
@@ -661,6 +700,7 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
         <form aria-label={t('plugins.import.title')} onSubmit={(event) => { event.preventDefault(); void reviewImport(); }}>
           <div className="block text-sm">
             <label className={settingsRowTitle} htmlFor="plugin-import-path">{t('plugins.import.title')}</label>
+            <p className={`${settingsRowDescription} mt-1`}>{t('plugins.import.description')}</p>
             <div className="mt-1 flex gap-compact">
               <input id="plugin-import-path" className="min-w-0 flex-1 rounded-sm border border-border-subtle bg-raised px-sm py-1" value={archivePath} onChange={(event) => setArchivePath(event.currentTarget.value)} placeholder={t('plugins.import.path')} aria-label={t('plugins.import.path')} />
               <button type="button" className="shrink-0 rounded-sm border border-border-subtle px-sm py-1 text-sm hover:bg-[#2e2e2e]" disabled={busy} onClick={() => void pickArchive()}>{t('plugins.import.chooseFile')}</button>
@@ -671,117 +711,177 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
           <button type="submit" className="mt-compact rounded-sm border border-border-subtle px-sm py-1 text-sm hover:bg-[#2e2e2e]" disabled={busy || !archivePath.trim() || profileId === null}>{t('plugins.import.review')}</button>
         </form>
         {importReview && <article className="mt-compact border-t border-border-subtle pt-compact" aria-label={t('plugins.import.reviewTitle')}>
-          <h3 className={settingsRowTitle}>{importReview.name} {importReview.version}</h3>
-          <p className={settingsRowDescription}>{t('plugins.identifier')}: {importReview.pluginId}</p>
-          <p className={settingsRowDescription}>{t('plugins.import.fingerprint')}: {importReview.publisherFingerprint}</p>
-          {importReview.pinnedFingerprint && <p className={settingsRowDescription}>{t('plugins.import.previousFingerprint')}: {importReview.pinnedFingerprint}</p>}
-          <div className={settingsRowDescription}>
-            <p>{t('plugins.import.permissions')}:</p>
-            {importReview.requestedPermissions.length ? (
-              <ul className="ml-4 list-disc">
-                {importReview.requestedPermissions.map((permission) => (
-                  <li key={permission.id}>
-                    {permission.id} · {permission.scope} · {permission.required ? t('plugins.import.required') : t('plugins.import.optional')} · {permission.reason}
-                  </li>
-                ))}
-              </ul>
-            ) : <p>—</p>}
-          </div>
-          <section className={settingsRowDescription} aria-label={t('plugins.playtime.title')}>
-            <p>{t('plugins.import.playtimeDisclosure')}</p>
-            <p>{t('plugins.playtime.gameplayDetection')}: {importReview.playtime.identifiesGameplay ? t('plugins.playtime.yes') : t('plugins.playtime.no')}</p>
-            <p>{t('plugins.playtime.pauseDetection')}: {importReview.playtime.identifiesPauses ? t('plugins.playtime.yes') : t('plugins.playtime.no')}</p>
-            <p>{t('plugins.playtime.modeLabel')}: {t(`plugins.playtime.mode.${importReview.playtime.withoutPauseDetection}`)}</p>
-            {importReview.playtime.identifiesGameplay && !importReview.playtime.identifiesPauses && importReview.playtime.withoutPauseDetection === 'application_open' && (
-              <p className="mt-1" role="note">{t('plugins.playtime.applicationOpenWarning')}</p>
+          <header className="flex flex-col gap-1">
+            <div className="flex flex-wrap items-center gap-compact">
+              <h3 className={settingsRowTitle}>{importReview.name} {importReview.version}</h3>
+              <span className={importReview.compatibility === 'compatible' ? settingsPillSuccess : settingsPillWarning}>
+                {t(`plugins.import.${importReview.compatibility}`)}
+              </span>
+            </div>
+            <p className={`${settingsRowDescription} break-all`}>{t('plugins.import.fingerprint')}: {importReview.publisherFingerprint}</p>
+            {importReview.pinnedFingerprint && <p className={`${settingsRowDescription} break-all`}>{t('plugins.import.previousFingerprint')}: {importReview.pinnedFingerprint}</p>}
+            <p className={settingsRowDescription}>{t('plugins.import.license')}: {importReview.license}</p>
+            {(importReview.supportedPlatforms?.length ?? 0) > 0 && (
+              <p className={settingsRowDescription}>
+                {t('plugins.import.platforms')}: {(importReview.supportedPlatforms ?? []).map((platform) => importPlatformLabel(platform, t)).join(', ')}
+              </p>
             )}
+          </header>
+          <section className="mt-md" aria-label={t('plugins.import.permissions')}>
+            <p className={settingsRowTitle}>{t('plugins.import.permissions')}</p>
+            <PluginImportPermissions
+              permissions={importReview.requestedPermissions}
+              decisions={importPermissionDecisions}
+              onDecisionsChange={setImportPermissionDecisions}
+              disabled={busy || profileId === null}
+              ariaLabel={t('plugins.import.permissions')}
+              emptyLabel={t('plugins.import.noPermissions')}
+            />
           </section>
-          <p className={settingsRowDescription}>{t('plugins.nativeAccess')}: {importReview.nativeAccess.join(', ') || '—'}</p>
-          {importReview.nativeAccess.length > 0 && <label className="mt-compact flex items-start gap-compact text-sm">
-            <input type="checkbox" checked={nativeCodeConsent} disabled={busy} onChange={(event) => setNativeCodeConsent(event.currentTarget.checked)} />
-            <span>{t('plugins.import.nativeConsent')}</span>
-          </label>}
-          <p className={settingsRowDescription}>{t('plugins.import.license')}: {importReview.license}</p>
-          {[...new Set([...importReview.licenseFiles, ...importReview.licenseNotices])].map((file) => (
-            <details key={file} className="mt-1 text-sm">
-              <summary className="cursor-pointer">{file}</summary>
-              {licenseText[file] === undefined ? <button type="button" className="mt-1 underline" disabled={busy} onClick={() => {
-                setBusy(true);
-                void commands.pluginImportLicenseText(importReview.token, file)
-                  .then((text) => setLicenseText((current) => ({ ...current, [file]: text })))
-                  .catch(() => setManagementError(true))
-                  .finally(() => setBusy(false));
-              }}>{t('plugins.import.viewLicense')}</button> : <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap rounded-sm bg-raised p-sm">{licenseText[file]}</pre>}
-            </details>
-          ))}
-          <p className={settingsRowDescription}>{t('plugins.import.compatibility')}: {t(`plugins.import.${importReview.compatibility}`)} {importReview.compatibilityReason ?? ''}</p>
-          {importReview.compatibilityDetails && <PluginCompatibilityReview details={importReview.compatibilityDetails} />}
+          <section className="mt-md" aria-label={t('plugins.nativeAccess')}>
+            <p className={settingsRowDescription}>{t('plugins.nativeAccess')}: {importReview.nativeAccess.join(', ') || '—'}</p>
+            {importReview.nativeAccess.length > 0 && <label className="mt-compact flex items-start gap-compact text-sm">
+              <input type="checkbox" checked={nativeCodeConsent} disabled={busy} onChange={(event) => setNativeCodeConsent(event.currentTarget.checked)} />
+              <span>{t('plugins.import.nativeConsent')}</span>
+            </label>}
+          </section>
           {importReview.trust !== 'trusted' ? <button type="button" className="mt-compact rounded-sm border border-border-subtle px-sm py-1 text-sm" disabled={busy || profileId === null || importReview.compatibility !== 'compatible'} onClick={() => {
             setBusy(true);
             setManagementError(false);
             void commands.pluginImportConfirmPublisher(importReview.token, importReview.publisherFingerprint).then(setImportReview).catch(() => setManagementError(true)).finally(() => setBusy(false));
-          }}>{importReview.trust === 'changed' ? t('plugins.import.retrust') : t('plugins.import.trust')}</button> : null}
-          <button type="button" className="ml-compact mt-compact rounded-sm border border-brand bg-brand px-sm py-1 text-sm text-white" disabled={busy || profileId === null || importReview.trust !== 'trusted' || importReview.compatibility !== 'compatible' || (importReview.nativeAccess.length > 0 && !nativeCodeConsent)} onClick={() => void installImport()}>{t('plugins.import.install')}</button>
+          }}>{importReview.trust === 'changed' ? t('plugins.import.retrust') : t('plugins.import.trust')}</button> : <p className={`${settingsRowDescription} mt-compact`} role="status">{t('plugins.import.publisherTrusted')}</p>}
+          <details className="mt-md text-sm">
+            <summary className="cursor-pointer text-[var(--settings-text-secondary)]">{t('plugins.import.technicalDetails')}</summary>
+            <div className="mt-compact flex flex-col gap-1">
+              <p className={settingsRowDescription}>{t('plugins.identifier')}: {importReview.pluginId}</p>
+              <p className={settingsRowDescription}>{t('plugins.import.compatibility')}: {t(`plugins.import.${importReview.compatibility}`)} {importReview.compatibilityReason ?? ''}</p>
+              {importReview.compatibilityDetails && <PluginCompatibilityReview details={importReview.compatibilityDetails} />}
+              <section className={settingsRowDescription} aria-label={t('plugins.playtime.title')}>
+                <p>{t('plugins.import.playtimeDisclosure')}</p>
+                <p>{t('plugins.playtime.gameplayDetection')}: {importReview.playtime.identifiesGameplay ? t('plugins.playtime.yes') : t('plugins.playtime.no')}</p>
+                <p>{t('plugins.playtime.pauseDetection')}: {importReview.playtime.identifiesPauses ? t('plugins.playtime.yes') : t('plugins.playtime.no')}</p>
+                <p>{t('plugins.playtime.modeLabel')}: {t(`plugins.playtime.mode.${importReview.playtime.withoutPauseDetection}`)}</p>
+                {importReview.playtime.identifiesGameplay && !importReview.playtime.identifiesPauses && importReview.playtime.withoutPauseDetection === 'application_open' && (
+                  <p className="mt-1" role="note">{t('plugins.playtime.applicationOpenWarning')}</p>
+                )}
+              </section>
+              {[...new Set([...importReview.licenseFiles, ...importReview.licenseNotices])].map((file) => (
+                <details key={file} className="mt-1 text-sm">
+                  <summary className="cursor-pointer">{file}</summary>
+                  {licenseText[file] === undefined ? <button type="button" className="mt-1 underline" disabled={busy} onClick={() => {
+                    setBusy(true);
+                    void commands.pluginImportLicenseText(importReview.token, file)
+                      .then((text) => setLicenseText((current) => ({ ...current, [file]: text })))
+                      .catch(() => setManagementError(true))
+                      .finally(() => setBusy(false));
+                  }}>{t('plugins.import.viewLicense')}</button> : <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap rounded-sm bg-raised p-sm">{licenseText[file]}</pre>}
+                </details>
+              ))}
+            </div>
+          </details>
+          <button type="button" className="mt-md w-full rounded-sm border border-brand bg-brand px-md py-compact text-base font-semibold text-white transition-colors hover:bg-brand-4 disabled:cursor-not-allowed disabled:opacity-50" disabled={busy || profileId === null || importReview.trust !== 'trusted' || importReview.compatibility !== 'compatible' || (importReview.nativeAccess.length > 0 && !nativeCodeConsent)} onClick={() => void installImport()}>{t('plugins.import.acceptInstall')}</button>
         </article>}
         {bundleReview && <article className="mt-compact border-t border-border-subtle pt-compact" aria-label={t('plugins.bundle.reviewTitle')}>
-          <h3 className={settingsRowTitle}>
-            {bundleReview.bundle.name} {bundleReview.bundle.version}
-          </h3>
-          <p className={settingsRowDescription}>{t('plugins.bundle.identifier')}: {bundleReview.bundle.id}</p>
-          <p className={`${settingsRowDescription} break-all`}>
-            {t('plugins.import.fingerprint')}: {bundleReview.bundle.publisherFingerprint}
-          </p>
-          {bundleReview.pinnedFingerprint && (
-            <p className={settingsRowDescription}>
-              {t('plugins.import.previousFingerprint')}: {bundleReview.pinnedFingerprint}
+          <header className="flex flex-col gap-1">
+            <h3 className={settingsRowTitle}>
+              {bundleReview.bundle.name} {bundleReview.bundle.version}
+            </h3>
+            <p className={`${settingsRowDescription} break-all`}>
+              {t('plugins.import.fingerprint')}: {bundleReview.bundle.publisherFingerprint}
             </p>
-          )}
-          <p className={settingsRowDescription}>
-            {t('plugins.import.license')}: {bundleReview.license.expressions.join(', ') || '—'}
-          </p>
-          <p className={settingsRowDescription}>{t('plugins.bundle.reviewDescription')}</p>
+            {bundleReview.pinnedFingerprint && (
+              <p className={`${settingsRowDescription} break-all`}>
+                {t('plugins.import.previousFingerprint')}: {bundleReview.pinnedFingerprint}
+              </p>
+            )}
+            <p className={settingsRowDescription}>
+              {t('plugins.import.license')}: {bundleReview.license.expressions.join(', ') || '—'}
+            </p>
+          </header>
+          <p className={`${settingsRowDescription} mt-compact`}>{t('plugins.bundle.reviewDescription')}</p>
           <ul className="mt-compact flex flex-col gap-compact" aria-label={t('plugins.bundle.components')}>
-            {bundleReview.components.map((component) => (
-              <li key={component.review.pluginId} className="border-t border-border-subtle pt-compact">
-                <div className="flex flex-wrap items-center gap-compact">
-                  <h4 className={settingsRowTitle}>{component.review.name}</h4>
-                  <span className={settingsPill}>{t(`plugins.bundle.kind.${component.kind}`)}</span>
-                  <span className={settingsPill}>{component.review.version}</span>
-                  <span className={component.availability.status === 'available' ? settingsPillSuccess : settingsPillWarning}>
-                    {t(`plugins.bundle.availability.${component.availability.status}`)}
-                  </span>
-                </div>
-                <p className={settingsRowDescription}>{t('plugins.identifier')}: {component.review.pluginId}</p>
-                {component.availability.status === 'unavailable' && (
-                  <p className={settingsRowDescription} role="status">
-                    {t(`plugins.bundle.unavailable.${component.availability.reason}`)}
-                  </p>
-                )}
-                <p className={settingsRowDescription}>
-                  {t('plugins.import.compatibility')}: {t(`plugins.import.${component.review.compatibility}`)}
-                  {component.review.compatibilityReason ? ` ${component.review.compatibilityReason}` : ''}
-                </p>
-                {component.review.compatibilityDetails && (
-                  <PluginCompatibilityReview details={component.review.compatibilityDetails} />
-                )}
-                <div className={`${settingsRowDescription} mt-compact`}>
-                  <p>{t('plugins.bundle.permissionsFor', { name: component.review.name })}:</p>
-                  {component.review.requestedPermissions.length > 0 ? (
-                    <ul className="ml-4 list-disc">
-                      {component.review.requestedPermissions.map((permission) => (
-                        <li key={permission.id}>
-                          {permission.id} · {permission.scope} · {permission.required ? t('plugins.import.required') : t('plugins.import.optional')} · {permission.reason}
-                        </li>
-                      ))}
-                    </ul>
-                  ) : <p>{t('plugins.bundle.noPermissions')}</p>}
-                </div>
-                <p className={settingsRowDescription}>
-                  {t('plugins.import.license')}: {component.review.license}
-                </p>
-              </li>
-            ))}
+            {bundleReview.components.map((component) => {
+              const license = bundleReview.license.components.find(
+                (entry) => entry.pluginId === component.review.pluginId,
+              );
+              return (
+                <li key={component.review.pluginId} className="border-t border-border-subtle pt-compact">
+                  <div className="flex flex-wrap items-center gap-compact">
+                    <h4 className={settingsRowTitle}>{component.review.name}</h4>
+                    <span className={settingsPill}>{t(`plugins.bundle.kind.${component.kind}`)}</span>
+                    <span className={settingsPill}>{component.review.version}</span>
+                    <span className={component.availability.status === 'available' ? settingsPillSuccess : settingsPillWarning}>
+                      {t(`plugins.bundle.availability.${component.availability.status}`)}
+                    </span>
+                    <span className={component.review.compatibility === 'compatible' ? settingsPillSuccess : settingsPillWarning}>
+                      {t(`plugins.import.${component.review.compatibility}`)}
+                    </span>
+                  </div>
+                  {(component.review.supportedPlatforms?.length ?? 0) > 0 && (
+                    <p className={`${settingsRowDescription} mt-1`}>
+                      {t('plugins.import.platforms')}: {(component.review.supportedPlatforms ?? []).map((platform) => importPlatformLabel(platform, t)).join(', ')}
+                    </p>
+                  )}
+                  {component.availability.status === 'unavailable' && (
+                    <p className={`${settingsRowDescription} mt-1`} role="status">
+                      {t(`plugins.bundle.unavailable.${component.availability.reason}`)}
+                    </p>
+                  )}
+                  <div className="mt-compact">
+                    <p className={settingsRowTitle}>
+                      {t('plugins.bundle.permissionsFor', { name: component.review.name })}
+                    </p>
+                    <PluginImportPermissions
+                      permissions={component.review.requestedPermissions}
+                      decisions={bundlePermissionDecisions[component.review.pluginId] ?? {}}
+                      onDecisionsChange={(decisions) => setBundlePermissionDecisions((current) => ({
+                        ...current,
+                        [component.review.pluginId]: decisions,
+                      }))}
+                      disabled={busy || profileId === null}
+                      ariaLabel={t('plugins.bundle.permissionsFor', { name: component.review.name })}
+                      emptyLabel={t('plugins.bundle.noPermissions')}
+                    />
+                  </div>
+                  <details className="mt-compact text-sm">
+                    <summary className="cursor-pointer text-[var(--settings-text-secondary)]">{t('plugins.import.technicalDetails')}</summary>
+                    <div className="mt-compact flex flex-col gap-1">
+                      <p className={settingsRowDescription}>{t('plugins.identifier')}: {component.review.pluginId}</p>
+                      <p className={settingsRowDescription}>{t('plugins.import.license')}: {component.review.license}</p>
+                      <p className={settingsRowDescription}>
+                        {t('plugins.import.compatibility')}: {t(`plugins.import.${component.review.compatibility}`)}
+                        {component.review.compatibilityReason ? ` ${component.review.compatibilityReason}` : ''}
+                      </p>
+                      {component.review.compatibilityDetails && (
+                        <PluginCompatibilityReview details={component.review.compatibilityDetails} />
+                      )}
+                      <p className={settingsRowDescription}>
+                        {t('plugins.nativeAccess')}: {component.review.nativeAccess.join(', ') || '—'}
+                      </p>
+                      {license && (license.files.length > 0 || license.notices.length > 0) && (
+                        <p className={settingsRowDescription}>
+                          {t('plugins.import.licenseFilesLabel')}: {[...license.files, ...license.notices].join(', ')}
+                        </p>
+                      )}
+                    </div>
+                  </details>
+                </li>
+              );
+            })}
           </ul>
+          <details className="mt-md text-sm">
+            <summary className="cursor-pointer text-[var(--settings-text-secondary)]">{t('plugins.import.technicalDetails')}</summary>
+            <div className="mt-compact flex flex-col gap-1">
+              <p className={`${settingsRowDescription} break-all`}>{t('plugins.bundle.identifier')}: {bundleReview.bundle.id}</p>
+              {bundleReview.license.components.map((component) => (
+                <p key={component.pluginId} className={`${settingsRowDescription} break-all`}>
+                  {component.pluginId}: {component.expression}
+                  {component.files.length > 0 ? ` · ${component.files.join(', ')}` : ''}
+                  {component.notices.length > 0 ? ` · ${component.notices.join(', ')}` : ''}
+                </p>
+              ))}
+            </div>
+          </details>
           {bundleReview.trust !== 'trusted' ? (
             <button
               type="button"
@@ -792,37 +892,38 @@ export const PluginInventory: React.FC<PluginInventoryProps> = ({ renderCards })
               {bundleReview.trust === 'changed' ? t('plugins.import.retrust') : t('plugins.import.trust')}
             </button>
           ) : (
-            <div className="mt-compact flex flex-col gap-compact">
-              <p className={settingsRowDescription} role="status">
-                {t('plugins.bundle.publisherConfirmed')}
-              </p>
-              {bundleReview.components.some((component) => component.review.nativeAccess.length > 0) && (
-                <label className="flex items-start gap-compact text-sm">
-                  <input
-                    type="checkbox"
-                    checked={bundleNativeConsent}
-                    disabled={busy}
-                    onChange={(event) => setBundleNativeConsent(event.currentTarget.checked)}
-                  />
-                  <span>{t('plugins.import.nativeConsent')}</span>
-                </label>
-              )}
-              <button
-                type="button"
-                className="self-start rounded-sm border border-brand bg-brand px-sm py-1 text-sm text-white disabled:opacity-50"
-                disabled={
-                  busy
-                  || profileId === null
-                  || (bundleReview.components.some(
-                    (component) => component.review.nativeAccess.length > 0,
-                  ) && !bundleNativeConsent)
-                }
-                onClick={() => void installBundle()}
-              >
-                {t('plugins.import.installBundle')}
-              </button>
-            </div>
+            <p className={`${settingsRowDescription} mt-compact`} role="status">
+              {t('plugins.bundle.publisherConfirmed')}
+            </p>
           )}
+          <div className="mt-md flex flex-col gap-compact">
+            {bundleReview.components.some((component) => component.review.nativeAccess.length > 0) && (
+              <label className="flex items-start gap-compact text-sm">
+                <input
+                  type="checkbox"
+                  checked={bundleNativeConsent}
+                  disabled={busy}
+                  onChange={(event) => setBundleNativeConsent(event.currentTarget.checked)}
+                />
+                <span>{t('plugins.import.nativeConsent')}</span>
+              </label>
+            )}
+            <button
+              type="button"
+              className="w-full rounded-sm border border-brand bg-brand px-md py-compact text-base font-semibold text-white transition-colors hover:bg-brand-4 disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={
+                busy
+                || profileId === null
+                || bundleReview.trust !== 'trusted'
+                || (bundleReview.components.some(
+                  (component) => component.review.nativeAccess.length > 0,
+                ) && !bundleNativeConsent)
+              }
+              onClick={() => void installBundle()}
+            >
+              {t('plugins.import.acceptInstall')}
+            </button>
+          </div>
         </article>}
       </div>
       <div className={`${settingsCard} mb-compact`}>

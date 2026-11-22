@@ -264,10 +264,12 @@ fn make(
             id: format!("recipe:{}", recipe.recipe_id),
             revision: recipe.revision,
         });
-        resources.push(LaunchPlanResource {
-            id: format!("base-target:{}", entry.provider_id),
-            revision: recipe.base_target_revision,
-        });
+        if recipe.base_target_revision > 0 {
+            resources.push(LaunchPlanResource {
+                id: format!("base-target:{}", entry.provider_id),
+                revision: recipe.base_target_revision,
+            });
+        }
     }
     let plan = LaunchPlan {
         version: gamenode_core::library::LAUNCH_PLAN_VERSION,

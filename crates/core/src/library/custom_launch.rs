@@ -139,6 +139,9 @@ impl CustomLaunchRecipe {
         };
         let has_executable = !self.executable_handle.is_empty() || self.executable.is_some();
         let has_uri = !self.uri.is_empty();
+        // A ROM store has no detected executable/URI target. A runtime recipe is a complete
+        // launch on its own, so revision 0 means "no detected target" rather than invalid.
+        let runtime_recipe = !self.runtime_handle.is_empty() && !has_executable && !has_uri;
         let effective_arguments = self.effective_arguments();
         let effective_environment = self.effective_environment();
         let parameter_overlay = !effective_arguments.is_empty()
@@ -153,7 +156,7 @@ impl CustomLaunchRecipe {
             || self.game_id == 0
             || !handle_ok(&self.installation_id)
             || self.installation_id.is_empty()
-            || self.base_target_revision == 0
+            || self.base_target_revision == 0 && !runtime_recipe
             || self.base_launch_fingerprint == 0
             || !handle_ok(&self.executable_handle)
             || !handle_ok(&self.working_directory_handle)
@@ -299,6 +302,31 @@ mod tests {
         let mut recipe = uri_recipe();
         recipe.executable_handle = "executable-handle".into();
         assert!(!recipe.validate());
+    }
+
+    #[test]
+    fn a_runtime_recipe_can_launch_an_entry_without_a_detected_target() {
+        let mut recipe = CustomLaunchRecipe {
+            runtime_handle: "runtime-handle".into(),
+            content_id: "content-1".into(),
+            ..CustomLaunchRecipe::default()
+        };
+        recipe.recipe_id = "recipe-1".into();
+        recipe.revision = 1;
+        recipe.game_id = 620;
+        recipe.installation_id = "install-1".into();
+        recipe.base_target_revision = 0;
+        recipe.base_launch_fingerprint = 9;
+        assert!(
+            recipe.validate(),
+            "a runtime is a complete launch for a ROM store with no detected target"
+        );
+
+        recipe.runtime_handle.clear();
+        assert!(
+            !recipe.validate(),
+            "without a runtime there is nothing to launch at revision 0"
+        );
     }
 
     #[test]

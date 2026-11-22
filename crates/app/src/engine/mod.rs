@@ -1501,7 +1501,7 @@ impl Engine {
             let target_revision = entry.target.as_ref().map_or(0, |target| target.revision);
             (game_id, target_revision)
         };
-        if target_revision != expected_target_revision || target_revision == 0 {
+        if target_revision != expected_target_revision {
             return Err("the detected target changed; refresh launch choices".into());
         }
         let profiles = self
@@ -3767,12 +3767,13 @@ impl crate::plugin_host::library::LibraryHost for PluginLibraryHost {
     async fn launch_target_revision(&self, entry_key: String) -> Result<u64, tonic::Status> {
         let engine = self.engine()?;
         let state = engine.lock();
-        state
+        let entry = state
             .library
             .entry(&entry_key)
-            .and_then(|entry| entry.target.as_ref())
-            .map(|target| target.revision)
-            .ok_or_else(|| tonic::Status::failed_precondition("detected launch target changed"))
+            .ok_or_else(|| tonic::Status::not_found("library entry not found"))?;
+        // Zero means the provider reports no detected executable/URI target. A runtime recipe is
+        // still a complete launch for a ROM store, so that is a revision, not an error.
+        Ok(entry.target.as_ref().map_or(0, |target| target.revision))
     }
 
     async fn open_entry(&self, entry_key: String, install: bool) -> Result<(), tonic::Status> {

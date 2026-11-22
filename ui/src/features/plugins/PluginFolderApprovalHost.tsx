@@ -118,33 +118,33 @@ export const PluginFolderApprovalHost: React.FC = () => {
     return (
       <AppModal.Root opened onClose={() => void answerSelection(null)} centered zIndex={1020}>
         <AppModal.Overlay />
-        <AppModal.Content className="w-[92%] max-w-[620px] bg-secondary p-5 text-text-default shadow-alert">
-          <AppModal.Header className="border-0 pb-3">
+        <AppModal.Content className="w-[94%] max-w-[760px] bg-secondary p-6 text-text-default shadow-alert">
+          <AppModal.Header className="border-0 pb-4">
             <AppModal.Title>{t('plugins.folder.selectTitle')}</AppModal.Title>
             <AppModal.CloseButton aria-label={t('plugins.folder.cancel')} onClick={() => void answerSelection(null)} />
           </AppModal.Header>
-          <AppModal.Body className="gap-3">
-            <p className="text-sm">{t('plugins.folder.requestedBy', { plugin: selection.pluginId, target: selection.installationName })}</p>
-            <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs text-text-dimmed">
+          <AppModal.Body className="gap-4">
+            <p className="text-sm leading-relaxed">{t('plugins.folder.requestedBy', { plugin: selection.pluginId, target: selection.installationName })}</p>
+            <dl className="grid grid-cols-[auto_1fr] gap-x-5 gap-y-2 text-sm text-text-dimmed">
               <dt>{t('plugins.folder.publisher')}</dt><dd className="break-all text-text-default">{fingerprint || t('plugins.folder.unknownPublisher')}</dd>
               <dt>{t('plugins.folder.kind')}</dt><dd className="text-text-default">{t(`plugins.folder.kind.${selection.kind}`)}</dd>
               <dt>{t('plugins.folder.requested')}</dt><dd className="flex flex-wrap gap-1">{selection.operations.map((op) => <span key={op} className="rounded bg-raised px-1.5 py-0.5 text-text-default">{operationLabel(op, t)}</span>)}</dd>
             </dl>
             {selection.previouslyApproved && (
-              <div className="rounded border border-border-subtle bg-primary/40 p-3 text-xs">
+              <div className="rounded border border-border-subtle bg-primary/40 p-4 text-sm">
                 <p className="font-semibold">{t('plugins.folder.wideningTitle')}</p>
                 <p className="mt-1 break-all">{t('plugins.folder.alreadyApproved', { root: selection.previouslyApproved.root, operations: selection.previouslyApproved.operations.map((op) => operationLabel(op, t)).join(', ') })}</p>
                 <p className="mt-1">{t('plugins.folder.addedOperations', { operations: selection.operations.filter((op) => !selection.previouslyApproved?.operations.includes(op)).map((op) => operationLabel(op, t)).join(', ') })}</p>
               </div>
             )}
-            {logicalRoot && <p className="rounded border border-border-subtle bg-primary/40 p-3 text-xs">{t('plugins.folder.logicalRootDisclosure')}</p>}
+            {logicalRoot && <p className="rounded border border-border-subtle bg-primary/40 p-4 text-sm">{t('plugins.folder.logicalRootDisclosure')}</p>}
             {selection.declared.length > 0 && (
               <div>
-                <p className="text-xs font-semibold">{t('plugins.folder.suggestions')}</p>
-                <ul className="mt-1 flex max-h-36 flex-col gap-1 overflow-y-auto">
+                <p className="text-sm font-semibold">{t('plugins.folder.suggestions')}</p>
+                <ul className="mt-2 flex max-h-48 flex-col gap-2 overflow-y-auto">
                   {selection.declared.map((folder, index) => (
                     <li key={`${folder.path}-${index}`}>
-                      <button type="button" className="w-full rounded border border-border-subtle p-2 text-left text-xs hover:bg-raised" onClick={() => setSelectedPath(folder.path)}>
+                      <button type="button" className="w-full rounded border border-border-subtle p-3 text-left text-sm hover:bg-raised" onClick={() => setSelectedPath(folder.path)}>
                         <span className="block break-all text-text-default">{folder.path}</span>
                         <span className="mt-1 block text-text-dimmed">{folder.description} · {t('plugins.folder.declaredUnverified')}{folder.exists ? '' : ` · ${t('plugins.folder.notFound')}`}</span>
                       </button>
@@ -153,17 +153,17 @@ export const PluginFolderApprovalHost: React.FC = () => {
                 </ul>
               </div>
             )}
-            {selection.suggested && <p className="text-xs text-text-dimmed">{t('plugins.folder.hostSuggestion', { path: selection.suggested })}</p>}
-            <label className="flex flex-col gap-1 text-xs font-semibold">
+            {selection.suggested && <p className="text-sm text-text-dimmed">{t('plugins.folder.hostSuggestion', { path: selection.suggested })}</p>}
+            <label className="flex flex-col gap-1.5 text-sm font-semibold">
               {t('plugins.folder.selectedPath')}
-              <input className="rounded border border-border-subtle bg-primary px-2 py-1.5 font-normal text-text-default" value={selectedPath} onChange={(event) => setSelectedPath(event.target.value)} spellCheck={false} autoComplete="off" />
+              <input className="rounded border border-border-subtle bg-primary px-3 py-2 font-normal text-text-default" value={selectedPath} onChange={(event) => setSelectedPath(event.target.value)} spellCheck={false} autoComplete="off" />
             </label>
             <div className="flex flex-wrap gap-2">
               <button type="button" className={settingsButtonSecondary} onClick={() => void pickFolder()}>{t('plugins.folder.chooseAnother')}</button>
               {selection.preselected && <button type="button" className={settingsButtonSecondary} onClick={() => setSelectedPath(selection.preselected ?? '')}>{t('plugins.folder.useSuggested')}</button>}
             </div>
             {error && <p role="alert" className="text-sm text-danger">{t('plugins.folder.error')}</p>}
-            <div className="mt-2 flex justify-end gap-2">
+            <div className="mt-3 flex justify-end gap-2">
               <button autoFocus data-autofocus type="button" className={settingsButtonSecondary} disabled={busy} onClick={() => void answerSelection(null)}>{t('plugins.folder.cancel')}</button>
               <button type="button" className={settingsButtonPrimary} disabled={busy || !selectedPath.trim()} onClick={() => void answerSelection(selectedPath.trim())}>{t('plugins.folder.review')}</button>
             </div>
@@ -178,14 +178,14 @@ export const PluginFolderApprovalHost: React.FC = () => {
     return (
       <AppModal.Root opened onClose={() => void answerConfirmation(false)} centered zIndex={1020}>
         <AppModal.Overlay />
-        <AppModal.Content className="w-[92%] max-w-[620px] bg-secondary p-5 text-text-default shadow-alert">
-          <AppModal.Header className="border-0 pb-3">
+        <AppModal.Content className="w-[94%] max-w-[760px] bg-secondary p-6 text-text-default shadow-alert">
+          <AppModal.Header className="border-0 pb-4">
             <AppModal.Title>{t('plugins.folder.confirmTitle')}</AppModal.Title>
             <AppModal.CloseButton aria-label={t('plugins.folder.cancel')} onClick={() => void answerConfirmation(false)} />
           </AppModal.Header>
           <AppModal.Body className="gap-3">
             <p className="text-sm">{t('plugins.folder.requestedBy', { plugin: confirmation.pluginId, target: confirmation.installationName })}</p>
-            <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs text-text-dimmed">
+            <dl className="grid grid-cols-[auto_1fr] gap-x-5 gap-y-2 text-sm text-text-dimmed">
               <dt>{t('plugins.folder.publisher')}</dt><dd className="break-all text-text-default">{fingerprint || t('plugins.folder.unknownPublisher')}</dd>
               <dt>{t('plugins.folder.kind')}</dt><dd className="text-text-default">{t(`plugins.folder.kind.${confirmation.kind}`)}</dd>
               <dt>{t('plugins.folder.folder')}</dt><dd className="break-all text-text-default">{confirmation.root}</dd>
@@ -193,16 +193,16 @@ export const PluginFolderApprovalHost: React.FC = () => {
               <dt>{t('plugins.folder.origin')}</dt><dd className="text-text-default">{confirmation.declaredByPlugin ? t('plugins.folder.declaredUnverified') : t('plugins.folder.userSelected')}</dd>
             </dl>
             {logicalRoot ? (
-              <p className="rounded border border-border-subtle bg-primary/40 p-3 text-xs">{t('plugins.folder.logicalRootDisclosure')}</p>
+              <p className="rounded border border-border-subtle bg-primary/40 p-4 text-sm">{t('plugins.folder.logicalRootDisclosure')}</p>
             ) : (
               <div>
-                <p className="text-xs font-semibold">{t('plugins.folder.affectedGames')}</p>
+                <p className="text-sm font-semibold">{t('plugins.folder.affectedGames')}</p>
                 {confirmation.affected.length > 0 ? <ul className="mt-1 max-h-32 list-disc overflow-y-auto pl-5 text-xs">{confirmation.affected.map((game, index) => <li key={`${game.gameId ?? 'none'}-${index}`}>{game.name}</li>)}</ul> : <p className="mt-1 text-xs text-text-dimmed">{t('plugins.folder.noAffectedGames')}</p>}
               </div>
             )}
-            <p className="text-xs text-text-dimmed">{t('plugins.folder.confirmDisclosure')}</p>
+            <p className="text-sm text-text-dimmed">{t('plugins.folder.confirmDisclosure')}</p>
             {error && <p role="alert" className="text-sm text-danger">{t('plugins.folder.error')}</p>}
-            <div className="mt-2 flex justify-end gap-2">
+            <div className="mt-3 flex justify-end gap-2">
               <button autoFocus data-autofocus type="button" className={settingsButtonSecondary} disabled={busy} onClick={() => void answerConfirmation(false)}>{t('plugins.folder.cancel')}</button>
               <button type="button" className={settingsButtonPrimary} disabled={busy} onClick={() => void answerConfirmation(true)}>{t('plugins.folder.approve')}</button>
             </div>

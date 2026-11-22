@@ -8,6 +8,7 @@ The full third-party plugin proposal combines a usable provider/catalog foundati
 
 - Completes external provider composition and account-bound plugin session lifecycle.
 - Delivers package import, plugin activation controls, publisher and effective-permission review, and safe update recovery.
+- Keeps every lifecycle operation live: import, enable, disable, update/rollback, uninstall and reinstall take effect in the running desktop, including the library store list and rows, without a restart.
 - Delivers provider discovery/catalog/counter interoperability, SDK distribution and focused Go/Rust examples.
 - Validates Linux and Windows provider-session paths without enabling the deferred endpoint families.
 

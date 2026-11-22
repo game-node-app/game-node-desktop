@@ -1506,3 +1506,27 @@ permission stays denied. If the runtime cannot register or the process fails to 
 package stays installed with its grants intact, the result reports the activation error, and the
 plugin remains disabled until the user retries activation. This is a host lifecycle step, not a
 plugin RPC; no plugin code participates in registration or enabling.
+
+## Live plugin lifecycle
+
+The same no-restart rule applies to the rest of the lifecycle, not only to import:
+
+| Operation | Host effect |
+| --- | --- |
+| Enable | Starts the supervised process with the verified configuration and requests a library scan. |
+| Disable | Stops the process with the bounded grace period, revokes its session and publishes the stopped availability; cached library facts remain. |
+| Update or rollback | Replaces the supervised configuration, restarts the process and requests a scan. The permission review still applies to added or wider grants. |
+| Uninstall | Stops and unregisters the plugin, unregisters its immutable process slot and removes its provider and live rows from the running library. Persisted rows are retained but hidden while the package is absent. |
+| Reinstall | Registers the provider again, restores it to the library and scans it. Dropping the slot at uninstall is what lets the same provider id register in the same session. |
+
+A provider removed while a scan is running is dropped from that scan's pending set, and a late
+discovery answer for it is ignored. The library view only shows entries whose provider is
+currently loaded, so a restart after an uninstall cannot resurrect the store from the account
+cache. The user never needs to restart the application to complete any of these operations;
+restarting is only crash recovery.
+
+The command wiring lives in `crates/app/src/commands.rs` (`plugin_enable`, `plugin_disable`,
+`plugin_remove`, `plugin_bundle_uninstall`, `plugin_bundle_update_approve` and
+`plugin_bundle_rollback_approve`). Host coverage is
+`plugin_host::runtime::tests::a_live_signed_provider_can_update_disable_remove_and_reinstall_without_a_restart`;
+library coverage is task 18.11.

@@ -153,7 +153,7 @@ The user SHALL be able to enable and disable each third-party plugin persistentl
 
 #### Scenario: Remove installed plugin
 - **WHEN** the user removes a plugin
-- **THEN** its sessions, packages and grants are removed, library history is preserved and private configuration/secret deletion is a separate choice
+- **THEN** its sessions, packages and grants are removed, its store and live rows leave the running library, persisted library history is retained but hidden for a reinstall, and private configuration/secret deletion is a separate choice
 
 ### Requirement: Verified consented updates
 The host SHALL check a plugin's configured HTTPS update feed using its pinned publisher key, metadata expiry and anti-replay sequence. Periodic checks SHALL be disabled until the user opts in, run no more frequently than once per 24 hours while the app is running, and inspect feed metadata without executing plugin code. The feed SHALL return a bounded JSON envelope containing base64 exact index JSON bytes and a lowercase hexadecimal detached Ed25519 signature over `GameNode/plugin-update-index/v1\0` plus those bytes. A release URL SHALL return the existing ZIP package format (`integrity.json`, `signature.ed25519` and signed payload). The host SHALL verify the index signature, expiry and sequence, then the ZIP size/hash, and extract only payload paths in its signed integrity allowlist using the same bounded path/entry/expanded-size checks as local import. Redirect destinations SHALL pass the same origin, HTTPS and public-address checks at every hop. Updates SHALL require user approval, platform/API compatibility and full package validation. Review SHALL compare permission ids, required status and scopes, native access, license expression/files/notices, publisher identity and API range. Approving package activation SHALL NOT create or widen permission grants. Failed checks, offline feeds, interrupted downloads, invalid archives or failed candidate validation SHALL leave the active version unchanged. New permissions or wider scopes SHALL NOT be granted implicitly.
@@ -259,6 +259,48 @@ The manifest SHALL declare whether the plugin can identify playtime and pauses, 
 - **THEN** the host presents the changed policy and any application-open warning before activation and preserves the user's disabled-accounting preference
 
 ## ADDED Requirements
+
+### Requirement: Enable and disable apply live
+
+Enabling a third-party provider SHALL start its supervised process and request a library scan in the running desktop. Disabling it SHALL stop the process with the bounded grace period, publish the stopped availability and keep previously successful library facts visible. Neither operation SHALL require an application restart.
+
+#### Scenario: Enable without a restart
+
+- **WHEN** the user enables a compatible provider
+- **THEN** its process starts and a scan populates its games in the running library
+
+#### Scenario: Disable keeps cached games
+
+- **WHEN** the user disables an active provider
+- **THEN** its process stops, its cached rows stay visible, and enabling it again starts the process and scans without a restart
+
+### Requirement: Updates and rollbacks apply live
+
+An approved update or rollback SHALL replace the supervised configuration of a third-party plugin, restart its process and request a library scan in the same session. A restart SHALL only be required to recover from a crash, never to complete a lifecycle operation.
+
+#### Scenario: Update and rollback stay live
+
+- **WHEN** an approved update or rollback changes the active provider version
+- **THEN** the supervised configuration is replaced and a scan reflects the new discovery records in the same session
+
+### Requirement: Uninstall and reinstall update the live library
+
+Uninstalling a provider SHALL remove it and its live rows from the running library immediately, unregister it and drop its immutable process slot; persisted rows SHALL remain hidden while the provider is not loaded. A late discovery answer for a removed provider SHALL be ignored. Reinstalling SHALL register the provider, add it back to the library and scan it in the same session.
+
+#### Scenario: Uninstall a provider while the library is open
+
+- **WHEN** the user uninstalls an active provider
+- **THEN** its store shortcut and live rows leave the running library, its process slot and registration are removed, and its persisted rows stay hidden until a reinstall
+
+#### Scenario: Reinstall in the same session
+
+- **WHEN** the user imports the provider again without restarting
+- **THEN** it is registered and enabled, its store and rows return, and a new scan repopulates the records
+
+#### Scenario: Late answer after uninstall
+
+- **WHEN** a discovery answer arrives for a provider removed during the scan
+- **THEN** the answer is ignored and does not recreate its rows
 
 ### Requirement: Upgrade compatibility with existing installations
 The application SHALL open the data created by every previously shipped version without loss or manual repair. A shipped schema migration SHALL keep its version, name and content, and new migrations SHALL be numbered after the latest shipped version. The host SHALL verify the recorded migration history before applying migrations and SHALL leave a mismatched, foreign or newer database unchanged. It SHALL preserve a verified snapshot before migrating a database that holds user data.

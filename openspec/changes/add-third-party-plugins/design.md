@@ -584,6 +584,19 @@ Rules:
 
 Validation before the pull request: a fixture database built from `main`'s migration list with representative data upgrades to the complete schema with all data preserved; a test pins the version, name and SHA-256 of every shipped migration; mismatched history, failed migration and downgrade are exercised; and an upgrade of a copy of a real profile is run on native Linux and Windows. No pull request for the plugin changes is opened until these pass.
 
+### 22. Every lifecycle operation is live
+
+The running desktop is the lifecycle authority; restarting is recovery from a crash, never a step the user must take to finish an operation.
+
+- **Import** installs the reviewed package, applies the decisions, registers the process configuration and enables it. For a provider it also adds the provider to the running library and requests a scan. This is the existing accepted-import path.
+- **Enable** starts the supervised process and requests a scan. Cached rows from an earlier run stay visible until the new scan replaces or marks them.
+- **Disable** stops the process with the bounded grace period, revokes its sessions and publishes the new availability. Previously successful library facts and their rows remain; the store shows the provider as stopped rather than disappearing.
+- **Update and rollback** replace the immutable process configuration, restart the supervised process and request a scan, so changed discovery records appear in the same session. Added or wider permissions still require the normal grant review.
+- **Uninstall** stops the process, unregisters the plugin, drops its process slot and removes the provider from the running library together with its live rows. Persisted rows stay in the account cache, hidden while the provider is not loaded; they are never deleted by uninstall.
+- **Reinstall** registers the provider again, adds it back to the library and scans it. The process slot removed at uninstall is what allows the same provider id to register in the same session.
+
+A provider removed during a scan is dropped from that scan's pending set, and a late discovery answer for it is ignored instead of recreating rows. The library view only shows entries whose provider is currently loaded, which also covers a restart after an uninstall. The UI consumes ordinary engine snapshots; it never asks the user to restart to see a lifecycle change.
+
 ## Risks / Trade-offs
 
 - Native plugin can bypass API restrictions or alter same-user files → explicit consent/disclosure; API checks still protect cooperative calls and prevent confused host authority, without claiming OS confinement.

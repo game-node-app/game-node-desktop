@@ -270,6 +270,32 @@ cargo test --locked -p gamenode-app --lib -- \
 The fixture variant always runs; the Dolphin variant is the end-to-end acceptance evidence and is
 not part of the regular CI job.
 
+### The plugin lifecycle is live
+
+The running desktop owns every lifecycle change. Restarting GameNode is recovery from a crash, not
+a step the user takes to finish an operation.
+
+| Operation | Effect in the running desktop |
+| --- | --- |
+| Import | Installs the reviewed package, applies the decisions, registers the process and enables it; a provider joins the library and a scan starts. |
+| Enable | Starts the supervised process and requests a scan; cached rows stay visible until the new scan replaces or marks them. |
+| Disable | Stops the process with the bounded grace period, revokes its sessions and publishes the stopped availability; cached library facts and rows remain. |
+| Update / rollback | Replaces the immutable process configuration, restarts the process and requests a scan; added or wider permissions still need their normal review. |
+| Uninstall | Stops and unregisters the plugin, drops its process slot, and removes the provider and its live rows from the library. Persisted rows stay hidden for a later reinstall. |
+| Reinstall | Registers the provider again, adds it back to the library and scans it in the same session. |
+
+A provider removed during a scan is dropped from that scan's pending set; a late discovery answer
+for it is ignored instead of recreating rows. `LibraryMachine::remove_provider` removes the live
+rows and `visible_entries` hides cached rows whose provider is not loaded, which also covers a
+restart after an uninstall. Enable/disable, update/rollback and uninstall/reinstall are wired in
+`crates/app/src/commands.rs`; no second `HostedProviders` or engine rebuild is involved.
+
+The regression coverage is split between the core library machine
+(`removing_a_provider_drops_its_live_rows_and_a_reinstall_restores_them`,
+`cached_entries_of_a_provider_that_is_not_loaded_stay_hidden`), the live host
+(`a_live_signed_provider_can_update_disable_remove_and_reinstall_without_a_restart`) and the
+library/UI lifecycle acceptance tracked by task 18.11.
+
 ## RPC inventory and API 1.6 status
 
 The mounted `PluginHost` service has `OpenSession`, the legacy `SubmitDiscovery`, and API 1.6

@@ -2824,6 +2824,22 @@ impl crate::plugin_host::library::LibraryHost for PluginLibraryHost {
         .map_err(|_| tonic::Status::internal("could not read runtime availability"))
     }
 
+    async fn installed_programs(
+        &self,
+    ) -> Result<Vec<crate::plugin_host::runtime_access::InstalledProgram>, tonic::Status> {
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || {
+            let cache = store.load_cache(None)?;
+            Ok::<_, gamenode_core::ports::StorageError>(
+                crate::plugin_host::runtime_access::installed_programs_from_entries(&cache.entries),
+            )
+        })
+        .await
+        .map_err(|_| tonic::Status::unavailable("library worker stopped"))?
+        .map_err(|_| tonic::Status::internal("could not read the installed-program inventory"))
+    }
+
     async fn custom_launch_recipe(
         &self,
         owner_key: String,

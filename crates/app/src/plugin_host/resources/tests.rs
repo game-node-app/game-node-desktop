@@ -109,6 +109,7 @@ struct Fixture {
     endpoint: std::path::PathBuf,
     capabilities: Vec<&'static str>,
     host: HostClient,
+    resource_api: Arc<crate::plugin_host::resources::ResourceApi>,
     _commands: tonic::Streaming<ProviderCommand>,
     _server: crate::plugin_host::PluginApiServer,
     _temp: tempfile::TempDir,
@@ -248,6 +249,7 @@ impl Fixture {
             root,
         )
         .unwrap();
+        let resource_api = server.resource_api();
         let client_launch = Launch {
             endpoint: endpoint.clone(),
             credential,
@@ -306,6 +308,7 @@ impl Fixture {
             endpoint,
             capabilities: capabilities.clone(),
             host: session.host,
+            resource_api,
             _commands: session.commands,
             _server: server,
             _temp: temp,
@@ -784,6 +787,7 @@ async fn custom_launch_without_its_own_grant_is_denied_and_describe_lists_the_ro
             ("RuntimesList", MAX_PAGE_SIZE as u32),
             ("RuntimesGet", 0),
             ("RuntimesWatch", 0),
+            ("RuntimesRequestAccess", 0),
             ("RuntimesRegister", 0),
             ("RuntimesUpdate", 0),
             ("RuntimesRemove", 0),
@@ -930,6 +934,9 @@ struct FakeHost {
         Mutex<HashMap<(String, u64, String), Vec<gamenode_core::library::RuntimeContentBinding>>>,
     /// Monotonic catalog revision for runtime list/watch fixtures.
     runtime_catalog_revision: std::sync::atomic::AtomicU64,
+    /// The official installed-program inventory the runtime picker reads.
+    installed_programs: Mutex<Vec<crate::plugin_host::runtime_access::InstalledProgram>>,
+    inventory_down: AtomicBool,
 }
 
 impl FakeHost {
@@ -1168,6 +1175,15 @@ impl LibraryHost for FakeHost {
             }
         }
         Ok(availability)
+    }
+
+    async fn installed_programs(
+        &self,
+    ) -> Result<Vec<crate::plugin_host::runtime_access::InstalledProgram>, Status> {
+        if self.inventory_down.load(Ordering::SeqCst) {
+            return Err(Status::unavailable("PackageKit is unavailable"));
+        }
+        Ok(self.installed_programs.lock().unwrap().clone())
     }
 
     async fn save_runtime_resource(

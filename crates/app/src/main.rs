@@ -346,6 +346,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
     plugin_api.files.set_approver(root_approvals.clone());
 
+    // Runtime executable approvals use the same one-use prompt pattern. The plugin sends hints;
+    // the host shows its installed-program candidates and the user approves exactly one program.
+    let runtime_approval_slot = app_handle_slot.clone();
+    let runtime_approvals = Arc::new(
+        gamenode_app::plugin_host::runtime_access::RuntimeApprovalBridge::new(Arc::new(
+            move |signal| {
+                use gamenode_app::plugin_host::runtime_access::{
+                    RUNTIME_CLOSED_EVENT, RUNTIME_SELECT_EVENT, RuntimeApprovalSignal,
+                };
+                use tauri::Emitter;
+                let guard = runtime_approval_slot.lock().unwrap();
+                let Some(app) = guard.as_ref() else {
+                    return false;
+                };
+                match signal {
+                    RuntimeApprovalSignal::Select(prompt) => {
+                        app.emit(RUNTIME_SELECT_EVENT, &prompt).is_ok()
+                    }
+                    RuntimeApprovalSignal::Closed(id) => app.emit(RUNTIME_CLOSED_EVENT, id).is_ok(),
+                }
+            },
+        )),
+    );
+    plugin_api
+        .files
+        .set_runtime_approver(runtime_approvals.clone());
+
     // A plugin's request to launch or install a game is confirmed in the window: the bridge shows
     // it with an event and takes the answer from a command. With no window listening, a request
     // that needs the user fails instead of waiting.
@@ -518,6 +545,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     builder = builder.manage(confirmations);
     builder = builder.manage(root_approvals);
+    builder = builder.manage(runtime_approvals);
     builder = builder.manage(folder_approvals);
     builder = builder.manage(shared_resources);
     builder = builder.manage(plugin_approvals);
@@ -691,6 +719,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         commands::plugin_confirmation_answer,
         commands::plugin_folder_selection_answer,
         commands::plugin_folder_approval_answer,
+        commands::plugin_runtime_selection_answer,
         commands::plugin_folder_approvals,
         commands::plugin_folder_revoke,
         commands::plugin_folder_change,

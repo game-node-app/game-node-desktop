@@ -238,6 +238,12 @@ pub const SERVED: &[Served] = &[
         RUNTIME_READ_SCOPE,
     ),
     Served::new(
+        "RuntimesRequestAccess",
+        cap::GAME_RUNTIME_CREATE,
+        false,
+        PRIVATE_NAMESPACE,
+    ),
+    Served::new(
         "RuntimesRegister",
         cap::GAME_RUNTIME_CREATE,
         false,
@@ -2110,6 +2116,12 @@ impl resource_host_server::ResourceHost for ResourceApi {
         request: Request<RuntimeRegisterRequest>,
     ) -> Result<Response<RuntimeMutationReply>, Status> {
         self.register_runtime(request).await
+    }
+    async fn runtimes_request_access(
+        &self,
+        request: Request<RuntimeRequestAccessRequest>,
+    ) -> Result<Response<RuntimeMutationReply>, Status> {
+        self.request_runtime_access(request).await
     }
     async fn runtimes_update(
         &self,

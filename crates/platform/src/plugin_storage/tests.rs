@@ -630,6 +630,66 @@ fn a_revoked_approval_stays_visible_as_revoked_and_revokes_once() {
 }
 
 #[test]
+fn runtime_approvals_round_trip_survive_reopening_and_revoke_once() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = namespace_dir(temp.path(), "pub", "org.example", "profile");
+    let approval = RuntimeApproval {
+        id: "runtime-approval".into(),
+        runtime_id: "runtime-1".into(),
+        path: "/usr/bin/dolphin-emu".into(),
+        volume: 7,
+        node: 9,
+        size: 21_731_776,
+        digest: "ab".repeat(32),
+        approved_at: 100,
+        revoked_at: None,
+    };
+    {
+        let mut first = store(&dir);
+        first.save_runtime_approval(&approval).unwrap();
+    }
+    let mut reopened = store(&dir);
+    assert_eq!(
+        reopened.runtime_approval_for("runtime-1").unwrap(),
+        Some(approval.clone())
+    );
+    assert_eq!(
+        reopened.runtime_approval_by_id("runtime-approval").unwrap(),
+        Some(approval.clone())
+    );
+    assert_eq!(
+        reopened.runtime_approvals().unwrap(),
+        vec![approval.clone()]
+    );
+    assert!(reopened.revoke_runtime_approval("runtime-1", 500).unwrap());
+    assert!(!reopened.revoke_runtime_approval("runtime-1", 600).unwrap());
+    assert_eq!(
+        reopened
+            .runtime_approval_for("runtime-1")
+            .unwrap()
+            .unwrap()
+            .revoked_at,
+        Some(500)
+    );
+
+    // A reapproval replaces the row for the same runtime and keeps one id.
+    let mut replacement = approval;
+    replacement.id = "runtime-approval-2".into();
+    replacement.digest = "cd".repeat(32);
+    replacement.revoked_at = None;
+    reopened.save_runtime_approval(&replacement).unwrap();
+    assert_eq!(
+        reopened.runtime_approval_by_id("runtime-approval").unwrap(),
+        None
+    );
+    assert_eq!(
+        reopened.runtime_approval_for("runtime-1").unwrap(),
+        Some(replacement)
+    );
+    assert_eq!(reopened.runtime_approvals().unwrap().len(), 1);
+}
+
+#[test]
 fn a_version_1_store_gains_the_approvals_table_and_keeps_its_values() {
     let temp = tempfile::tempdir().unwrap();
     let dir = temp.path().join("ns");

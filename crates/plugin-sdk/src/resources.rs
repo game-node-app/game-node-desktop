@@ -141,6 +141,15 @@ pub enum RuntimeArgumentTemplate {
     ContentPath,
 }
 
+/// Text hints for the host's runtime picker. Executable base names and desktop ids only: never a
+/// path, an argument or a handle. The host matches them against its own installed-program
+/// inventory (PackageKit on Linux) and always offers manual Browse.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RuntimeExecutableHints {
+    pub executable_names: Vec<String>,
+    pub desktop_ids: Vec<String>,
+}
+
 /// One content-to-runtime binding. The game and installation IDs preserve GameNode identity;
 /// content and runtime handles are opaque host-issued references.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -201,6 +210,31 @@ fn runtime_register_request(
             expected_revision,
         }),
         runtime: Some(runtime_record(spec, "", 0)),
+    }
+}
+
+fn runtime_request_access_request(
+    context: &ServiceContext,
+    spec: RuntimeSpec,
+    hints: RuntimeExecutableHints,
+    key: &str,
+    expected_revision: u64,
+) -> RuntimeRequestAccessRequest {
+    let mut runtime = runtime_record(spec, "", 0);
+    // The request never carries an executable handle: the host owns the choice and approval.
+    runtime.executable_handle.clear();
+    RuntimeRequestAccessRequest {
+        mutation: Some(MutationContext {
+            context: Some(context.clone()),
+            operation_id: String::new(),
+            idempotency_key: key.to_owned(),
+            expected_revision,
+        }),
+        runtime: Some(runtime),
+        hints: Some(RuntimeAccessHints {
+            executable_names: hints.executable_names,
+            desktop_ids: hints.desktop_ids,
+        }),
     }
 }
 
@@ -299,6 +333,33 @@ mod runtime_sdk_tests {
         ));
         assert_eq!(runtime.revision, 0);
         assert_eq!(runtime.observed_at, 0);
+    }
+
+    #[test]
+    fn request_access_strips_the_handle_and_sends_text_hints_only() {
+        let context = ServiceContext::default();
+        let request = runtime_request_access_request(
+            &context,
+            runtime(),
+            RuntimeExecutableHints {
+                executable_names: vec!["dolphin-emu".into()],
+                desktop_ids: vec!["dolphin-emu.desktop".into()],
+            },
+            "request-key",
+            0,
+        );
+        let mutation = request.mutation.unwrap();
+        let runtime = request.runtime.unwrap();
+        let hints = request.hints.unwrap();
+
+        assert_eq!(mutation.idempotency_key, "request-key");
+        assert_eq!(mutation.expected_revision, 0);
+        assert!(runtime.id.is_empty());
+        assert!(runtime.executable_handle.is_empty());
+        assert_eq!(runtime.name, "Example Emulator");
+        assert_eq!(runtime.platform, "linux");
+        assert_eq!(hints.executable_names, ["dolphin-emu"]);
+        assert_eq!(hints.desktop_ids, ["dolphin-emu.desktop"]);
     }
 
     #[test]
@@ -627,6 +688,35 @@ impl Resources {
             .runtimes_register(timed(runtime_register_request(
                 &self.context,
                 runtime,
+                key,
+                expected_revision,
+            )))
+            .await
+            .map(tonic::Response::into_inner)
+    }
+
+    /// Ask the host to let the user approve one exact executable as a runtime. The spec must not
+    /// carry a handle; the reply's runtime record also carries none. The host reuses a valid
+    /// owned runtime with the same name/platform/formats without prompting, and a declined
+    /// picker creates nothing. Reuse the key for retries of this request.
+    pub async fn runtime_request_access(
+        &self,
+        runtime: RuntimeSpec,
+        hints: RuntimeExecutableHints,
+        expected_revision: u64,
+        key: &str,
+    ) -> Result<RuntimeMutationReply, Status> {
+        if !runtime.executable_handle.is_empty() {
+            return Err(Status::invalid_argument(
+                "runtime_request_access takes no executable handle",
+            ));
+        }
+        self.client
+            .clone()
+            .runtimes_request_access(timed(runtime_request_access_request(
+                &self.context,
+                runtime,
+                hints,
                 key,
                 expected_revision,
             )))

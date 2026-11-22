@@ -1301,6 +1301,41 @@
       }
     },
     {
+      "method": "RuntimesRequestAccess",
+      "request": "RuntimeRequestAccessRequest",
+      "response": "RuntimeMutationReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns the executable inventory and the approved program",
+      "permission": "game.runtime.create",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "The extension supplies a runtime spec with an empty executable_handle plus text executable/desktop hints; the host shows its picker and the user approves one exact program",
+        "Suggestions come only from host-owned installed-program inventory (PackageKit on Linux, the registry/Start Menu list on Windows); third-party providers never contribute candidates and manual Browse always remains",
+        "The host validates the regular executable, records its identity, size and SHA-256 in a durable approval and creates the owned runtime; the reply carries no path or handle and never falls back to another path",
+        "A valid owned runtime for the same name/platform/formats is returned without prompting; a declined picker creates nothing, and a changed executable requires fresh approval"
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
+    },
+    {
       "method": "RuntimesRegister",
       "request": "RuntimeRegisterRequest",
       "response": "RuntimeMutationReply",

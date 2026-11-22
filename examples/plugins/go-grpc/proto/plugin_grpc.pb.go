@@ -612,6 +612,7 @@ const (
 	ResourceHost_RuntimesList_FullMethodName                       = "/gamenode.plugin.v1.ResourceHost/RuntimesList"
 	ResourceHost_RuntimesGet_FullMethodName                        = "/gamenode.plugin.v1.ResourceHost/RuntimesGet"
 	ResourceHost_RuntimesWatch_FullMethodName                      = "/gamenode.plugin.v1.ResourceHost/RuntimesWatch"
+	ResourceHost_RuntimesRequestAccess_FullMethodName              = "/gamenode.plugin.v1.ResourceHost/RuntimesRequestAccess"
 	ResourceHost_RuntimesRegister_FullMethodName                   = "/gamenode.plugin.v1.ResourceHost/RuntimesRegister"
 	ResourceHost_RuntimesUpdate_FullMethodName                     = "/gamenode.plugin.v1.ResourceHost/RuntimesUpdate"
 	ResourceHost_RuntimesRemove_FullMethodName                     = "/gamenode.plugin.v1.ResourceHost/RuntimesRemove"
@@ -690,6 +691,7 @@ type ResourceHostClient interface {
 	RuntimesList(ctx context.Context, in *DomainListRequest, opts ...grpc.CallOption) (*RuntimesListReply, error)
 	RuntimesGet(ctx context.Context, in *DomainGetRequest, opts ...grpc.CallOption) (*RuntimeRecordReply, error)
 	RuntimesWatch(ctx context.Context, in *DomainWatchRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[RuntimeRecordEvent], error)
+	RuntimesRequestAccess(ctx context.Context, in *RuntimeRequestAccessRequest, opts ...grpc.CallOption) (*RuntimeMutationReply, error)
 	RuntimesRegister(ctx context.Context, in *RuntimeRegisterRequest, opts ...grpc.CallOption) (*RuntimeMutationReply, error)
 	RuntimesUpdate(ctx context.Context, in *RuntimeUpdateRequest, opts ...grpc.CallOption) (*RuntimeMutationReply, error)
 	RuntimesRemove(ctx context.Context, in *DomainRemoveRequest, opts ...grpc.CallOption) (*MutationReply, error)
@@ -1156,6 +1158,16 @@ func (c *resourceHostClient) RuntimesWatch(ctx context.Context, in *DomainWatchR
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type ResourceHost_RuntimesWatchClient = grpc.ServerStreamingClient[RuntimeRecordEvent]
 
+func (c *resourceHostClient) RuntimesRequestAccess(ctx context.Context, in *RuntimeRequestAccessRequest, opts ...grpc.CallOption) (*RuntimeMutationReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RuntimeMutationReply)
+	err := c.cc.Invoke(ctx, ResourceHost_RuntimesRequestAccess_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *resourceHostClient) RuntimesRegister(ctx context.Context, in *RuntimeRegisterRequest, opts ...grpc.CallOption) (*RuntimeMutationReply, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RuntimeMutationReply)
@@ -1511,6 +1523,7 @@ type ResourceHostServer interface {
 	RuntimesList(context.Context, *DomainListRequest) (*RuntimesListReply, error)
 	RuntimesGet(context.Context, *DomainGetRequest) (*RuntimeRecordReply, error)
 	RuntimesWatch(*DomainWatchRequest, grpc.ServerStreamingServer[RuntimeRecordEvent]) error
+	RuntimesRequestAccess(context.Context, *RuntimeRequestAccessRequest) (*RuntimeMutationReply, error)
 	RuntimesRegister(context.Context, *RuntimeRegisterRequest) (*RuntimeMutationReply, error)
 	RuntimesUpdate(context.Context, *RuntimeUpdateRequest) (*RuntimeMutationReply, error)
 	RuntimesRemove(context.Context, *DomainRemoveRequest) (*MutationReply, error)
@@ -1669,6 +1682,9 @@ func (UnimplementedResourceHostServer) RuntimesGet(context.Context, *DomainGetRe
 }
 func (UnimplementedResourceHostServer) RuntimesWatch(*DomainWatchRequest, grpc.ServerStreamingServer[RuntimeRecordEvent]) error {
 	return status.Errorf(codes.Unimplemented, "method RuntimesWatch not implemented")
+}
+func (UnimplementedResourceHostServer) RuntimesRequestAccess(context.Context, *RuntimeRequestAccessRequest) (*RuntimeMutationReply, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RuntimesRequestAccess not implemented")
 }
 func (UnimplementedResourceHostServer) RuntimesRegister(context.Context, *RuntimeRegisterRequest) (*RuntimeMutationReply, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RuntimesRegister not implemented")
@@ -2477,6 +2493,24 @@ func _ResourceHost_RuntimesWatch_Handler(srv interface{}, stream grpc.ServerStre
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type ResourceHost_RuntimesWatchServer = grpc.ServerStreamingServer[RuntimeRecordEvent]
 
+func _ResourceHost_RuntimesRequestAccess_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RuntimeRequestAccessRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ResourceHostServer).RuntimesRequestAccess(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ResourceHost_RuntimesRequestAccess_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ResourceHostServer).RuntimesRequestAccess(ctx, req.(*RuntimeRequestAccessRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _ResourceHost_RuntimesRegister_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(RuntimeRegisterRequest)
 	if err := dec(in); err != nil {
@@ -3139,6 +3173,10 @@ var ResourceHost_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RuntimesGet",
 			Handler:    _ResourceHost_RuntimesGet_Handler,
+		},
+		{
+			MethodName: "RuntimesRequestAccess",
+			Handler:    _ResourceHost_RuntimesRequestAccess_Handler,
 		},
 		{
 			MethodName: "RuntimesRegister",

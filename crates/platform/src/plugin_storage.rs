@@ -29,7 +29,7 @@ pub const ENTRY_OVERHEAD_BYTES: u64 = 64;
 /// The longest an entry may live before it expires (30 days).
 pub const MAX_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
 
-const SCHEMA_VERSION: i64 = 15;
+const SCHEMA_VERSION: i64 = 16;
 const STORE_FILE: &str = "storage.sqlite3";
 /// Longest directory name derived from an identity before it is replaced by a digest.
 const MAX_COMPONENT_BYTES: usize = 120;
@@ -817,6 +817,26 @@ impl DurableStore {
                  COMMIT;"
             ))?;
         }
+        if version < 16 {
+            // One exact executable the user approved for an owned runtime. The path and digest are
+            // host-only; a plugin sees only the runtime record that references this row.
+            conn.execute_batch(
+                "BEGIN IMMEDIATE;
+                 CREATE TABLE IF NOT EXISTS runtime_approvals (
+                     id TEXT NOT NULL UNIQUE,
+                     runtime_id TEXT PRIMARY KEY,
+                     path TEXT NOT NULL,
+                     volume INTEGER NOT NULL,
+                     node INTEGER NOT NULL,
+                     size INTEGER NOT NULL CHECK (size >= 0),
+                     digest TEXT NOT NULL,
+                     approved_at INTEGER NOT NULL,
+                     revoked_at INTEGER
+                 ) STRICT;
+                 PRAGMA user_version = 16;
+                 COMMIT;",
+            )?;
+        }
         Ok(Self { conn })
     }
 
@@ -1424,6 +1444,142 @@ fn approval_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileApproval> {
         origin: row.get(11)?,
         volume_token: row.get(12)?,
     })
+}
+
+/// Where the user's chosen executable is and what it was when approved.
+///
+/// It is kept per plugin and account profile, apart from the plugin's key/value data and not
+/// charged to its quota. The plugin never sees `path`: the runtime record points at this approval,
+/// and the host resolves the path only after checking the identity and digest before a launch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeApproval {
+    /// Opaque random id in the runtime's durable file reference; a reapproval gets a new one.
+    pub id: String,
+    /// The owned runtime this approval belongs to.
+    pub runtime_id: String,
+    /// The canonical executable location, valid Unicode.
+    pub path: String,
+    /// The volume and node identity of the approved file.
+    pub volume: u64,
+    pub node: u64,
+    pub size: u64,
+    /// Lowercase hexadecimal SHA-256 of the approved file.
+    pub digest: String,
+    /// Unix seconds.
+    pub approved_at: i64,
+    /// Unix seconds; a revoked approval launches nothing.
+    pub revoked_at: Option<i64>,
+}
+
+fn runtime_approval_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<RuntimeApproval> {
+    Ok(RuntimeApproval {
+        id: row.get(0)?,
+        runtime_id: row.get(1)?,
+        path: row.get(2)?,
+        volume: row.get::<_, i64>(3)? as u64,
+        node: row.get::<_, i64>(4)? as u64,
+        size: row.get::<_, i64>(5)? as u64,
+        digest: row.get(6)?,
+        approved_at: row.get(7)?,
+        revoked_at: row.get(8)?,
+    })
+}
+
+const RUNTIME_APPROVAL_COLUMNS: &str =
+    "id, runtime_id, path, volume, node, size, digest, approved_at, revoked_at";
+
+impl DurableStore {
+    /// Records `approval`, replacing the earlier approval of the same runtime.
+    pub fn save_runtime_approval(
+        &mut self,
+        approval: &RuntimeApproval,
+    ) -> Result<(), PluginStorageError> {
+        self.conn.execute(
+            "INSERT INTO runtime_approvals
+                 (id, runtime_id, path, volume, node, size, digest, approved_at, revoked_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(runtime_id) DO UPDATE SET
+                 id = excluded.id,
+                 path = excluded.path,
+                 volume = excluded.volume,
+                 node = excluded.node,
+                 size = excluded.size,
+                 digest = excluded.digest,
+                 approved_at = excluded.approved_at,
+                 revoked_at = excluded.revoked_at",
+            rusqlite::params![
+                approval.id,
+                approval.runtime_id,
+                approval.path,
+                approval.volume as i64,
+                approval.node as i64,
+                approval.size as i64,
+                approval.digest,
+                approval.approved_at,
+                approval.revoked_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The approval for `runtime_id`, revoked or active.
+    pub fn runtime_approval_for(
+        &self,
+        runtime_id: &str,
+    ) -> Result<Option<RuntimeApproval>, PluginStorageError> {
+        Ok(self
+            .conn
+            .query_row(
+                &format!(
+                    "SELECT {RUNTIME_APPROVAL_COLUMNS} FROM runtime_approvals
+                     WHERE runtime_id = ?1"
+                ),
+                [runtime_id],
+                runtime_approval_from,
+            )
+            .optional()?)
+    }
+
+    /// The approval with this id, revoked or active.
+    pub fn runtime_approval_by_id(
+        &self,
+        id: &str,
+    ) -> Result<Option<RuntimeApproval>, PluginStorageError> {
+        Ok(self
+            .conn
+            .query_row(
+                &format!(
+                    "SELECT {RUNTIME_APPROVAL_COLUMNS} FROM runtime_approvals
+                     WHERE id = ?1"
+                ),
+                [id],
+                runtime_approval_from,
+            )
+            .optional()?)
+    }
+
+    /// Every runtime approval in this namespace, revoked or active.
+    pub fn runtime_approvals(&self) -> Result<Vec<RuntimeApproval>, PluginStorageError> {
+        let mut statement = self.conn.prepare(&format!(
+            "SELECT {RUNTIME_APPROVAL_COLUMNS} FROM runtime_approvals ORDER BY approved_at, id"
+        ))?;
+        let rows = statement.query_map([], runtime_approval_from)?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// Revokes the approval of `runtime_id`; a missing or already revoked approval is not an error.
+    pub fn revoke_runtime_approval(
+        &mut self,
+        runtime_id: &str,
+        at: i64,
+    ) -> Result<bool, PluginStorageError> {
+        let changed = self.conn.execute(
+            "UPDATE runtime_approvals SET revoked_at = ?2
+             WHERE runtime_id = ?1 AND revoked_at IS NULL",
+            rusqlite::params![runtime_id, at],
+        )?;
+        Ok(changed > 0)
+    }
 }
 
 const APPROVAL_COLUMNS: &str = "id, installation_id, game_id, kind, root, root_volume, root_node, \

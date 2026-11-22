@@ -798,6 +798,16 @@ pub trait LibraryHost: Send + Sync {
         Err(Status::unavailable("runtime availability is unavailable"))
     }
 
+    /// Host-owned installed programs the runtime picker may suggest. Only official providers
+    /// contribute; the implementation reads the library store and never a plugin payload.
+    async fn installed_programs(
+        &self,
+    ) -> Result<Vec<crate::plugin_host::runtime_access::InstalledProgram>, Status> {
+        Err(Status::unavailable(
+            "the installed-program inventory is unavailable",
+        ))
+    }
+
     /// Durable recipes stay under the authenticated plugin/profile namespace.
     async fn custom_launch_recipe(
         &self,

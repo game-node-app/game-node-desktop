@@ -93,6 +93,13 @@ pub struct Identity {
     pub node: u64,
 }
 
+/// Identifies a path independently of its name: the volume and the node on it. The path is
+/// followed as the system resolves it, so callers that approve a link-free file should inspect it
+/// first.
+pub fn identity_of(path: &Path) -> Result<Identity, FileError> {
+    sys::identity_of(path).map_err(FileError::from)
+}
+
 /// Host folders no plugin may reach. Built once from the host's data folders.
 #[derive(Clone, Debug, Default)]
 pub struct Reserved {

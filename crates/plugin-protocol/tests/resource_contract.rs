@@ -81,6 +81,57 @@ fn checked_resource_catalog_matches_generated_protobuf_service() {
 }
 
 #[test]
+fn runtime_request_access_is_a_host_picker_route_without_path_fields() {
+    let catalog: Value = serde_json::from_str(CATALOG).unwrap();
+    let route = catalog["routes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|route| route["method"] == "RuntimesRequestAccess")
+        .expect("RuntimesRequestAccess route");
+    assert_eq!(route["request"], "RuntimeRequestAccessRequest");
+    assert_eq!(route["response"], "RuntimeMutationReply");
+    assert_eq!(route["permission"], "game.runtime.create");
+    assert_eq!(route["streaming"], false);
+    assert!(
+        route["semantics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item.as_str().unwrap().contains("empty executable_handle"))
+    );
+
+    let descriptors = FileDescriptorSet::decode(DESCRIPTOR).unwrap();
+    let message = |name: &str| {
+        descriptors
+            .file
+            .iter()
+            .flat_map(|file| &file.message_type)
+            .find(|message| message.name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("missing message {name}"))
+    };
+    let request = message("RuntimeRequestAccessRequest");
+    let fields: Vec<&str> = request
+        .field
+        .iter()
+        .map(|field| field.name.as_deref().unwrap())
+        .collect();
+    assert_eq!(fields, ["mutation", "runtime", "hints"]);
+    assert!(request.field.iter().all(|field| {
+        !field.name.as_deref().unwrap().contains("path")
+            && !field.name.as_deref().unwrap().contains("handle")
+    }));
+
+    let hints = message("RuntimeAccessHints");
+    let hint_fields: Vec<&str> = hints
+        .field
+        .iter()
+        .map(|field| field.name.as_deref().unwrap())
+        .collect();
+    assert_eq!(hint_fields, ["executable_names", "desktop_ids"]);
+}
+
+#[test]
 fn ordinary_and_custom_launch_are_distinct_wire_contracts() {
     let catalog: Value = serde_json::from_str(CATALOG).unwrap();
     let route = |name: &str| {
@@ -136,7 +187,7 @@ fn resource_routes_use_typed_operation_messages() {
 fn endpoint_field_policy_covers_all_current_services_and_marks_future_routes() {
     let fixture: Value = serde_json::from_str(FIELD_POLICY).unwrap();
     let routes = fixture["routes"].as_array().unwrap();
-    assert_eq!(routes.len(), 106);
+    assert_eq!(routes.len(), 107);
     for route in routes {
         assert!(!route["request_policy"].as_str().unwrap().is_empty());
         assert!(!route["response_policy"].as_str().unwrap().is_empty());

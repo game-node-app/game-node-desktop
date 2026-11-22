@@ -373,7 +373,7 @@ The ResourceHost method names, grouped for source/API review, are:
 | Game execution and install | `GamesRequestLaunch`, `GamesProposeCustomLaunch`, `GamesRequestCustomLaunch`, `GamesRemoveCustomLaunch`, `GamesRequestInstall` |
 | Storage, files and network | `StorageGet`, `StoragePut`, `StorageDelete`, `FilesRequestAccess`, `FilesList`, `FilesRead`, `FilesWrite`, `FilesDelete`, `NetworkFetch`, `NotificationsPublish` |
 | Backups and libraries | `BackupsList`, `BackupsRequestCreate`, `BackupsRequestRestore`, `LibrariesList`, `LibrariesGet`, `LibrariesWatch`, `LibrariesCreate`, `LibrariesUpdate`, `LibrariesRemove`, `LibrariesAddRoot`, `LibrariesUpdateRoot`, `LibrariesRemoveRoot` |
-| Runtimes and observations | `RuntimesList`, `RuntimesGet`, `RuntimesWatch`, `RuntimesRegister`, `RuntimesUpdate`, `RuntimesRemove`, `GamesRegisterContent`, `StorageDiagnosticsPublishBenchmark`, `StorageDiagnosticsPublishSmart`, `ComputerPublishHardware`, `GamePresencePublish`, `GamePresenceClear`, `GamePerformancePublishSamples`, `GamePerformanceEndSeries` |
+| Runtimes and observations | `RuntimesList`, `RuntimesGet`, `RuntimesWatch`, `RuntimesRequestAccess`, `RuntimesRegister`, `RuntimesUpdate`, `RuntimesRemove`, `GamesRegisterContent`, `StorageDiagnosticsPublishBenchmark`, `StorageDiagnosticsPublishSmart`, `ComputerPublishHardware`, `GamePresencePublish`, `GamePresenceClear`, `GamePerformancePublishSamples`, `GamePerformanceEndSeries` |
 | Data, persistence, tools, ports and jobs | `DataPublish`, `DataGet`, `DataList`, `DataWatch`, `PersistenceGetUsage`, `PersistenceListEntries`, `PersistenceDeleteEntries`, `PersistenceClear`, `PersistenceSetRetentionPolicy`, `ToolsList`, `ToolsRequestApply`, `ToolsRequestRemove`, `PortsList`, `PortsDetail`, `PortsRequestInstall`, `JobsGet`, `JobsWatch`, `JobsCancel` |
 
 Each name above maps to exactly one typed request/response pair in the protobuf service and
@@ -732,6 +732,40 @@ recipes in
 [`examples/action_recipes.rs`](../crates/plugin-sdk/examples/action_recipes.rs): `wait_for_job`,
 `cancel`, `launch`, `install`, `apply_tool`, `remove_tool`, `install_port`, `create_backup` and
 `restore_backup`.
+
+## Approved runtimes and the host picker
+
+An emulator extension does not receive a path, a folder handle or process-spawning authority.
+Under `game.runtime.create`, call `RuntimesRequestAccess` with the runtime spec and text hints; the
+host lets the user approve one exact executable and creates the owned runtime.
+
+1. Send `RuntimeRequestAccessRequest` with a `RuntimeRecord` whose `executable_handle` is empty,
+   plus `RuntimeAccessHints`. `executable_names` are base names such as `dolphin-emu`;
+   `desktop_ids` are desktop ids such as `dolphin-emu.desktop`. They are text, never paths. Put a
+   fresh idempotency key in `MutationContext`; reuse it for retries of that request.
+2. The host looks for an owned runtime with the same name, platform and supported formats. If its
+   approved executable still matches its recorded identity, size and SHA-256, the host returns that
+   runtime with `ALREADY_APPLIED` and opens no picker.
+3. Otherwise Core shows the picker with the requesting plugin/publisher and the runtime. It offers
+   only host-owned installed-program suggestions — the official PackageKit inventory on Linux; the
+   Windows registry/Start Menu source is not implemented in this build — and always offers
+   **Browse…**. Third-party providers never contribute candidates. The user sees the exact program,
+   package id/manager/version when known, and can cancel.
+4. The host validates the chosen regular executable (no link in the final component, executable
+   permissions, not inside GameNode's private data), records its volume/node identity, size and
+   SHA-256, stores a durable approval and creates the runtime. A decline or cancel creates nothing.
+   The reply is an ordinary `RuntimeMutationReply`; its runtime record has an empty
+   `executable_handle` and never contains a path.
+5. Bind content with `GamesRegisterContent`, then propose or request your recipe with the runtime
+   id as usual. The host resolves the approved program only at launch, after rechecking the
+   approval's ownership, profile, runtime revision, identity, size and digest. If the program was
+   replaced or changed, the launch is refused and the next `RuntimesRequestAccess` shows the picker
+   again. There is no fallback to another program.
+
+Use the Rust SDK's `Resources::runtime_request_access` with `RuntimeExecutableHints`; it refuses a
+`RuntimeSpec` that already has an `executable_handle`. `RuntimesRegister` remains for runtimes whose
+executable comes from an already approved installation, prefix or library folder. For an emulator
+program, prefer the host picker: it approves one file instead of a folder.
 
 ## Save profiles
 

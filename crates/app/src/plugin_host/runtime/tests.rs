@@ -1254,3 +1254,657 @@ async fn uninstall_delete_removes_only_the_selected_private_namespace() {
         "another owner's durable pool row is untouched"
     );
 }
+
+#[cfg(target_os = "linux")]
+struct NoConsumerServices;
+
+#[cfg(target_os = "linux")]
+#[tonic::async_trait]
+impl crate::plugin_host::provider::HostServices for NoConsumerServices {
+    async fn context(
+        &self,
+        _: crate::plugin_host::provider::Lease,
+    ) -> Result<gamenode_plugin_protocol::proto::ProviderContext, Status> {
+        Err(Status::unimplemented("consumer fixture"))
+    }
+    async fn account(
+        &self,
+        _: crate::plugin_host::provider::Lease,
+        _: gamenode_plugin_protocol::proto::account_request::Action,
+    ) -> Result<gamenode_plugin_protocol::proto::AccountReply, Status> {
+        Err(Status::unimplemented("consumer fixture"))
+    }
+    async fn secret(
+        &self,
+        _: crate::plugin_host::provider::Lease,
+        _: gamenode_plugin_protocol::proto::SecretRequest,
+    ) -> Result<gamenode_plugin_protocol::proto::SecretReply, Status> {
+        Err(Status::unimplemented("consumer fixture"))
+    }
+    async fn login(
+        &self,
+        _: crate::plugin_host::provider::Lease,
+        _: gamenode_plugin_protocol::proto::LoginRequest,
+    ) -> Result<gamenode_plugin_protocol::proto::LoginReply, Status> {
+        Err(Status::unimplemented("consumer fixture"))
+    }
+    async fn actions(
+        &self,
+        _: crate::plugin_host::provider::Lease,
+        _: gamenode_plugin_protocol::proto::ActionDeclaration,
+    ) -> Result<gamenode_plugin_protocol::proto::ActionReply, Status> {
+        Err(Status::unimplemented("consumer fixture"))
+    }
+}
+
+/// A second third-party plugin session for consumer reads. It is the ordinary host registration
+/// and session handshake, not a fixture provider: only the Dolphin producer is the real artifact.
+#[cfg(target_os = "linux")]
+async fn durable_consumer_session(
+    api: &crate::plugin_host::PluginApi,
+    endpoint: &Path,
+) -> gamenode_plugin_sdk::Session {
+    use gamenode_plugin_sdk::{Launch as SdkLaunch, Session, SessionOptions};
+
+    api.providers
+        .register(Registration {
+            provider_id: "consumer".into(),
+            plugin_id: "org.example.consumer".into(),
+            kind: RegistrationKind::Provider,
+            declared_developer: "Consumer developer".into(),
+            package_digest: vec![8; 32],
+            origin: RegistrationOrigin::ThirdParty {
+                publisher_fingerprint: "cd".repeat(32),
+            },
+            capabilities: vec![cap::CONTEXT.into()],
+            shared_catalog: false,
+            playtime: Default::default(),
+            services: Arc::new(NoConsumerServices),
+        })
+        .unwrap();
+    let launch = api.providers.begin_launch("consumer").unwrap();
+    let credential = (0..launch.credential.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&launch.credential[index..index + 2], 16).unwrap())
+        .collect();
+    let session = Session::open_with_options(
+        SdkLaunch {
+            endpoint: endpoint.to_path_buf(),
+            credential,
+            operation_id: "consumer-launch".into(),
+        },
+        "org.example.consumer",
+        "consumer",
+        "1.0",
+        &[cap::CONTEXT],
+        SessionOptions {
+            min_api_major: 1,
+            min_api_minor: cap::THIRD_PARTY_API_MINOR,
+            max_api_major: 1,
+            max_api_minor: gamenode_plugin_protocol::API_MINOR,
+            ..SessionOptions::default()
+        },
+    )
+    .await
+    .unwrap();
+    launch.ready.await.unwrap();
+    session
+}
+
+/// The production `ResourceHost` handlers over a local TCP transport, so a consumer test sends
+/// the same `DataGet`/`DataList`/`DataWatch` messages the SDK sends over the host socket.
+#[cfg(target_os = "linux")]
+async fn local_resource_client(
+    api: Arc<crate::plugin_host::resources::ResourceApi>,
+) -> (
+    gamenode_plugin_protocol::proto::resource_host_client::ResourceHostClient<
+        tonic::transport::Channel,
+    >,
+    tokio::task::JoinHandle<()>,
+) {
+    use gamenode_plugin_protocol::proto::resource_host_server::ResourceHostServer;
+    use tokio_stream::wrappers::TcpListenerStream;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        tonic::transport::Server::builder()
+            .add_service(ResourceHostServer::new((*api).clone()))
+            .serve_with_incoming(TcpListenerStream::new(listener))
+            .await
+            .unwrap();
+    });
+    let client =
+        gamenode_plugin_protocol::proto::resource_host_client::ResourceHostClient::connect(
+            format!("http://{address}"),
+        )
+        .await
+        .unwrap();
+    (client, server)
+}
+
+#[cfg(target_os = "linux")]
+fn catalog_projection(
+    record: &gamenode_plugin_protocol::proto::DataRecord,
+) -> std::collections::BTreeMap<String, String> {
+    use gamenode_plugin_protocol::prost_types::value::Kind;
+
+    record
+        .value
+        .as_ref()
+        .expect("the catalog record carries a payload")
+        .fields
+        .iter()
+        .map(|(key, value)| {
+            (
+                key.clone(),
+                match value.kind.as_ref() {
+                    Some(Kind::StringValue(value)) => value.clone(),
+                    other => panic!("the Dolphin catalog uses string fields: {other:?}"),
+                },
+            )
+        })
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn assert_catalog_projection(
+    record: &gamenode_plugin_protocol::proto::DataRecord,
+    digest: &[u8],
+    fingerprint: &str,
+) {
+    use gamenode_plugin_protocol::proto::StorageDurability;
+
+    let fields = catalog_projection(record);
+    let expected = std::collections::BTreeMap::from([
+        ("disc_id".to_owned(), "GZLE01".to_owned()),
+        ("title".to_owned(), "The Legend of Zelda".to_owned()),
+        ("platform".to_owned(), "gamecube".to_owned()),
+        ("content_id".to_owned(), "GZLE01".to_owned()),
+    ]);
+    assert_eq!(fields, expected, "only the reviewed fields are projected");
+    assert_eq!(record.dataset_id, DOLPHIN_DATASET);
+    assert_eq!(record.publisher_id, DOLPHIN_PLUGIN);
+    assert_eq!(
+        record.durability,
+        StorageDurability::Persistent as i32,
+        "the record reports its actual durability"
+    );
+    let provenance = record.provenance.as_ref().expect("host provenance");
+    assert_eq!(provenance.producer_plugin_id, DOLPHIN_PLUGIN);
+    assert_eq!(provenance.publisher_fingerprint, fingerprint);
+    assert_eq!(provenance.package_digest, digest);
+    assert!(
+        provenance.package_digest.len() == 32,
+        "provenance names a 32-byte installed package digest"
+    );
+    // No physical path and no reserved or scanner-only field crossed the API.
+    for (key, value) in &fields {
+        assert!(
+            !matches!(key.as_str(), "path" | "rom" | "install_dir" | "owner"),
+            "reserved or scanner-only field {key} leaked"
+        );
+        assert!(
+            !value.contains(['/', '\\']),
+            "a physical path leaked in {key}"
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+const DOLPHIN_PLUGIN: &str = "dev.richmont.gamenode.dolphin-emu";
+#[cfg(target_os = "linux")]
+const DOLPHIN_PROVIDER: &str = "dolphin-emu";
+#[cfg(target_os = "linux")]
+const DOLPHIN_DATASET: &str = "dev.richmont.gamenode.dolphin-emu.catalog.v1";
+
+/// 6.3/7.2 Linux acceptance with the real signed bundle: the installed provider discovers a disc,
+/// publishes the durable catalog row under the production `HostedProviders::bundled` registration,
+/// and a consumer reads it with Dolphin stopped, across a broker/pool restart, and after
+/// revocation. The platform has no Windows Dolphin target, so this test is Linux-only.
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_real_dolphin_provider_publishes_a_durable_catalog_read_with_it_stopped() {
+    use crate::plugin_host::{
+        PluginApi,
+        bundles::dolphin_bundle_artifact,
+        grants::PermissionDecision,
+        profile::PluginStateLayout,
+        resources::ResourceApi,
+        shared_data::DataBroker,
+        shared_pool::DurableSharedPool,
+        sharing_policy::{ActivationReadGrant, SharingClass, SourceRecipientPolicy},
+        updates::PluginUpdateService,
+    };
+    use gamenode_platform::{
+        db::SqliteSettingsStore, paths::DataPaths, plugin_registry::PluginPackageRegistry,
+    };
+    use gamenode_plugin_protocol::proto::{
+        DataGetRequest, DataListRequest, DataWatchRequest, PageRequest,
+    };
+    use std::ffi::OsString;
+    use std::os::unix::fs::PermissionsExt;
+
+    let Some(artifact) = dolphin_bundle_artifact() else {
+        return;
+    };
+
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let paths = DataPaths::at(directory.path().join("app-data"));
+    let state = PluginStateLayout::managed(&paths);
+    let api = PluginApi {
+        shared_pool: Arc::new(DurableSharedPool::new(paths.data_dir())),
+        ..Default::default()
+    };
+    api.set_state_layout(state.clone());
+    api.providers
+        .profiles()
+        .update(Some("dolphin-emu-account"), true);
+    let registry = PluginPackageRegistry::open(&paths).unwrap();
+    let settings = SqliteSettingsStore::open(&paths.database_file()).unwrap();
+    let endpoint = paths.data_dir().join("plugins.sock");
+
+    // Install the real bundle through the reviewed import flow, exactly as 7.1 does.
+    let preliminary = Arc::new(ThirdPartyPluginLifecycle::new(
+        api.providers.clone(),
+        ProviderProcesses::new_for_lifecycle(
+            api.providers.clone(),
+            endpoint.clone(),
+            vec![],
+            state.clone(),
+        )
+        .unwrap(),
+        state.clone(),
+        registry.clone(),
+        ManagedPackageLifecycle::new(registry.clone()),
+    ));
+    let service = PluginUpdateService::open(&paths).unwrap();
+    service.set_lifecycle(preliminary);
+    service.set_profiles(api.providers.profiles());
+    service.set_bundle_store(settings.bundle_store());
+    let review = service
+        .bundle_import_review(artifact.clone())
+        .await
+        .unwrap();
+    assert_eq!(review.bundle.id, "dev.richmont.gamenode.dolphin-emu.bundle");
+    service
+        .bundle_import_confirm_publisher(&review.token, &review.bundle.publisher_fingerprint)
+        .await
+        .unwrap();
+    let installed_bundle = service
+        .bundle_import_install(&review.token, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        installed_bundle.bundle_id,
+        "dev.richmont.gamenode.dolphin-emu.bundle"
+    );
+    let installed = registry.active(DOLPHIN_PLUGIN).unwrap().unwrap();
+    let digest = installed_package_digest(&installed.package_path).unwrap();
+    assert_eq!(digest.len(), 32);
+
+    // Compose the production runtime: this is the `HostedProviders::bundled` registration that
+    // supplies the installed package digest, not a test-only registration.
+    let library: Arc<dyn gamenode_core::library::LibraryStore> = Arc::new(
+        SqliteSettingsStore::open(&paths.database_file())
+            .unwrap()
+            .library_store(),
+    );
+    let host = HostedProviders::bundled(
+        api.providers.clone(),
+        Arc::new(Default::default()),
+        Some(endpoint.clone()),
+        paths.clone(),
+        library,
+        None,
+    )
+    .await
+    .unwrap();
+    let server =
+        PluginApiServer::start(&tokio::runtime::Handle::current(), &endpoint, api.clone()).unwrap();
+
+    // Grant exactly the catalog path the bundle declares and enable the component.
+    let activation = tokio::sync::Mutex::new(());
+    let snapshot = host
+        .lifecycle()
+        .permission_snapshot(DOLPHIN_PLUGIN.into())
+        .await
+        .unwrap();
+    assert_eq!(
+        snapshot.publisher_fingerprint,
+        review.bundle.publisher_fingerprint
+    );
+    let decisions = snapshot
+        .requested_permissions
+        .iter()
+        .flat_map(|request| {
+            request
+                .allowed_scopes
+                .iter()
+                .map(|scope| PermissionDecision {
+                    permission_id: request.permission_id.clone(),
+                    scope: scope.clone(),
+                    granted: true,
+                })
+        })
+        .collect::<Vec<_>>();
+    let granted = host
+        .lifecycle()
+        .replace_permissions(
+            &activation,
+            DOLPHIN_PLUGIN.into(),
+            snapshot.profile_id.clone(),
+            snapshot.publisher_fingerprint.clone(),
+            snapshot.grant_revision,
+            decisions,
+        )
+        .await
+        .unwrap();
+    for permission in [
+        "provider.context.read",
+        "library.discovery",
+        "data.publish",
+        "storage.persist",
+    ] {
+        assert!(
+            granted.effective_grants.iter().any(|grant| {
+                grant.permission_id == permission
+                    && grant.state == crate::plugin_host::grants::PermissionState::Granted
+            }),
+            "{permission} is granted: {:?}",
+            granted.effective_grants
+        );
+    }
+    host.lifecycle()
+        .enable(DOLPHIN_PLUGIN.into())
+        .await
+        .unwrap();
+
+    // A temporary Dolphin collection. The scanner reads the six-byte disc header and takes the
+    // title from the ROM file name, so the plain-disc fixture is named like a real collection.
+    let rom_root = directory.path().join("collection");
+    std::fs::create_dir_all(&rom_root).unwrap();
+    std::fs::write(
+        rom_root.join("The Legend of Zelda.iso"),
+        b"GZLE01\x00\x00\x00\x00",
+    )
+    .unwrap();
+    let mut config = host.processes.config(DOLPHIN_PROVIDER).unwrap();
+    config.environment.push((
+        OsString::from("DOLPHIN_PLUGIN_ROOTS"),
+        rom_root.clone().into_os_string(),
+    ));
+    host.processes
+        .replace_config(DOLPHIN_PROVIDER, config)
+        .await
+        .unwrap();
+
+    let completion = host
+        .execute(DOLPHIN_PROVIDER, ProviderOperation::Discover)
+        .await
+        .unwrap();
+    let discovery = completion
+        .result
+        .discovery
+        .expect("Discover returns the scanner's records");
+    assert_eq!(discovery.provider_id, DOLPHIN_PROVIDER);
+    assert_eq!(discovery.records.len(), 1, "{discovery:?}");
+    let discovered = &discovery.records[0];
+    assert_eq!(discovered.id, "GZLE01");
+    assert_eq!(discovered.name, "The Legend of Zelda");
+    assert_eq!(
+        discovered.fields.get("platform").map(String::as_str),
+        Some("gamecube")
+    );
+
+    // The durable row is written by the provider's own DataPublish during Discover. Poll on a
+    // bounded timeout instead of sleeping: the publication has already completed by now.
+    let pool = api.shared_pool.clone();
+    let now_seconds = || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+    };
+    let stored = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let (rows, _) = pool
+                .list_dataset_any(DOLPHIN_DATASET.to_owned(), now_seconds())
+                .await
+                .unwrap();
+            if let Some(row) = rows
+                .into_iter()
+                .find(|row| row.dataset_id == DOLPHIN_DATASET)
+            {
+                return row;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("the provider's durable catalog row reaches the host pool");
+    assert_eq!(stored.provenance.source.plugin_id, DOLPHIN_PLUGIN);
+    assert_eq!(
+        stored.provenance.source.profile_id, snapshot.profile_id,
+        "provenance names the active account profile"
+    );
+    assert_eq!(stored.provenance.package_version, "0.1.0");
+    assert_eq!(stored.provenance.package_digest.len(), 32);
+    assert_eq!(
+        stored.provenance.package_digest, digest,
+        "provenance names the installed signed package"
+    );
+    assert_eq!(stored.owner.plugin_id, DOLPHIN_PLUGIN);
+    let record_id = stored.record_id.clone();
+
+    // Stop the real provider before any consumer read.
+    host.stop(DOLPHIN_PROVIDER).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while host.processes.process_id(DOLPHIN_PROVIDER).await.is_some() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the stopped provider process exits");
+    assert!(!api.providers.connected(DOLPHIN_PROVIDER));
+
+    // The exact source/recipient/dataset policy for the consumer plugin.
+    let consumer = durable_consumer_session(&api, &endpoint).await;
+    let consumer_context = consumer.host.resource_context().unwrap().clone();
+    let caller = api
+        .providers
+        .authorize_resource_session(Some(&consumer_context))
+        .unwrap();
+    let recipient = caller
+        .namespace
+        .as_ref()
+        .expect("the consumer has a third-party namespace")
+        .identity()
+        .clone();
+    let (source_plugin, source_fingerprint) = api
+        .providers
+        .third_party_identity(DOLPHIN_PROVIDER)
+        .unwrap();
+    let source = crate::plugin_host::grants::PluginIdentity {
+        plugin_id: source_plugin,
+        publisher_fingerprint: source_fingerprint,
+        profile_id: snapshot.profile_id.clone(),
+    };
+    api.shared_policies
+        .set_source_recipient_policy(
+            SourceRecipientPolicy::new(
+                source.clone(),
+                recipient.clone(),
+                SharingClass::Custom,
+                DOLPHIN_DATASET.into(),
+                ["disc_id", "title", "platform", "content_id"].map(str::to_owned),
+                true,
+                true,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+    let (mut consumer_rpc, consumer_server) = local_resource_client(server.resource_api()).await;
+    let listed = consumer_rpc
+        .data_list(DataListRequest {
+            page: Some(PageRequest {
+                context: Some(consumer_context.clone()),
+                page_size: 10,
+                ..Default::default()
+            }),
+            dataset_id: DOLPHIN_DATASET.into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(listed.records.len(), 1, "{listed:?}");
+    assert_eq!(listed.records[0].record_id, record_id);
+    assert_catalog_projection(
+        &listed.records[0],
+        &digest,
+        &review.bundle.publisher_fingerprint,
+    );
+    let fetched = consumer_rpc
+        .data_get(DataGetRequest {
+            context: Some(consumer_context.clone()),
+            dataset_id: DOLPHIN_DATASET.into(),
+            record_id: record_id.clone(),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .record
+        .unwrap();
+    assert_eq!(fetched.record_id, record_id);
+    assert_catalog_projection(&fetched, &digest, &review.bundle.publisher_fingerprint);
+    assert_eq!(
+        fetched.expires_at, 0,
+        "the provider requests no TTL, so retention is the pool policy rather than an expiry"
+    );
+
+    // A real host restart: a fresh broker over a pool reopened from the same data folder. The
+    // persisted pool sequence resumes instead of restarting at zero.
+    let restarted_broker = Arc::new(DataBroker::new());
+    assert_eq!(restarted_broker.revision(), 0);
+    let restarted_pool = Arc::new(DurableSharedPool::new(paths.data_dir()));
+    let restarted = ResourceApi::new(
+        api.providers.clone(),
+        api.library.clone(),
+        api.storage.clone(),
+        api.files.clone(),
+        api.network.clone(),
+        api.notifications.clone(),
+        api.jobs.clone(),
+        api.intents.clone(),
+        api.saves.clone(),
+        api.fingerprints.clone(),
+        api.leases.clone(),
+        api.processes.clone(),
+    )
+    .with_shared_data(restarted_broker.clone(), api.shared_policies.clone())
+    .with_shared_pool(restarted_pool);
+    let (mut restarted_rpc, restarted_server) = local_resource_client(Arc::new(restarted)).await;
+    let relisted = restarted_rpc
+        .data_list(DataListRequest {
+            page: Some(PageRequest {
+                context: Some(consumer_context.clone()),
+                page_size: 10,
+                ..Default::default()
+            }),
+            dataset_id: DOLPHIN_DATASET.into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(relisted.records.len(), 1, "{relisted:?}");
+    assert_eq!(relisted.records[0].record_id, record_id);
+    assert!(
+        relisted.revision >= 1,
+        "the restarted broker resumes the persisted pool revision: {}",
+        relisted.revision
+    );
+    assert_catalog_projection(
+        &relisted.records[0],
+        &digest,
+        &review.bundle.publisher_fingerprint,
+    );
+    let refetched = restarted_rpc
+        .data_get(DataGetRequest {
+            context: Some(consumer_context.clone()),
+            dataset_id: DOLPHIN_DATASET.into(),
+            record_id: record_id.clone(),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .record
+        .unwrap();
+    assert_catalog_projection(&refetched, &digest, &review.bundle.publisher_fingerprint);
+
+    // Revoking the reviewed policy fences the read and an open watch while Dolphin stays stopped.
+    use futures_util::StreamExt as _;
+    let mut watch = restarted_rpc
+        .data_watch(DataWatchRequest {
+            context: Some(consumer_context.clone()),
+            dataset_id: DOLPHIN_DATASET.into(),
+            after_revision: relisted.revision,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let policy = api.shared_policies.recipient_snapshot(&recipient).unwrap();
+    assert_eq!(policy.source_recipient_policies.len(), 1);
+    api.shared_policies
+        .replace_recipient_policies(
+            &recipient,
+            policy.revision,
+            ActivationReadGrant::default(),
+            vec![],
+        )
+        .unwrap();
+    let error = tokio::time::timeout(Duration::from_secs(7), watch.next())
+        .await
+        .expect("revocation wakes the open watch")
+        .expect("the watch reports the fencing")
+        .unwrap_err();
+    assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+    let error = restarted_rpc
+        .data_get(DataGetRequest {
+            context: Some(consumer_context.clone()),
+            dataset_id: DOLPHIN_DATASET.into(),
+            record_id,
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), tonic::Code::NotFound);
+    let fenced = restarted_rpc
+        .data_list(DataListRequest {
+            page: Some(PageRequest {
+                context: Some(consumer_context),
+                page_size: 10,
+                ..Default::default()
+            }),
+            dataset_id: DOLPHIN_DATASET.into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(
+        fenced.records.is_empty(),
+        "revocation fences the durable list: {fenced:?}"
+    );
+
+    consumer_server.abort();
+    restarted_server.abort();
+    host.shutdown().await;
+    server.shutdown().await;
+}

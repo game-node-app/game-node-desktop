@@ -2133,6 +2133,25 @@ fn restrict_private(_: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// The real Dolphin development artifact shared by the 7.1 import/uninstall acceptance and the
+/// durable-read acceptance. Absent unless `DOLPHIN_BUNDLE_PATH` names the signed archive.
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) fn dolphin_bundle_artifact() -> Option<PathBuf> {
+    let Some(path) = std::env::var_os("DOLPHIN_BUNDLE_PATH") else {
+        eprintln!(
+            "skipping the real Dolphin bundle acceptance: set DOLPHIN_BUNDLE_PATH to \
+             gamenode-plugin-dolphin-emu/dist/dolphin-emu-0.1.0-linux-x64.gnbundle"
+        );
+        return None;
+    };
+    let path = PathBuf::from(path);
+    assert!(
+        path.is_file(),
+        "DOLPHIN_BUNDLE_PATH must point at the signed .gnbundle artifact: {path:?}"
+    );
+    Some(path)
+}
+
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
@@ -5356,23 +5375,6 @@ mod tests {
     /// publisher cannot pass unnoticed.
     #[cfg(target_os = "linux")]
     const DOLPHIN_PUBLISHER_PUBLIC_KEY: &str = "9MJsveQ7SI656O7ykweL/Y+WN1pye9EJ9W+yaQZmidw=";
-
-    #[cfg(target_os = "linux")]
-    fn dolphin_bundle_artifact() -> Option<PathBuf> {
-        let Some(path) = std::env::var_os("DOLPHIN_BUNDLE_PATH") else {
-            eprintln!(
-                "skipping the real Dolphin bundle acceptance: set DOLPHIN_BUNDLE_PATH to \
-                 gamenode-plugin-dolphin-emu/dist/dolphin-0.1.0-linux-x64.gnbundle"
-            );
-            return None;
-        };
-        let path = PathBuf::from(path);
-        assert!(
-            path.is_file(),
-            "DOLPHIN_BUNDLE_PATH must point at the signed .gnbundle artifact: {path:?}"
-        );
-        Some(path)
-    }
 
     #[cfg(target_os = "linux")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

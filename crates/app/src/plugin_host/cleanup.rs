@@ -18,6 +18,9 @@ use tonic::Status;
 
 use super::runtime::ThirdPartyPluginLifecycle;
 
+mod admin;
+pub use admin::{PluginStorageAccounting, PluginStorageLocation, PluginStoragePool};
+
 /// The store a candidate belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CleanupKind {

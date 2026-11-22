@@ -332,6 +332,75 @@ async fn cleanup_requires_confirmation_and_touches_only_selected_owners() {
 }
 
 #[tokio::test]
+async fn storage_locations_report_physical_files_overhead_and_effective_limits() {
+    let fixture = Fixture::new();
+    fixture.write_private(ONE, "note", b"value", None, false);
+    fixture.publish(ONE, "live", None).await;
+    let expected_private_bytes = gamenode_platform::plugin_storage::charge("note", b"value".len());
+
+    let accounting = fixture.lifecycle().storage_locations_at(100).await.unwrap();
+    assert_eq!(accounting.profile_id, fixture.profile_id());
+
+    let private = accounting
+        .locations
+        .iter()
+        .find(|location| location.kind == "private_persistence" && location.plugin_id == ONE)
+        .expect("one private location");
+    assert_eq!(private.scope, "namespace");
+    let expected_private_path = fixture
+        .private_dir(ONE)
+        .join("storage.sqlite3")
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(
+        private.path, expected_private_path,
+        "the host UI names the managed file; plugin replies never do"
+    );
+    assert_eq!(private.logical_bytes, expected_private_bytes);
+    assert_eq!(private.max_bytes, Some(QUOTA_BYTES));
+    assert!(private.file_bytes >= private.logical_bytes);
+    assert!(private.file_bytes > 0);
+    assert!(
+        accounting.private_root_bytes >= private.file_bytes,
+        "the private root total covers this namespace"
+    );
+
+    let durable = accounting
+        .locations
+        .iter()
+        .find(|location| location.kind == "durable_shared" && location.plugin_id == ONE)
+        .expect("one durable location");
+    assert_eq!(durable.scope, "pool");
+    assert!(durable.path.ends_with("plugin-shared-data.sqlite3"));
+    assert_eq!(durable.records, 1);
+    assert_eq!(
+        durable.max_bytes,
+        Some(gamenode_platform::plugin_shared_data::MAX_OWNER_LOGICAL_BYTES)
+    );
+
+    let pool = accounting.pool.expect("the pool file is accounted once");
+    assert_eq!(pool.owners, 1);
+    assert_eq!(pool.logical_bytes, durable.logical_bytes);
+    assert_eq!(pool.path, durable.path);
+    assert_eq!(
+        pool.overhead_bytes,
+        pool.file_bytes.saturating_sub(pool.logical_bytes),
+        "overhead is the measured file minus the quota-charged logical bytes"
+    );
+    assert!(pool.file_bytes > 0);
+
+    // Another plugin has no location until it stores something, and the accounting never
+    // creates a namespace.
+    assert!(
+        accounting
+            .locations
+            .iter()
+            .all(|location| location.plugin_id != TWO)
+    );
+    assert!(!fixture.private_dir(TWO).exists());
+}
+
+#[tokio::test]
 async fn cleanup_reports_a_partial_failure_and_consumes_the_review() {
     let fixture = Fixture::new();
     fixture.write_private(ONE, "one", b"one", None, false);

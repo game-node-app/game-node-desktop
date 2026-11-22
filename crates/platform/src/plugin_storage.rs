@@ -90,6 +90,13 @@ pub fn namespace_dir(root: &Path, publisher: &str, plugin: &str, profile: &str) 
         .join(component(profile))
 }
 
+/// The SQLite file of one plugin's store in one profile below `root` (`plugin-data`). Pure: it
+/// creates nothing. Host-only administration uses this to measure the file; no plugin reply ever
+/// carries it.
+pub fn namespace_store_file(root: &Path, publisher: &str, plugin: &str, profile: &str) -> PathBuf {
+    namespace_dir(root, publisher, plugin, profile).join(STORE_FILE)
+}
+
 /// Archives one namespace's live private entries without creating a store. `None` means the
 /// namespace never wrote anything durably. Used by bundle uninstall, which has no live
 /// [`PluginStorage`] worker at that point.

@@ -278,8 +278,26 @@ expiry/age/byte paths as automatic retention, and their unprotected archived
 rows are reclaimed because the review showed them. User-protected rows stay.
 The report lists each candidate as `completed` or `failed`, the measured
 reclaimed bytes and the protected rows that were kept; a partial failure still
-consumes the review, so a retry needs a new one. Settings screens for this review
-belong to task 1.19.
+consumes the review, so a retry needs a new one.
+
+The settings surface in Settings → Plugins is host administration only. It
+shows the managed files, their measured allocation and the effective limits,
+lets the user select review candidates, confirm the apply and read the measured
+reclaimed bytes with per-candidate failures. Retention limits are set by each
+plugin through `PersistenceSetRetentionPolicy`; the host has no policy editor,
+so the screen states the effective limits as read-only. A slow review or apply
+runs on the host's blocking worker and does not block the rest of the settings.
+
+`plugin_storage_locations` is the matching physical accounting command, again a
+Tauri command and not a plugin route. It reports each plugin's private
+namespace file and the durable pool file with the bytes measured on disk
+(database file plus `-wal`/`-shm` sidecars), the quota-charged logical bytes and
+the effective limits. Because every producer shares one pool file, its physical
+figure and the pool overhead are labelled pool-wide; only the private namespace
+file has a per-plugin overhead. The paths appear only in this host screen: no
+plugin reply carries a path, and the generated wire contract has no
+storage-administration route or message (a protocol regression test asserts
+that).
 
 The host-wide path does not weaken automatic retention: each namespace still
 applies its own policy, and a cleanup only acts on an owner the user selected and

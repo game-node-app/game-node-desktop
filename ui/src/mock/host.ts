@@ -1774,6 +1774,109 @@ export function createMockHost(options: {
     maxAgeSeconds: null,
     oldestUpdatedAt: null,
   });
+  /** Host-managed plugin data files and their cleanup candidates, reset on reload. */
+  interface MockStorageEntry {
+    candidateId: string;
+    pluginId: string;
+    kind: 'durable_shared' | 'private_persistence';
+    scope: 'namespace' | 'pool';
+    path: string;
+    fileBytes: number;
+    logicalBytes: number;
+    records: number;
+    protectedRecords: number;
+    archivedRecords: number;
+    oldestUsedAt: number | null;
+    maxBytes: number;
+    maxAgeSeconds: number | null;
+  }
+  const mockDataDir = '/home/mock/.local/share/gamenode';
+  const mockPoolPath = `${mockDataDir}/plugin-shared-data.sqlite3`;
+  const mockPrivatePath = `${mockDataDir}/plugin-data/cdcdcdcdcdcdcdcd/dev.prateleira.local/mock-profile/storage.sqlite3`;
+  let mockCleanupToken = 'mock-cleanup-review';
+  let mockStorageEntries: MockStorageEntry[] = [
+    {
+      candidateId: 'mock-candidate-durable-plateleira',
+      pluginId: 'dev.prateleira.local',
+      kind: 'durable_shared',
+      scope: 'pool',
+      path: mockPoolPath,
+      fileBytes: 262_144,
+      logicalBytes: 153_600,
+      records: 12,
+      protectedRecords: 0,
+      archivedRecords: 0,
+      oldestUsedAt: Math.floor(Date.now() / 1000) - 86_400,
+      maxBytes: 64 * 1024 * 1024,
+      maxAgeSeconds: 30 * 24 * 60 * 60,
+    },
+    {
+      candidateId: 'mock-candidate-private-plateleira',
+      pluginId: 'dev.prateleira.local',
+      kind: 'private_persistence',
+      scope: 'namespace',
+      path: mockPrivatePath,
+      fileBytes: 57_344,
+      logicalBytes: 40_960,
+      records: 5,
+      protectedRecords: 2,
+      archivedRecords: 1,
+      oldestUsedAt: Math.floor(Date.now() / 1000) - 3_600,
+      maxBytes: 16 * 1024 * 1024,
+      maxAgeSeconds: null,
+    },
+  ];
+  const mockStorageLocations = (profileId: string) => {
+    const durable = mockStorageEntries.filter((entry) => entry.kind === 'durable_shared');
+    const poolLogical = durable.reduce((total, entry) => total + entry.logicalBytes, 0);
+    const poolBytes = durable[0]?.fileBytes ?? 0;
+    return {
+      profileId,
+      locations: mockStorageEntries.map((entry) => ({
+        pluginId: entry.pluginId,
+        kind: entry.kind,
+        path: entry.path,
+        scope: entry.scope,
+        fileBytes: entry.fileBytes,
+        logicalBytes: entry.logicalBytes,
+        records: entry.records,
+        protectedRecords: entry.protectedRecords,
+        archivedRecords: entry.archivedRecords,
+        oldestUsedAt: entry.oldestUsedAt,
+        maxBytes: entry.maxBytes,
+        maxAgeSeconds: entry.maxAgeSeconds,
+      })),
+      pool: durable.length === 0 ? null : {
+        path: mockPoolPath,
+        fileBytes: poolBytes,
+        logicalBytes: poolLogical,
+        overheadBytes: Math.max(0, poolBytes - poolLogical),
+        owners: durable.length,
+        maxOwnerBytes: 64 * 1024 * 1024,
+      },
+      privateRootBytes: mockStorageEntries
+        .filter((entry) => entry.scope === 'namespace')
+        .reduce((total, entry) => total + entry.fileBytes, 0),
+    };
+  };
+  const mockCleanupReview = () => ({
+    token: mockCleanupToken,
+    generatedAt: Math.floor(Date.now() / 1000),
+    candidates: mockStorageEntries.map((entry) => ({
+      candidateId: entry.candidateId,
+      kind: entry.kind,
+      pluginId: entry.pluginId,
+      profileId: 'mock-profile',
+      records: entry.records,
+      protectedRecords: entry.protectedRecords,
+      archivedRecords: entry.archivedRecords,
+      logicalBytes: entry.logicalBytes,
+      physicalBytesEstimate: entry.fileBytes,
+      oldestUpdatedAt: entry.oldestUsedAt,
+      maxBytes: entry.maxBytes,
+      maxAgeSeconds: entry.maxAgeSeconds,
+    })),
+  });
   const mockBundlePublisher = `SHA256:${'ef'.repeat(32)}`;
   const mockPluginEnabled = new Map<string, boolean>();
   let mockBundleInstalled = true;
@@ -4402,6 +4505,41 @@ export function createMockHost(options: {
           usage: after,
         });
       }
+      if (cmd === 'plugin_storage_locations') {
+        return structuredClone(mockStorageLocations(String(args.profileId ?? 'mock-profile')));
+      }
+      if (cmd === 'plugin_storage_cleanup_review') {
+        return structuredClone(mockCleanupReview());
+      }
+      if (cmd === 'plugin_storage_cleanup_apply') {
+        if (args.confirmed !== true) {
+          throw new Error('reviewed storage cleanup requires confirmation');
+        }
+        if (String(args.token ?? '') !== mockCleanupToken) {
+          throw new Error('cleanup review expired or was used');
+        }
+        const ids = (args.candidateIds ?? []) as string[];
+        const selected = mockStorageEntries.filter((entry) => ids.includes(entry.candidateId));
+        const missing = ids.find((id) => !selected.some((entry) => entry.candidateId === id));
+        if (missing) throw new Error('a selected candidate is not in this cleanup review');
+        mockStorageEntries = mockStorageEntries.filter((entry) => !ids.includes(entry.candidateId));
+        mockCleanupToken = `mock-cleanup-review-${Date.now()}`;
+        return structuredClone({
+          token: mockCleanupToken,
+          removedRecords: selected.reduce((total, entry) => total + entry.records, 0),
+          reclaimedBytes: selected.reduce((total, entry) => total + entry.logicalBytes, 0),
+          skippedProtectedRecords: selected.reduce((total, entry) => total + entry.protectedRecords, 0),
+          results: selected.map((entry) => ({
+            candidateId: entry.candidateId,
+            kind: entry.kind,
+            pluginId: entry.pluginId,
+            status: 'completed' as const,
+            removedRecords: entry.records,
+            reclaimedBytes: entry.logicalBytes,
+            error: null,
+          })),
+        });
+      }
       if (cmd === 'plugin_bundle_import_review') {
         return structuredClone(mockBundleReview());
       }
@@ -4534,7 +4672,10 @@ export function createMockHost(options: {
         publish();
         return undefined;
       }
-      if (cmd === 'plugin_remove') return undefined;
+      if (cmd === 'plugin_remove') {
+        if (args.deleteData === true) durableUsage.delete(String(args.pluginId ?? ''));
+        return undefined;
+      }
       if (cmd === 'custom_launch_ids') return [];
       if (cmd === 'custom_launch_stop') return undefined;
       if (cmd === 'plugin_stop' || cmd === 'plugin_start') {

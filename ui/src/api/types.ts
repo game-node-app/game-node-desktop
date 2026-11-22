@@ -2008,6 +2008,86 @@ export interface PluginDurableDeletion {
   usage: PluginDurableUsage;
 }
 
+/**
+ * One host-managed physical file holding plugin data. Host administration only: these paths are
+ * never part of a plugin reply.
+ */
+export interface PluginStorageLocation {
+  pluginId: string;
+  kind: 'durable_shared' | 'private_persistence';
+  path: string;
+  scope: 'namespace' | 'pool';
+  fileBytes: number;
+  logicalBytes: number;
+  records: number;
+  protectedRecords: number;
+  archivedRecords: number;
+  oldestUsedAt: number | null;
+  maxBytes: number | null;
+  maxAgeSeconds: number | null;
+}
+
+/** The durable pool file, counted once because every producer shares it. */
+export interface PluginStoragePool {
+  path: string;
+  fileBytes: number;
+  logicalBytes: number;
+  overheadBytes: number;
+  owners: number;
+  maxOwnerBytes: number;
+}
+
+/** Host-only physical accounting of the active profile's plugin data. */
+export interface PluginStorageAccounting {
+  profileId: string;
+  locations: PluginStorageLocation[];
+  pool: PluginStoragePool | null;
+  privateRootBytes: number;
+}
+
+/** One owner's non-empty dataset or private store, as presented for review, without a path. */
+export interface StorageCleanupCandidate {
+  candidateId: string;
+  kind: 'durable_shared' | 'private_persistence';
+  pluginId: string;
+  profileId: string;
+  records: number;
+  protectedRecords: number;
+  archivedRecords: number;
+  logicalBytes: number;
+  physicalBytesEstimate: number;
+  oldestUpdatedAt: number | null;
+  maxBytes: number | null;
+  maxAgeSeconds: number | null;
+}
+
+/** A single-use cleanup review the user must confirm. */
+export interface StorageCleanupReview {
+  token: string;
+  generatedAt: number;
+  candidates: StorageCleanupCandidate[];
+}
+
+/** One selected candidate's measured result; a partial failure is named, not collapsed. */
+export interface StorageCleanupResult {
+  candidateId: string;
+  kind: 'durable_shared' | 'private_persistence';
+  pluginId: string;
+  status: 'completed' | 'failed';
+  removedRecords: number;
+  reclaimedBytes: number;
+  error?: string | null;
+}
+
+/** The measured result of one confirmed cleanup; the token cannot be reused. */
+export interface StorageCleanupReport {
+  token: string;
+  removedRecords: number;
+  reclaimedBytes: number;
+  skippedProtectedRecords: number;
+  results: StorageCleanupResult[];
+}
+
 /** Host-owned configuration availability; no plugin preference values are included. */
 export interface PluginConfigurationState {
   pluginId: string;

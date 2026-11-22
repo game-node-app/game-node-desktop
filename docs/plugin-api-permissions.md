@@ -461,7 +461,10 @@ pool.
   library history are untouched. Bundle and component uninstall apply the same choice to every
   component they removed.
 - **No paths.** Replies and errors carry logical sizes, counts, limits and timestamps only. The
-  physical pool file and the private plugin stores are never exposed to plugins.
+  physical pool file and the private plugin stores are never exposed to plugins. The host's own
+  settings surface may show the managed files and their measured allocation (see
+  `docs/plugin-shared-data.md`); that accounting is a host command, not a route, so a plugin
+  cannot read it.
 
 ## Files
 

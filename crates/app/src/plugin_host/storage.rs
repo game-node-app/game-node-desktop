@@ -168,6 +168,12 @@ impl PluginStorage {
         }
     }
 
+    /// The `plugin-data` root, if this host has one. Host administration measures the physical
+    /// files below it; a plugin reply never carries a path.
+    pub(crate) fn root(&self) -> Option<&Path> {
+        self.root.as_deref()
+    }
+
     /// Replaces the clock (Unix seconds), for tests of expiry.
     #[cfg(test)]
     pub(crate) fn with_clock(mut self, clock: impl Fn() -> i64 + Send + Sync + 'static) -> Self {

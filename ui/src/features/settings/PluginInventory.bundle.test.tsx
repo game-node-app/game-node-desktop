@@ -470,6 +470,9 @@ describe('bundle inventory', () => {
     const article = await screen.findByRole('article', { name: 'Revisar pacote de plugins' });
     expect(article).toHaveTextContent('Identificador do pacote: org.example.dolphin.bundle');
     expect(article).toHaveTextContent('Permissões solicitadas');
+    expect(article).toHaveTextContent('Plataformas: GameCube, Wii');
+    expect(article).toHaveTextContent('Persistir dados do plugin');
+    expect(article).toHaveTextContent('Aceitar e instalar');
     expect(article).toHaveTextContent('Confiar neste publicador');
   });
 

@@ -652,7 +652,7 @@ pub async fn plugin_import_install(
     token: String,
     native_code_consent: bool,
     denied_permission_ids: Vec<String>,
-) -> Result<String, String> {
+) -> Result<crate::plugin_host::updates::PluginImportInstallOutcome, String> {
     updates
         .import_install(&token, native_code_consent, &denied_permission_ids)
         .await

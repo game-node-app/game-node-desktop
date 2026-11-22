@@ -197,12 +197,12 @@ async fn hosted_fixture() -> (HostedProviders, PluginApiServer, tempfile::TempDi
     let mut entries = std::collections::BTreeMap::new();
     entries.insert(
         "fixture".into(),
-        Entry {
+        Arc::new(Entry {
             services,
             initialized: tokio::sync::Mutex::new(None),
             packaged: true,
             initialize: true,
-        },
+        }),
     );
     let registry = gamenode_platform::plugin_registry::PluginPackageRegistry::at(
         directory.path().join("registry"),
@@ -223,6 +223,7 @@ async fn hosted_fixture() -> (HostedProviders, PluginApiServer, tempfile::TempDi
         processes,
         endpoint_available: true,
         entries,
+        dynamic: Arc::new(DynamicHostState::default()),
         failures: Mutex::new(std::collections::BTreeMap::new()),
         observer: Mutex::new(None),
     };
@@ -234,8 +235,7 @@ async fn hosted_fixture() -> (HostedProviders, PluginApiServer, tempfile::TempDi
 async fn imported_signed_provider_runs_from_registry_and_profile_fences_after_permission_revocation()
  {
     use crate::plugin_host::{
-        PluginApi, grants::PermissionDecision, process::ProviderProcesses,
-        profile::PluginStateLayout, runtime::ThirdPartyPluginLifecycle,
+        PluginApi, grants::PermissionDecision, profile::PluginStateLayout,
         updates::PluginUpdateService,
     };
     use gamenode_platform::{
@@ -258,26 +258,28 @@ async fn imported_signed_provider_runs_from_registry_and_profile_fences_after_pe
     api.set_state_layout(state.clone());
     api.providers.profiles().update(Some("account-one"), true);
 
-    // Import uses the same signed archive and publisher-pin flow as the UI. A small preliminary
-    // lifecycle gives that flow an authenticated active profile; the runtime below is rebuilt
-    // from the imported active package, as it is on application startup.
+    // Compose the host before the import: the accepted package must register into this same
+    // runtime, exactly as a running desktop does. No second HostedProviders is built.
     let registry = PluginPackageRegistry::open(&paths).unwrap();
-    let preliminary_processes = ProviderProcesses::new_for_lifecycle(
-        api.providers.clone(),
-        endpoint.clone(),
-        vec![],
-        state.clone(),
-    )
-    .unwrap();
-    let preliminary = Arc::new(ThirdPartyPluginLifecycle::new(
-        api.providers.clone(),
-        preliminary_processes,
-        state,
-        registry.clone(),
-        crate::plugin_host::managed_packages::ManagedPackageLifecycle::new(registry.clone()),
-    ));
+    // The update service prepares the private layout the host composition reads.
     let importer = PluginUpdateService::open(&paths).unwrap();
-    importer.set_lifecycle(preliminary);
+    let store = SqliteSettingsStore::new(db::open(Path::new(":memory:")).unwrap());
+    let library: Arc<dyn gamenode_core::library::LibraryStore> = Arc::new(store.library_store());
+    let host = HostedProviders::bundled(
+        api.providers.clone(),
+        Arc::new(Default::default()),
+        Some(endpoint.clone()),
+        paths.clone(),
+        library,
+        None,
+    )
+    .await
+    .unwrap();
+    let server =
+        PluginApiServer::start(&tokio::runtime::Handle::current(), &endpoint, api.clone()).unwrap();
+
+    // Import uses the same signed archive and publisher-pin flow as the UI.
+    importer.set_lifecycle(host.lifecycle());
     let archive = signed_provider_archive(&directory.path().join("package"));
     let review = importer.import_review(archive).await.unwrap();
     assert_eq!(review.package.trust, "untrusted");
@@ -290,7 +292,8 @@ async fn imported_signed_provider_runs_from_registry_and_profile_fences_after_pe
         importer
             .import_install(&review.token, false, &[])
             .await
-            .unwrap(),
+            .unwrap()
+            .plugin_id,
         "fixture.plugin"
     );
     let imported = registry.active("fixture.plugin").unwrap().unwrap();
@@ -303,20 +306,6 @@ async fn imported_signed_provider_runs_from_registry_and_profile_fences_after_pe
         "only the signed target entrypoint receives executable permissions"
     );
 
-    let store = SqliteSettingsStore::new(db::open(Path::new(":memory:")).unwrap());
-    let library: Arc<dyn gamenode_core::library::LibraryStore> = Arc::new(store.library_store());
-    let host = HostedProviders::bundled(
-        api.providers.clone(),
-        Arc::new(Default::default()),
-        Some(endpoint.clone()),
-        paths,
-        library,
-        None,
-    )
-    .await
-    .unwrap();
-    let server =
-        PluginApiServer::start(&tokio::runtime::Handle::current(), &endpoint, api.clone()).unwrap();
     let plugin = host
         .managed_plugin_inventory()
         .into_iter()
@@ -415,8 +404,7 @@ async fn imported_signed_provider_runs_from_registry_and_profile_fences_after_pe
 #[tokio::test(flavor = "multi_thread")]
 async fn official_linux_providers_remain_composed_across_managed_registry_states() {
     use crate::plugin_host::{
-        PluginApi, grants::PermissionDecision, process::ProviderProcesses,
-        profile::PluginStateLayout, runtime::ThirdPartyPluginLifecycle,
+        PluginApi, grants::PermissionDecision, profile::PluginStateLayout,
         updates::PluginUpdateService,
     };
     use gamenode_platform::{
@@ -478,7 +466,8 @@ async fn official_linux_providers_remain_composed_across_managed_registry_states
                     importer
                         .import_install(&review.token, false, &[])
                         .await
-                        .unwrap(),
+                        .unwrap()
+                        .plugin_id,
                     "fixture.plugin",
                     "{state_name}"
                 );
@@ -1511,22 +1500,30 @@ async fn the_real_dolphin_provider_publishes_a_durable_catalog_read_with_it_stop
     let settings = SqliteSettingsStore::open(&paths.database_file()).unwrap();
     let endpoint = paths.data_dir().join("plugins.sock");
 
-    // Install the real bundle through the reviewed import flow, exactly as 7.1 does.
-    let preliminary = Arc::new(ThirdPartyPluginLifecycle::new(
-        api.providers.clone(),
-        ProviderProcesses::new_for_lifecycle(
-            api.providers.clone(),
-            endpoint.clone(),
-            vec![],
-            state.clone(),
-        )
-        .unwrap(),
-        state.clone(),
-        registry.clone(),
-        ManagedPackageLifecycle::new(registry.clone()),
-    ));
+    // Compose the production runtime first: the accepted import must register into this same
+    // host, so no second HostedProviders is built and no restart is involved. Opening the update
+    // service prepares the private layout the host composition reads.
     let service = PluginUpdateService::open(&paths).unwrap();
-    service.set_lifecycle(preliminary);
+    let library: Arc<dyn gamenode_core::library::LibraryStore> = Arc::new(
+        SqliteSettingsStore::open(&paths.database_file())
+            .unwrap()
+            .library_store(),
+    );
+    let host = HostedProviders::bundled(
+        api.providers.clone(),
+        Arc::new(Default::default()),
+        Some(endpoint.clone()),
+        paths.clone(),
+        library,
+        None,
+    )
+    .await
+    .unwrap();
+    let server =
+        PluginApiServer::start(&tokio::runtime::Handle::current(), &endpoint, api.clone()).unwrap();
+
+    // Install the real bundle through the reviewed import flow, exactly as 7.1 does.
+    service.set_lifecycle(host.lifecycle());
     service.set_profiles(api.providers.profiles());
     service.set_bundle_store(settings.bundle_store());
     let review = service
@@ -1546,29 +1543,42 @@ async fn the_real_dolphin_provider_publishes_a_durable_catalog_read_with_it_stop
         installed_bundle.bundle_id,
         "dev.richmont.gamenode.dolphin-emu.bundle"
     );
+    // The launch extension is runtime-available and enabled immediately after the accepted
+    // import; the provider is running from the same host composition.
+    let launch_component = installed_bundle
+        .components
+        .iter()
+        .find(|component| component.kind == "extension")
+        .expect("the bundle carries the launch extension");
+    assert!(launch_component.active);
+    assert!(
+        launch_component.activated,
+        "{:?}",
+        launch_component.activation_error
+    );
+    assert!(
+        host.lifecycle()
+            .extension_runtime_available(&launch_component.plugin_id)
+    );
+    assert!(
+        host.lifecycle()
+            .enabled(launch_component.plugin_id.clone())
+            .await
+            .unwrap()
+    );
+    let provider_component = installed_bundle
+        .components
+        .iter()
+        .find(|component| component.kind == "provider")
+        .expect("the bundle carries the discovery provider");
+    assert!(
+        provider_component.activated,
+        "{:?}",
+        provider_component.activation_error
+    );
     let installed = registry.active(DOLPHIN_PLUGIN).unwrap().unwrap();
     let digest = installed_package_digest(&installed.package_path).unwrap();
     assert_eq!(digest.len(), 32);
-
-    // Compose the production runtime: this is the `HostedProviders::bundled` registration that
-    // supplies the installed package digest, not a test-only registration.
-    let library: Arc<dyn gamenode_core::library::LibraryStore> = Arc::new(
-        SqliteSettingsStore::open(&paths.database_file())
-            .unwrap()
-            .library_store(),
-    );
-    let host = HostedProviders::bundled(
-        api.providers.clone(),
-        Arc::new(Default::default()),
-        Some(endpoint.clone()),
-        paths.clone(),
-        library,
-        None,
-    )
-    .await
-    .unwrap();
-    let server =
-        PluginApiServer::start(&tokio::runtime::Handle::current(), &endpoint, api.clone()).unwrap();
 
     // Grant exactly the catalog path the bundle declares and enable the component.
     let activation = tokio::sync::Mutex::new(());

@@ -7,11 +7,19 @@ Manage third-party native plugin packages, publisher identity, execution and upd
 ## MODIFIED Requirements
 
 ### Requirement: Managed package installation
-The application SHALL install third-party plugins only through explicit package import into its managed per-user registry. Packages and publisher-key trust SHALL belong to the OS-user registry; activation and enabled state SHALL belong to the signed-in GameNode account. Packages SHALL be validated before execution and installed disabled until the user approves activation for that account. Arbitrary files dropped outside this flow SHALL NOT be executed as plugins.
+The application SHALL install third-party plugins only through explicit package import into its managed per-user registry. Packages and publisher-key trust SHALL belong to the OS-user registry; activation and enabled state SHALL belong to the signed-in GameNode account. Packages SHALL be validated before execution. Packages SHALL be installed disabled until the user approves activation for that account, except that one explicitly accepted import SHALL both install the reviewed package and enable its reviewed components for the active profile immediately, with the reviewed permission decisions applied and no application restart required. Arbitrary files dropped outside this flow SHALL NOT be executed as plugins.
 
 #### Scenario: Import a valid package
-- **WHEN** a user imports a valid package for this platform
-- **THEN** its metadata, license and requested permissions are shown before activation and no executable runs during validation
+- **WHEN** a user accepts a valid package review for this platform
+- **THEN** its metadata, license and requested permissions were shown before acceptance, no executable ran during validation, and the host installs the package, applies the reviewed permission decisions and enables the compatible components for the active profile in the same running session
+
+#### Scenario: Activation fails after an accepted import
+- **WHEN** an accepted package installs but its process cannot be registered or started
+- **THEN** the package and its reviewed grants remain installed, the import result reports that the package was installed but not activated with the component error, inventory shows it installed and disabled, and the host does not claim the component is running
+
+#### Scenario: Bundle activates every compatible component
+- **WHEN** an accepted bundle review installs a provider and an extension and both are compatible with the host
+- **THEN** every component is registered and enabled for the active profile without a restart, a component that is unavailable on this host stays installed inactive, and the bundle inventory reports each component's own installed, enabled and runtime state
 
 #### Scenario: Import review does not trust UI metadata
 - **WHEN** the user reviews a selected package archive
@@ -209,11 +217,11 @@ A managed package SHALL declare whether it owns a provider or acts as an extensi
 
 #### Scenario: Install a launch-only extension
 - **WHEN** a valid package declares extension kind and requests game.custom_launch
-- **THEN** it can be reviewed and stored disabled without a provider manifest and remains subject to normal identity, permission and signature checks; while provider-free process supervision is unavailable, inventory explains that runtime activation is unavailable and offers no activation control
+- **THEN** it can be reviewed, installed and enabled without a provider manifest and remains subject to normal identity, permission and signature checks; when the host cannot compose a verified extension process runtime, inventory explains that the runtime is unavailable and offers no activation control
 
-#### Scenario: Activate an extension after provider-free supervision is available
-- **WHEN** the host supports the extension's negotiated runtime and the user enables it for the active account
-- **THEN** the host starts it under the supervised lifecycle using its authenticated plugin identity and user-selected target-game context, with no provider identity or provider-owned service context
+#### Scenario: Activate an extension after an accepted import
+- **WHEN** an accepted import installs an extension whose negotiated runtime is supported and whose reviewed permissions are decided
+- **THEN** the host registers the verified extension slot and enables it for the active account in the same session, and later starts it under the supervised lifecycle using its authenticated plugin identity and user-selected target-game context, with no provider identity or provider-owned service context
 
 ### Requirement: Attributed persistence budgets
 The host SHALL account managed persistent data by owning plugin, dataset/category, logical/physical usage, quota, last use and retention. Plugin callers SHALL receive only their own logical accounting. Exact local paths and global accounting SHALL be visible only through host-owned user administration.

@@ -236,13 +236,312 @@ pub(crate) fn managed_process_config(
     })
 }
 
+/// One active managed package that passed identity, publisher and compatibility validation and
+/// is ready for host registration.
+struct PreparedManagedPackage {
+    provider_id: String,
+    plugin_id: String,
+    publisher_fingerprint: String,
+    inventory: super::PluginInfo,
+    config: ProcessConfig,
+    registration: Registration,
+    extension_schemas: Vec<gamenode_plugin_protocol::proto::ExtensionSchemaDescriptor>,
+    entry: Option<Arc<Entry>>,
+}
+
+/// Host-owned composition surfaces used to register a package accepted after startup. The import
+/// flow must not need a restart, so it reuses the same verified package data and service surface
+/// as the startup loop instead of a weaker, second registration path.
+#[derive(Clone)]
+pub(crate) struct HostComposition {
+    paths: gamenode_platform::paths::DataPaths,
+    library: Arc<dyn gamenode_core::library::LibraryStore>,
+    login: Option<Arc<LoginBroker>>,
+    dynamic: Arc<DynamicHostState>,
+}
+
+/// One post-startup package registration attempt. A package that was installed but could not be
+/// registered keeps its review outcome and reports the explicit reason instead of running.
+pub(crate) struct InstalledPackageRegistration {
+    pub plugin_id: String,
+    pub error: Option<String>,
+}
+
+/// Provider entries and inventory rows added after the startup composition.
+#[derive(Default)]
+pub(crate) struct DynamicHostState {
+    entries: std::sync::RwLock<BTreeMap<String, Arc<Entry>>>,
+    inventory: std::sync::RwLock<Vec<super::PluginInfo>>,
+    /// Host callbacks wired before a package was registered. New provider services receive the
+    /// same observer and account persistence as the startup composition.
+    observer: Mutex<Option<Observer>>,
+    accounts: Mutex<Option<Arc<dyn super::services::AccountPersistence>>>,
+}
+
+impl DynamicHostState {
+    fn entry(&self, provider_id: &str) -> Option<Arc<Entry>> {
+        self.entries
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(provider_id)
+            .cloned()
+    }
+
+    fn entries(&self) -> Vec<(String, Arc<Entry>)> {
+        self.entries
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .map(|(id, entry)| (id.clone(), entry.clone()))
+            .collect()
+    }
+
+    fn inventory(&self) -> Vec<super::PluginInfo> {
+        self.inventory
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn insert_entry(&self, provider_id: String, entry: Arc<Entry>) {
+        if let Some(observer) = lock(&self.observer).clone() {
+            entry.services.set_observer(observer);
+        }
+        if let Some(accounts) = lock(&self.accounts).clone() {
+            entry.services.set_account_persistence(accounts);
+        }
+        self.entries
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(provider_id, entry);
+    }
+
+    fn set_observer(&self, observer: Observer) {
+        for (_, entry) in self.entries() {
+            entry.services.set_observer(observer.clone());
+        }
+        *lock(&self.observer) = Some(observer);
+    }
+
+    fn set_account_persistence(&self, accounts: Arc<dyn super::services::AccountPersistence>) {
+        for (_, entry) in self.entries() {
+            entry.services.set_account_persistence(accounts.clone());
+        }
+        *lock(&self.accounts) = Some(accounts);
+    }
+
+    fn push_inventory(&self, plugin: super::PluginInfo) {
+        self.inventory
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(plugin);
+    }
+}
+
+/// Reads, validates and describes one active managed package under the pinned publisher key.
+/// Every manifest, trust, compatibility and identity check runs here so the startup composition
+/// and post-install registration cannot drift apart.
+async fn prepare_managed_package(
+    installed: InstalledPluginVersion,
+    trust: &super::publisher_trust::PublisherTrustStore,
+    packages: &ManagedPackageLifecycle,
+    composition: Option<&HostComposition>,
+) -> Result<PreparedManagedPackage, Status> {
+    let package_root = installed.package_path.clone();
+    let manifest = tokio::task::spawn_blocking(move || {
+        let path = package_root.join("plugin.json");
+        let metadata = std::fs::symlink_metadata(&path).map_err(|error| {
+            Status::failed_precondition(format!("plugin manifest unavailable: {error}"))
+        })?;
+        if !metadata.is_file()
+            || metadata.file_type().is_symlink()
+            || metadata.len() > 4 * 1024 * 1024
+        {
+            return Err(Status::failed_precondition(
+                "plugin manifest is not a bounded regular file",
+            ));
+        }
+        let bytes = std::fs::read(path).map_err(|error| {
+            Status::failed_precondition(format!("plugin manifest unavailable: {error}"))
+        })?;
+        super::package::Manifest::parse_json(&bytes).map_err(|error| {
+            Status::failed_precondition(format!("plugin manifest is invalid: {error}"))
+        })
+    })
+    .await
+    .map_err(|_| Status::internal("plugin manifest worker failed"))??;
+    let plugin_manifest = manifest.manifest();
+    if plugin_manifest.id != installed.plugin_id || plugin_manifest.version != installed.version {
+        return Err(Status::failed_precondition(
+            "managed plugin registry identity does not match its manifest",
+        ));
+    }
+    let publisher_key = manifest.publisher_key();
+    let publisher_fingerprint = match trust.inspect(&installed.plugin_id, &publisher_key) {
+        Ok(super::publisher_trust::KeyStatus::Trusted { fingerprint }) => fingerprint,
+        _ => {
+            return Err(Status::failed_precondition(
+                "managed plugin publisher is not currently trusted",
+            ));
+        }
+    };
+    let report = packages
+        .inspect_candidate(
+            &installed.package_path,
+            publisher_key,
+            gamenode_platform::plugin_environment::EmulationPolicy::RequireNative,
+        )
+        .await
+        .map_err(|error| Status::failed_precondition(error.to_string()))?;
+    let config = managed_process_config(&installed, &report, publisher_key)?;
+    let provider_id = config.provider_id.clone();
+    let inventory = super::PluginInfo {
+        provider_id: report.manifest.provider_id.clone().unwrap_or_default(),
+        plugin_id: installed.plugin_id.clone(),
+        plugin_kind: match report.manifest.kind {
+            super::package::PluginKind::Provider => "provider".to_owned(),
+            super::package::PluginKind::Extension => "extension".to_owned(),
+        },
+        name: report.manifest.name.clone(),
+        source: "community".to_owned(),
+        status: "installed".to_owned(),
+        // Manifest declarations are not grants. The permission viewer exposes effective grants
+        // separately; this legacy field is only for bundled plugins.
+        capabilities: vec![],
+        session: "stopped".to_owned(),
+        native_access: report.manifest.native_access.clone(),
+        publisher_fingerprint: Some(publisher_fingerprint.clone()),
+        version: installed.version.clone(),
+        enabled: None,
+        runtime_available: None,
+        compatibility_details: Some(report.compatibility_review()),
+        bundle_id: None,
+        bundle_name: None,
+        bundle_version: None,
+        bundle_component_kind: None,
+        bundle_publisher_fingerprint: None,
+        bundle_components: None,
+    };
+    let services = if report.manifest.kind == super::package::PluginKind::Provider {
+        // ProviderServices validates the host context as a provider TOML manifest. A managed
+        // package has its own signed JSON manifest instead, so compose the minimal context from
+        // that already verified identity. Do not accept a manifest supplied over RPC or copy
+        // package data into host capabilities/actions.
+        match composition {
+            Some(composition) => {
+                let context_manifest = format!(
+                    "id = {:?}\nname = {:?}\nplatforms = [{:?}]\nsource = {:?}\n\n[scan]\n",
+                    provider_id,
+                    report.manifest.name,
+                    std::env::consts::OS,
+                    installed.plugin_id
+                );
+                Some(Arc::new(ProviderServices::new_external(
+                    ProviderContext {
+                        provider_id: provider_id.clone(),
+                        platform: std::env::consts::OS.into(),
+                        manifest_toml: context_manifest,
+                        ..Default::default()
+                    },
+                    composition.paths.clone(),
+                    composition.library.clone(),
+                    Arc::new(UnavailableExternalAccounts),
+                    composition.login.clone(),
+                    None,
+                )?))
+            }
+            // The startup host always provides its composition. A test host that only exercises
+            // lifecycle registration still gets the process slot and extension schemas.
+            None => None,
+        }
+    } else {
+        None
+    };
+    let host_services: Arc<dyn super::provider::HostServices> = match &services {
+        Some(services) => services.clone(),
+        None => Arc::new(super::provider::ExtensionServices),
+    };
+    let package_root = installed.package_path.clone();
+    let package_digest =
+        tokio::task::spawn_blocking(move || installed_package_digest(&package_root))
+            .await
+            .map_err(|_| Status::internal("installed package digest worker failed"))?
+            .map_err(|_| Status::internal("installed package integrity is unavailable"))?;
+    let registration = Registration {
+        provider_id: provider_id.clone(),
+        plugin_id: installed.plugin_id.clone(),
+        kind: match report.manifest.kind {
+            super::package::PluginKind::Provider => super::provider::RegistrationKind::Provider,
+            super::package::PluginKind::Extension => super::provider::RegistrationKind::Extension,
+        },
+        origin: super::provider::RegistrationOrigin::ThirdParty {
+            publisher_fingerprint: publisher_fingerprint.clone(),
+        },
+        declared_developer: report.manifest.name.clone(),
+        package_digest,
+        playtime: report.manifest.playtime,
+        capabilities: config.manifest_capabilities.clone(),
+        shared_catalog: false,
+        services: host_services,
+    };
+    let entry = services.map(|services| {
+        Arc::new(Entry {
+            services,
+            initialized: tokio::sync::Mutex::new(None),
+            packaged: true,
+            initialize: true,
+        })
+    });
+    Ok(PreparedManagedPackage {
+        provider_id,
+        plugin_id: installed.plugin_id,
+        publisher_fingerprint,
+        inventory,
+        config,
+        registration,
+        extension_schemas: report.extension_schemas,
+        entry,
+    })
+}
+
+/// Registers a prepared package with the shared API. A host rebuilt over an API that already
+/// holds the same signed package (a restart or a test composition) continues composing the
+/// process surface instead of dropping the package as a duplicate.
+async fn register_prepared_management(
+    api: &ProviderApi,
+    provider_id: &str,
+    plugin_id: &str,
+    publisher_fingerprint: &str,
+    registration: Registration,
+    extension_schemas: &[gamenode_plugin_protocol::proto::ExtensionSchemaDescriptor],
+) -> Result<(), Status> {
+    let registration_api = api.clone();
+    match tokio::task::spawn_blocking(move || registration_api.register(registration)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error))
+            if error.code() == tonic::Code::AlreadyExists
+                && api.third_party_identity(provider_id)
+                    == Some((plugin_id.to_owned(), publisher_fingerprint.to_owned())) => {}
+        Ok(Err(error)) => return Err(error),
+        Err(_) => return Err(Status::internal("plugin registration worker failed")),
+    }
+    api.set_extension_schemas(
+        provider_id,
+        plugin_id,
+        publisher_fingerprint,
+        extension_schemas.to_vec(),
+    )
+}
+
 pub struct HostedProviders {
     api: ProviderApi,
     processes: ProviderProcesses,
     intents: Arc<super::intents::Intents>,
     endpoint_available: bool,
-    entries: BTreeMap<String, Entry>,
+    entries: BTreeMap<String, Arc<Entry>>,
     managed_plugins: Vec<super::PluginInfo>,
+    /// Registrations and inventory rows added by an accepted import after startup.
+    dynamic: Arc<DynamicHostState>,
     failures: Mutex<BTreeMap<String, String>>,
     observer: Mutex<Option<Observer>>,
     lifecycle: Arc<ThirdPartyPluginLifecycle>,
@@ -258,6 +557,9 @@ pub struct ThirdPartyPluginLifecycle {
     registry: gamenode_platform::plugin_registry::PluginPackageRegistry,
     packages: ManagedPackageLifecycle,
     mutation: tokio::sync::Mutex<()>,
+    /// Host composition used to register packages accepted after startup. Absent in tests that
+    /// only exercise lifecycle registration.
+    composition: Mutex<Option<HostComposition>>,
     /// Host-only private store worker, connected by the desktop host. Absent in hosts and tests
     /// that did not open `plugin-data`; private retention is then skipped rather than guessed.
     private_storage: Mutex<Option<Arc<super::storage::PluginStorage>>>,
@@ -345,6 +647,7 @@ impl ThirdPartyPluginLifecycle {
             registry,
             packages,
             mutation: tokio::sync::Mutex::new(()),
+            composition: Mutex::new(None),
             private_storage: Mutex::new(None),
             cleanup_reviews: super::cleanup::CleanupReviews::default(),
             migration_reviews: super::migration::MigrationReviews::default(),
@@ -353,6 +656,15 @@ impl ThirdPartyPluginLifecycle {
             #[cfg(test)]
             permission_commit_hook: Mutex::new(None),
         }
+    }
+
+    /// Connects the host-owned composition surfaces a post-startup registration needs. This is
+    /// host wiring: no plugin IPC reaches it.
+    pub(crate) fn set_host_composition(&self, composition: HostComposition) {
+        *self
+            .composition
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(composition);
     }
 
     /// Connects the host-only private store worker used by uninstall retention and host cleanup.
@@ -389,6 +701,110 @@ impl ThirdPartyPluginLifecycle {
     /// The private trust directory, read by the reviewed migration preview for publisher history.
     pub(crate) fn trust_dir(&self) -> std::path::PathBuf {
         self.state.trust_dir()
+    }
+
+    /// Registers every active, publisher-pinned package this runtime has not composed yet.
+    ///
+    /// The startup composition registers packages once. An explicitly accepted import installs a
+    /// package later, so this host-only step repeats the same manifest, trust, compatibility and
+    /// identity checks and registers the process slot without replacing the shared provider API
+    /// or process manager. The returned outcomes let a caller report a package that was installed
+    /// but could not be registered instead of claiming it is running.
+    pub(crate) async fn register_installed_packages(
+        &self,
+    ) -> Result<Vec<InstalledPackageRegistration>, Status> {
+        let registry = self.registry.clone();
+        let active = tokio::task::spawn_blocking(move || registry.active_versions())
+            .await
+            .map_err(|_| Status::internal("plugin package registry worker failed"))?
+            .map_err(|_| Status::internal("plugin package registry is unavailable"))?;
+        let trust_dir = self.state.trust_dir();
+        let trust = tokio::task::spawn_blocking(move || {
+            super::publisher_trust::PublisherTrustStore::open(trust_dir)
+        })
+        .await
+        .map_err(|_| Status::internal("publisher trust worker failed"))?
+        .map_err(|_| Status::internal("publisher trust store is unavailable"))?;
+        let composition = self
+            .composition
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let mut outcomes = Vec::new();
+        for installed in active {
+            let plugin_id = installed.plugin_id.clone();
+            if !self
+                .api
+                .third_party_provider_ids_for_plugin(&plugin_id)
+                .is_empty()
+            {
+                continue;
+            }
+            let prepared = match prepare_managed_package(
+                installed,
+                &trust,
+                &self.packages,
+                composition.as_ref(),
+            )
+            .await
+            {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    outcomes.push(InstalledPackageRegistration {
+                        plugin_id,
+                        error: Some(error.message().to_owned()),
+                    });
+                    continue;
+                }
+            };
+            let PreparedManagedPackage {
+                provider_id,
+                plugin_id,
+                publisher_fingerprint,
+                inventory,
+                config,
+                registration,
+                extension_schemas,
+                entry,
+            } = prepared;
+            if let Err(error) = register_prepared_management(
+                &self.api,
+                &provider_id,
+                &plugin_id,
+                &publisher_fingerprint,
+                registration,
+                &extension_schemas,
+            )
+            .await
+            {
+                outcomes.push(InstalledPackageRegistration {
+                    plugin_id,
+                    error: Some(error.message().to_owned()),
+                });
+                continue;
+            }
+            if let Err(error) = self.processes.register_config(config) {
+                // Never leave a plugin registered without a process slot: a later retry would
+                // skip it as already registered.
+                let _ = self.api.unregister_third_party_plugin(&plugin_id).await;
+                outcomes.push(InstalledPackageRegistration {
+                    plugin_id,
+                    error: Some(error.message().to_owned()),
+                });
+                continue;
+            }
+            if let Some(composition) = composition.as_ref() {
+                if let Some(entry) = entry {
+                    composition.dynamic.insert_entry(provider_id, entry);
+                }
+                composition.dynamic.push_inventory(inventory);
+            }
+            outcomes.push(InstalledPackageRegistration {
+                plugin_id,
+                error: None,
+            });
+        }
+        Ok(outcomes)
     }
 
     pub async fn enabled(&self, plugin_id: String) -> Result<bool, Status> {
@@ -2064,15 +2480,22 @@ impl HostedProviders {
             });
             entries.insert(
                 descriptor.provider_id.clone(),
-                Entry {
+                Arc::new(Entry {
                     services,
                     initialized: tokio::sync::Mutex::new(None),
                     packaged,
                     initialize: descriptor.has(cap::CONTEXT),
-                },
+                }),
             );
         }
 
+        let dynamic = Arc::new(DynamicHostState::default());
+        let composition = HostComposition {
+            paths: paths.clone(),
+            library: library.clone(),
+            login: login.clone(),
+            dynamic: dynamic.clone(),
+        };
         let active_packages = {
             let registry = registry.clone();
             tokio::task::spawn_blocking(move || registry.active_versions())
@@ -2081,189 +2504,48 @@ impl HostedProviders {
                 .map_err(|_| Status::internal("plugin package registry is unavailable"))?
         };
         for installed in active_packages {
-            let package_root = installed.package_path.clone();
-            let manifest = tokio::task::spawn_blocking(move || {
-                let path = package_root.join("plugin.json");
-                let metadata = std::fs::symlink_metadata(&path).map_err(|error| {
-                    Status::failed_precondition(format!("plugin manifest unavailable: {error}"))
-                })?;
-                if !metadata.is_file()
-                    || metadata.file_type().is_symlink()
-                    || metadata.len() > 4 * 1024 * 1024
-                {
-                    return Err(Status::failed_precondition(
-                        "plugin manifest is not a bounded regular file",
-                    ));
-                }
-                let bytes = std::fs::read(path).map_err(|error| {
-                    Status::failed_precondition(format!("plugin manifest unavailable: {error}"))
-                })?;
-                super::package::Manifest::parse_json(&bytes).map_err(|error| {
-                    Status::failed_precondition(format!("plugin manifest is invalid: {error}"))
-                })
-            })
+            let plugin_id = installed.plugin_id.clone();
+            let prepared = match prepare_managed_package(
+                installed,
+                &trust,
+                &packages,
+                Some(&composition),
+            )
             .await
-            .map_err(|_| Status::internal("plugin manifest worker failed"))?;
-            let manifest = match manifest {
-                Ok(manifest) => manifest,
-                Err(error) => {
-                    tracing::warn!(plugin_id = %installed.plugin_id, %error, "managed plugin is not eligible for runtime registration");
-                    continue;
-                }
-            };
-            let plugin_manifest = manifest.manifest();
-            if plugin_manifest.id != installed.plugin_id
-                || plugin_manifest.version != installed.version
             {
-                tracing::warn!(plugin_id = %installed.plugin_id, "managed plugin registry identity does not match its manifest");
-                continue;
-            }
-            let publisher_key = manifest.publisher_key();
-            let publisher_fingerprint = match trust.inspect(&installed.plugin_id, &publisher_key) {
-                Ok(super::publisher_trust::KeyStatus::Trusted { fingerprint }) => fingerprint,
-                _ => {
-                    tracing::warn!(plugin_id = %installed.plugin_id, "managed plugin publisher is not currently trusted");
-                    continue;
-                }
-            };
-            let report = match packages
-                .inspect_candidate(
-                    &installed.package_path,
-                    publisher_key,
-                    gamenode_platform::plugin_environment::EmulationPolicy::RequireNative,
-                )
-                .await
-            {
-                Ok(report) => report,
+                Ok(prepared) => prepared,
                 Err(error) => {
-                    tracing::warn!(plugin_id = %installed.plugin_id, %error, "managed plugin failed package validation");
+                    tracing::warn!(%plugin_id, %error, "managed plugin is not eligible for runtime registration");
                     continue;
                 }
             };
-            let config = match managed_process_config(&installed, &report, publisher_key) {
-                Ok(config) => config,
-                Err(error) => {
-                    tracing::warn!(plugin_id = %installed.plugin_id, %error, "managed plugin has no usable provider runtime configuration");
-                    continue;
-                }
-            };
-            let provider_id = config.provider_id.clone();
-            let inventory_entry = super::PluginInfo {
-                provider_id: report.manifest.provider_id.clone().unwrap_or_default(),
-                plugin_id: installed.plugin_id.clone(),
-                plugin_kind: match report.manifest.kind {
-                    super::package::PluginKind::Provider => "provider".to_owned(),
-                    super::package::PluginKind::Extension => "extension".to_owned(),
-                },
-                name: report.manifest.name.clone(),
-                source: "community".to_owned(),
-                status: "installed".to_owned(),
-                // Manifest declarations are not grants. The permission viewer will expose
-                // effective grants separately; this legacy field is only for bundled plugins.
-                capabilities: vec![],
-                session: "stopped".to_owned(),
-                native_access: report.manifest.native_access.clone(),
-                publisher_fingerprint: Some(publisher_fingerprint.clone()),
-                version: installed.version.clone(),
-                enabled: None,
-                runtime_available: None,
-                compatibility_details: Some(report.compatibility_review()),
-                bundle_id: None,
-                bundle_name: None,
-                bundle_version: None,
-                bundle_component_kind: None,
-                bundle_publisher_fingerprint: None,
-                bundle_components: None,
-            };
-            let services = if report.manifest.kind == super::package::PluginKind::Provider {
-                // ProviderServices validates the host context as a provider TOML manifest. A
-                // managed package has its own signed JSON manifest instead, so compose the
-                // minimal context from that already verified identity. Do not accept a manifest
-                // supplied over RPC or copy package data into host capabilities/actions.
-                let context_manifest = format!(
-                    "id = {:?}\nname = {:?}\nplatforms = [{:?}]\nsource = {:?}\n\n[scan]\n",
-                    provider_id,
-                    report.manifest.name,
-                    std::env::consts::OS,
-                    installed.plugin_id
-                );
-                Some(Arc::new(ProviderServices::new_external(
-                    ProviderContext {
-                        provider_id: provider_id.clone(),
-                        platform: std::env::consts::OS.into(),
-                        manifest_toml: context_manifest,
-                        ..Default::default()
-                    },
-                    paths.clone(),
-                    library.clone(),
-                    Arc::new(UnavailableExternalAccounts),
-                    login.clone(),
-                    None,
-                )?))
-            } else {
-                None
-            };
-            let host_services: Arc<dyn super::provider::HostServices> = match &services {
-                Some(services) => services.clone(),
-                None => Arc::new(super::provider::ExtensionServices),
-            };
-            let package_root = installed.package_path.clone();
-            let package_digest =
-                tokio::task::spawn_blocking(move || installed_package_digest(&package_root))
-                    .await
-                    .map_err(|_| Status::internal("installed package digest worker failed"))?
-                    .map_err(|_| Status::internal("installed package integrity is unavailable"))?;
-            let registration = Registration {
-                provider_id: provider_id.clone(),
-                plugin_id: installed.plugin_id.clone(),
-                kind: match report.manifest.kind {
-                    super::package::PluginKind::Provider => {
-                        super::provider::RegistrationKind::Provider
-                    }
-                    super::package::PluginKind::Extension => {
-                        super::provider::RegistrationKind::Extension
-                    }
-                },
-                origin: super::provider::RegistrationOrigin::ThirdParty {
-                    publisher_fingerprint: publisher_fingerprint.clone(),
-                },
-                declared_developer: report.manifest.name.clone(),
-                package_digest,
-                playtime: report.manifest.playtime,
-                capabilities: config.manifest_capabilities.clone(),
-                shared_catalog: false,
-                services: host_services,
-            };
-            let registration_api = api.clone();
-            let registered =
-                tokio::task::spawn_blocking(move || registration_api.register(registration))
-                    .await
-                    .map_err(|_| Status::internal("plugin registration worker failed"))?;
-            if let Err(error) = registered {
-                tracing::warn!(plugin_id = %installed.plugin_id, %error, "managed plugin registration was rejected");
-                continue;
-            }
-            if let Err(error) = api.set_extension_schemas(
+            let PreparedManagedPackage {
+                provider_id,
+                plugin_id,
+                publisher_fingerprint,
+                inventory,
+                config,
+                registration,
+                extension_schemas,
+                entry,
+            } = prepared;
+            if let Err(error) = register_prepared_management(
+                &api,
                 &provider_id,
-                &installed.plugin_id,
+                &plugin_id,
                 &publisher_fingerprint,
-                report.extension_schemas.clone(),
-            ) {
-                tracing::warn!(plugin_id = %installed.plugin_id, %error, "managed plugin schema catalog was rejected");
+                registration,
+                &extension_schemas,
+            )
+            .await
+            {
+                tracing::warn!(%plugin_id, %error, "managed plugin registration was rejected");
                 continue;
             }
-            managed_plugins.push(inventory_entry);
+            managed_plugins.push(inventory);
             configs.push(config);
-            if let Some(services) = services {
-                entries.insert(
-                    provider_id,
-                    Entry {
-                        services,
-                        initialized: tokio::sync::Mutex::new(None),
-                        packaged: true,
-                        initialize: true,
-                    },
-                );
+            if let Some(entry) = entry {
+                entries.insert(provider_id, entry);
             }
         }
         let endpoint_available = endpoint.is_some();
@@ -2280,6 +2562,7 @@ impl HostedProviders {
             registry,
             packages,
         ));
+        lifecycle.set_host_composition(composition);
         lifecycle.spawn_profile_lifecycle(&tokio::runtime::Handle::try_current().map_err(
             |_| Status::failed_precondition("plugin lifecycle requires an async runtime"),
         )?);
@@ -2290,6 +2573,7 @@ impl HostedProviders {
             endpoint_available,
             entries,
             managed_plugins,
+            dynamic,
             failures: Mutex::new(BTreeMap::new()),
             observer: Mutex::new(None),
             lifecycle,
@@ -2300,8 +2584,26 @@ impl HostedProviders {
         self.lifecycle.clone()
     }
 
+    /// The composed entry for a provider, including packages registered after startup.
+    fn entry(&self, id: &str) -> Option<Arc<Entry>> {
+        self.entries
+            .get(id)
+            .cloned()
+            .or_else(|| self.dynamic.entry(id))
+    }
+
+    fn entries_snapshot(&self) -> Vec<(String, Arc<Entry>)> {
+        let mut entries = self
+            .entries
+            .iter()
+            .map(|(id, entry)| (id.clone(), entry.clone()))
+            .collect::<Vec<_>>();
+        entries.extend(self.dynamic.entries());
+        entries
+    }
+
     pub fn availability(&self, id: &str) -> &'static str {
-        let Some(entry) = self.entries.get(id) else {
+        let Some(entry) = self.entry(id) else {
             return "unavailable";
         };
         if !entry.packaged {
@@ -2326,7 +2628,7 @@ impl HostedProviders {
     }
 
     pub fn services(&self, provider: &str) -> Option<Arc<ProviderServices>> {
-        self.entries.get(provider).map(|e| e.services.clone())
+        self.entry(provider).map(|e| e.services.clone())
     }
 
     async fn initialized(&self, id: &str) -> Result<(), Status> {
@@ -2334,8 +2636,7 @@ impl HostedProviders {
             return Err(Status::unavailable("provider endpoint unavailable"));
         }
         let entry = self
-            .entries
-            .get(id)
+            .entry(id)
             .ok_or_else(|| Status::unavailable("provider is not registered"))?;
         self.processes.ensure_started(id).await?;
         let mut initialized = entry.initialized.lock().await;
@@ -2404,6 +2705,7 @@ impl ProviderRuntime for HostedProviders {
         self.managed_plugins
             .iter()
             .cloned()
+            .chain(self.dynamic.inventory())
             .map(|mut plugin| {
                 let slot = if plugin.plugin_kind == "extension" {
                     plugin.status = if self
@@ -2432,18 +2734,17 @@ impl ProviderRuntime for HostedProviders {
     }
 
     fn accounts(&self) -> Vec<String> {
-        self.entries
-            .iter()
+        self.entries_snapshot()
+            .into_iter()
             .filter(|(_, e)| e.services.initial_status().is_some())
-            .map(|(id, _)| id.clone())
+            .map(|(id, _)| id)
             .collect()
     }
     fn has_provider(&self, id: &str) -> bool {
-        self.entries.contains_key(id)
+        self.entry(id).is_some()
     }
     fn status(&self, id: &str) -> Option<models::AccountStatus> {
-        self.entries
-            .get(id)
+        self.entry(id)
             .and_then(|e| e.services.status().or_else(|| e.services.initial_status()))
     }
     fn available(&self, id: &str) -> bool {
@@ -2456,15 +2757,17 @@ impl ProviderRuntime for HostedProviders {
         self.api.connected(id)
     }
     fn set_observer(&self, observer: Observer) {
-        for entry in self.entries.values() {
+        for (_, entry) in self.entries_snapshot() {
             entry.services.set_observer(observer.clone());
         }
+        self.dynamic.set_observer(observer.clone());
         *lock(&self.observer) = Some(observer);
     }
     fn set_account_persistence(&self, accounts: Arc<dyn super::services::AccountPersistence>) {
-        for entry in self.entries.values() {
+        for (_, entry) in self.entries_snapshot() {
             entry.services.set_account_persistence(accounts.clone());
         }
+        self.dynamic.set_account_persistence(accounts);
     }
     fn set_runtime_session_handler(&self, handler: Arc<dyn RuntimeSessionHandler>) {
         self.api.set_runtime_session_handler(handler);
@@ -2564,8 +2867,13 @@ impl ProviderRuntime for HostedProviders {
             return Ok(Vec::new());
         }
         let mut eligible = Vec::new();
-        for plugin in self
+        let managed_extensions = self
             .managed_plugins
+            .iter()
+            .cloned()
+            .chain(self.dynamic.inventory())
+            .collect::<Vec<_>>();
+        for plugin in managed_extensions
             .iter()
             .filter(|plugin| plugin.plugin_kind == "extension")
         {
@@ -2649,7 +2957,7 @@ impl ProviderRuntime for HostedProviders {
         result
     }
     async fn stop(&self, id: &str) -> Result<(), Status> {
-        if !self.entries.contains_key(id) {
+        if self.entry(id).is_none() {
             return Err(Status::not_found("provider is not registered"));
         }
         // A pending sign-in owns a native window; ask the plugin to close it before the process
@@ -2666,7 +2974,7 @@ impl ProviderRuntime for HostedProviders {
         Ok(())
     }
     async fn start(&self, id: &str) -> Result<(), Status> {
-        if !self.entries.contains_key(id) {
+        if self.entry(id).is_none() {
             return Err(Status::not_found("provider is not registered"));
         }
         self.processes.start_provider(id).await?;
@@ -2679,8 +2987,8 @@ impl ProviderRuntime for HostedProviders {
     }
     async fn shutdown(&self) {
         self.processes.shutdown().await;
-        for id in self.entries.keys() {
-            let _ = tokio::time::timeout(Duration::from_secs(3), self.api.disconnect(id)).await;
+        for (id, _) in self.entries_snapshot() {
+            let _ = tokio::time::timeout(Duration::from_secs(3), self.api.disconnect(&id)).await;
         }
     }
 }

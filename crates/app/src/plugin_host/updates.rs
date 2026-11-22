@@ -509,6 +509,17 @@ pub struct BundleImportInstallOutcome {
     pub components: Vec<BundleImportInstalledComponent>,
 }
 
+/// The result of one explicitly accepted standalone import. The package stays installed even when
+/// activation fails; `activation_error` then explains why it is not running.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginImportInstallOutcome {
+    pub plugin_id: String,
+    pub activated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation_error: Option<String>,
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct BundleImportInstalledComponent {
@@ -516,6 +527,12 @@ pub struct BundleImportInstalledComponent {
     pub kind: String,
     pub version: String,
     pub active: bool,
+    /// Whether the host enabled this component for the active profile right after installing it.
+    pub activated: bool,
+    /// Present when a compatible component stayed installed but could not be activated. Every
+    /// sibling still reports its own outcome.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation_error: Option<String>,
     /// Present when this component was installed but its reviewed permission decisions could not
     /// be saved. Every sibling still reports its own outcome.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -905,6 +922,17 @@ impl PluginUpdateService {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(lifecycle);
     }
 
+    /// The connected managed runtime, if the host composed one.
+    #[cfg(test)]
+    pub(crate) fn lifecycle(
+        &self,
+    ) -> Option<std::sync::Arc<super::runtime::ThirdPartyPluginLifecycle>> {
+        self.lifecycle
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
     /// Stages and validates a user-selected local archive without executing plugin code.
     pub async fn import_review(&self, archive_path: PathBuf) -> Result<PluginImportReview, String> {
         const MAX_PENDING_IMPORTS: usize = 8;
@@ -1087,7 +1115,7 @@ impl PluginUpdateService {
         token: &str,
         native_code_consent: bool,
         denied_permission_ids: &[String],
-    ) -> Result<String, String> {
+    ) -> Result<PluginImportInstallOutcome, String> {
         let lifecycle = self
             .lifecycle
             .read()
@@ -1157,7 +1185,17 @@ impl PluginUpdateService {
             self.apply_install_permission_review(&plugin_id, &publisher_fingerprint, &denied)
                 .await?;
         }
-        Ok(plugin_id)
+        // Registration and activation happen now, not on the next composition. A failure leaves
+        // the installed package and its reviewed grants in place and is reported to the caller.
+        let activation =
+            Self::register_and_activate_installed(&lifecycle, std::slice::from_ref(&plugin_id))
+                .await;
+        let outcome = activation.get(&plugin_id).cloned().unwrap_or(Ok(()));
+        Ok(PluginImportInstallOutcome {
+            plugin_id,
+            activated: outcome.is_ok(),
+            activation_error: outcome.err(),
+        })
     }
 
     /// Resolves reviewed optional-permission decisions into the host's typed grant scopes for one
@@ -1246,6 +1284,58 @@ impl PluginUpdateService {
                     error.message()
                 )
             })
+    }
+
+    /// Registers just-installed packages with the live host and enables each one for the active
+    /// profile. Every failure is reported per plugin; the installed package and its grants remain.
+    async fn register_and_activate_installed(
+        lifecycle: &std::sync::Arc<super::runtime::ThirdPartyPluginLifecycle>,
+        plugin_ids: &[String],
+    ) -> BTreeMap<String, Result<(), String>> {
+        let registration = match lifecycle.register_installed_packages().await {
+            Ok(outcomes) => outcomes,
+            Err(error) => {
+                let message = format!(
+                    "the installed package runtime could not be registered: {}",
+                    error.message()
+                );
+                return plugin_ids
+                    .iter()
+                    .map(|plugin_id| (plugin_id.clone(), Err(message.clone())))
+                    .collect();
+            }
+        };
+        let mut results = BTreeMap::new();
+        for plugin_id in plugin_ids {
+            if let Some(error) = registration
+                .iter()
+                .find(|outcome| outcome.plugin_id == *plugin_id)
+                .and_then(|outcome| outcome.error.as_deref())
+            {
+                results.insert(
+                    plugin_id.clone(),
+                    Err(format!(
+                        "the installed package runtime could not be registered: {error}"
+                    )),
+                );
+                continue;
+            }
+            if !lifecycle.is_registered(plugin_id) {
+                results.insert(
+                    plugin_id.clone(),
+                    Err("the installed package is not registered for this host".to_owned()),
+                );
+                continue;
+            }
+            results.insert(
+                plugin_id.clone(),
+                lifecycle
+                    .enable(plugin_id.clone())
+                    .await
+                    .map_err(|error| format!("activation failed: {}", error.message())),
+            );
+        }
+        results
     }
 
     /// Stages, verifies and reviews a user-selected bundle without executing component code.
@@ -1573,17 +1663,41 @@ impl PluginUpdateService {
                 }
             }
         }
+        // Enable every compatible component for the active profile now. Unavailable components
+        // stay installed without a runtime; an activation failure keeps the component installed
+        // and is reported instead of pretending it runs.
+        let compatible_ids = installed
+            .components
+            .iter()
+            .filter(|component| component.active)
+            .map(|component| component.plugin_id.clone())
+            .collect::<Vec<_>>();
+        let mut activation =
+            Self::register_and_activate_installed(&lifecycle, &compatible_ids).await;
         Ok(BundleImportInstallOutcome {
             bundle_id: installed.bundle.bundle_id,
             components: installed
                 .components
                 .into_iter()
-                .map(|component| BundleImportInstalledComponent {
-                    permission_error: permission_errors.remove(&component.plugin_id),
-                    plugin_id: component.plugin_id,
-                    kind: component.kind,
-                    version: component.version,
-                    active: component.active,
+                .map(|component| {
+                    let outcome = component
+                        .active
+                        .then(|| activation.remove(&component.plugin_id))
+                        .flatten();
+                    let (activated, activation_error) = match outcome {
+                        Some(Ok(())) => (true, None),
+                        Some(Err(error)) => (false, Some(error)),
+                        None => (false, None),
+                    };
+                    BundleImportInstalledComponent {
+                        permission_error: permission_errors.remove(&component.plugin_id),
+                        plugin_id: component.plugin_id,
+                        kind: component.kind,
+                        version: component.version,
+                        active: component.active,
+                        activated,
+                        activation_error,
+                    }
                 })
                 .collect(),
         })
@@ -2097,6 +2211,11 @@ impl PluginUpdateService {
                     Err(_) => continue,
                 };
                 if manifest.id != installed.plugin_id || manifest.version != installed.version {
+                    continue;
+                }
+                // Only a package that declares a playtime capability belongs in this inventory.
+                // Every other trusted package stays installed without a playtime row.
+                if !manifest.playtime.declares_support() {
                     continue;
                 }
                 inventory.push(PluginPlaytimeInfo {
@@ -4138,6 +4257,15 @@ pub(super) mod tests {
                     super::super::package::PlaytimeAccountingMode::ApplicationOpen,
             }
         );
+        let serialized = serde_json::to_value(&review.package).unwrap();
+        assert_eq!(
+            serialized["playtime"],
+            serde_json::json!({
+                "identifiesGameplay": true,
+                "identifiesPauses": false,
+                "withoutPauseDetection": "application_open"
+            })
+        );
     }
 
     fn signed_package(root: &Path, version: &str, key: &ring::signature::Ed25519KeyPair) {
@@ -4228,7 +4356,7 @@ pub(super) mod tests {
             .import_install(&imported.token, false, &["network.fetch".to_owned()])
             .await
             .unwrap();
-        assert_eq!(plugin_id, "org.example.update");
+        assert_eq!(plugin_id.plugin_id, "org.example.update");
 
         let lifecycle = service
             .lifecycle
@@ -4238,7 +4366,7 @@ pub(super) mod tests {
             .unwrap();
         let snapshot = lifecycle
             .installed_permission_snapshot(
-                plugin_id.clone(),
+                plugin_id.plugin_id.clone(),
                 imported.package.publisher_fingerprint.clone(),
             )
             .await
@@ -4296,7 +4424,8 @@ pub(super) mod tests {
             service
                 .import_install(&imported.token, false, &[])
                 .await
-                .unwrap(),
+                .unwrap()
+                .plugin_id,
             "org.example.update"
         );
         assert!(
@@ -4359,6 +4488,27 @@ pub(super) mod tests {
             "version": version,
             "api": {"min": "1.6.0", "max": "1.6.0"},
             "permissions": permissions,
+            "targets": [{"os": "linux", "arch": "x86_64", "abi": "gnu", "entrypoint": "bin/plugin"}],
+            "publisher": {
+                "key_id": "fixture-key",
+                "public_key": ""
+            },
+            "license": {"expression": "MIT", "files": ["licenses/LICENSE"]}
+        })
+    }
+
+    fn extension_fixture_manifest(version: &str) -> serde_json::Value {
+        serde_json::json!({
+            "schema": 1,
+            "id": "org.example.launch",
+            "kind": "extension",
+            "name": "Launch Fixture",
+            "version": version,
+            "api": {"min": "1.6.0", "max": "1.6.0"},
+            "permissions": [{
+                "id": "game.launch", "required": true, "scope": "selected game",
+                "reason": "Start the selected game"
+            }],
             "targets": [{"os": "linux", "arch": "x86_64", "abi": "gnu", "entrypoint": "bin/plugin"}],
             "publisher": {
                 "key_id": "fixture-key",
@@ -4512,7 +4662,16 @@ pub(super) mod tests {
         let publisher_key: [u8; 32] = key.public_key().as_ref().try_into().unwrap();
 
         let v1 = base.path().join("v1");
-        signed_package(&v1, "1.0.0", &key);
+        signed_package_with_playtime(
+            &v1,
+            "1.0.0",
+            &key,
+            serde_json::json!({
+                "identifies_gameplay": true,
+                "identifies_pauses": true,
+                "without_pause_detection": "disabled"
+            }),
+        );
         lifecycle
             .install_candidate(&v1, publisher_key, EmulationPolicy::RequireNative, true)
             .await
@@ -4885,7 +5044,8 @@ pub(super) mod tests {
                 service
                     .import_install(&review.token, false, &[])
                     .await
-                    .unwrap(),
+                    .unwrap()
+                    .plugin_id,
                 plugin_id
             );
 
@@ -4956,6 +5116,197 @@ pub(super) mod tests {
     }
 
     #[tokio::test]
+    async fn import_install_registers_and_enables_a_signed_extension_without_a_restart() {
+        let base = tempfile::tempdir().unwrap();
+        let paths = gamenode_platform::paths::DataPaths::at(base.path().join("app"));
+        let (service, _profiles) = import_service_with_profiles(&paths);
+        let key = ring::signature::Ed25519KeyPair::from_seed_unchecked(&[47; 32]).unwrap();
+        let package = base.path().join("launch-extension");
+        signed_package_from_manifest(&package, &key, &extension_fixture_manifest("1.0.0"));
+        let imported = import_review_and_pin(&service, &package).await;
+
+        let outcome = service
+            .import_install(&imported.token, false, &[])
+            .await
+            .unwrap();
+        assert!(outcome.activated, "{:?}", outcome.activation_error);
+        assert_eq!(outcome.plugin_id, "org.example.launch");
+
+        // No second lifecycle and no new HostedProviders: the same host is usable right away.
+        let lifecycle = service
+            .lifecycle
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .unwrap();
+        assert!(lifecycle.is_registered("org.example.launch"));
+        assert!(lifecycle.extension_runtime_available("org.example.launch"));
+        assert!(
+            lifecycle
+                .enabled("org.example.launch".into())
+                .await
+                .unwrap()
+        );
+
+        let inventory = service.managed_inventory().await.unwrap();
+        let row = inventory
+            .iter()
+            .find(|plugin| plugin.plugin_id == "org.example.launch")
+            .expect("the imported extension is listed");
+        assert_eq!(row.status, "installed");
+        assert_eq!(row.runtime_available, Some(true));
+        assert_eq!(row.enabled, Some(true));
+        let serialized = serde_json::to_value(row).unwrap();
+        assert_eq!(serialized["runtimeAvailable"], serde_json::json!(true));
+        assert_eq!(serialized["enabled"], serde_json::json!(true));
+    }
+
+    #[tokio::test]
+    async fn import_activation_failure_keeps_the_package_installed_and_reports_the_error() {
+        use crate::plugin_host::grants::PermissionState;
+
+        let base = tempfile::tempdir().unwrap();
+        let paths = gamenode_platform::paths::DataPaths::at(base.path().join("app"));
+        let service = import_service(&paths);
+        let key = ring::signature::Ed25519KeyPair::from_seed_unchecked(&[48; 32]).unwrap();
+        let package = base.path().join("unstartable-provider");
+        // The inert fixture entrypoint cannot start, so activation must fail after installation.
+        signed_package(&package, "1.0.0", &key);
+        let imported = import_review_and_pin(&service, &package).await;
+
+        let outcome = service
+            .import_install(&imported.token, true, &[])
+            .await
+            .unwrap();
+        assert!(!outcome.activated);
+        assert_eq!(outcome.plugin_id, "org.example.update");
+        assert!(
+            outcome
+                .activation_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("activation failed"),
+            "{:?}",
+            outcome.activation_error
+        );
+
+        // The package and the reviewed grants are not rolled back.
+        assert!(
+            service
+                .registry
+                .active("org.example.update")
+                .unwrap()
+                .is_some()
+        );
+        let lifecycle = service
+            .lifecycle
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .unwrap();
+        assert!(lifecycle.is_registered("org.example.update"));
+        assert!(
+            !lifecycle
+                .enabled("org.example.update".into())
+                .await
+                .unwrap()
+        );
+        let snapshot = lifecycle
+            .installed_permission_snapshot(
+                "org.example.update".into(),
+                imported.package.publisher_fingerprint.clone(),
+            )
+            .await
+            .unwrap();
+        assert!(snapshot.effective_grants.iter().any(|grant| {
+            grant.permission_id == "storage.persist" && grant.state == PermissionState::Granted
+        }));
+
+        // The registration is complete, not half-applied: a later attempt skips it by identity.
+        let outcomes = lifecycle.register_installed_packages().await.unwrap();
+        assert!(
+            outcomes
+                .iter()
+                .all(|outcome| outcome.plugin_id != "org.example.update")
+        );
+        assert!(lifecycle.is_registered("org.example.update"));
+    }
+
+    #[test]
+    fn playtime_capabilities_serialize_camel_case_and_accept_manifest_snake_case() {
+        let parsed: PlaytimeCapabilities = serde_json::from_value(serde_json::json!({
+            "identifies_gameplay": true,
+            "identifies_pauses": false,
+            "without_pause_detection": "application_open"
+        }))
+        .unwrap();
+        assert!(parsed.identifies_gameplay);
+        assert!(!parsed.identifies_pauses);
+        assert_eq!(
+            parsed.without_pause_detection,
+            super::super::package::PlaytimeAccountingMode::ApplicationOpen
+        );
+        assert_eq!(
+            serde_json::to_value(parsed).unwrap(),
+            serde_json::json!({
+                "identifiesGameplay": true,
+                "identifiesPauses": false,
+                "withoutPauseDetection": "application_open"
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn playtime_inventory_lists_only_packages_that_declare_playtime() {
+        let base = tempfile::tempdir().unwrap();
+        let paths = gamenode_platform::paths::DataPaths::at(base.path().join("app"));
+        let service = import_service(&paths);
+        let key = ring::signature::Ed25519KeyPair::from_seed_unchecked(&[49; 32]).unwrap();
+
+        let declaring = base.path().join("declaring-playtime");
+        signed_package_with_playtime(
+            &declaring,
+            "1.0.0",
+            &key,
+            serde_json::json!({
+                "identifies_gameplay": true,
+                "identifies_pauses": false,
+                "without_pause_detection": "application_open"
+            }),
+        );
+        let imported = import_review_and_pin(&service, &declaring).await;
+        service
+            .import_install(&imported.token, true, &[])
+            .await
+            .unwrap();
+
+        let plain = base.path().join("plain-package");
+        let mut manifest = fixture_manifest("1.0.0", vec![]);
+        manifest["id"] = serde_json::json!("org.example.plain");
+        manifest["provider_id"] = serde_json::json!("plain-fixture");
+        manifest["name"] = serde_json::json!("Plain Fixture");
+        signed_package_from_manifest(&plain, &key, &manifest);
+        let imported = import_review_and_pin(&service, &plain).await;
+        service
+            .import_install(&imported.token, true, &[])
+            .await
+            .unwrap();
+
+        let inventory = service.playtime_inventory().await.unwrap();
+        assert_eq!(inventory.len(), 1, "{inventory:#?}");
+        assert_eq!(inventory[0].plugin_id, "org.example.update");
+        let serialized = serde_json::to_value(&inventory[0]).unwrap();
+        assert_eq!(
+            serialized["playtime"],
+            serde_json::json!({
+                "identifiesGameplay": true,
+                "identifiesPauses": false,
+                "withoutPauseDetection": "application_open"
+            })
+        );
+    }
+
+    #[tokio::test]
     async fn imported_publisher_pin_authorizes_update_rollback_and_playtime() {
         let base = tempfile::tempdir().unwrap();
         let paths = gamenode_platform::paths::DataPaths::at(base.path().join("app"));
@@ -4963,13 +5314,23 @@ pub(super) mod tests {
         let plugin_id = "org.example.update";
         let key = ring::signature::Ed25519KeyPair::from_seed_unchecked(&[39; 32]).unwrap();
         let v1 = base.path().join("v1");
-        signed_package(&v1, "1.0.0", &key);
+        signed_package_with_playtime(
+            &v1,
+            "1.0.0",
+            &key,
+            serde_json::json!({
+                "identifies_gameplay": true,
+                "identifies_pauses": true,
+                "without_pause_detection": "disabled"
+            }),
+        );
         let imported = import_review_and_pin(&service, &v1).await;
         assert_eq!(
             service
                 .import_install(&imported.token, true, &[])
                 .await
-                .unwrap(),
+                .unwrap()
+                .plugin_id,
             plugin_id
         );
         assert_eq!(
@@ -4981,7 +5342,16 @@ pub(super) mod tests {
         // import flow's trust store with no artificial entry in the legacy private directory.
         let work = UpdateWorkDir::create().unwrap();
         let staged = work.path.join("package");
-        signed_package(&staged, "2.0.0", &key);
+        signed_package_with_playtime(
+            &staged,
+            "2.0.0",
+            &key,
+            serde_json::json!({
+                "identifies_gameplay": true,
+                "identifies_pauses": true,
+                "without_pause_detection": "disabled"
+            }),
+        );
         let public_key: [u8; 32] = key.public_key().as_ref().try_into().unwrap();
         let active = service.registry.active(plugin_id).unwrap().unwrap();
         let current = service
@@ -5462,7 +5832,16 @@ pub(super) mod tests {
         let fingerprint = super::super::publisher_trust::key_fingerprint(&public);
 
         let v1 = base.path().join("v1");
-        signed_package(&v1, "1.0.0", &key);
+        signed_package_with_playtime(
+            &v1,
+            "1.0.0",
+            &key,
+            serde_json::json!({
+                "identifies_gameplay": true,
+                "identifies_pauses": true,
+                "without_pause_detection": "disabled"
+            }),
+        );
         service
             .packages
             .install_candidate(&v1, public, EmulationPolicy::RequireNative, true)

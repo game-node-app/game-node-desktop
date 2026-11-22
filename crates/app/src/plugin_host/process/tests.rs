@@ -476,15 +476,9 @@ async fn managed_package_integrity_failure_prevents_process_start() {
         Duration::from_secs(5),
     )
     .await;
-    Arc::get_mut(&mut processes.inner)
-        .unwrap()
-        .slots
-        .get_mut("fixture")
-        .unwrap()
-        .config
-        .get_mut()
-        .unwrap()
-        .integrity = Some(PackageIntegrity {
+    let inner = Arc::get_mut(&mut processes.inner).unwrap();
+    let slot = Arc::get_mut(inner.slots.get_mut().unwrap().get_mut("fixture").unwrap()).unwrap();
+    slot.config.get_mut().unwrap().integrity = Some(PackageIntegrity {
         version: "1.0.0".into(),
         package_root: directory.path().to_owned(),
         publisher_key: [0; 32],
@@ -556,15 +550,9 @@ async fn incompatible_signed_target_prevents_process_start() {
 
     let (mut processes, _server, _directory) =
         manager(executable, "normal", Duration::from_secs(5)).await;
-    Arc::get_mut(&mut processes.inner)
-        .unwrap()
-        .slots
-        .get_mut("fixture")
-        .unwrap()
-        .config
-        .get_mut()
-        .unwrap()
-        .integrity = Some(PackageIntegrity {
+    let inner = Arc::get_mut(&mut processes.inner).unwrap();
+    let slot = Arc::get_mut(inner.slots.get_mut().unwrap().get_mut("fixture").unwrap()).unwrap();
+    slot.config.get_mut().unwrap().integrity = Some(PackageIntegrity {
         version: "1.0.0".into(),
         package_root: package.path().to_owned(),
         publisher_key: public_key.try_into().unwrap(),

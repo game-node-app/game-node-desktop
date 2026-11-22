@@ -1493,3 +1493,16 @@ being smuggled through the ordinary `game.launch` contract.
 draft compatibility messages only; no current service route uses them. Generated
 descriptor fixtures check every route against its catalog, and contract tests
 reject generic request/response envelopes on published services.
+
+## Installing and activating a reviewed package
+
+An explicitly accepted import is both the installation and the initial activation decision. After
+the signed package is installed and the reviewed optional decisions are written to the active
+profile, the host registers the verified process configuration and enables the plugin for that
+profile without a restart. For a bundle every compatible component is enabled; unavailable
+components remain installed inactive. The declared permissions are reviewed before this point:
+the import never widens a grant, a required permission cannot be denied, and a denied optional
+permission stays denied. If the runtime cannot register or the process fails to start, the
+package stays installed with its grants intact, the result reports the activation error, and the
+plugin remains disabled until the user retries activation. This is a host lifecycle step, not a
+plugin RPC; no plugin code participates in registration or enabling.

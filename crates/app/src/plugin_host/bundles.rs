@@ -3758,6 +3758,110 @@ mod tests {
         assert!(standalone_entry.bundle_components.is_none());
     }
 
+    #[tokio::test]
+    async fn an_accepted_bundle_import_registers_and_enables_its_components_without_a_restart() {
+        let fixture = Fixture::new();
+        let provider = fixture.component(
+            "provider",
+            "provider",
+            "org.example.dolphin",
+            "0.1.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+        );
+        let launch = fixture.component_with_permissions(
+            "launch",
+            "extension",
+            "org.example.dolphin.launch",
+            "0.2.0",
+            "linux",
+            "gnu",
+            "1.6.0",
+            vec![permission("game.launch", "selected game")],
+        );
+        let bundle = fixture.bundle(&[&provider, &launch]);
+
+        let paths = DataPaths::at(fixture.dir.path().join("app-data"));
+        let api = PluginApi::default();
+        let state = PluginStateLayout::managed(&paths);
+        api.set_state_layout(state.clone());
+        api.providers
+            .profiles()
+            .update(Some("bundle-account"), true);
+        let registry = PluginPackageRegistry::open(&paths).unwrap();
+        let settings = SqliteSettingsStore::open(&paths.database_file()).unwrap();
+        let service = bundle_service(&api, &paths, &state, &registry, &settings);
+
+        let review = service.bundle_import_review(bundle).await.unwrap();
+        assert_eq!(review.components.len(), 2);
+        service
+            .bundle_import_confirm_publisher(&review.token, &review.bundle.publisher_fingerprint)
+            .await
+            .unwrap();
+        let outcome = service
+            .bundle_import_install(&review.token, false, &[])
+            .await
+            .unwrap();
+        assert_eq!(outcome.components.len(), 2);
+
+        let provider_outcome = outcome
+            .components
+            .iter()
+            .find(|component| component.plugin_id == "org.example.dolphin")
+            .unwrap();
+        // The inert provider fixture cannot start; it stays installed and reports the error.
+        assert!(provider_outcome.active);
+        assert!(!provider_outcome.activated);
+        assert!(provider_outcome.activation_error.is_some());
+        let launch_outcome = outcome
+            .components
+            .iter()
+            .find(|component| component.plugin_id == "org.example.dolphin.launch")
+            .unwrap();
+        assert!(
+            launch_outcome.activated,
+            "{:?}",
+            launch_outcome.activation_error
+        );
+        assert_eq!(launch_outcome.kind, "extension");
+
+        // The same host registers both packages and composes the extension slot immediately.
+        let lifecycle = service.lifecycle().unwrap();
+        assert!(lifecycle.is_registered("org.example.dolphin"));
+        assert!(lifecycle.is_registered("org.example.dolphin.launch"));
+        assert!(lifecycle.extension_runtime_available("org.example.dolphin.launch"));
+        assert!(
+            lifecycle
+                .enabled("org.example.dolphin.launch".into())
+                .await
+                .unwrap()
+        );
+
+        let inventory = service.managed_inventory().await.unwrap();
+        let bundle_entry = inventory
+            .iter()
+            .find(|plugin| plugin.plugin_kind == "bundle")
+            .expect("the installed bundle is one inventory entry");
+        let components = bundle_entry
+            .bundle_components
+            .as_ref()
+            .expect("the bundle entry carries its components");
+        let launch_component = components
+            .iter()
+            .find(|component| component.plugin_id == "org.example.dolphin.launch")
+            .unwrap();
+        assert_eq!(launch_component.status, "installed");
+        assert_eq!(launch_component.runtime_available, Some(true));
+        assert_eq!(launch_component.enabled, Some(true));
+        let provider_component = components
+            .iter()
+            .find(|component| component.plugin_id == "org.example.dolphin")
+            .unwrap();
+        assert_eq!(provider_component.status, "installed");
+        assert_eq!(provider_component.runtime_available, Some(true));
+    }
+
     /// A service with an authenticated profile and the same registry and state the fixtures
     /// install into, matching application startup before the hosted providers are composed.
     fn review_service(

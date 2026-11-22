@@ -1857,3 +1857,62 @@ fn fresh_for(game_id: u64) -> LibraryEntry {
         finished_at: None,
     }
 }
+
+#[test]
+fn putting_a_provider_adds_it_without_losing_entries_matches_or_settings_and_requests_a_scan() {
+    let (mut machine, effects) = loaded(false, matched_cache());
+    let (op, _) = scan_ops(&effects)[0].clone();
+    scanned(
+        &mut machine,
+        op,
+        "steam",
+        Ok(vec![record("620", "Portal 2", "/g/Portal 2")]),
+        50,
+    );
+    assert_eq!(machine.providers().len(), 1);
+    assert!(machine.entry("steam:620").is_some());
+    let matches_before = machine.auto_matches.len();
+    let layout_before = machine.layout.clone();
+
+    // The already-known provider is replaced in place rather than appended twice.
+    let loaded = registry::tests::load(&[("shop.toml", SHOP_MANIFEST)], Platform::Linux);
+    let shop = loaded.providers.into_iter().next().unwrap();
+    assert!(machine.put_provider(shop));
+    assert_eq!(
+        machine
+            .providers()
+            .iter()
+            .map(|provider| provider.id())
+            .collect::<Vec<_>>(),
+        ["steam", "shop"]
+    );
+    assert!(machine.entry("steam:620").is_some(), "entries are kept");
+    assert_eq!(
+        machine.auto_matches.len(),
+        matches_before,
+        "matches are kept"
+    );
+    assert_eq!(machine.layout, layout_before, "layout settings are kept");
+
+    machine.put_provider(providers(true).pop().unwrap());
+    assert_eq!(
+        machine
+            .providers()
+            .iter()
+            .map(|provider| provider.id())
+            .collect::<Vec<_>>(),
+        ["steam", "shop"],
+        "replacing by id keeps the position"
+    );
+
+    // A scan request now includes the new provider.
+    let effects = machine.handle(Input::ScanRequested);
+    assert_eq!(
+        scan_ops(&effects)
+            .into_iter()
+            .map(|(_, provider)| provider)
+            .collect::<Vec<_>>(),
+        ["shop", "steam"]
+    );
+    assert!(machine.entry("steam:620").is_some(), "entries are kept");
+}

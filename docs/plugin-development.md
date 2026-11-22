@@ -228,6 +228,48 @@ so there is no Windows bundle to cross-build; native Windows acceptance remains 
 (GameNode Core) handoff tracked as task 7.2-win. `add-plugin-bundles` 7.2 therefore stays open on
 that clause with the complete Linux evidence recorded in its task note.
 
+### Installed providers join the library
+
+An accepted import makes a provider package part of the running library, not only of the plugin
+runtime. At startup the desktop composes the official manifests and then appends every active
+third-party package whose signed manifest has `kind: "provider"` and declares `library.discovery`,
+provided its publisher key is pinned, the package is signed and intact, and one target is
+compatible with this machine. The synthetic provider manifest keeps the verified id and name,
+uses `source = "community"` and `[scan] plugin = <plugin_id>`, so scans go through the same plugin
+`Discover` operation as an official plugin-backed provider. Official providers keep their order
+and behavior. After `plugin_import_install` or `plugin_bundle_import_install` the command re-reads
+the installed packages and adds/replaces the provider in the existing library, then requests a
+scan; no restart and no second `HostedProviders` is involved. Ineligible packages are skipped with
+a logged diagnostic: untrusted or changed publisher keys, incompatible targets, extension-only
+packages, packages without `library.discovery`, reserved provider ids and malformed manifests.
+
+The always-running regression fixtures are in `plugin_host::startup::tests`:
+
+```sh
+CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target-provider-discovery \
+CARGO_NET_OFFLINE=true CARGO_INCREMENTAL=0 \
+cargo test --locked -p gamenode-app --lib -- plugin_host::startup::tests
+```
+
+They install real signed fixture packages into a temporary registry, run the binary's own
+composition, drive the library scan effects through a provider runtime and assert the entries and
+the `provider_scans` success row. The real signed Dolphin end-to-end acceptance is gated because it
+needs the sibling repository artifact; it imports the bundle into an already composed host, points
+`DOLPHIN_PLUGIN_ROOTS` at a temporary collection with `The Legend of Zelda.iso` (`GZLE01`), and
+asserts that `dolphin-emu` joins the library provider list, the record reaches `library_entries`,
+and `provider_scans` records success:
+
+```sh
+DOLPHIN_BUNDLE_PATH=/path/to/gamenode-plugin-dolphin-emu/dist/dolphin-emu-0.1.0-linux-x64.gnbundle \
+CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target-provider-discovery \
+CARGO_NET_OFFLINE=true CARGO_INCREMENTAL=0 \
+cargo test --locked -p gamenode-app --lib -- \
+  plugin_host::startup::tests::the_real_dolphin_bundle_joins_the_running_library
+```
+
+The fixture variant always runs; the Dolphin variant is the end-to-end acceptance evidence and is
+not part of the regular CI job.
+
 ## RPC inventory and API 1.6 status
 
 The mounted `PluginHost` service has `OpenSession`, the legacy `SubmitDiscovery`, and API 1.6

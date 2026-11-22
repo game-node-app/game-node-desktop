@@ -50,6 +50,7 @@ pub mod shared_data;
 pub mod shared_pool;
 pub mod shared_resources;
 pub mod sharing_policy;
+pub mod startup;
 pub mod storage;
 mod transport;
 pub mod updates;

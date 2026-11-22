@@ -933,6 +933,24 @@ impl PluginUpdateService {
             .clone()
     }
 
+    /// Re-reads one installed package through the same registry and publisher pin the startup
+    /// composition uses. A command that accepts an import calls this afterwards so the new
+    /// provider joins the running library and becomes scannable without a restart.
+    pub async fn library_provider(
+        &self,
+        plugin_id: &str,
+    ) -> Result<Option<gamenode_core::provider::Provider>, String> {
+        let platform = gamenode_core::provider::Platform::current()
+            .ok_or_else(|| "GameNode Desktop supports Windows and Linux only".to_owned())?;
+        super::startup::installed_provider_from_registry(
+            platform,
+            self.registry.clone(),
+            self.trust_dir.clone(),
+            plugin_id,
+        )
+        .await
+    }
+
     /// Stages and validates a user-selected local archive without executing plugin code.
     pub async fn import_review(&self, archive_path: PathBuf) -> Result<PluginImportReview, String> {
         const MAX_PENDING_IMPORTS: usize = 8;

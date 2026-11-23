@@ -926,7 +926,17 @@ mod tests {
             .stdin(Stdio::null())
             .spawn()
             .unwrap();
-        assert_eq!(check.inspect(), ExternalUse::Active);
+        // The child is visible in `/proc` only after it execs; a loaded runner can lose that race
+        // between `spawn` and the first scan.
+        let mut active = false;
+        for _ in 0..100 {
+            if check.inspect() == ExternalUse::Active {
+                active = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(active, "the real process was not observed as active");
         child.kill().unwrap();
         child.wait().unwrap();
         for _ in 0..100 {

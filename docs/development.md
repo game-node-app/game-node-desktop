@@ -732,9 +732,8 @@ process), then run from WSL:
 scripts/dev-windows-wsl.sh
 ```
 
-The current launcher hard-codes `target/windows-hmr` and overrides
-`CARGO_TARGET_DIR`. Do not run it in this workspace until it honors the configured
-external target described above. Its existing flow verifies the plugins sit beside the host, prepares its
+The launcher builds the Windows desktop and its bundled plugins under
+`windows-hmr` inside the configured Cargo target directory, verifies the plugins sit beside the host, prepares its
 backup assets, starts a local Vite server, and opens the Windows app. It forces the real Tauri bridge rather than the UI
 mock. It uses the same Windows Credential Manager entry and local application
 data as the installed app, so an existing session can be restored and changes

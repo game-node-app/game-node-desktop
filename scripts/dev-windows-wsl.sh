@@ -19,9 +19,16 @@ check_app_stopped() {
 }
 check_app_stopped
 
-# Serialize launchers without interfering with the installed application or normal Cargo target.
-mkdir -p target/windows-hmr
-exec 9>target/windows-hmr/.launcher.lock
+# Build under a windows-hmr subdirectory of the configured Cargo target directory, so this
+# launcher neither disturbs normal builds nor ignores where the developer keeps build output.
+cargo_target=$(cargo metadata --locked --no-deps --format-version 1 \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
+target_dir="$cargo_target/windows-hmr"
+binary_dir="$target_dir/x86_64-pc-windows-msvc/debug"
+
+# Serialize launchers without interfering with the installed application.
+mkdir -p "$target_dir"
+exec 9>"$target_dir/.launcher.lock"
 if ! flock -n 9; then
     echo 'Another Windows development launcher is already running.' >&2
     exit 1
@@ -53,8 +60,6 @@ if [[ ${#plugin_files[@]} -eq 0 ]]; then
     exit 1
 fi
 
-target_dir="$repo_root/target/windows-hmr"
-binary_dir="$target_dir/x86_64-pc-windows-msvc/debug"
 echo 'Building the current Windows development executable...'
 XWIN_ARCH=x86_64 CARGO_TARGET_DIR="$target_dir" cargo xwin build \
     --locked --bins -p gamenode-app \

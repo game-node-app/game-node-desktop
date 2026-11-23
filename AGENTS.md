@@ -12,63 +12,23 @@
 - These conventions do not authorize committing, pushing, or rewriting history;
   perform those actions only when requested.
 
-## Intermediate pushes for third-party plugins
+## Cargo build output
 
-- While the third-party plugin work is in progress, before every push from
-  the integration checkout or any of the three follow-up worktrees, verify
-  that the outgoing commit at the tip of each branch being pushed contains
-  `[skip ci]` in its commit message. If the marker is missing, stop the push.
-- Keep the marker for intermediate pushes even when an individual task is
-  complete. Resume normal CI when the work is complete and ready for final
-  validation. Continue to follow the focused local validation guidance.
+- Where build output lives is a per-machine choice made in the developer's own
+  environment (`CARGO_TARGET_DIR` or `build.target-dir`/`build.build-dir` in
+  their Cargo config). Respect it: do not hardcode a target directory in
+  scripts or docs, and do not override the one a script receives.
+- To share build work between worktrees, use a compiler cache such as sccache
+  (`RUSTC_WRAPPER=sccache`). A single target directory shared by several
+  worktrees can serve one worktree another's stale artifacts. See
+  [the development guide](docs/development.md#cargo-build-output).
 
-## Required Cargo target location
+## Specification changes
 
-- ALWAYS use an external `CARGO_TARGET_DIR` for Cargo builds, checks, tests,
-  Clippy, cross-compilation and packaging/development scripts; never the
-  repository's own `target/`. On this Linux workstation each worktree has its
-  own target under `/data/DADOS_LINUX/geral/area_troca_rust/`: `target` for the
-  integration checkout and `target-<worktree-directory-name>` for every other
-  worktree.
-- Targets are not shared between worktrees here, and builds in different
-  worktrees may run concurrently. Workspace crates hash independently of the
-  checkout path and Cargo judges freshness by source modification time, so a
-  shared target can reuse another worktree's stale artifacts and report wrong
-  results.
-- A single shared target (and sequential builds) is a convenience for
-  constrained machines such as the Raspberry Pi, where disk and CPU are scarce.
-  Use it there by pointing every worktree at one directory; it is not required
-  on this workstation.
-- NEVER fall back to a target under `/tmp`, `/var/tmp`, a RAM-backed filesystem
-  or the root filesystem, and keep large targets off `/home` on this workstation
-  (it is nearly full). If the selected `/data/DADOS_LINUX` mount or target is
-  unavailable, stop and report it; do not choose another target.
-- Pass `CARGO_TARGET_DIR` on each Cargo invocation; an earlier shell's export
-  does not persist into a new invocation. Verify Cargo's effective
-  `target_directory` with `cargo metadata` before compiling. Check launch/package
-  scripts for overrides; a script that resets the target is not an exception.
-- Before finishing work on these instructions, reread this section and
-  [the development guide](docs/development.md#required-cargo-target-location),
-  and verify both describe the per-worktree target, the shared-target option for
-  constrained machines and the prohibited fallback locations.
-
-## Confirming and persisting specification decisions
-
-- When a user instruction or clarification appears to change specifications,
-  state the proposed interpretation and ask whether the user wants it persisted
-  in the documents, with a consistency review of related tasks and artifacts.
-  Explain that the confirmation is needed because you inferred a specification
-  change; do not treat exploratory discussion as authorization to edit specs.
-- Do not ask again when the user has already explicitly authorized the update
-  or confirmed the proposed persistence in the current conversation.
-- Once authorized, update the affected OpenSpec proposal, design, delta specs
-  and tasks as applicable. Review their consistency, identify tasks that must
-  be added or reopened, and synchronize main specs when authorized. A planning
-  update does not itself establish implementation completion.
-- Before finishing, verify the document changes and report the files updated,
-  validation results and any unresolved decisions. Do not describe a decision
-  as persisted when it exists only in the conversation. Document updates do not
-  authorize implementation, committing, pushing or archiving the change.
+- When an instruction appears to change an OpenSpec specification, state the
+  interpretation and ask before editing specs, unless the user already asked
+  for the update. Once authorized, keep the proposal, design, delta and main
+  specs and tasks consistent, and report the files changed.
 
 ## Architecture Guardrails (Tauri v2 + React + TanStack)
 
@@ -148,8 +108,6 @@ For those OS-level checks, use `cargo xwin test --workspace --target x86_64-pc-w
 and `scripts/install-windows-wsl.sh` as documented in
 [docs/development.md](docs/development.md).
 
-Native Windows acceptance is never assigned to the user. After Linux acceptance is recorded and
-the Windows cross-build/test compilation passes, the handoff belongs to **Lamarck (GameNode
-Core)**; record it as a `Windows handoff — Lamarck (GameNode Core)` task and do not complete it
-from cross-build results. See
-[docs/development.md](docs/development.md#native-windows-acceptance-handoff).
+Cross-compiled checks show that the Windows build compiles; they are not native Windows
+acceptance. Keep native Windows acceptance tasks open until a native run is recorded in
+[docs/windows-verification.md](docs/windows-verification.md).

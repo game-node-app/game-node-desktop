@@ -46,74 +46,40 @@ Protobuf generation uses the build-host compiler selected from the pinned
 vendored dependency; a system `protoc` installation is not required.
 Node.js (v24+) and pnpm are used for the `ui/` frontend workspace.
 
-## Intermediate pushes for third-party plugins
+## Cargo build output
 
-Until the work across the four fronts is complete, use `[skip ci]` in the
-body of every commit intended as the tip of an intermediate push. This rule
-covers `integration/third-party-plugins`, `mvp-actions-configuration`,
-`mvp-custom-launch-runtimes` and `mvp-data-and-persistence`. It also applies
-to pushes that complete an individual task.
+Cargo writes to the checkout's `target/` by default, and that works. Where build
+output lives is a per-machine choice: configure it in your own environment, not
+in repository files, and keep scripts from hardcoding or overriding it.
 
-Before pushing, inspect the commit message of the actual ref to be sent.
-For the current branch, run:
+Give each worktree its own build directory. Cargo reuses an artifact when its
+sources are not newer than it, and workspace crates get the same hashes in every
+checkout, so a target directory shared by several worktrees can serve one
+worktree a stale build from another, even when builds run one at a time.
 
-```sh
-git log -1 --format=%B HEAD | rg -F '[skip ci]'
+To keep large build output on another disk, set it once in your user Cargo
+config (`~/.cargo/config.toml`) instead of on each command:
+
+```toml
+[build]
+build-dir = "/path/to/large-disk/cargo-build/{workspace-path-hash}"
 ```
 
-If the command finds no marker, stop before pushing. Use the explicit local
-ref instead of `HEAD` when pushing another branch. The marker skips GitHub
-Actions triggered by this push and the resulting pull request update. It
-does not change focused local tests. When all work is ready for final
-validation, push a new commit without the marker to resume CI.
-See [GitHub's skip instructions](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/skip-workflow-runs).
+`{workspace-path-hash}` gives every checkout its own intermediate directory;
+final binaries stay in that checkout's `target/`. A per-worktree
+`CARGO_TARGET_DIR` works too.
 
-## Required Cargo target location
+To share compiled dependencies between worktrees, use a compiler cache such as
+[sccache](https://github.com/mozilla/sccache) (`RUSTC_WRAPPER=sccache`). It keys
+its cache by content, so worktrees reuse each other's work without the
+staleness of a shared target directory.
 
-Always build with an external `CARGO_TARGET_DIR`, never the repository's own
-`target/`. On this Linux workstation each worktree has its own target on the
-persistent `/data/DADOS_LINUX` mount, under
-`/data/DADOS_LINUX/geral/area_troca_rust/`: **`target`** for the integration
-checkout and **`target-<worktree-directory-name>`** for every other worktree.
-
-Targets are not shared between worktrees on this workstation, so builds in
-different worktrees may run concurrently. Workspace crates hash independently of
-the checkout path and Cargo judges freshness by source modification time; a
-shared target can therefore reuse another worktree's stale artifacts and report
-a wrong compile error or test result.
-
-A single shared target with sequential builds is a convenience for constrained
-machines such as the Raspberry Pi, where disk and CPU are scarce. On such a
-machine point every worktree at the same directory and let one Cargo invocation
-finish before starting another. It is not required here.
-
-Set `CARGO_TARGET_DIR` for every Cargo invocation and verify the effective
-location before compiling:
+Scripts that need a built binary read the location from Cargo instead of
+assuming `target/`:
 
 ```sh
-export CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target-$(basename "$PWD")
 cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])'
 ```
-
-The command must print the directory you selected. For separate tool calls or
-fresh shells, pass the variable on **each invocation**, because an earlier
-export is not inherited:
-
-```sh
-CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target-$(basename "$PWD") cargo test --locked -p gamenode-app
-```
-
-Never use `/tmp`, `/var/tmp`, a RAM-backed filesystem or the root filesystem as a
-fallback, and keep large targets off `/home` on this workstation. If the
-selected `/data/DADOS_LINUX` mount or target is unavailable, stop and report the
-problem instead of choosing another path. Check launcher scripts for target
-overrides; a launcher that resets the target must be corrected before use.
-
-On native Windows, use the configured external Windows target outside the user
-profile; the Linux paths above apply to Linux/WSL. Before handing back changes
-to this rule, reread this section and the matching section in `AGENTS.md`, and
-confirm both describe the per-worktree target, the shared-target option for
-constrained machines and the prohibited fallback locations.
 
 ## Linux (Ubuntu/Debian, native x86-64)
 
@@ -150,21 +116,16 @@ helper `scripts/bundled_plugins.py` to derive the bundled plugin executables fro
 `plugins/*.toml`, and fails with an actionable message when Python 3.11+ is missing.
 
 Native Linux and Windows builds require their corresponding prerequisites above.
-This change does not configure hosted CI runners; its verification commands are
-run locally, and cross-compilation does not replace native OS acceptance.
+CI runs the Linux checks and a Windows cross-compilation check; cross-compilation
+does not replace native OS acceptance.
 
-### Native Windows acceptance handoff
+### Native Windows acceptance
 
-The desktop change author does not run native Windows acceptance. A change is ready for handoff
-when its Linux acceptance is recorded and the Windows cross-build and test compilation pass
-locally (`cargo xwin ...`). The Windows candidate is then handed to **Lamarck (GameNode Core)**,
-who runs the native checks and records the outcomes in
-[windows-verification.md](windows-verification.md).
-
-OpenSpec tasks keep two explicit items: the Linux/cross-build work owned by this repository and
-a `Windows handoff — Lamarck (GameNode Core)` task that stays unchecked until he records the
-result. Cross-compilation never completes the handoff. Pull requests list the pending handoff
-and never claim native Windows execution.
+Cross-compiled checks (`cargo xwin check` or `cargo xwin test`) show that the
+Windows build compiles; they are not native acceptance. Record native Windows
+runs in [windows-verification.md](windows-verification.md), keep a change's
+native Windows acceptance task open until such a run is recorded, and do not
+claim native Windows execution in a pull request without one.
 
 ## Scoped verification for implementation tasks
 
@@ -178,13 +139,10 @@ broader check, or release readiness is being evaluated. Do not run the full
 project test suite by default for a scoped task. Record any unrun broader checks
 as such instead of implying they passed.
 
-Every Cargo check in this workflow must use the external target configured in
-[Required Cargo target location](#required-cargo-target-location); a previous
-shell's `export` does not carry into a new tool invocation. For example:
+For example:
 
 ```sh
-CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target-$(basename "$PWD") \
-  cargo test --locked -p gamenode-app custom_launch_without_its_own_grant
+cargo test --locked -p gamenode-app custom_launch_without_its_own_grant
 ```
 
 Supervised Linux launch fixtures, including the reviewed shared-resource launch, spawn the host
@@ -192,10 +150,9 @@ binary in its internal helper mode. They skip when `GAMENODE_TEST_HELPER_BINARY`
 at a built binary to exercise them:
 
 ```sh
-CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target-$(basename "$PWD") \
-  cargo build --locked -p gamenode-app --bin gamenode --no-default-features
-GAMENODE_TEST_HELPER_BINARY=/data/DADOS_LINUX/geral/area_troca_rust/target-$(basename "$PWD")/debug/gamenode \
-CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target-$(basename "$PWD") \
+cargo build --locked -p gamenode-app --bin gamenode --no-default-features
+target=$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
+GAMENODE_TEST_HELPER_BINARY="$target/debug/gamenode" \
   cargo test --locked -p gamenode-app --lib reviewed_shared_resource_use
 ```
 

@@ -298,6 +298,10 @@ library/UI lifecycle acceptance tracked by task 18.11.
 
 ## RPC inventory and API 1.6 status
 
+An endpoint is homologated only after a real signed bundle crosses it; fixtures and examples do not
+count. [`plugin-endpoint-acceptance.md`](plugin-endpoint-acceptance.md) records each family, its
+current consumer, the evidence and the cold paths that still have no real consumer.
+
 The mounted `PluginHost` service has `OpenSession`, the legacy `SubmitDiscovery`, and API 1.6
 control RPCs `DescribeApi`, `GetPermissions` and `WatchPermissionChanges`. The three control
 methods authenticate the session and do not require a library/data permission. They return public

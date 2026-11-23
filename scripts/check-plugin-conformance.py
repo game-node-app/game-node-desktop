@@ -30,6 +30,7 @@ PROTO = REPO_ROOT / "crates/plugin-protocol/proto/plugin.proto"
 PROTOCOL_LIB = REPO_ROOT / "crates/plugin-protocol/src/lib.rs"
 PROTOCOL_CAPABILITY = REPO_ROOT / "crates/plugin-protocol/src/capability.rs"
 PLUGIN_HOST = REPO_ROOT / "crates/app/src/plugin_host.rs"
+ACCEPTANCE = REPO_ROOT / "docs/plugin-endpoint-acceptance.md"
 RESOURCES = REPO_ROOT / "crates/app/src/plugin_host/resources.rs"
 SAVES = REPO_ROOT / "crates/app/src/plugin_host/resources/saves.rs"
 LOCATIONS = REPO_ROOT / "crates/app/src/plugin_host/resources/locations.rs"
@@ -598,7 +599,48 @@ def check_endpoints() -> tuple[Problems, list[str]]:
 # ---------------------------------------------------------------------------
 
 
+def check_acceptance() -> tuple[Problems, list[str]]:
+    """Every advertised route must be classified on the acceptance page.
+
+    The page groups routes by family instead of one row per route, so a route is
+    classified when its method name appears there. An unclassified route is an
+    acceptance gap, not a documentation detail: the endpoint shipped without an
+    owner or a status.
+    """
+    problems = Problems()
+    notes: list[str] = []
+    advertised = advertised_routes()
+    services = proto_services()
+    page = read(ACCEPTANCE)
+    missing = sorted(
+        f"{service}.{method}"
+        for service, methods in advertised.items()
+        for method in methods
+        if method not in page
+    )
+    for route in missing:
+        problems.fail(f"{route} is advertised but absent from docs/plugin-endpoint-acceptance.md")
+    deferred = sorted(
+        f"{service}.{method}"
+        for service, methods in services.items()
+        if service in advertised
+        for method in methods
+        if method not in advertised[service]
+    )
+    undocumented = [
+        route for route in deferred if route.split(".")[1] not in page
+    ]
+    for route in undocumented:
+        problems.fail(f"{route} is deferred but not documented on the acceptance page")
+    notes.append(
+        f"{sum(map(len, advertised.values()))} advertised routes classified, "
+        f"{len(deferred)} deferred documented"
+    )
+    return problems, notes
+
+
 CHECKS = {
+    "acceptance": check_acceptance,
     "bindings": lambda: check_bindings(shutil.which("protoc")),
     "boundaries": check_boundaries,
     "versions": check_versions,

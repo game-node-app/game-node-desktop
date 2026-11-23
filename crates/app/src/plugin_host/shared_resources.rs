@@ -915,9 +915,10 @@ mod tests {
         let registration = gamenode_platform::installations::LinuxInstallations
             .inspect(executable.to_str().unwrap())
             .unwrap();
+        let processes = Arc::new(gamenode_platform::processes::HostProcesses::new());
         let check = RuntimeUseCheck {
             executable: registration.executable.clone(),
-            processes: Some(Arc::new(gamenode_platform::processes::HostProcesses::new())),
+            processes: Some(processes.clone()),
         };
         assert_eq!(check.inspect(), ExternalUse::Idle, "nothing is running yet");
 
@@ -936,7 +937,23 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
-        assert!(active, "the real process was not observed as active");
+        if !active {
+            use gamenode_core::ports::Processes as _;
+            let listed = processes
+                .list()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|process| {
+                    process.pid == child.id() || process.exe_path.contains("approved-runtime")
+                })
+                .map(|process| (process.pid, process.exe_path))
+                .collect::<Vec<_>>();
+            panic!(
+                "the real process was not observed as active: child={} approved={:?} listed={listed:?}",
+                child.id(),
+                registration.executable
+            );
+        }
         child.kill().unwrap();
         child.wait().unwrap();
         for _ in 0..100 {

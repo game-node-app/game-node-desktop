@@ -7,7 +7,6 @@ import { useI18n } from '../../i18n';
 import { uiStore, useUiStore } from '../../store/uiStore';
 import { formatI18n } from '../library/formatters';
 import {
-  PortComingSoonBanner,
   PortCredit,
   PortEmptyState,
   PortGrid,
@@ -49,7 +48,7 @@ export const PortsView: React.FC = () => {
     typeof navigator !== 'undefined' ? navigator.userAgent : null,
     appInfo?.data?.platform,
   );
-  const comingSoon = platform === 'linux';
+  const linux = platform === 'linux';
 
   const [search, setSearch] = useState('');
   const deferredSearch = useDeferredValue(search);
@@ -67,7 +66,7 @@ export const PortsView: React.FC = () => {
   const storedFilters = preferences?.filters ?? DEFAULT_FILTERS;
   // The control only exists in the read-only phase; elsewhere a persisted value must not hide
   // entries with no way to clear it.
-  const filters = comingSoon ? storedFilters : { ...storedFilters, platform: 'all' as const };
+  const filters = linux ? storedFilters : { ...storedFilters, platform: 'all' as const };
   const view: PortViewMode = preferences?.view ?? 'grid';
   const catalog = ports.catalog;
   const entries = ports.entries;
@@ -147,7 +146,7 @@ export const PortsView: React.FC = () => {
         view={view}
         onViewChange={setView}
         consoles={consoles}
-        showPlatformFilter={comingSoon}
+        showPlatformFilter={linux}
         visibleCount={filtered.length}
         totalCount={entries.length}
         refreshing={refreshing}
@@ -156,7 +155,6 @@ export const PortsView: React.FC = () => {
 
       <div className="flex min-h-0 w-full flex-1 overflow-hidden">
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-          {comingSoon && <PortComingSoonBanner />}
           {refreshing && entries.length > 0 && <PortRefreshingBanner />}
           {catalog.state === 'stale' && (
             <PortStaleBanner

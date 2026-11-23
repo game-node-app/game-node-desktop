@@ -125,6 +125,8 @@ function installProblemMessage(
     case 'noWindowsAsset':
     case 'noMatchingAsset':
       return t('Ports::No Windows download is available.');
+    case 'noLinuxAsset':
+      return t('Ports::No native Linux download is available.');
     case 'unknownAssetFormat':
     case 'unsupportedFormat':
       return formatI18n(

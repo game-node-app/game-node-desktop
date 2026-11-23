@@ -70,16 +70,35 @@ capabilities. Windows behavior and the existing Windows acceptance are not reope
     Linux identity the launch validation compares. An end-to-end runner test installs an AppImage
     and asserts the file, mode, and registration. Remaining for the task: tar support. Phase 2.2
     and 2.5 (enabling the Linux service and per-entry availability in the UI) are still open.
-- [ ] 2.2 Map `app`, `data`, `config` and `localData` to XDG placement roots, register the result
+- [x] 2.2 Map `app`, `data`, `config` and `localData` to XDG placement roots, register the result
   as an ordinary DRM-free entry, and validate the Linux launcher/executable before launch.
+  - Completion (2026-11-22): `UserDataRoots::host`/`CopyRoots::host` already resolve XDG
+    (`dirs::config_dir` and `data_local_dir`), and the Linux plan uses the recipe's
+    `preferredExecutables.linux`. `SystemExecutableIdentity` now records the same
+    device/inode/mode/timestamp identity `LinuxInstallations::validate_registration` compares, so
+    the registration written at the commit point launches after a restart. The end-to-end runner
+    test asserts the registration and the executable; the native launch itself is part of 2.6.
 - [ ] 2.3 Support Linux guided setup only for overlay recipes explicitly reviewed for Linux. A
   recipe requiring the Windows PS4 PKG extractor is reported unavailable; never fetch or run that
   tool on Linux.
-- [ ] 2.4 Extend the port job runner for Linux assets and placement: cancellation, crash recovery,
+- [x] 2.4 Extend the port job runner for Linux assets and placement: cancellation, crash recovery,
   no partial registration, journaled paths and no game-file deletion. Keep the Windows branch
   unchanged.
-- [ ] 2.5 Remove the Coming Soon block for native Linux entries; keep Windows-only entries blocked
+  - Completion (2026-11-22): the runner detects AppImage/bin/run as a bare executable, copies it
+    into staging, sets `0o755`, and keeps the shared journaling, cancellation and startup
+    recovery paths unchanged. `ports::linux_asset` classifies executable versus archive formats.
+    The end-to-end test `a_native_linux_appimage_installs_and_becomes_executable` covers download,
+    checksum, placement, mode and registration; `beyond_the_pines`-style archive installs reuse the
+    existing zip/7z extractor. Windows tests are unchanged.
+- [x] 2.5 Remove the Coming Soon block for native Linux entries; keep Windows-only entries blocked
   with their own reason. Add en/pt-BR strings, mocks and tests for the mixed catalog.
+  - Completion (2026-11-22): `supports_installs` now covers Windows and Linux, so the service
+    starts the install runner on Linux. `entry_view` blocks only entries that do not declare the
+    host platform, with `PortInstallBlockReason::WindowsOnly` and the Proton note; the Coming Soon
+    reason, sidebar badge and catalog banner are gone. The platform filter stays on Linux. The
+    plan's `NoLinuxAsset` has its own user-facing message. Tests cover a native Linux entry, a
+    Windows-only entry on Linux, the sidebar, the app destination, the filter and the blocked
+    install.
 - [ ] 2.6 Run focused Linux install fixtures and a packaged Linux acceptance with at least one
   native port built from the user's own files. Record the evidence separately from Windows
   acceptance.

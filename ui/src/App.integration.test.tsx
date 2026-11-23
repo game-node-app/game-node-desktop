@@ -352,7 +352,7 @@ describe('App (integration: real component tree over a fake Tauri host)', () => 
     });
   });
 
-  it('opens the read-only PC ports catalog on Linux', async () => {
+  it('opens the PC ports catalog on Linux', async () => {
     appPlatform = 'linux';
     try {
       await mountApp();
@@ -363,7 +363,7 @@ describe('App (integration: real component tree over a fake Tauri host)', () => 
       );
 
       expect(await screen.findByTestId('ports-view')).toBeInTheDocument();
-      expect(await screen.findByTestId('banner-ports-coming-soon')).toBeInTheDocument();
+      expect(screen.queryByTestId('banner-ports-coming-soon')).not.toBeInTheDocument();
       expect(calls('ports_open')).toHaveLength(1);
     } finally {
       appPlatform = 'windows';

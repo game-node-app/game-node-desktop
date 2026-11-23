@@ -17,22 +17,6 @@ export const PortRefreshingBanner: React.FC = () => {
   );
 };
 
-/**
- * Read-only phase note. The catalog is served on a platform whose install runner is absent, so
- * browsing works and every Install action stays disabled.
- */
-export const PortComingSoonBanner: React.FC = () => {
-  const { t } = useI18n();
-  return (
-    <div
-      data-testid="banner-ports-coming-soon"
-      className="border-b border-border-subtle bg-accent-subtle px-md py-compact text-xs text-text-default"
-    >
-      {t('Ports::Browsing only. Installing PC ports on Linux is coming soon.')}
-    </div>
-  );
-};
-
 export interface PortStaleBannerProps {
   fetchedAt: number | null;
   age: string;

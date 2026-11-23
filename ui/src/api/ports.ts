@@ -119,7 +119,7 @@ export type PortNoAssetReason =
 
 /** Why Install is unavailable for an entry. */
 export type PortInstallBlockReason =
-  | 'comingSoon'
+  | 'windowsOnly'
   | 'withdrawn'
   | 'noVerifiedRelease'
   | PortNoAssetReason;
@@ -510,6 +510,7 @@ export type PortInstallProblem =
   | { code: 'releaseUnavailable'; version: string }
   | { code: 'noVerifiedRelease' }
   | { code: 'noWindowsAsset' }
+  | { code: 'noLinuxAsset' }
   | { code: 'noMatchingAsset' }
   | { code: 'unknownAssetFormat'; filename: string }
   | { code: 'unsupportedFormat'; format: string }

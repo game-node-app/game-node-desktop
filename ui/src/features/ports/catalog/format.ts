@@ -97,8 +97,8 @@ export function installBlockReasonText(
   t: Translate,
 ): string | null {
   switch (reason) {
-    case 'comingSoon':
-      return t('Ports::Installing PC ports on Linux is coming soon.');
+    case 'windowsOnly':
+      return t('Ports::This port is Windows-only. Proton support is future work.');
     case 'withdrawn':
       return t('Ports::This port was withdrawn upstream.');
     case 'noVerifiedRelease':

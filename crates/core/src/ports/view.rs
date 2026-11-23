@@ -36,9 +36,9 @@ impl PortPlatform {
         }
     }
 
-    /// True when port installs are supported (Windows first, Linux deferred).
+    /// True when this platform has an install strategy. macOS has none.
     pub const fn supports_installs(self) -> bool {
-        matches!(self, Self::Windows)
+        matches!(self, Self::Windows | Self::Linux)
     }
 }
 
@@ -131,8 +131,8 @@ pub enum PortNoAssetReason {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PortInstallBlockReason {
-    /// This build serves the catalog but cannot install ports yet (Linux phase 1).
-    ComingSoon,
+    /// The entry declares Windows only; native Linux and Proton are not available.
+    WindowsOnly,
     Withdrawn,
     NoVerifiedRelease,
     InstallerOnly,
@@ -575,9 +575,9 @@ mod tests {
     }
 
     #[test]
-    fn platform_capability_is_windows_only() {
+    fn platform_capability_covers_windows_and_linux() {
         assert!(PortPlatform::Windows.supports_installs());
-        assert!(!PortPlatform::Linux.supports_installs());
+        assert!(PortPlatform::Linux.supports_installs());
         assert!(!PortPlatform::Macos.supports_installs());
         assert_eq!(PortPlatform::Linux.to_string(), "linux");
     }

@@ -526,7 +526,7 @@ async fn the_catalog_status_carries_seconds_and_the_entries_are_merged() {
 }
 
 #[tokio::test]
-async fn linux_serves_the_catalog_read_only_and_refuses_installs() {
+async fn linux_serves_the_catalog_and_needs_install_dependencies_for_a_job() {
     let _serial = serial().lock().await;
     let db = database();
     let store: Arc<dyn PortStore> = Arc::new(db.ports_store());
@@ -540,16 +540,18 @@ async fn linux_serves_the_catalog_read_only_and_refuses_installs() {
     config.platform = gamenode_core::ports::PortPlatform::Linux;
     assert!(
         config.install.is_none(),
-        "a Linux build has no install dependencies"
+        "this test config has no install dependencies"
     );
     let (service, rx) = start(config);
-    assert!(!service.is_supported());
+    assert!(service.is_supported(), "Linux has an install strategy");
     service.open();
     let view = wait_for_view(&rx, |view| view.catalog.state == PortCatalogState::Ready);
     assert_eq!(view.catalog.entry_count, 1);
     assert_eq!(view.entries.len(), 1);
     assert!(view.jobs.is_empty(), "a read-only build queues no jobs");
 
+    // The catalog is usable without install dependencies; queueing needs the runner production
+    // builds construct when the platform supports installs.
     let error = service
         .install(&PortInstallRequest {
             plugin_request_id: None,
@@ -560,8 +562,11 @@ async fn linux_serves_the_catalog_read_only_and_refuses_installs() {
             accept_malware_flag: false,
             retry_job_id: None,
         })
-        .expect_err("a Linux build cannot install");
-    assert_eq!(error, PortsError::Unsupported);
+        .expect_err("no runner in this config");
+    assert_eq!(
+        error,
+        PortsError::Unavailable("install worker unavailable".into())
+    );
     service.shutdown();
 }
 

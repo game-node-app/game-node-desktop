@@ -54,8 +54,8 @@ pub struct ViewInput<'a> {
     pub facts: &'a HashMap<String, EntryFacts>,
     /// Job ids the install runner currently owns.
     pub active_jobs: &'a HashSet<String>,
-    /// False on a platform that serves the catalog without an install runner.
-    pub installs_supported: bool,
+    /// The host platform whose install strategy applies to every entry.
+    pub platform: gamenode_core::ports::view::PortPlatform,
 }
 
 /// Builds the complete PC ports projection.
@@ -79,7 +79,7 @@ pub fn build(input: ViewInput<'_>) -> PortsView {
                 entry,
                 installed_keys.get(&entry.catalog_id).cloned(),
                 &facts,
-                input.installs_supported,
+                input.platform,
             )
         })
         .collect::<Vec<_>>();
@@ -137,7 +137,7 @@ pub fn entry_view(
     entry: &CatalogEntry,
     installed_registration_key: Option<String>,
     facts: &EntryFacts,
-    installs_supported: bool,
+    platform: gamenode_core::ports::view::PortPlatform,
 ) -> PortEntryView {
     let pinned = entry
         .pinned_release
@@ -153,19 +153,28 @@ pub fn entry_view(
     });
     let withdrawn = !entry.withdrawn.is_empty() || facts.withdrawn;
     let no_asset_reason = facts.no_asset_reason;
-    let installable = installs_supported
-        && entry.supports_windows()
-        && !withdrawn
-        && (verified || pinned.is_some())
-        && no_asset_reason.is_none();
-    let install_block_reason = if !installs_supported {
-        Some(PortInstallBlockReason::ComingSoon)
+    use gamenode_core::ports::view::PortPlatform;
+    let supported = match platform {
+        PortPlatform::Windows => entry.supports_windows(),
+        PortPlatform::Linux => entry.supports_linux(),
+        PortPlatform::Macos => false,
+    };
+    // The detail-derived reason comes from the Windows asset selection. Until the equivalent
+    // Linux fact is computed (1.1), a Linux build trusts the declared platform and lets the plan
+    // refuse a release without a usable asset.
+    let asset_reason = (platform == PortPlatform::Windows)
+        .then_some(no_asset_reason)
+        .flatten();
+    let installable =
+        supported && !withdrawn && (verified || pinned.is_some()) && asset_reason.is_none();
+    let install_block_reason = if !supported {
+        Some(PortInstallBlockReason::WindowsOnly)
     } else if withdrawn {
         Some(PortInstallBlockReason::Withdrawn)
     } else if !verified && pinned.is_none() {
         Some(PortInstallBlockReason::NoVerifiedRelease)
     } else {
-        no_asset_reason.map(PortInstallBlockReason::from)
+        asset_reason.map(PortInstallBlockReason::from)
     };
     PortEntryView {
         catalog_id: entry.catalog_id.clone(),
@@ -894,7 +903,7 @@ mod tests {
             preferences,
             facts,
             active_jobs: active,
-            installs_supported: true,
+            platform: gamenode_core::ports::view::PortPlatform::Windows,
         }
     }
 
@@ -946,13 +955,23 @@ mod tests {
             no_asset_reason: Some(PortNoAssetReason::InstallerOnly),
             withdrawn: false,
         };
-        let view = entry_view(&withdrawn, None, &EntryFacts::default(), true);
+        let view = entry_view(
+            &withdrawn,
+            None,
+            &EntryFacts::default(),
+            gamenode_core::ports::view::PortPlatform::Windows,
+        );
         assert_eq!(
             view.install_block_reason,
             Some(PortInstallBlockReason::Withdrawn)
         );
         assert!(!view.installable);
-        let view = entry_view(&entry(), None, &facts, true);
+        let view = entry_view(
+            &entry(),
+            None,
+            &facts,
+            gamenode_core::ports::view::PortPlatform::Windows,
+        );
         assert_eq!(
             view.install_block_reason,
             Some(PortInstallBlockReason::InstallerOnly)
@@ -1169,7 +1188,12 @@ mod tests {
                 .map(|release| (release.version.as_str(), release.withdrawn)),
             Some(("v0.9.38", true))
         );
-        let view = entry_view(&entry, None, &facts, true);
+        let view = entry_view(
+            &entry,
+            None,
+            &facts,
+            gamenode_core::ports::view::PortPlatform::Windows,
+        );
         assert!(!view.installable);
         assert_eq!(
             view.install_block_reason,
@@ -1178,17 +1202,30 @@ mod tests {
     }
 
     #[test]
-    fn a_catalog_only_platform_blocks_every_install_with_coming_soon() {
-        // A Windows-capable, verified entry is still blocked where the install runner is absent.
-        let view = entry_view(&entry(), None, &EntryFacts::default(), false);
+    fn each_platform_blocks_only_the_entries_it_cannot_run() {
+        use gamenode_core::ports::view::PortPlatform;
+
+        // The fixture declares Windows only.
+        let view = entry_view(
+            &entry(),
+            None,
+            &EntryFacts::default(),
+            PortPlatform::Windows,
+        );
+        assert!(view.installable);
+        assert_eq!(view.install_block_reason, None);
+
+        let view = entry_view(&entry(), None, &EntryFacts::default(), PortPlatform::Linux);
         assert!(!view.installable);
         assert_eq!(
             view.install_block_reason,
-            Some(PortInstallBlockReason::ComingSoon)
+            Some(PortInstallBlockReason::WindowsOnly)
         );
-        // The same entry is installable on a platform with an install runner.
-        let view = entry_view(&entry(), None, &EntryFacts::default(), true);
-        assert!(view.installable);
+
+        let mut native = entry();
+        native.supported_os = vec!["linux".into()];
+        let view = entry_view(&native, None, &EntryFacts::default(), PortPlatform::Linux);
+        assert!(view.installable, "a declared Linux entry can install");
         assert_eq!(view.install_block_reason, None);
     }
 

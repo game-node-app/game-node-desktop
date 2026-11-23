@@ -276,20 +276,16 @@ describe('Ports catalog', () => {
       entry({
         catalogId: 'qcat_linux',
         supportedOS: ['linux', 'windows'],
-        installable: false,
-        installBlockReason: 'comingSoon',
       }),
       entry({
         catalogId: 'qcat_windows',
         supportedOS: ['windows'],
         installable: false,
-        installBlockReason: 'comingSoon',
+        installBlockReason: 'windowsOnly',
       }),
       entry({
         catalogId: 'qcat_native',
         supportedOS: ['linux'],
-        installable: false,
-        installBlockReason: 'comingSoon',
       }),
     ];
     ports.preferences.filters.platform = 'nativeLinux';
@@ -329,23 +325,11 @@ describe('Ports catalog', () => {
     );
   });
 
-  it('marks the catalog read-only on Linux and hides the note on Windows', async () => {
-    const first = renderPorts(makePorts());
-    expect(await screen.findByTestId('banner-ports-coming-soon')).toHaveTextContent(
-      'Browsing only. Installing PC ports on Linux is coming soon.',
-    );
-    first.unmount();
-
-    vi.spyOn(commands, 'getAppInfo').mockResolvedValue({
-      locale: 'en',
-      version: '0.1.0',
-      backgroundSupported: false,
-      platform: 'windows',
-    });
+  it('offers the platform filter on Linux without a read-only note', () => {
     renderPorts(makePorts());
-    await waitFor(() =>
-      expect(screen.queryByTestId('banner-ports-coming-soon')).not.toBeInTheDocument(),
-    );
+
+    expect(screen.getByTestId('ports-platform-filter')).toBeInTheDocument();
+    expect(screen.queryByTestId('banner-ports-coming-soon')).not.toBeInTheDocument();
   });
 
   it('filters by search over names and game titles, and by the persisted toggles', async () => {
@@ -495,20 +479,25 @@ describe('Ports catalog', () => {
     );
   });
 
-  it('blocks every install with the coming soon reason on a read-only platform', () => {
+  it('blocks a Windows-only entry on Linux with the Proton note', () => {
     const ports = makePorts();
-    ports.entries = ports.entries.map((item) => ({
-      ...item,
-      installable: false,
-      installBlockReason: 'comingSoon' as const,
-    }));
+    ports.entries = ports.entries.map((item) =>
+      item.catalogId === 'qcat_aster'
+        ? {
+            ...item,
+            supportedOS: ['windows'],
+            installable: false,
+            installBlockReason: 'windowsOnly' as const,
+          }
+        : item,
+    );
     renderPorts(ports);
 
     fireEvent.click(screen.getByTestId('port-tile-qcat_aster'));
 
     expect(screen.getByTestId('port-install-btn')).toBeDisabled();
     expect(screen.getByTestId('port-install-reason')).toHaveTextContent(
-      'Installing PC ports on Linux is coming soon.',
+      'This port is Windows-only. Proton support is future work.',
     );
     expect(screen.getByTestId('port-detail-platforms')).toHaveTextContent('Windows');
   });

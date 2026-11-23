@@ -175,6 +175,8 @@ pub enum PortInstallProblem {
     NoVerifiedRelease,
     /// The release has no Windows asset.
     NoWindowsAsset,
+    /// The release has no Linux asset.
+    NoLinuxAsset,
     /// No asset matches the recipe's asset filter.
     NoMatchingAsset,
     /// The selected asset has no file format.
@@ -210,6 +212,7 @@ impl From<PlanError> for PortInstallProblem {
             PlanError::ReleaseUnavailable { version } => Self::ReleaseUnavailable { version },
             PlanError::NoVerifiedRelease => Self::NoVerifiedRelease,
             PlanError::NoWindowsAsset => Self::NoWindowsAsset,
+            PlanError::NoLinuxAsset => Self::NoLinuxAsset,
             PlanError::NoMatchingAsset { .. } => Self::NoMatchingAsset,
             PlanError::UnknownAssetFormat { filename } => Self::UnknownAssetFormat { filename },
             PlanError::UnsupportedFormat { format } => Self::UnsupportedFormat { format },
@@ -1239,7 +1242,7 @@ impl PortsService {
             preferences: &preferences,
             facts: &facts,
             active_jobs: &active,
-            installs_supported: self.config.platform.supports_installs(),
+            platform: self.config.platform,
         }))
     }
 

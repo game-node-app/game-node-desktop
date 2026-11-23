@@ -433,21 +433,18 @@ describe('Sidebar', () => {
     view.unmount();
   });
 
-  it('shows the PC ports destination on Linux with a coming soon label', () => {
+  it('shows the PC ports destination on Linux', () => {
     const portsOpen = vi.spyOn(commands, 'portsOpen').mockResolvedValue();
     renderSidebar({
       library: makeLibrary(),
       localGames: emptyLocal(),
-      ports: { ...createDefaultPortsView(), unseenCount: 3 },
+      ports: createDefaultPortsView(),
       signedIn: true,
       platform: 'linux',
     });
 
-    expect(
-      within(screen.getByTestId('sidebar-ports')).getByTestId(
-        'sidebar-ports-coming-soon',
-      ),
-    ).toHaveTextContent('Coming soon');
+    expect(screen.getByTestId('sidebar-ports')).toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar-ports-coming-soon')).not.toBeInTheDocument();
     expect(screen.queryByTestId('sidebar-ports-badge')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'PC ports' }));
     expect(uiStore.state.activeDestination).toBe('ports');

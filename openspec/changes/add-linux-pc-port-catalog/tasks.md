@@ -103,6 +103,22 @@ capabilities. Windows behavior and the existing Windows acceptance are not reope
   native port built from the user's own files. Record the evidence separately from Windows
   acceptance.
 
+- [ ] 2.7 **Linux folder and file pickers (acceptance blocker, documented 2026-11-22).** The setup
+  modal's **Escolher pasta** does nothing on Linux, so a native install cannot choose its
+  destination and **Iniciar instalação** stays unavailable.
+  - Symptom: with `diablo-devilutionx` (Diablo, 1.5.5) and `diablo-iii-reaper-of-souls-...-sanctuaryport`
+    (Diablo III, v0.7.0), the Install setup shows **Nenhuma pasta escolhida**; pressing
+    **Escolher pasta** opens no dialog. Reproduced with both entries, so it is not entry-specific.
+  - Cause: `gamenode_platform::installations::pick_folder_starting_at` is implemented only under
+    `#[cfg(windows)]` and returns `LocalError::Unsupported` on every other platform; the command
+    turns that into `PortCommandError::UnsupportedPlatform`. The same Windows-only path backs the
+    guided-setup file and folder pickers (`pick_file_with_extensions` / `pick_file_starting_at`).
+  - Scope: add Linux folder and file pickers (desktop portal/GTK or the Tauri dialog plugin) behind
+    `ports_pick_parent` and `ports_pick_supplied`, with a typed-path fallback when no portal is
+    available and a clear message when the picker cannot open. Never start an install with an empty
+    parent folder.
+  - Status: documented only, deliberately not fixed yet. It blocks 2.6 native acceptance.
+
 ## 3. Future
 
 - Proton/Wine execution, Windows-only installs on Linux, macOS catalog/installs and a Linux PS4

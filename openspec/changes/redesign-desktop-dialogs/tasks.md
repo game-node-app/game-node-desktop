@@ -318,7 +318,7 @@ Rules for every group:
 - [x] 11.4 Update `docs/development.md` (new mock interactions) and `docs/drm-free-games.md` (custom cover,
   discovery suggestions, rediscovery choice). Verify that `openspec validate redesign-desktop-dialogs
   --strict` still passes.
-- [ ] 11.5 **Windows handoff — Lamarck (GameNode Core).** Native Windows acceptance via `scripts/install-windows-wsl.sh`: the cover image picker and
+- [ ] 11.5 **Native Windows acceptance.** Native Windows acceptance via `scripts/install-windows-wsl.sh`: the cover image picker and
   re-encode, browser reopen during sign-in, Open in Steam, and backup retention with Ludusavi. Verify by
   recording the results in `docs/windows-verification.md`.
 

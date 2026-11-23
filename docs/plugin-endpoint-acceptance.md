@@ -52,7 +52,7 @@ grant path.
 | Secrets | `Secret` (exchange stream) | official | Steam, Epic |
 | Playtime counter | `Counter` (exchange stream) | official | Steam |
 | Declared actions | `DeclareActions` (exchange stream) | official | Steam, Epic |
-| Achievements | `ReadAchievements` (exchange stream) | official | Steam on Linux; Windows handoff (`add-achievement-tracking` 8.2/8.3) |
+| Achievements | `ReadAchievements` (exchange stream) | official | Steam on Linux; native Windows acceptance open (`add-achievement-tracking` 8.2/8.3) |
 | Library read | `LibraryList`, `LibraryGet`, `LibraryWatch` | third-party | Dolphin launch (`LibraryGet` on the selected entry) |
 | Metadata write | `MetadataUpdate` | none | — |
 | Favorites | `FavoritesList`, `FavoritesSet` | none | — |

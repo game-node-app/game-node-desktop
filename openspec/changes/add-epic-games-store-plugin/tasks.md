@@ -173,7 +173,7 @@
   - PackageKit discovery.
   - Verify that no Epic UI appears and no credential or data row changed.
   - Record the evidence in the PR.
-- [ ] 10.3 **Windows handoff — Lamarck (GameNode Core).** After the 10.2 Linux evidence, install the Windows candidate and accept the Epic flows:
+- [ ] 10.3 **Native Windows acceptance.** After the 10.2 Linux evidence, install the Windows candidate and accept the Epic flows:
   - Discovery with multiple games and DLC.
   - Play and Install via the launcher.
   - Sign-in with 2FA, cancel and close.
@@ -185,7 +185,7 @@
   - A missing executable.
   - An Epic crash while Steam keeps working.
   - Done when each scenario has recorded evidence, or is listed as unresolved.
-- [ ] 10.4 **Windows handoff — Lamarck (GameNode Core).** On the same Windows candidate, run Steam regression: Credential Manager restore, sign-in, catalog, playtime and actions. Also run the PC ports and tools smoke tests.
+- [ ] 10.4 **Native Windows acceptance.** On the same Windows candidate, run Steam regression: Credential Manager restore, sign-in, catalog, playtime and actions. Also run the PC ports and tools smoke tests.
   - Done when the results confirm parity with the pre-change build, recorded in the PR.
 
 ## Workflow follow-up

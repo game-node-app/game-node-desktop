@@ -46,7 +46,7 @@ would bypass the signed recipe, so the host must expose only reviewed, bounded o
 
 - Raw host-side argv/environment editing, shell commands and arbitrary executable/URI selection.
 - A central recipe marketplace; plugin updates still deliver new option schemas.
-- Windows native acceptance (a separate handoff; the option schema is platform-neutral and may
+- Native Windows acceptance (a separate open task; the option schema is platform-neutral and may
   declare platform-specific values).
 
 ## Status

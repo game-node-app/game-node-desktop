@@ -67,7 +67,7 @@ The picker builds candidates from host-owned official sources only:
   package id/manager, version when known, and the exact path.
 - Windows: the installed-program inventory from the registry/Start Menu (same host-owned source
   used for local-game suggestions), matched by executable base name/display name. Native Windows
-  acceptance remains a handoff. **This change has no registry/Start Menu reader yet; the Windows
+  acceptance remains an open task. **This change has no registry/Start Menu reader yet; the Windows
   inventory is deferred to task 1.8 and the picker offers manual Browse until then.**
 
 Third-party providers never contribute candidates. The user can always choose **Browse…** and pick
@@ -119,8 +119,8 @@ No path is copied into the plugin or into logs.
 - **Stale runtime after a package upgrade** → identity/hash change invalidates the approval and
   requires reapproval; no silent fallback.
 - **Inventory changes by distro** → suggestions are advisory; manual browse always works.
-- **Windows source is new** → keep it behind the same interface and record native acceptance as a
-  handoff; Linux must not depend on it.
+- **Windows source is new** → keep it behind the same interface and keep native acceptance as an
+  open task; Linux must not depend on it.
 - **Prompt fatigue** → reuse a valid owned runtime and remember the approval; only changed or
   revoked executables prompt again.
 
@@ -131,7 +131,7 @@ No path is copied into the plugin or into logs.
 3. Add the Linux installed-program suggestions and the Windows inventory adapter.
 4. Add the picker UI and tests.
 5. Implement the Dolphin launch session against the new request.
-6. Run the real Linux acceptance with Dolphin and Pikmin; record Windows as a handoff.
+6. Run the real Linux acceptance with Dolphin and Pikmin; keep native Windows acceptance as an open task.
 
 Rollback: remove the new request and picker; existing runtimes registered through file handles and
 all official launches remain unchanged.

@@ -25,7 +25,7 @@ Dolphin; the provider account/login/catalog path by Steam and Epic; everything e
 - Replacing unit and fixture tests, or running in production installs.
 - Driving native dialogs programmatically.
 - New protocol methods, permissions or provider capabilities.
-- Windows native acceptance; that remains a handoff.
+- Native Windows acceptance; that remains an open task.
 
 ## Decisions
 
@@ -84,8 +84,8 @@ working around the contract.
 ### D8. Results are evidence, not certification
 
 A passing probe proves that the host path works with one real consumer. It does not certify native
-code safety, OS-specific behavior or Windows execution. Those stay with native acceptance and the
-Lamarck handoff.
+code safety, OS-specific behavior or Windows execution. Those stay with native acceptance,
+including a native Windows acceptance task.
 
 ## Risks / Trade-offs
 
@@ -104,7 +104,7 @@ Lamarck handoff.
 2. Create the bundle skeleton, manifests, packaging and CI build.
 3. Implement provider probes, then extension probes.
 4. Add the scenario/report path and the Configure panel.
-5. Run the matrix on Linux, record results, hand off Windows acceptance.
+5. Run the matrix on Linux, record results, keep native Windows acceptance as an open task.
 
 ## Open Questions
 

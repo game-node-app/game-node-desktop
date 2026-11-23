@@ -99,7 +99,7 @@ Retrato do checklist do workspace na data do levantamento; não representa aprov
 | 8. Providers externos, credenciais e configuração | 7 |
 | 9. Atualizações e recuperação | 4 |
 | 10. Interface de gerenciamento | 8 |
-| 11. SDK e exemplos Rust/Go | 9 |
+| 11. SDK e exemplos Rust | 9 |
 | 12. Compartilhamento e consentimento | 7 |
 | 13. Saves, inspeção e volumes | 7 |
 | 14. Bibliotecas, runtimes e conteúdo | 5 |
@@ -230,7 +230,7 @@ Detalhes de engenharia dentro do escopo da 5.5, para revisão; nenhuma mudança 
 | A chave de idempotência é do plugin: `idempotency_key()` gera uma por mudança pretendida, a mesma chave vale para reenviar a mesma mudança, e conflito de revisão é resposta (`Outcome::RevisionConflict`), não erro. | 5.5. |
 | Equivalência SDK × gRPC bruto é verificada nos testes de serviço do host de teste: leituras comparadas diretamente, escritas reenviadas cruas sob a chave do SDK (o host só devolve o resultado original para um pedido idêntico) e recusas comparadas por código e mensagem. | 5.5. |
 | As receitas são código compilado (`crates/plugin-sdk/examples/library_recipes.rs`) e executado nesses mesmos testes, não trechos soltos na documentação. | 5.5. |
-| O SDK é só Rust; clientes Go usam o cliente gerado com as mesmas regras (o exemplo Go não tem SDK). | 5.5. |
+| O SDK é só Rust; clientes em outras linguagens usam o cliente gerado a partir do `plugin.proto` com as mesmas regras. | 5.5. |
 
 ## I. Decisões adotadas na implementação da tarefa 6.1 (2026-11-14)
 
@@ -488,7 +488,7 @@ A primeira linha foi decidida com o usuário; o resto é detalhe de engenharia.
 | **Entrega do resultado**: a chamada sempre cria (ou reaproveita, pela chave) um job; se ele termina em cerca de 2 s, a resposta já traz digest, `snapshot_id` e `complete`; senão traz só o `job_id`, e quando o job termina com o código `fingerprint_ready` (mensagem = id do snapshot) o plugin repete a chamada com a mesma chave e recebe o resultado guardado. | 13.4. |
 | O digest da árvore é `sha256-tree-v1` (tag de domínio, caminhos ordenados pelos bytes UTF-8, comprimento, tipo, tamanho lógico, SHA-256 do arquivo; pastas vazias incluídas). Um teste fixa o valor; qualquer mudança no formato é outro id de algoritmo. O rótulo de um perfil começa com `d<n>/` da n-ésima pasta, e o que se alcança por duas pastas conta uma vez. | 13.4. |
 | Um arquivo ilegível, um arquivo que mudou de tamanho ou de data enquanto era lido, uma varredura cortada (entradas, 4 GiB, 10 min) ou uma pasta de perfil sem aprovação tornam o snapshot incompleto ou instável, **não devolvem digest** e deixam a comparação `indeterminate`; um arquivo ilegível nunca é listado como modificado. | 13.4. |
-| Campos aditivos no protocolo: `LocationChange.relative_path = 5` (sem ele um item removido não teria identidade) e `LocationFingerprintReply.observed_start_at = 9` / `observed_end_at = 10` (o design manda o resultado trazer o início e o fim observados). Bindings Go regenerados. | 13.4, 2.2. |
+| Campos aditivos no protocolo: `LocationChange.relative_path = 5` (sem ele um item removido não teria identidade) e `LocationFingerprintReply.observed_start_at = 9` / `observed_end_at = 10` (o design manda o resultado trazer o início e o fim observados). | 13.4, 2.2. |
 | Snapshots só em memória (8 por plugin, 1 hora), do próprio plugin; um perfil em outra revisão é outro lugar (`incomparable`); `expected_revision` diferente de 0 e fora da revisão do snapshot é `FAILED_PRECONDITION`. Um fingerprint por plugin e dois no total rodam ao mesmo tempo (`RESOURCE_EXHAUSTED`). Limites sem medir. | 13.4. |
 | A leitura roda sem segurar a trava do namespace do plugin (as pastas são abertas sob a trava e a trava é solta), para uma varredura longa não bloquear as outras chamadas do plugin. Cancelar o job para a varredura e a leitura no próximo arquivo ou bloco e não guarda nada. | 13.4. |
 | `require_fresh` não muda nada: toda chamada relê o conteúdo e não há cache. Um handle de runtime é um handle de arquivo aprovado e usa o mesmo job; sessão, aprovação, escopo de jogos afetados, volume e concessão são revalidados antes da leitura, e um teste cobre o conteúdo alterado com o mesmo tamanho e a mesma data. | 13.4, 14.x. |

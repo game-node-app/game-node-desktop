@@ -45,7 +45,7 @@ a whole folder is too broad for a runtime: the host needs one exact, user-confir
 
 ## Out of Scope
 
-- Proton/Wine orchestration, Windows native acceptance (Lamarck handoff) and emulator certification.
+- Proton/Wine orchestration, native Windows acceptance (tracked as its own task) and emulator certification.
 - Auto-approval, plugin-supplied executable paths outside the host picker, and non-emulator runtimes
   without a signed extension.
 - Changing the provider API or letting a provider launch a game.

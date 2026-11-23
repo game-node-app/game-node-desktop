@@ -222,8 +222,8 @@ pool reads the same record, and revoking the policy fences the watch and reads. 
 field is projected.
 
 The Dolphin repository still has no Windows target (both manifests declare only `linux/x86_64`),
-so there is no Windows bundle to cross-build; native Windows acceptance remains the Lamarck
-(GameNode Core) handoff tracked as task 7.2-win. `add-plugin-bundles` 7.2 therefore stays open on
+so there is no Windows bundle to cross-build; native Windows acceptance remains open
+as task 7.2-win. `add-plugin-bundles` 7.2 therefore stays open on
 that clause with the complete Linux evidence recorded in its task note.
 
 ### Installed providers join the library

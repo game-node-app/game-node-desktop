@@ -64,12 +64,12 @@ São recomendações para comparar, não garantia de desempenho. Use o modelo ma
 | 10.10 | Implement the host-issued user intents of design section 20 for `GamesRequestLaunch` and `GamesRequestInstall`: an in-memory  | 6–12 h | Alta | Sol (Astra para revisão de arquitetura se houver conflito) |
 | 11.1 | Prepare versioned public SDK/protocol source archives with usable external dependency metadata and pinned tooling | 3–6 h | Baixa/média | Luna |
 | 11.2 | Create examples/plugins/rust-sdk as a runnable separate-identity MIT plugin using the SDK, including provider and launch-exte | 2–5 h | Média/alta | Sol |
-| 11.3 | Create examples/plugins/go-grpc with pinned protobuf generation, provider and launch-extension fixture profiles and no GameNo | 3–6 h | Média/alta | Sol |
+| 11.3 | Withdrawn (2026-11-23): the Go direct-gRPC example was removed | 3–6 h | Média/alta | Sol |
 | 11.4 | Implement a real plugin-owned configuration window in both examples with focus/close and one persistent non-secret preference | 2–4 h | Média/alta | Sol |
 | 11.5 | Add runnable fake account/secret/login/action/settings recipes covering all existing RPC/event families and a new Core read/c | 4–8 h | Média/alta | Sol |
 | 11.6 | Supply per-example manifests, notices, package/sign commands and standalone build/install/run guides | 1–3 h | Baixa/média | Luna |
 | 11.7 | Add conformance checks for generated-code freshness, public dependency boundaries, supported-version fallback and both exampl | 2–4 h | Baixa/média | Luna |
-| 11.8 | Add equivalent safe Go/Rust launch-consent fixtures for emulators/runtimes, known mod layers and environment-only customizati | 3–6 h | Média/alta | Sol |
+| 11.8 | Add safe launch-consent fixtures for emulators/runtimes, known mod layers and environment-only customizati | 3–6 h | Média/alta | Sol |
 | 11.9 | Publish target compatibility examples and deterministic evaluator fixtures for Windows builds/products, Debian release constr | 2–4 h | Baixa/média | Luna |
 | 12.1 | Define typed stable domain/report bases, versioned namespaced Struct schemas, opaque byte envelopes and get/list/watch access | 4–8 h | Média/alta | Sol |
 | 12.2 | Implement bounded publication/session retention with host-assigned source/developer/origin/publisher/version/package provenan | 2–5 h | Média/alta | Sol |
@@ -94,9 +94,9 @@ São recomendações para comparar, não garantia de desempenho. Use o modelo ma
 | 16.5 | Implement own-namespace automatic cleanup policy within user limits and reviewed host-wide cleanup for unused/large datasets, | 4–8 h | Alta | Sol (Astra para revisão de arquitetura se houver conflito) |
 | 17.1 | Add activation-time common-data category read controls and separate sensitive-data source/recipient field/history/delivery/re | 3–6 h | Média/alta | Sol |
 | 17.2 | Add host-only physical-path storage accounting, uninstall retain/delete and cleanup preview/policy screens | 4–8 h | Média/alta | Sol |
-| 17.3 | Extend both Go/Rust examples with fixture producer-consumer exchanges, performance history/cleanup, save/location inspection  | 4–8 h | Média/alta | Sol |
-| 17.4 | Add matching Go/Rust hybrid-record, opaque-byte and custom-dataset examples with schema-version/unknown-namespace handling | 3–6 h | Média/alta | Sol |
-| 18.1 | Run focused Rust protocol/SDK/host tests, UI component tests and Go example checks, then required workspace checks | 3–6 h | Média/alta | Sol |
+| 17.3 | Extend the Rust examples with fixture producer-consumer exchanges, performance history/cleanup, save/location inspection  | 4–8 h | Média/alta | Sol |
+| 17.4 | Add Rust hybrid-record, opaque-byte and custom-dataset examples with schema-version/unknown-namespace handling | 3–6 h | Média/alta | Sol |
+| 18.1 | Run focused Rust protocol/SDK/host tests, UI component tests and example checks, then required workspace checks | 3–6 h | Média/alta | Sol |
 | 18.2 | On native Linux, exercise signed package import, both example transports/windows, grant revocation, scoped file/keyring acces | 4–8 h | Baixa/média | Luna |
 | 18.3 | On native Windows, exercise both example named-pipe sessions/windows, ACL/junction behavior, credential isolation, supervised | 6–12 h | Baixa/média | Luna |
 | 18.4 | Confirm official Steam sign-in/discovery/catalog/counter/actions and Linux package discovery remain unchanged with empty, inv | 2–4 h | Baixa/média | Luna |

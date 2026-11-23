@@ -3,8 +3,7 @@
 - [x] 1.1 Derive the platform filter from the entry's `fields.platform`, normalize it and map
   `gamecube`/`wii` to the catalog abbreviations. Add unit coverage for aliases, unknown/absent
   platforms and empty answers.
-  - Verified: `CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target-platform-match-filter
-    CARGO_NET_OFFLINE=true CARGO_INCREMENTAL=0 cargo test --locked -p gamenode-core match_dialog`
+  - Verified: `CARGO_NET_OFFLINE=true CARGO_INCREMENTAL=0 cargo test --locked -p gamenode-core match_dialog`
     → 41 passed, 0 failed, including `the_declared_platform_maps_to_catalog_aliases` (NGC/GC/GCN/
     GameCube case-insensitive, Wii, unknown/blank/absent declarations, disabled filter shows all)
     and `an_entry_without_a_known_platform_is_not_filtered`.
@@ -15,14 +14,12 @@
     `a_gamecube_entry_shows_the_ngc_candidates_and_results_by_default` (one `SearchGames` with the
     unchanged text query `Pikmin`, `SetMatchPlatformFilter` returns no effects, lists narrow and
     restore) and the serialization test
-    `CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target-platform-match-filter
-    CARGO_NET_OFFLINE=true CARGO_INCREMENTAL=0 cargo test --locked -p gamenode-core --test
+    `CARGO_NET_OFFLINE=true CARGO_INCREMENTAL=0 cargo test --locked -p gamenode-core --test
     serialization` → 8 passed, 0 failed (`{ "setMatchPlatformFilter": { "enabled": false } }` and
     the camelCase platform filter payload).
 - [x] 1.3 Add core regressions with a GameCube entry returning NGC and Switch options (NGC visible
   by default, Switch after show-all), a Wii entry, no-platform entry and a fully filtered answer.
-  - Verified: `CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target-platform-match-filter
-    CARGO_NET_OFFLINE=true CARGO_INCREMENTAL=0 cargo test --locked -p gamenode-core` → 679 passed,
+  - Verified: `CARGO_NET_OFFLINE=true CARGO_INCREMENTAL=0 cargo test --locked -p gamenode-core` → 679 passed,
     0 failed, including `a_gamecube_entry_shows_the_ngc_candidates_and_results_by_default`,
     `a_wii_entry_matches_the_wii_alias_and_keeps_its_manual_choice`,
     `an_entry_without_a_known_platform_is_not_filtered`,
@@ -46,8 +43,7 @@
   - Automated evidence: `npx --yes pnpm@10 --dir ui exec tsc -b` → clean; `npx --yes pnpm@10
     --dir ui build` → built in 6.36 s; `cargo fmt --all -- --check` → clean; `git diff --check` →
     clean; `openspec validate --strict add-platform-aware-match-filter` → valid;
-    `CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target-platform-match-filter
-    CARGO_NET_OFFLINE=true CARGO_INCREMENTAL=0 cargo clippy --locked -p gamenode-core
+    `CARGO_NET_OFFLINE=true CARGO_INCREMENTAL=0 cargo clippy --locked -p gamenode-core
     --all-targets` → clean.
   - The Pikmin GameCube vs Switch case is covered by the mock-host regression above (NGC-only
     candidates/results, then Switch after Show all). Native interactive confirmation and the

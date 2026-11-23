@@ -98,4 +98,4 @@ on a store or provider.
 3. Add the plugin-details and per-game editors with en/pt-BR and reset.
 4. Add Dolphin options and map them to its recipe.
 5. Test schema bounds, merge precedence, invalid values and review invalidation; record native
-   Linux acceptance and a Windows handoff.
+   Linux acceptance and an open native Windows acceptance task.

@@ -32,7 +32,7 @@ assigned task, preserving checkout-local edits.
   verified through both intent paths. 1.10 needs full fixture evidence for
   both configuration examples, especially Rust.
 - **Runtimes.** 1.9, 1.15 and 1.16 have tracker, declarations and preference
-  code. 1.18 has scoped supervised startup from actions 1.6. 1.20 has Go
+  code. 1.18 has scoped supervised startup from actions 1.6. 1.20 has
   wire fixtures. The remaining criteria for each are in the checklist.
   1.10 needs two-client runtime/library projections, 1.11 and 1.17 need
   scoped discovery and its acceptance, 1.12–1.14 need launch and native

@@ -32,8 +32,8 @@ and consent work. A single acceptance bundle that drives every endpoint is more 
   confirmation and records the grant revision and timestamp.
 - **Conformance gate.** `scripts/check-plugin-conformance.py` fails when an advertised route has no
   matrix row and no documented deferral, so a new endpoint cannot ship unclassified.
-- **Homologation run.** Execute the matrix on Linux, record results on the page, and hand Windows
-  native acceptance to Lamarck.
+- **Homologation run.** Execute the matrix on Linux, record results on the page, and keep native
+  Windows acceptance as an open task.
 
 ## Capabilities
 
@@ -57,5 +57,5 @@ and consent work. A single acceptance bundle that drives every endpoint is more 
 - Replacing fixtures: fixtures stay as regression tests.
 - Automating native dialogs: the operator still approves folder, origin, runtime and backup
   scopes.
-- Windows native acceptance, which stays a handoff to Lamarck.
+- Native Windows acceptance, which stays an open task until a native run is recorded.
 - A marketplace or a shipped diagnostics plugin.

@@ -25,10 +25,10 @@ Status: **deferred by the user after recording.** Not started; nothing below is 
 
 - [ ] 1.5 Cover schema/bounds, merge precedence, unknown ids, reset and review invalidation in
   focused core/app/UI tests; document the author and user flow; run the full affected suites,
-  formatting, Clippy and strict OpenSpec validation. Record native Linux acceptance and a Windows
-  handoff for Lamarck.
+  formatting, Clippy and strict OpenSpec validation. Record native Linux acceptance and leave
+  native Windows acceptance as an open task.
 
 ## Out of Scope
 
 - Raw host-side argv/environment editing, shell commands, arbitrary executables/URIs and a central
-  recipe marketplace. Windows native acceptance is a handoff.
+  recipe marketplace. Native Windows acceptance is a separate open task.

@@ -38,8 +38,8 @@
   `/usr/bin/dolphin-emu` from the PackageKit suggestion, review the recipe, start the game, close
   Dolphin, verify the session/playtime and that a changed executable requires reapproval.
 
-- [ ] 1.8 **Windows handoff — Lamarck (GameNode Core).** Record the registry/Start Menu suggestion
-  and native picker acceptance on Windows. Linux does not depend on this handoff.
+- [ ] 1.8 **Native Windows acceptance.** Record the registry/Start Menu suggestion
+  and native picker acceptance on Windows. Linux does not depend on this task.
 
 ## Out of Scope
 

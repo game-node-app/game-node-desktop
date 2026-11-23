@@ -35,8 +35,8 @@
 - [ ] 1.6 **Run the matrix and record it.** Execute the full sequence for every row on Linux:
   grant, use, revoke in flight, profile change, uninstall and reinstall. Record status and evidence
   in `docs/plugin-endpoint-acceptance.md`, report every defect found on a shared host path with its
-  regression test, and leave a `Windows handoff — Lamarck (GameNode Core)` task for native
-  acceptance. Run `cargo test --locked -p gamenode-app`, the example suites,
+  regression test, and leave a native Windows acceptance task
+  open. Run `cargo test --locked -p gamenode-app`, the example suites,
   `python3 scripts/check-plugin-conformance.py`, `pnpm --dir ui test --run` and
   `openspec validate add-plugin-endpoint-probe --strict`.
 

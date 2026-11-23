@@ -654,12 +654,14 @@ def main(argv: list[str] | None = None) -> int:
         "checks",
         nargs="*",
         choices=sorted(CHECKS),
-        default=sorted(CHECKS),
         help="checks to run (default: all)",
     )
     args = parser.parse_args(argv)
+    # Python 3.13+ validates a `nargs="*"` default against `choices` as a single value, so the
+    # "all checks" default is applied here instead of in argparse.
+    checks = args.checks or sorted(CHECKS)
     failed = False
-    for name in args.checks:
+    for name in checks:
         problems, notes = CHECKS[name]()
         for note in notes:
             print(f"{name}: {note}")

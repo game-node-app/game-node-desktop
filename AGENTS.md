@@ -12,17 +12,6 @@
 - These conventions do not authorize committing, pushing, or rewriting history;
   perform those actions only when requested.
 
-## Cargo build output
-
-- Where build output lives is a per-machine choice made in the developer's own
-  environment (`CARGO_TARGET_DIR` or `build.target-dir`/`build.build-dir` in
-  their Cargo config). Respect it: do not hardcode a target directory in
-  scripts or docs, and do not override the one a script receives.
-- To share build work between worktrees, use a compiler cache such as sccache
-  (`RUSTC_WRAPPER=sccache`). A single target directory shared by several
-  worktrees can serve one worktree another's stale artifacts. See
-  [the development guide](docs/development.md#cargo-build-output).
-
 ## Specification changes
 
 - When an instruction appears to change an OpenSpec specification, state the

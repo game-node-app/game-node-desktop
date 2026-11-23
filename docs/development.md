@@ -41,41 +41,6 @@ Protobuf generation uses the build-host compiler selected from the pinned
 vendored dependency; a system `protoc` installation is not required.
 Node.js (v24+) and pnpm are used for the `ui/` frontend workspace.
 
-## Cargo build output
-
-Cargo writes to the checkout's `target/` by default, and that works. Where build
-output lives is a per-machine choice: configure it in your own environment, not
-in repository files, and keep scripts from hardcoding or overriding it.
-
-Give each worktree its own build directory. Cargo reuses an artifact when its
-sources are not newer than it, and workspace crates get the same hashes in every
-checkout, so a target directory shared by several worktrees can serve one
-worktree a stale build from another, even when builds run one at a time.
-
-To keep large build output on another disk, set it once in your user Cargo
-config (`~/.cargo/config.toml`) instead of on each command:
-
-```toml
-[build]
-build-dir = "/path/to/large-disk/cargo-build/{workspace-path-hash}"
-```
-
-`{workspace-path-hash}` gives every checkout its own intermediate directory;
-final binaries stay in that checkout's `target/`. A per-worktree
-`CARGO_TARGET_DIR` works too.
-
-To share compiled dependencies between worktrees, use a compiler cache such as
-[sccache](https://github.com/mozilla/sccache) (`RUSTC_WRAPPER=sccache`). It keys
-its cache by content, so worktrees reuse each other's work without the
-staleness of a shared target directory.
-
-Scripts that need a built binary read the location from Cargo instead of
-assuming `target/`:
-
-```sh
-cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])'
-```
-
 ## Linux (Ubuntu/Debian, native x86-64)
 
 Install native prerequisites:
@@ -146,8 +111,7 @@ at a built binary to exercise them:
 
 ```sh
 cargo build --locked -p gamenode-app --bin gamenode --no-default-features
-target=$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
-GAMENODE_TEST_HELPER_BINARY="$target/debug/gamenode" \
+GAMENODE_TEST_HELPER_BINARY="$PWD/target/debug/gamenode" \
   cargo test --locked -p gamenode-app --lib reviewed_shared_resource_use
 ```
 
@@ -728,7 +692,7 @@ scripts/dev-windows-wsl.sh
 ```
 
 The launcher builds the Windows desktop and its bundled plugins under
-`windows-hmr` inside the configured Cargo target directory, verifies the plugins sit beside the host, prepares its
+`windows-hmr` in the Cargo target directory (`target/windows-hmr` by default), verifies the plugins sit beside the host, prepares its
 backup assets, starts a local Vite server, and opens the Windows app. It forces the real Tauri bridge rather than the UI
 mock. It uses the same Windows Credential Manager entry and local application
 data as the installed app, so an existing session can be restored and changes

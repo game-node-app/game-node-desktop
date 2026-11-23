@@ -177,7 +177,6 @@ desktop acceptance for the signed bundle is the host test
 
 ```sh
 DOLPHIN_BUNDLE_PATH=/path/to/gamenode-plugin-dolphin-emu/dist/dolphin-emu-0.1.0-linux-x64.gnbundle \
-CARGO_NET_OFFLINE=true CARGO_INCREMENTAL=0 \
 cargo test --locked -p gamenode-app --lib -- the_real_dolphin_bundle
 ```
 
@@ -205,7 +204,6 @@ the host test
 
 ```sh
 DOLPHIN_BUNDLE_PATH=/path/to/gamenode-plugin-dolphin-emu/dist/dolphin-emu-0.1.0-linux-x64.gnbundle \
-CARGO_NET_OFFLINE=true CARGO_INCREMENTAL=0 \
 cargo test --locked -p gamenode-app --lib -- the_real_dolphin_provider_publishes
 ```
 
@@ -244,7 +242,6 @@ packages, packages without `library.discovery`, reserved provider ids and malfor
 The always-running regression fixtures are in `plugin_host::startup::tests`:
 
 ```sh
-CARGO_NET_OFFLINE=true CARGO_INCREMENTAL=0 \
 cargo test --locked -p gamenode-app --lib -- plugin_host::startup::tests
 ```
 
@@ -258,7 +255,6 @@ and `provider_scans` records success:
 
 ```sh
 DOLPHIN_BUNDLE_PATH=/path/to/gamenode-plugin-dolphin-emu/dist/dolphin-emu-0.1.0-linux-x64.gnbundle \
-CARGO_NET_OFFLINE=true CARGO_INCREMENTAL=0 \
 cargo test --locked -p gamenode-app --lib -- \
   plugin_host::startup::tests::the_real_dolphin_bundle_joins_the_running_library
 ```

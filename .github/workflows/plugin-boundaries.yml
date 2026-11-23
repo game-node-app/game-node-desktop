@@ -57,6 +57,8 @@ jobs:
         run: pnpm --dir ui test --run
       - name: Typecheck and build UI
         run: pnpm --dir ui build
+      - name: Install plugin packaging dependencies
+        run: python3 -m pip install --disable-pip-version-check -r scripts/plugin-package-requirements.txt
       - name: Validate formatting and plugin boundaries
         run: |
           cargo fmt --all --check

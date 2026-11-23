@@ -34,8 +34,8 @@ pub use plan::{
     sanitize_folder_name, select_asset, select_release, space_estimate,
 };
 pub use store::{
-    PortInstallation, PortJobResume, PortJobRow, PortOverlayRow, PortPreferences, PortStore,
-    PortViewMode,
+    PortInstallation, PortJobResume, PortJobRow, PortOverlayRow, PortPlatformFilter,
+    PortPreferences, PortStore, PortViewMode,
 };
 pub use view::{
     PortArgumentKind, PortArgumentSpec, PortArtKind, PortArtView, PortCatalogError,

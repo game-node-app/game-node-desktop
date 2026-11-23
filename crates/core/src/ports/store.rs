@@ -185,6 +185,19 @@ pub enum PortViewMode {
     List,
 }
 
+/// Which platform slice of the catalog the remembered filter shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PortPlatformFilter {
+    /// Every entry, including Windows-only ports.
+    #[default]
+    All,
+    /// Entries whose declared platforms include Linux.
+    NativeLinux,
+    /// Entries that declare Windows and do not declare Linux.
+    WindowsOnly,
+}
+
 /// Remembered catalog view, filters and last install parent folder. The search text is not stored.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -198,6 +211,8 @@ pub struct PortPreferences {
     pub verified: bool,
     /// Only entries installed by GameNode.
     pub installed: bool,
+    /// The remembered platform slice; defaults to every entry.
+    pub platform_filter: PortPlatformFilter,
     /// The parent folder offered first by the next install.
     pub last_parent: Option<String>,
 }
@@ -247,10 +262,14 @@ mod tests {
         assert!(!preferences.guided);
         assert!(!preferences.verified);
         assert!(!preferences.installed);
+        assert_eq!(
+            preferences.platform_filter,
+            crate::ports::PortPlatformFilter::All
+        );
         assert_eq!(preferences.last_parent, None);
         assert_eq!(
             serde_json::to_string(&preferences).unwrap(),
-            r#"{"view":"grid","consoles":[],"guided":false,"verified":false,"installed":false,"lastParent":null}"#
+            r#"{"view":"grid","consoles":[],"guided":false,"verified":false,"installed":false,"platformFilter":"all","lastParent":null}"#
         );
     }
 }

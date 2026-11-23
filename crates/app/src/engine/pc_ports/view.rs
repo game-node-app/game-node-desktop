@@ -54,6 +54,8 @@ pub struct ViewInput<'a> {
     pub facts: &'a HashMap<String, EntryFacts>,
     /// Job ids the install runner currently owns.
     pub active_jobs: &'a HashSet<String>,
+    /// False on a platform that serves the catalog without an install runner.
+    pub installs_supported: bool,
 }
 
 /// Builds the complete PC ports projection.
@@ -77,6 +79,7 @@ pub fn build(input: ViewInput<'_>) -> PortsView {
                 entry,
                 installed_keys.get(&entry.catalog_id).cloned(),
                 &facts,
+                input.installs_supported,
             )
         })
         .collect::<Vec<_>>();
@@ -134,6 +137,7 @@ pub fn entry_view(
     entry: &CatalogEntry,
     installed_registration_key: Option<String>,
     facts: &EntryFacts,
+    installs_supported: bool,
 ) -> PortEntryView {
     let pinned = entry
         .pinned_release
@@ -149,11 +153,14 @@ pub fn entry_view(
     });
     let withdrawn = !entry.withdrawn.is_empty() || facts.withdrawn;
     let no_asset_reason = facts.no_asset_reason;
-    let installable = entry.supports_windows()
+    let installable = installs_supported
+        && entry.supports_windows()
         && !withdrawn
         && (verified || pinned.is_some())
         && no_asset_reason.is_none();
-    let install_block_reason = if withdrawn {
+    let install_block_reason = if !installs_supported {
+        Some(PortInstallBlockReason::ComingSoon)
+    } else if withdrawn {
         Some(PortInstallBlockReason::Withdrawn)
     } else if !verified && pinned.is_none() {
         Some(PortInstallBlockReason::NoVerifiedRelease)
@@ -541,6 +548,7 @@ fn preferences_view(preferences: &PortPreferences) -> PortPreferencesView {
             guided: preferences.guided,
             verified: preferences.verified,
             installed: preferences.installed,
+            platform: preferences.platform_filter,
         },
         last_parent_folder: preferences.last_parent.clone(),
     }
@@ -886,6 +894,7 @@ mod tests {
             preferences,
             facts,
             active_jobs: active,
+            installs_supported: true,
         }
     }
 
@@ -937,13 +946,13 @@ mod tests {
             no_asset_reason: Some(PortNoAssetReason::InstallerOnly),
             withdrawn: false,
         };
-        let view = entry_view(&withdrawn, None, &EntryFacts::default());
+        let view = entry_view(&withdrawn, None, &EntryFacts::default(), true);
         assert_eq!(
             view.install_block_reason,
             Some(PortInstallBlockReason::Withdrawn)
         );
         assert!(!view.installable);
-        let view = entry_view(&entry(), None, &facts);
+        let view = entry_view(&entry(), None, &facts, true);
         assert_eq!(
             view.install_block_reason,
             Some(PortInstallBlockReason::InstallerOnly)
@@ -1160,12 +1169,27 @@ mod tests {
                 .map(|release| (release.version.as_str(), release.withdrawn)),
             Some(("v0.9.38", true))
         );
-        let view = entry_view(&entry, None, &facts);
+        let view = entry_view(&entry, None, &facts, true);
         assert!(!view.installable);
         assert_eq!(
             view.install_block_reason,
             Some(PortInstallBlockReason::Withdrawn)
         );
+    }
+
+    #[test]
+    fn a_catalog_only_platform_blocks_every_install_with_coming_soon() {
+        // A Windows-capable, verified entry is still blocked where the install runner is absent.
+        let view = entry_view(&entry(), None, &EntryFacts::default(), false);
+        assert!(!view.installable);
+        assert_eq!(
+            view.install_block_reason,
+            Some(PortInstallBlockReason::ComingSoon)
+        );
+        // The same entry is installable on a platform with an install runner.
+        let view = entry_view(&entry(), None, &EntryFacts::default(), true);
+        assert!(view.installable);
+        assert_eq!(view.install_block_reason, None);
     }
 
     #[test]

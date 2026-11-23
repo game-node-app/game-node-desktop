@@ -23,6 +23,8 @@ export interface PortsToolbarProps {
   view: PortViewMode;
   onViewChange: (view: PortViewMode) => void;
   consoles: string[];
+  /** The platform control exists only where the catalog is read-only (Linux phase 1). */
+  showPlatformFilter?: boolean;
   visibleCount: number;
   totalCount: number;
   refreshing: boolean;
@@ -48,6 +50,7 @@ export const PortsToolbar: React.FC<PortsToolbarProps> = ({
   view,
   onViewChange,
   consoles,
+  showPlatformFilter = false,
   visibleCount,
   totalCount,
   refreshing,
@@ -65,6 +68,16 @@ export const PortsToolbar: React.FC<PortsToolbarProps> = ({
           ...filters,
           consoles: filters.consoles.filter((value) => value !== consoleName),
         }),
+    });
+  }
+  if (showPlatformFilter && (filters.platform ?? 'all') !== 'all') {
+    chips.push({
+      id: 'platform',
+      label:
+        filters.platform === 'nativeLinux'
+          ? t('Ports::Linux (native)')
+          : t('Ports::Windows-only'),
+      remove: () => onFiltersChange({ ...filters, platform: 'all' }),
     });
   }
   if (filters.guided) {
@@ -163,6 +176,28 @@ export const PortsToolbar: React.FC<PortsToolbarProps> = ({
             ))}
           </select>
         </label>
+
+        {showPlatformFilter && (
+          <label className="flex shrink-0 items-center gap-1.5">
+            <span className="sr-only">{t('Ports::Platform')}</span>
+            <select
+              data-testid="ports-platform-filter"
+              aria-label={t('Ports::Platform')}
+              value={filters.platform ?? 'all'}
+              onChange={(event) =>
+                onFiltersChange({
+                  ...filters,
+                  platform: event.target.value as PortFilters['platform'],
+                })
+              }
+              className={`${controlBase} cursor-pointer px-2 text-xs outline-none focus:border-brand`}
+            >
+              <option value="all">{t('Ports::All platforms')}</option>
+              <option value="nativeLinux">{t('Ports::Linux (native)')}</option>
+              <option value="windowsOnly">{t('Ports::Windows-only')}</option>
+            </select>
+          </label>
+        )}
 
         {toggle('guided', t('Ports::Guided setup'), filters.guided, (value) =>
           onFiltersChange({ ...filters, guided: value }),

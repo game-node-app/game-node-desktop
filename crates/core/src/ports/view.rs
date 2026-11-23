@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::ports::store::PortViewMode;
+use crate::ports::store::{PortPlatformFilter, PortViewMode};
 
 /// Where the PC ports destination exists. Reported through `AppInfo.platform` as well.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -130,6 +130,8 @@ pub enum PortNoAssetReason {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PortInstallBlockReason {
+    /// This build serves the catalog but cannot install ports yet (Linux phase 1).
+    ComingSoon,
     Withdrawn,
     NoVerifiedRelease,
     InstallerOnly,
@@ -333,6 +335,8 @@ pub struct PortFiltersView {
     pub guided: bool,
     pub verified: bool,
     pub installed: bool,
+    #[serde(default)]
+    pub platform: PortPlatformFilter,
 }
 
 /// Remembered view state.

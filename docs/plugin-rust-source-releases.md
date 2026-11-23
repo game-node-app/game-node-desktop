@@ -13,23 +13,18 @@ crates.io index and resolves the bundle lockfiles from locally available
 registry metadata. Have registry access for packaging and fetching dependencies.
 
 From the repository root, use a fresh output directory to keep `SHA256SUMS`
-scoped to this release. The packager requires an absolute `CARGO_TARGET_DIR`
-outside the repository; pick any directory on a disk with room for a full build
-(see [Cargo build output](development.md#cargo-build-output)).
+scoped to this release:
 
 ```sh
-export CARGO_TARGET_DIR=/absolute/path/outside/the/repository/target
-mkdir -p "$CARGO_TARGET_DIR"
 output=$(mktemp -d) || exit 1
 python3 scripts/package-plugin-rust-sources.py --output "$output/artifacts"
 ```
 
-The script requires clean public crate sources by default, checks Cargo's
-effective target directory with `cargo metadata` before packaging, creates
+The script requires clean public crate sources by default, creates
 versioned `.crate` packages, then extracts them into clean source workspaces. It resolves lockfiles offline, checks the resolved
 dependency paths, and runs the protocol and SDK tests from the extracted
-sources. Cargo build output stays in `CARGO_TARGET_DIR`. The packager removes
-its staging workspaces after the run.
+sources. Build output goes to the repository's Cargo target directory, and the
+packager removes its temporary staging workspaces after the run.
 
 The output directory contains the registry-format `.crate` files and
 versioned `.tar.gz` source bundles. Each bundle includes its `Cargo.lock`, the
@@ -79,17 +74,14 @@ publishing.
 
 ## Build from an extracted bundle
 
-Extract the matching `.tar.gz` into a fresh directory outside the repository.
-Run each command from the root of its respective bundle so rustup selects the
-pinned toolchain. Use a target directory outside the extracted bundle:
+Extract the matching `.tar.gz` into a fresh directory. Run each command from
+the root of its bundle so rustup selects the pinned toolchain:
 
 ```sh
-export CARGO_TARGET_DIR=/absolute/path/outside/the/bundle/target
 cargo metadata --locked --no-deps --format-version 1
 cargo test --locked -p gamenode-plugin-protocol
 cargo test --locked -p gamenode-plugin-sdk --lib --tests
 ```
 
-Run the metadata command in each bundle before testing. Confirm that
-`target_directory` matches `CARGO_TARGET_DIR` and that the workspace contains
-only the public protocol crate, plus the SDK in its own bundle.
+The metadata output should list only the public protocol crate, plus the SDK in
+its own bundle.

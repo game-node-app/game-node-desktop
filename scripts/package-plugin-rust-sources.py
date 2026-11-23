@@ -34,6 +34,8 @@ def sha256(path: Path) -> str:
 
 
 def cargo_command(target_dir: Path, cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    # The clean bundles live in a temporary directory; building them under the repository's
+    # target directory keeps build output out of the archived sources.
     environment = os.environ.copy()
     environment["CARGO_TARGET_DIR"] = str(target_dir)
     return subprocess.run(
@@ -47,13 +49,15 @@ def cargo_command(target_dir: Path, cwd: Path, *args: str) -> subprocess.Complet
     )
 
 
-def check_target_dir(target_dir: Path, cwd: Path) -> None:
-    metadata = json.loads(
-        cargo_command(target_dir, cwd, "metadata", "--locked", "--format-version", "1", "--no-deps").stdout
-    )
-    effective = Path(metadata["target_directory"]).resolve()
-    if effective != target_dir.resolve():
-        raise RuntimeError(f"Cargo target_directory is {effective}, expected {target_dir.resolve()}")
+def repository_target_dir() -> Path:
+    metadata = subprocess.run(
+        ["cargo", "metadata", "--locked", "--format-version", "1", "--no-deps"],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    ).stdout
+    return Path(json.loads(metadata)["target_directory"]).resolve()
 
 
 def unpack_crate(crate: Path, destination: Path) -> None:
@@ -160,9 +164,8 @@ def build_bundle(
     crate_paths: dict[str, Path],
     output: Path,
     target_dir: Path,
-    staging_parent: Path,
 ) -> None:
-    with tempfile.TemporaryDirectory(prefix=f"{package_name}-", dir=staging_parent) as temporary:
+    with tempfile.TemporaryDirectory(prefix=f"{package_name}-") as temporary:
         bundle = Path(temporary) / package_name
         crate_dirs: dict[str, Path] = {}
         for name, crate in crate_paths.items():
@@ -182,7 +185,6 @@ def build_bundle(
         (bundle / "Cargo.toml").write_text(workspace, encoding="utf-8")
         shutil.copyfile(ROOT / "rust-toolchain.toml", bundle / "rust-toolchain.toml")
 
-        check_target_dir(target_dir, bundle)
         cargo_command(
             target_dir,
             bundle,
@@ -203,8 +205,6 @@ def build_bundle(
                 str(bundle / "Cargo.toml"),
             ).stdout
         )
-        if Path(metadata["target_directory"]).resolve() != target_dir.resolve():
-            raise RuntimeError("clean bundle did not honor the required external Cargo target")
         bundle_root = bundle.resolve()
         for package in metadata["packages"]:
             manifest_path = Path(package["manifest_path"]).resolve()
@@ -285,21 +285,12 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    configured_target = os.environ.get("CARGO_TARGET_DIR")
-    if not configured_target:
-        parser.error("CARGO_TARGET_DIR must be set explicitly")
-    target_dir = Path(configured_target).resolve()
-    if not Path(configured_target).is_absolute():
-        parser.error(f"CARGO_TARGET_DIR must be an absolute path, got {configured_target}")
-    if target_dir == ROOT or ROOT in target_dir.parents:
-        parser.error(f"CARGO_TARGET_DIR must be outside the repository, got {target_dir}")
-
     with (ROOT / "Cargo.toml").open("rb") as stream:
         workspace = tomllib.load(stream)
     version = workspace["workspace"]["package"]["version"]
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
-    check_target_dir(target_dir, ROOT)
+    target_dir = repository_target_dir()
 
     dirty = subprocess.run(
         ["git", "status", "--porcelain", "--", *PACKAGES.values()],
@@ -341,8 +332,7 @@ def main() -> int:
         "gamenode-plugin-protocol",
         {"gamenode-plugin-protocol": crate_paths["gamenode-plugin-protocol"]},
         output,
-        target_dir,
-        target_dir.parent,
+        target_dir / "plugin-source-bundles",
     )
     build_bundle(
         "gamenode-plugin-sdk",
@@ -351,8 +341,7 @@ def main() -> int:
             "gamenode-plugin-sdk": crate_paths["gamenode-plugin-sdk"],
         },
         output,
-        target_dir,
-        target_dir.parent,
+        target_dir / "plugin-source-bundles",
     )
     checksums = []
     for artifact in sorted(output.glob("gamenode-plugin-*")):

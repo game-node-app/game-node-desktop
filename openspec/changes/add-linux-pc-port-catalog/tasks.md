@@ -60,13 +60,16 @@ capabilities. Windows behavior and the existing Windows acceptance are not reope
   recipe allows it), verify its checksum and normalize the executable bit. Reject Windows-only
   assets and unsupported formats explicitly.
   - Progress (2026-11-22): `select_asset_for(platform, ...)` in `crates/core/src/ports/plan.rs`
-    picks a Linux asset (AppImage, tar, tar.gz, tgz, zip, 7z, bin), applies the recipe asset
-    filter, ranks architecture, and refuses Windows-only releases (`NoLinuxAsset`), unsupported
-    formats (`UnsupportedFormat`) and macOS (`UnsupportedPlatform`); `select_asset` stays the
-    Windows entry point, so its tests and behavior are unchanged. `ports::linux_asset` classifies
-    executable versus archive formats and normalizes the executable bit with a test. Remaining:
-    wire the Linux install plan and job runner (download, checksum and placement), which is 2.2
-    and 2.4.
+    picks a Linux asset (AppImage, zip, 7z or a bare binary), applies the recipe asset filter,
+    ranks architecture, and refuses Windows-only releases (`NoLinuxAsset`), unsupported formats
+    (`UnsupportedFormat`, including `.deb` and tar until the in-process tar extractor exists) and
+    macOS (`UnsupportedPlatform`); `select_asset` stays the Windows entry point, so its tests and
+    behavior are unchanged. The Linux plan selects its own preferred executable, rejects console
+    packages, and carries its platform. The job runner copies an AppImage/bare binary into the
+    install folder and normalizes its executable bit, and `SystemExecutableIdentity` records the
+    Linux identity the launch validation compares. An end-to-end runner test installs an AppImage
+    and asserts the file, mode, and registration. Remaining for the task: tar support. Phase 2.2
+    and 2.5 (enabling the Linux service and per-entry availability in the UI) are still open.
 - [ ] 2.2 Map `app`, `data`, `config` and `localData` to XDG placement roots, register the result
   as an ordinary DRM-free entry, and validate the Linux launcher/executable before launch.
 - [ ] 2.3 Support Linux guided setup only for overlay recipes explicitly reviewed for Linux. A

@@ -15,9 +15,10 @@ use serde::{Deserialize, Serialize};
 use crate::ports::store::{PortPlatformFilter, PortViewMode};
 
 /// Where the PC ports destination exists. Reported through `AppInfo.platform` as well.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PortPlatform {
+    #[default]
     Windows,
     Linux,
     Macos,

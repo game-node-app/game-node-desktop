@@ -767,6 +767,7 @@ mod tests {
 
     fn stored_plan() -> PortInstallPlan {
         PortInstallPlan {
+            platform: gamenode_core::ports::view::PortPlatform::Windows,
             catalog_id: "qcat_1".into(),
             slug: "bloodborne".into(),
             title: "Bloodborne".into(),

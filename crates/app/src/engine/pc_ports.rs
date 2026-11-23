@@ -986,6 +986,7 @@ impl PortsService {
             .collect();
         let supplied_bytes = supplied_bytes(&supplied);
         let plan_request = InstallPlanRequest {
+            platform: self.config.platform,
             entry: merged_detail.clone(),
             releases,
             withdrawn: merged_detail.withdrawn.clone(),

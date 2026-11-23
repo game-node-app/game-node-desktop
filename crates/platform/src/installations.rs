@@ -110,7 +110,7 @@ fn linux_canonical(path: &str) -> Result<std::path::PathBuf, LocalError> {
 }
 
 #[cfg(target_os = "linux")]
-fn linux_identity(path: &std::path::Path) -> Result<String, LocalError> {
+pub(crate) fn linux_identity(path: &std::path::Path) -> Result<String, LocalError> {
     use std::os::unix::{fs::MetadataExt, fs::PermissionsExt};
     let metadata = std::fs::metadata(path).map_err(|_| LocalError::InvalidTarget)?;
     if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {

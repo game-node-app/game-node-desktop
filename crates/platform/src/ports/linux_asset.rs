@@ -19,6 +19,8 @@ pub enum LinuxAssetKind {
 pub fn kind(format: &str) -> Option<LinuxAssetKind> {
     match format.trim().to_ascii_lowercase().as_str() {
         "appimage" | "bin" => Some(LinuxAssetKind::Executable),
+        // Tar is classified here for the platform helper, but selection refuses it until the
+        // in-process tar extractor lands.
         "tar" | "tar.gz" | "tgz" | "zip" | "7z" => Some(LinuxAssetKind::Archive),
         _ => None,
     }

@@ -140,16 +140,25 @@ pub trait ExecutableIdentity: Send + Sync {
     fn identity(&self, executable: &Path) -> Result<String, String>;
 }
 
-/// The identity a Windows install records: volume serial, file index high and low.
+/// The identity an install records, in the form the platform's launch validation compares.
 ///
-/// The value matches what `gamenode_platform::installations` checks before launching, so the
-/// registration written at the commit point stays launchable. Port installs are Windows-only, so
-/// other platforms report that the identity is unavailable.
+/// On Windows it is the volume serial and file index; on Linux it is the device, inode, mode and
+/// timestamps the DRM-free installation host checks. The value written at the commit point must
+/// stay comparable after a restart, or the installed port would not launch.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SystemExecutableIdentity;
 
 impl ExecutableIdentity for SystemExecutableIdentity {
     fn identity(&self, executable: &Path) -> Result<String, String> {
+        #[cfg(target_os = "linux")]
+        {
+            crate::installations::linux_identity(executable).map_err(|error| error.to_string())
+        }
+        #[cfg(not(any(windows, target_os = "linux")))]
+        {
+            let _ = executable;
+            Err("PC port installs are not supported on this platform".into())
+        }
         #[cfg(windows)]
         {
             use std::os::windows::io::AsRawHandle;
@@ -173,10 +182,10 @@ impl ExecutableIdentity for SystemExecutableIdentity {
                 info.dwVolumeSerialNumber, info.nFileIndexHigh, info.nFileIndexLow
             ))
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "linux")))]
         {
             let _ = executable;
-            Err("PC port installs are only supported on Windows".into())
+            Err("PC port installs are not supported on this platform".into())
         }
     }
 }
@@ -997,6 +1006,16 @@ impl<'a> JobContext<'a> {
             PORTS_MAX_TOTAL_EXTRACTED_BYTES,
         )
         .map_err(|error| InstallError::Extract(error.to_string()))?;
+        // A Linux AppImage or bare binary is copied without its executable bit; the launch
+        // validation and the user both need it set.
+        if plan.platform == gamenode_core::ports::view::PortPlatform::Linux
+            && super::linux_asset::kind(&plan.asset.format)
+                == Some(super::linux_asset::LinuxAssetKind::Executable)
+        {
+            let placed = Path::new(&plan.staging).join(&plan.asset.filename);
+            super::linux_asset::normalize_executable(&placed)
+                .map_err(|error| InstallError::Io(format!("{}: {error}", placed.display())))?;
+        }
         self.check_cancelled()?;
         self.emit_progress(
             None,

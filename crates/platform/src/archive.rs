@@ -65,7 +65,12 @@ pub fn detect_asset_type(path: &Path) -> Result<AssetType, ToolError> {
         Ok(ArchiveType::SevenZip) => Ok(AssetType::SevenZip),
         Ok(ArchiveType::Zip) => Ok(AssetType::Zip),
         Err(error) => {
-            if file_extension(path) == "exe" {
+            // A bare executable is copied, not unpacked. Windows ships `.exe`; a native Linux port
+            // ships an AppImage or a bare binary under one of these names.
+            if matches!(
+                file_extension(path).as_str(),
+                "exe" | "appimage" | "bin" | "run"
+            ) {
                 Ok(AssetType::BareExecutable)
             } else {
                 Err(error)
@@ -399,6 +404,23 @@ fn extraction_limit_message(max_total_bytes: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn native_linux_binaries_are_bare_executables() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["port.AppImage", "port.bin", "port.run"] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, b"not an archive").unwrap();
+            assert_eq!(
+                detect_asset_type(&path).unwrap(),
+                AssetType::BareExecutable,
+                "{name}"
+            );
+        }
+        let unknown = dir.path().join("port.deb");
+        std::fs::write(&unknown, b"not an archive").unwrap();
+        assert!(detect_asset_type(&unknown).is_err());
+    }
+
     use super::*;
     use std::io::Write;
 

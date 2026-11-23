@@ -25,10 +25,11 @@ pub const EXTRACTED_SIZE_ESTIMATE: u64 = 2;
 pub const SUPPORTED_FORMATS: [&str; 3] = ["zip", "7z", "exe"];
 
 /// The native Linux formats the installer handles: an AppImage or bare executable is placed and
-/// marked executable, an archive is extracted. A package format (`.deb`, `.rpm`) is not an install
-/// input here; the recipe would have to name its own extractor, which is a separate review.
-pub const SUPPORTED_LINUX_FORMATS: [&str; 7] =
-    ["appimage", "tar", "tar.gz", "tgz", "zip", "7z", "bin"];
+/// marked executable, a zip or 7z archive is extracted. A package format (`.deb`, `.rpm`) is not
+/// an install input here; the recipe would have to name its own extractor, which is a separate
+/// review. Tar archives need the in-process tar extractor and stay unsupported until it lands, so
+/// selection refuses them explicitly instead of failing after the download.
+pub const SUPPORTED_LINUX_FORMATS: [&str; 4] = ["appimage", "zip", "7z", "bin"];
 
 /// The bytes an install needs before it starts: the download, its extraction and the copies of
 /// supplied files.
@@ -113,23 +114,33 @@ pub fn join_relative(base: &str, relative: &str) -> String {
     format!("{base}{separator}{tail}")
 }
 
-/// Whether `path` is `root` or lies inside it, comparing the way Windows does.
-fn is_inside_or_equal(path: &str, root: &str) -> bool {
-    fn normalize(value: &str) -> String {
-        value
-            .replace('/', "\\")
-            .trim_end_matches('\\')
-            .to_ascii_lowercase()
+/// Whether `path` is `root` or lies inside it, comparing the way the platform does.
+fn is_inside_or_equal(platform: crate::ports::view::PortPlatform, path: &str, root: &str) -> bool {
+    use crate::ports::view::PortPlatform;
+    fn normalize(value: &str, platform: PortPlatform) -> String {
+        match platform {
+            PortPlatform::Windows => value
+                .replace('/', "\\")
+                .trim_end_matches('\\')
+                .to_ascii_lowercase(),
+            PortPlatform::Linux => value.trim_end_matches('/').to_owned(),
+            PortPlatform::Macos => value.trim_end_matches('/').to_owned(),
+        }
     }
-    let path = normalize(path);
-    let root = normalize(root);
+    let separator = if platform == PortPlatform::Windows {
+        '\\'
+    } else {
+        '/'
+    };
+    let path = normalize(path, platform);
+    let root = normalize(root, platform);
     if path.is_empty() || root.is_empty() {
         return false;
     }
     path == root
         || (path.len() > root.len()
             && path.starts_with(&root)
-            && path.as_bytes()[root.len()] == b'\\')
+            && path.as_bytes()[root.len()] == separator as u8)
 }
 
 /// Chooses the release an install uses: the overlay's pinned version when it names one, else the
@@ -250,6 +261,8 @@ fn asset_format(asset: &PortAsset) -> Option<String> {
 /// Everything the host knows before an install can be planned.
 #[derive(Clone, Debug)]
 pub struct InstallPlanRequest {
+    /// The host platform whose install strategy applies.
+    pub platform: crate::ports::view::PortPlatform,
     /// The merged catalog entry, with the overlay already applied.
     pub entry: CatalogEntry,
     /// The entry's releases, as fetched from the upstream.
@@ -407,6 +420,9 @@ impl RegistrationTemplate {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PortInstallPlan {
+    /// The platform strategy this plan was built for. Old stored plans read as Windows.
+    #[serde(default)]
+    pub platform: crate::ports::view::PortPlatform,
     pub catalog_id: String,
     pub slug: String,
     pub title: String,
@@ -454,6 +470,8 @@ pub enum InstallRisk {
 pub enum PlanError {
     #[error("this entry does not support Windows")]
     NotWindows,
+    #[error("this entry does not support Linux")]
+    NotLinux,
     #[error("the entry has no verified release")]
     NoVerifiedRelease,
     #[error("release {version} was withdrawn: {reason}")]
@@ -503,13 +521,19 @@ pub enum PlanError {
 /// Plans an install from what the host already knows. Every check that can fail before the job
 /// starts is here; the job itself only executes and journals (design D5).
 pub fn plan_install(request: &InstallPlanRequest) -> Result<PortInstallPlan, PlanError> {
+    use crate::ports::view::PortPlatform;
     let entry = &request.entry;
-    if !entry.supports_windows() {
-        return Err(PlanError::NotWindows);
+    match request.platform {
+        PortPlatform::Windows if !entry.supports_windows() => {
+            return Err(PlanError::NotWindows);
+        }
+        PortPlatform::Linux if !entry.supports_linux() => return Err(PlanError::NotLinux),
+        PortPlatform::Macos => return Err(PlanError::UnsupportedPlatform),
+        PortPlatform::Windows | PortPlatform::Linux => {}
     }
 
     let release = select_release(entry, &request.releases, &request.withdrawn)?;
-    let asset = select_asset(entry, &release)?;
+    let asset = select_asset_for(request.platform, entry, &release)?;
 
     let mut risks = Vec::new();
     let (sha256, unverified) = match asset.verified_sha256() {
@@ -561,7 +585,7 @@ pub fn plan_install(request: &InstallPlanRequest) -> Result<PortInstallPlan, Pla
     if let Some(root) = request
         .library_roots
         .iter()
-        .find(|root| is_inside_or_equal(&target, root))
+        .find(|root| is_inside_or_equal(request.platform, &target, root))
     {
         return Err(PlanError::TargetInsideLibrary {
             target,
@@ -611,6 +635,14 @@ pub fn plan_install(request: &InstallPlanRequest) -> Result<PortInstallPlan, Pla
             reason: error.to_string(),
         })?;
         let choice = choices.get(slot.id.as_str()).copied();
+        if request.platform == PortPlatform::Linux
+            && choice.is_some_and(|choice| matches!(choice.source, SuppliedSource::Packages { .. }))
+        {
+            return Err(PlanError::InvalidSlot {
+                slot: slot.id.clone(),
+                reason: "console package extraction is not available on Linux".into(),
+            });
+        }
         if choice.is_none() && slot.required {
             return Err(PlanError::MissingSlot {
                 slot: slot.id.clone(),
@@ -714,7 +746,7 @@ pub fn plan_install(request: &InstallPlanRequest) -> Result<PortInstallPlan, Pla
     let mut arguments = positional;
     arguments.extend(flags);
 
-    let roles = entry.executable_roles();
+    let roles = entry.executable_roles_for(request.platform);
     let registration = RegistrationTemplate {
         title: entry.name.clone(),
         executable: roles.executable,
@@ -726,6 +758,7 @@ pub fn plan_install(request: &InstallPlanRequest) -> Result<PortInstallPlan, Pla
     let format = asset_format(&asset).unwrap_or_default();
 
     Ok(PortInstallPlan {
+        platform: request.platform,
         catalog_id: entry.catalog_id.clone(),
         slug: entry.slug.clone(),
         title: entry.name.clone(),
@@ -845,6 +878,7 @@ mod tests {
 
     fn request(entry: CatalogEntry, releases: Vec<PortRelease>) -> InstallPlanRequest {
         InstallPlanRequest {
+            platform: crate::ports::view::PortPlatform::Windows,
             entry,
             releases,
             withdrawn: Vec::new(),
@@ -942,6 +976,19 @@ mod tests {
                 format: "deb".into()
             })
         );
+
+        for asset in &mut release.assets {
+            if asset.is_linux() {
+                asset.filename = "bloodborne.tar.gz".into();
+                asset.format = Some("tar.gz".into());
+            }
+        }
+        assert_eq!(
+            select_asset_for(PortPlatform::Linux, &entry(), &release),
+            Err(PlanError::UnsupportedFormat {
+                format: "tar.gz".into()
+            })
+        );
     }
 
     #[test]
@@ -954,6 +1001,125 @@ mod tests {
             Err(PlanError::NoMatchingAsset {
                 filter: "AppImage".into()
             })
+        );
+    }
+
+    fn linux_entry() -> CatalogEntry {
+        CatalogEntry {
+            catalog_id: "qcat_devilutionx".into(),
+            slug: "diablo-devilutionx".into(),
+            name: "Diablo".into(),
+            supported_os: vec!["linux".into(), "windows".into()],
+            verified: Some(VerifiedRelease {
+                version: "1.5.5".into(),
+                released_at: 1_761_000_000_000,
+                ..VerifiedRelease::default()
+            }),
+            launcher: LauncherRecipe {
+                folder_name: Some("Diablo-DevilutionX".into()),
+                preferred_executables: PreferredExecutables {
+                    linux: vec!["devilutionx-linux-x86_64.appimage".into()],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..CatalogEntry::default()
+        }
+    }
+
+    fn linux_release() -> PortRelease {
+        PortRelease {
+            release_id: "rel-1.5.5".into(),
+            version: "1.5.5".into(),
+            released_at: 1_761_000_000_000,
+            assets: vec![
+                PortAsset {
+                    id: "win".into(),
+                    filename: "devilutionx-windows-x86_64.zip".into(),
+                    url: "https://example.com/win.zip".into(),
+                    os: Some("windows".into()),
+                    architecture: Some("x86_64".into()),
+                    format: Some("zip".into()),
+                    size: 1_000,
+                    checksum: Some(format!("sha256:{}", digest('d'))),
+                    ..PortAsset::default()
+                },
+                PortAsset {
+                    id: "linux".into(),
+                    filename: "devilutionx-linux-x86_64.appimage".into(),
+                    url: "https://example.com/devilutionx.appimage".into(),
+                    os: Some("linux".into()),
+                    architecture: Some("x86_64".into()),
+                    format: Some("appimage".into()),
+                    size: 2_000,
+                    checksum: Some(format!("sha256:{}", digest('e'))),
+                    ..PortAsset::default()
+                },
+            ],
+            ..PortRelease::default()
+        }
+    }
+
+    #[test]
+    fn a_native_linux_release_plans_its_appimage() {
+        let mut request = request(linux_entry(), vec![linux_release()]);
+        request.platform = crate::ports::view::PortPlatform::Linux;
+        request.parent = "/home/player/Ports".into();
+
+        let plan = plan_install(&request).expect("plan");
+
+        assert_eq!(plan.asset.filename, "devilutionx-linux-x86_64.appimage");
+        assert_eq!(plan.asset.format, "appimage");
+        assert_eq!(plan.asset.sha256, digest('e'));
+        assert_eq!(plan.target, "/home/player/Ports/Diablo-DevilutionX");
+        assert_eq!(plan.staging, "/home/player/Ports/.gamenode-staging-job-1");
+        assert_eq!(
+            plan.registration.executable.as_deref(),
+            Some("devilutionx-linux-x86_64.appimage"),
+            "the Linux preferred executable, not the Windows one"
+        );
+    }
+
+    #[test]
+    fn a_windows_only_entry_is_refused_on_linux() {
+        let mut request = request(entry(), vec![verified_release()]);
+        request.platform = crate::ports::view::PortPlatform::Linux;
+        assert_eq!(plan_install(&request), Err(PlanError::NotLinux));
+    }
+
+    #[test]
+    fn console_packages_are_refused_on_linux() {
+        use crate::ports::catalog::SetupKind;
+
+        let mut entry = linux_entry();
+        entry.launcher.setup_files = vec![SetupFile {
+            id: "game".into(),
+            label: "Game files".into(),
+            kind: SetupKind::Folder,
+            required: true,
+            from_package: Some(crate::ports::catalog::FromPackage {
+                extractor: "ps4-pkg".into(),
+                title_id: Some("CUSA03173".into()),
+                needs_update: None,
+            }),
+            ..Default::default()
+        }];
+        let mut request = request(entry, vec![linux_release()]);
+        request.platform = crate::ports::view::PortPlatform::Linux;
+        request.parent = "/home/player/Ports".into();
+        request.supplied = vec![SuppliedChoice {
+            slot: "game".into(),
+            source: SuppliedSource::Packages {
+                base: "/home/player/base.pkg".into(),
+                update: None,
+            },
+        }];
+
+        let error = plan_install(&request).expect_err("refused");
+        assert!(
+            matches!(error, PlanError::InvalidSlot { ref slot, ref reason }
+                if slot == "game" && reason.contains("not available on Linux")),
+            "{error:?}"
         );
     }
 

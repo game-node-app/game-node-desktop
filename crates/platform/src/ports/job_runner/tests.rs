@@ -553,6 +553,7 @@ fn plan_for(
     let setup_files = entry.launcher.setup_files.clone();
     let match_input = PortMatchInput::from_entry(&entry);
     let request = InstallPlanRequest {
+        platform: gamenode_core::ports::view::PortPlatform::Windows,
         entry,
         releases: vec![release(bytes, filename)],
         withdrawn: Vec::new(),
@@ -661,6 +662,102 @@ fn wait_for_rejection(events: &Receiver<JobEvent>, job_id: &str) -> String {
             return reason;
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_entry(launcher: &str) -> CatalogEntry {
+    CatalogEntry {
+        catalog_id: "qcat_devilutionx".into(),
+        slug: "diablo-devilutionx".into(),
+        name: "Diablo".into(),
+        supported_os: vec!["linux".into()],
+        games: vec![CatalogGame {
+            title: "Diablo".into(),
+            ..CatalogGame::default()
+        }],
+        verified: Some(VerifiedRelease {
+            version: "1.5.5".into(),
+            released_at: 1,
+            ..VerifiedRelease::default()
+        }),
+        launcher: gamenode_core::ports::LauncherRecipe {
+            folder_name: Some("Diablo-DevilutionX".into()),
+            preferred_executables: gamenode_core::ports::PreferredExecutables {
+                linux: vec![launcher.into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ..CatalogEntry::default()
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_release(bytes: &[u8], filename: &str) -> PortRelease {
+    PortRelease {
+        release_id: "rel-1.5.5".into(),
+        version: "1.5.5".into(),
+        released_at: 1,
+        assets: vec![PortAsset {
+            id: "linux".into(),
+            url: format!("https://example.invalid/{filename}"),
+            filename: filename.into(),
+            os: Some("linux".into()),
+            architecture: Some("x86_64".into()),
+            format: Some("appimage".into()),
+            size: bytes.len() as u64,
+            checksum: Some(format!("sha256:{}", compute_bytes_sha256(bytes))),
+            ..PortAsset::default()
+        }],
+        ..PortRelease::default()
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_native_linux_appimage_installs_and_becomes_executable() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new();
+    let filename = "devilutionx-linux-x86_64.appimage";
+    let bytes = b"not a real appimage, only the extension matters".to_vec();
+    let entry = linux_entry(filename);
+    let match_input = PortMatchInput::from_entry(&entry);
+    let plan = plan_install(&InstallPlanRequest {
+        platform: gamenode_core::ports::view::PortPlatform::Linux,
+        entry,
+        releases: vec![linux_release(&bytes, filename)],
+        withdrawn: Vec::new(),
+        parent: fixture.parent.display().to_string(),
+        job_id: "job-linux".into(),
+        target_empty: true,
+        free_space: u64::MAX,
+        library_roots: Vec::new(),
+        supplied: Vec::new(),
+        supplied_bytes: 0,
+        confirmed_risk: false,
+    })
+    .expect("a Linux plan");
+    assert_eq!(plan.asset.format, "appimage");
+    let install_folder = plan.target.clone();
+
+    let (runner, events) = fixture.start(FakeFetcher::new(bytes.clone()), Arc::new(PathIdentity));
+    runner
+        .enqueue(request("job-linux", plan, Vec::new(), match_input))
+        .unwrap();
+    let (job, completion) = wait_for_finished(&events);
+    runner.shutdown();
+
+    assert_eq!(job.phase, PortJobPhase::Completed);
+    let installed = Path::new(&install_folder).join(filename);
+    assert_eq!(fs::read(&installed).unwrap(), bytes);
+    let mode = fs::metadata(&installed).unwrap().permissions().mode();
+    assert_eq!(mode & 0o111, 0o111, "the AppImage is executable");
+    let completion = completion.expect("a completed install");
+    assert_eq!(
+        completion.registration.executable,
+        installed.to_string_lossy()
+    );
 }
 
 #[test]

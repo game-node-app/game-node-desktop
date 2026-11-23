@@ -87,6 +87,13 @@ impl CatalogEntry {
             .any(|os| os.eq_ignore_ascii_case("windows"))
     }
 
+    /// True when the upstream says the entry runs on Linux.
+    pub fn supports_linux(&self) -> bool {
+        self.supported_os
+            .iter()
+            .any(|os| os.eq_ignore_ascii_case("linux"))
+    }
+
     /// True when every field the catalog needs is present.
     pub fn is_complete(&self) -> bool {
         !self.catalog_id.trim().is_empty()
@@ -122,8 +129,23 @@ impl CatalogEntry {
     /// Without one, the first preferred Windows executable is the executable and the whole
     /// preferred list is kept as launchers. The installer still has to confirm that the file
     /// exists after extraction; a missing one falls back to asking the user.
+    /// The Windows executable roles. Kept for the existing Windows plan and tests.
     pub fn executable_roles(&self) -> ExecutableRoles {
-        let preferred = &self.launcher.preferred_executables.windows;
+        self.executable_roles_for(crate::ports::view::PortPlatform::Windows)
+    }
+
+    /// The executable roles this platform launches. The overlay may pin a launcher; otherwise the
+    /// platform's preferred list names the executable and its wrappers.
+    pub fn executable_roles_for(
+        &self,
+        platform: crate::ports::view::PortPlatform,
+    ) -> ExecutableRoles {
+        use crate::ports::view::PortPlatform;
+        let preferred = match platform {
+            PortPlatform::Windows => &self.launcher.preferred_executables.windows,
+            PortPlatform::Linux => &self.launcher.preferred_executables.linux,
+            PortPlatform::Macos => &self.launcher.preferred_executables.macos,
+        };
         match &self.launcher_executable {
             Some(launcher) => ExecutableRoles {
                 executable: Some(launcher.clone()),

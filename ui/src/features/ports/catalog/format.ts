@@ -38,6 +38,16 @@ export function filterPortEntries(
       );
       if (!matchesConsole) return false;
     }
+    if (filters.platform === 'nativeLinux') {
+      const native = entry.supportedOS.some(
+        (os) => os.trim().toLowerCase() === 'linux',
+      );
+      if (!native) return false;
+    }
+    if (filters.platform === 'windowsOnly') {
+      const declared = entry.supportedOS.map((os) => os.trim().toLowerCase());
+      if (!declared.includes('windows') || declared.includes('linux')) return false;
+    }
     if (filters.guided && !entry.guided) return false;
     if (filters.verified && !entry.verified) return false;
     if (filters.installed && !entry.installedRegistrationKey) return false;
@@ -52,6 +62,7 @@ export function filterPortEntries(
 export function portFiltersAreDefault(filters: PortFilters): boolean {
   return (
     filters.consoles.length === 0 &&
+    (filters.platform ?? 'all') === 'all' &&
     !filters.guided &&
     !filters.verified &&
     !filters.installed
@@ -86,6 +97,8 @@ export function installBlockReasonText(
   t: Translate,
 ): string | null {
   switch (reason) {
+    case 'comingSoon':
+      return t('Ports::Installing PC ports on Linux is coming soon.');
     case 'withdrawn':
       return t('Ports::This port was withdrawn upstream.');
     case 'noVerifiedRelease':
@@ -100,6 +113,20 @@ export function installBlockReasonText(
       return t("Ports::None of the port's expected executables is available.");
     default:
       return t('Ports::Install is unavailable for this entry.');
+  }
+}
+
+/** A human name for an operating-system id the catalog declares. */
+export function portPlatformName(os: string, t: Translate): string {
+  switch (os.trim().toLowerCase()) {
+    case 'windows':
+      return t('Ports::Windows');
+    case 'linux':
+      return t('Ports::Linux');
+    case 'macos':
+      return t('Ports::macOS');
+    default:
+      return os;
   }
 }
 

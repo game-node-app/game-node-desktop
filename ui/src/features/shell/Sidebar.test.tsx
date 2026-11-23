@@ -425,19 +425,33 @@ describe('Sidebar', () => {
     expect(within(screen.getByTestId('sidebar-ports')).getByTestId('sidebar-ports-badge')).toHaveTextContent(
       '3',
     );
+    expect(screen.queryByTestId('sidebar-ports-coming-soon')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'PC ports' }));
     expect(uiStore.state.activeDestination).toBe('ports');
     expect(portsOpen).toHaveBeenCalledTimes(1);
 
     view.unmount();
+  });
+
+  it('shows the PC ports destination on Linux with a coming soon label', () => {
+    const portsOpen = vi.spyOn(commands, 'portsOpen').mockResolvedValue();
     renderSidebar({
       library: makeLibrary(),
       localGames: emptyLocal(),
-      ports,
+      ports: { ...createDefaultPortsView(), unseenCount: 3 },
       signedIn: true,
       platform: 'linux',
     });
-    expect(screen.queryByTestId('sidebar-ports')).not.toBeInTheDocument();
+
+    expect(
+      within(screen.getByTestId('sidebar-ports')).getByTestId(
+        'sidebar-ports-coming-soon',
+      ),
+    ).toHaveTextContent('Coming soon');
+    expect(screen.queryByTestId('sidebar-ports-badge')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'PC ports' }));
+    expect(uiStore.state.activeDestination).toBe('ports');
+    expect(portsOpen).toHaveBeenCalledTimes(1);
   });
 
   it('renders the 72px rail with accessible rows, keyboard activation and no resize handle', async () => {

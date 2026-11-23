@@ -526,6 +526,46 @@ async fn the_catalog_status_carries_seconds_and_the_entries_are_merged() {
 }
 
 #[tokio::test]
+async fn linux_serves_the_catalog_read_only_and_refuses_installs() {
+    let _serial = serial().lock().await;
+    let db = database();
+    let store: Arc<dyn PortStore> = Arc::new(db.ports_store());
+    let local: Arc<dyn LocalGameStore> = Arc::new(db.local_game_store());
+    let catalog = Arc::new(FakeCatalog::new(
+        vec![entry()],
+        Some(entry()),
+        vec![release(Some(format!("sha256:{}", "a".repeat(64))), None)],
+    ));
+    let mut config = service_config(store, local, catalog);
+    config.platform = gamenode_core::ports::PortPlatform::Linux;
+    assert!(
+        config.install.is_none(),
+        "a Linux build has no install dependencies"
+    );
+    let (service, rx) = start(config);
+    assert!(!service.is_supported());
+    service.open();
+    let view = wait_for_view(&rx, |view| view.catalog.state == PortCatalogState::Ready);
+    assert_eq!(view.catalog.entry_count, 1);
+    assert_eq!(view.entries.len(), 1);
+    assert!(view.jobs.is_empty(), "a read-only build queues no jobs");
+
+    let error = service
+        .install(&PortInstallRequest {
+            plugin_request_id: None,
+            catalog_id: "qcat_lantern".into(),
+            parent_folder: std::env::temp_dir().to_string_lossy().into_owned(),
+            supplied: Vec::new(),
+            accept_unverified_checksum: false,
+            accept_malware_flag: false,
+            retry_job_id: None,
+        })
+        .expect_err("a Linux build cannot install");
+    assert_eq!(error, PortsError::Unsupported);
+    service.shutdown();
+}
+
+#[tokio::test]
 async fn preferences_round_trip_and_reach_the_view() {
     let _serial = serial().lock().await;
     let db = database();
@@ -541,6 +581,7 @@ async fn preferences_round_trip_and_reach_the_view() {
                 guided: Some(true),
                 verified: Some(false),
                 installed: Some(false),
+                platform: Some(gamenode_core::ports::PortPlatformFilter::NativeLinux),
             }),
             last_parent_folder: Some(Some(r"D:\Ports".into())),
         })
@@ -548,6 +589,10 @@ async fn preferences_round_trip_and_reach_the_view() {
     let stored = store.preferences().unwrap();
     assert_eq!(stored.view, PortViewMode::List);
     assert_eq!(stored.consoles, ["PlayStation 4"]);
+    assert_eq!(
+        stored.platform_filter,
+        gamenode_core::ports::PortPlatformFilter::NativeLinux
+    );
     assert!(stored.guided);
     assert_eq!(stored.last_parent.as_deref(), Some(r"D:\Ports"));
     let view = wait_for_view(&rx, |view| {

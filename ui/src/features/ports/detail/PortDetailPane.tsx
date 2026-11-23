@@ -21,6 +21,7 @@ import {
   formatPortDate,
   installBlockReasonText,
   placementRootLabel,
+  portPlatformName,
   setupSlotKindLabel,
   versionLabel,
   type Translate,
@@ -278,6 +279,19 @@ export const PortDetailPane: React.FC<PortDetailPaneProps> = ({ entry, onClose }
               {entry.consoles.join(', ')}
             </span>
           </div>
+          {entry.supportedOS.length > 0 && (
+            <div
+              data-testid="port-detail-platforms"
+              className="flex flex-wrap gap-1"
+            >
+              <span className="text-text-dimmed">{t('Ports::Platforms')}</span>
+              <span className="min-w-0 break-words text-text-default">
+                {entry.supportedOS
+                  .map((os) => portPlatformName(os, t))
+                  .join(', ')}
+              </span>
+            </div>
+          )}
           {detail?.developer && (
             <div className="flex flex-wrap gap-1">
               <span className="text-text-dimmed">{t('Ports::Developer')}</span>

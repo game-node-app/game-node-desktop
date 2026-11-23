@@ -20,12 +20,14 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
+use serde::Deserialize;
+
 use gamenode_core::drm_free::Registration;
 use gamenode_core::ports::catalog::CatalogSnapshot;
 use gamenode_core::ports::job::PortJobPhase;
 use gamenode_core::ports::{
-    PortInstallation, PortJobResume, PortJobRow, PortOverlayRow, PortPreferences, PortStore,
-    PortViewMode, StorageError,
+    PortInstallation, PortJobResume, PortJobRow, PortOverlayRow, PortPlatformFilter,
+    PortPreferences, PortStore, PortViewMode, StorageError,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -596,6 +598,7 @@ impl PortStore for SqlitePortStore {
             guided: filters.guided,
             verified: filters.verified,
             installed: filters.installed,
+            platform_filter: filters.platform,
             last_parent,
         })
     }
@@ -607,6 +610,7 @@ impl PortStore for SqlitePortStore {
             guided: preferences.guided,
             verified: preferences.verified,
             installed: preferences.installed,
+            platform: preferences.platform_filter,
         };
         let filters = serde_json::to_string(&filters).map_err(failed)?;
         let view = match preferences.view {
@@ -641,6 +645,21 @@ struct StoredFilters {
     guided: bool,
     verified: bool,
     installed: bool,
+    /// An unknown value from a newer build falls back to `All` instead of failing the read.
+    #[serde(default, deserialize_with = "platform_filter_or_all")]
+    platform: PortPlatformFilter,
+}
+
+fn platform_filter_or_all<'de, D>(deserializer: D) -> Result<PortPlatformFilter, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    Ok(match value.as_deref() {
+        Some("nativeLinux") => PortPlatformFilter::NativeLinux,
+        Some("windowsOnly") => PortPlatformFilter::WindowsOnly,
+        _ => PortPlatformFilter::All,
+    })
 }
 
 #[cfg(test)]
@@ -1188,6 +1207,7 @@ mod tests {
                 guided: true,
                 verified: true,
                 installed: false,
+                platform_filter: PortPlatformFilter::NativeLinux,
                 last_parent: Some(r"D:\Ports".into()),
             };
             store.save_preferences(&saved).unwrap();
@@ -1202,6 +1222,7 @@ mod tests {
                     guided: true,
                     verified: true,
                     installed: false,
+                    platform_filter: PortPlatformFilter::NativeLinux,
                     last_parent: Some(r"D:\Ports".into()),
                 }
             );
@@ -1213,9 +1234,21 @@ mod tests {
                     [],
                 )
                 .unwrap();
+            let legacy = reopened.preferences().unwrap();
+            assert_eq!(legacy.consoles, vec!["ps4".to_owned()]);
+            // A filters row written before the platform filter existed reads as `All`.
+            assert_eq!(legacy.platform_filter, PortPlatformFilter::All);
+
+            // A value from a newer build falls back to `All` instead of failing the read.
+            crate::db::lock(&reopened.conn)
+                .execute(
+                    r#"UPDATE port_preferences SET filters_json = '{"platform":"steamdeck"}' WHERE id = 1"#,
+                    [],
+                )
+                .unwrap();
             assert_eq!(
-                reopened.preferences().unwrap().consoles,
-                vec!["ps4".to_owned()]
+                reopened.preferences().unwrap().platform_filter,
+                PortPlatformFilter::All
             );
 
             // An unreadable filter row falls back to no filters without blocking PC ports.

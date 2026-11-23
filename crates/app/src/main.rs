@@ -414,30 +414,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
 
     // The service loads the overlay, recovers interrupted installs and starts its workers on a
-    // dedicated thread; construction returns immediately.
-    let pc_ports = if gamenode_core::ports::PortPlatform::current().supports_installs() {
-        let data_dir = paths.data_dir().to_owned();
-        Some(PortsService::start(PortsServiceConfig {
-            store: Arc::clone(&port_store),
-            local_games: local_game_store.clone(),
-            catalog: Arc::new(gamenode_platform::ports::QuiverClient::new()?),
-            overlay_fetcher: Arc::new(
-                gamenode_platform::ports::overlay_source::HttpOverlayFetcher::new(),
-            ),
-            clock: Arc::new(gamenode_platform::ports::SystemClock),
-            data_dir: data_dir.clone(),
-            platform: gamenode_core::ports::PortPlatform::current(),
-            install: Some(InstallDeps {
-                fetcher: Arc::new(gamenode_platform::download::HttpDownloadFetcher::new()?),
-                url_policy: Arc::new(gamenode_platform::download::HttpsDownloadPolicy),
-                user_roots: gamenode_platform::ports::UserDataRoots::host()?,
-                identity: Arc::new(gamenode_platform::ports::SystemExecutableIdentity),
-                packages: Arc::new(gamenode_platform::ports::PinnedExtractor::new(data_dir)?),
-            }),
-        }))
+    // dedicated thread; construction returns immediately. The catalog also runs where installs are
+    // unsupported: the service is read-only there and the install runner stays absent.
+    let port_platform = gamenode_core::ports::PortPlatform::current();
+    let data_dir = paths.data_dir().to_owned();
+    let install = if port_platform.supports_installs() {
+        Some(InstallDeps {
+            fetcher: Arc::new(gamenode_platform::download::HttpDownloadFetcher::new()?),
+            url_policy: Arc::new(gamenode_platform::download::HttpsDownloadPolicy),
+            user_roots: gamenode_platform::ports::UserDataRoots::host()?,
+            identity: Arc::new(gamenode_platform::ports::SystemExecutableIdentity),
+            packages: Arc::new(gamenode_platform::ports::PinnedExtractor::new(
+                data_dir.clone(),
+            )?),
+        })
     } else {
         None
     };
+    let pc_ports = Some(PortsService::start(PortsServiceConfig {
+        store: Arc::clone(&port_store),
+        local_games: local_game_store.clone(),
+        catalog: Arc::new(gamenode_platform::ports::QuiverClient::new()?),
+        overlay_fetcher: Arc::new(
+            gamenode_platform::ports::overlay_source::HttpOverlayFetcher::new(),
+        ),
+        clock: Arc::new(gamenode_platform::ports::SystemClock),
+        data_dir,
+        platform: port_platform,
+        install,
+    }));
 
     let pub_clone = publisher.clone();
     let achievement_store = store.achievement_store();

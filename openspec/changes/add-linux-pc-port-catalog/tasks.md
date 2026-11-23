@@ -10,21 +10,46 @@ capabilities. Windows behavior and the existing Windows acceptance are not reope
   the recipe's tool requirements, not from `supportedOS` alone. Expose native/blocked/unknown and
   the reason in the catalog view model. Verify Linux-only, Windows-only, mixed and inconsistent
   upstream claims (an OS listed without an asset) produce the expected availability.
-- [ ] 1.2 Start the PC ports catalog service on signed-in Linux builds in read-only mode while the
+- [x] 1.2 Start the PC ports catalog service on signed-in Linux builds in read-only mode while the
   install service stays Windows-only. Keep the existing Windows catalog path unchanged.
-- [ ] 1.3 Show `EXPLORE → PC ports` on signed-in Linux builds with an “Em breve”/“Coming Soon”
+  - Completion (2026-11-22): `main.rs` now starts `PortsService` on every platform and builds
+    `InstallDeps` only where `supports_installs()` is true, so Linux gets the catalog worker with no
+    install runner. `install`, `prepare_install`, `pick_executable` and `clear_cache` still return
+    `Unsupported`; the plugin routes report `UNAVAILABLE` before any job starts. Windows keeps the
+    same construction. Regression: `engine::tests::pc_ports::linux_serves_the_catalog_read_only_and_refuses_installs`.
+- [x] 1.3 Show `EXPLORE → PC ports` on signed-in Linux builds with an “Em breve”/“Coming Soon”
   label on the destination and in the catalog header. Verify signed-out and non-Linux builds keep
   their existing visibility.
-- [ ] 1.4 Add the persisted platform filter **All** (default), **Native Linux** and
+  - Completion (2026-11-22): the sidebar shows PC ports for `windows` and `linux`, with a
+    `sidebar-ports-coming-soon` badge on Linux; `App.tsx` renders `PortsView` on both platforms
+    (the original gate hid the destination after the click). The catalog header carries
+    `banner-ports-coming-soon`. Signed-out and macOS builds keep the previous visibility. Tests:
+    `Sidebar.test.tsx`, `App.integration.test.tsx` (`opens the read-only PC ports catalog on Linux`).
+- [x] 1.4 Add the persisted platform filter **All** (default), **Native Linux** and
   **Windows-only** on Linux. Verify the filter survives restart, an unknown value falls back to
   All, and Windows filters are unchanged.
-- [ ] 1.5 Keep every entry browsable on Linux in phase 1, but disable Install for all of them with
+  - Completion (2026-11-22): `PortPlatformFilter` is stored in `PortPreferences` and inside the
+    existing `port_preferences.filters_json`, with an unknown value reading as `All`; the toolbar
+    select exists only on Linux (the read-only phase) and Windows keeps its previous controls.
+    Filtering uses the entry's declared `supportedOS`; installs stay blocked. Tests: platform
+    store round-trip plus legacy/unknown fallback and the UI platform filter.
+- [x] 1.5 Keep every entry browsable on Linux in phase 1, but disable Install for all of them with
   the Coming Soon reason. The detail pane shows available platforms and the phase note. Verify no
   download, extractor, launch or library registration is started from a blocked card; Windows-only
   cards explain that Proton is future work.
-- [ ] 1.6 Add en and pt-BR strings, `VITE_UI_MOCK=1` fixtures for native Linux, Windows-only and
+  - Completion (2026-11-22): `PortInstallBlockReason::ComingSoon` overrides every other reason on a
+    platform without an install runner, so a verified Windows-capable entry is still blocked; the
+    detail pane shows a Platforms row and the translated note. No setup, download, extractor or
+    registration starts because the button is disabled and the service refuses the request.
+    Untested here: the Proton note stays phase 2, when native installs exist.
+- [x] 1.6 Add en and pt-BR strings, `VITE_UI_MOCK=1` fixtures for native Linux, Windows-only and
   mixed entries, and component tests for the Coming Soon label, filter, blocked card and detail
   note.
+  - Completion (2026-11-22): en/pt-BR cover the label, banner, platform filter and platform names.
+    The mock catalog has a mixed entry (`Aster Vale`), a native Linux entry (`Beyond the Pines`) and
+    Windows-only entries, reachable with `VITE_UI_MOCK=1` plus `?platform=linux`. Component tests
+    cover the label, banner, filter, blocked install and Platforms row; the i18n parity test allows
+    the proper-noun platform names.
 - [ ] 1.7 Run a native Linux packaged-host check: open PC ports, see Coming Soon, list the cached
   catalog, filter native Linux and Windows-only, and confirm no install/network download starts.
   Record the evidence as a packaging check.

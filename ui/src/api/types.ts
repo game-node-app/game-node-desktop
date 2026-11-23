@@ -2336,6 +2336,7 @@ export function createDefaultPortsView(): PortsView {
         guided: false,
         verified: false,
         installed: false,
+        platform: 'all',
       },
       lastParentFolder: null,
     },

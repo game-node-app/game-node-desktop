@@ -22,6 +22,7 @@ const invokeLog: Array<{ cmd: string; args?: Record<string, unknown> }> = [];
 const order: string[] = [];
 let current: Snapshot;
 let locale = 'en';
+let appPlatform: 'windows' | 'linux' | 'macos' = 'windows';
 let pendingSnapshot: Promise<Snapshot> | null = null;
 
 vi.mock('@tauri-apps/api/core', () => ({
@@ -38,7 +39,7 @@ vi.mock('@tauri-apps/api/core', () => ({
         osVersion: 'Test OS 1.0',
         arch: 'x86_64',
         backgroundSupported: false,
-        platform: 'windows',
+        platform: appPlatform,
       } satisfies AppInfo;
     }
     if (cmd === 'get_license_notices') return 'GPL-3.0-only notices';
@@ -349,6 +350,24 @@ describe('App (integration: real component tree over a fake Tauri host)', () => 
     expect(calls('library_input').map((call) => call.args?.input)).toContainEqual({
       setScope: 'all',
     });
+  });
+
+  it('opens the read-only PC ports catalog on Linux', async () => {
+    appPlatform = 'linux';
+    try {
+      await mountApp();
+      await publish(signedIn(current));
+
+      fireEvent.click(
+        within(await screen.findByTestId('sidebar-ports')).getByRole('button'),
+      );
+
+      expect(await screen.findByTestId('ports-view')).toBeInTheDocument();
+      expect(await screen.findByTestId('banner-ports-coming-soon')).toBeInTheDocument();
+      expect(calls('ports_open')).toHaveLength(1);
+    } finally {
+      appPlatform = 'windows';
+    }
   });
 
   it('switches the content area to PC ports and back to the filtered library', async () => {

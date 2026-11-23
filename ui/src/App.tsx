@@ -169,7 +169,8 @@ export const App: React.FC = () => {
     typeof navigator !== 'undefined' ? navigator.userAgent : null,
     appInfo.data?.platform,
   );
-  const portsVisible = signedIn && platform === 'windows';
+  const portsVisible =
+    signedIn && (platform === 'windows' || platform === 'linux');
 
   let main: React.ReactNode;
   if (destination === 'ports' && portsVisible) {

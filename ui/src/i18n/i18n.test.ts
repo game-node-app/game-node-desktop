@@ -40,7 +40,15 @@ describe('i18n catalogs', () => {
 
     const placeholders = (value: string) => (value.match(/\{[^}]*\}/g) ?? []).sort();
     // Words that are already the same in Brazilian Portuguese, plus the percent symbol.
-    const identicalAllowed = new Set(['Ports::Console', 'Ports::Port', 'Ports::{}%']);
+    // Platform names are proper nouns in both catalogs.
+    const identicalAllowed = new Set([
+      'Ports::Console',
+      'Ports::Port',
+      'Ports::{}%',
+      'Ports::Windows',
+      'Ports::Linux',
+      'Ports::macOS',
+    ]);
 
     for (const key of portsEnKeys) {
       const enValue = (en as Record<string, string>)[key];

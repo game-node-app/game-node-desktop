@@ -270,6 +270,84 @@ describe('Ports catalog', () => {
     vi.restoreAllMocks();
   });
 
+  it('filters by the declared platform and persists the choice', () => {
+    const ports = makePorts();
+    ports.entries = [
+      entry({
+        catalogId: 'qcat_linux',
+        supportedOS: ['linux', 'windows'],
+        installable: false,
+        installBlockReason: 'comingSoon',
+      }),
+      entry({
+        catalogId: 'qcat_windows',
+        supportedOS: ['windows'],
+        installable: false,
+        installBlockReason: 'comingSoon',
+      }),
+      entry({
+        catalogId: 'qcat_native',
+        supportedOS: ['linux'],
+        installable: false,
+        installBlockReason: 'comingSoon',
+      }),
+    ];
+    ports.preferences.filters.platform = 'nativeLinux';
+    const view = renderPorts(ports);
+
+    expect(screen.getByTestId('port-tile-qcat_linux')).toBeInTheDocument();
+    expect(screen.getByTestId('port-tile-qcat_native')).toBeInTheDocument();
+    expect(screen.queryByTestId('port-tile-qcat_windows')).not.toBeInTheDocument();
+
+    // The control persists the choice; the host answers with a new snapshot.
+    fireEvent.change(screen.getByTestId('ports-platform-filter'), {
+      target: { value: 'windowsOnly' },
+    });
+    expect(commands.portsSetPreferences).toHaveBeenLastCalledWith({
+      filters: expect.objectContaining({ platform: 'windowsOnly' }),
+    });
+    view.unmount();
+
+    ports.preferences.filters.platform = 'windowsOnly';
+    renderPorts(ports);
+    expect(screen.getByTestId('port-tile-qcat_windows')).toBeInTheDocument();
+    expect(screen.queryByTestId('port-tile-qcat_linux')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('port-tile-qcat_native')).not.toBeInTheDocument();
+  });
+
+  it('hides the platform filter on Windows', async () => {
+    vi.spyOn(commands, 'getAppInfo').mockResolvedValue({
+      locale: 'en',
+      version: '0.1.0',
+      backgroundSupported: false,
+      platform: 'windows',
+    });
+    renderPorts(makePorts());
+
+    await waitFor(() =>
+      expect(screen.queryByTestId('ports-platform-filter')).not.toBeInTheDocument(),
+    );
+  });
+
+  it('marks the catalog read-only on Linux and hides the note on Windows', async () => {
+    const first = renderPorts(makePorts());
+    expect(await screen.findByTestId('banner-ports-coming-soon')).toHaveTextContent(
+      'Browsing only. Installing PC ports on Linux is coming soon.',
+    );
+    first.unmount();
+
+    vi.spyOn(commands, 'getAppInfo').mockResolvedValue({
+      locale: 'en',
+      version: '0.1.0',
+      backgroundSupported: false,
+      platform: 'windows',
+    });
+    renderPorts(makePorts());
+    await waitFor(() =>
+      expect(screen.queryByTestId('banner-ports-coming-soon')).not.toBeInTheDocument(),
+    );
+  });
+
   it('filters by search over names and game titles, and by the persisted toggles', async () => {
     renderPorts(makePorts());
 
@@ -415,6 +493,24 @@ describe('Ports catalog', () => {
     expect(screen.getByTestId('port-install-reason')).toHaveTextContent(
       'The Windows download is an installer, which GameNode does not run.',
     );
+  });
+
+  it('blocks every install with the coming soon reason on a read-only platform', () => {
+    const ports = makePorts();
+    ports.entries = ports.entries.map((item) => ({
+      ...item,
+      installable: false,
+      installBlockReason: 'comingSoon' as const,
+    }));
+    renderPorts(ports);
+
+    fireEvent.click(screen.getByTestId('port-tile-qcat_aster'));
+
+    expect(screen.getByTestId('port-install-btn')).toBeDisabled();
+    expect(screen.getByTestId('port-install-reason')).toHaveTextContent(
+      'Installing PC ports on Linux is coming soon.',
+    );
+    expect(screen.getByTestId('port-detail-platforms')).toHaveTextContent('Windows');
   });
 
   it('lists guided requirements with accepted versions, optional slots and the package option', async () => {

@@ -380,6 +380,7 @@ pub struct PortFiltersPatch {
     pub guided: Option<bool>,
     pub verified: Option<bool>,
     pub installed: Option<bool>,
+    pub platform: Option<gamenode_core::ports::store::PortPlatformFilter>,
 }
 
 /// Reads `null` as `Some(None)` and a value as `Some(Some(value))`; a missing field stays `None`.
@@ -1237,6 +1238,7 @@ impl PortsService {
             preferences: &preferences,
             facts: &facts,
             active_jobs: &active,
+            installs_supported: self.config.platform.supports_installs(),
         }))
     }
 
@@ -1423,6 +1425,9 @@ fn apply_preferences(preferences: &mut PortPreferences, patch: &PortPreferencesP
         }
         if let Some(installed) = filters.installed {
             preferences.installed = installed;
+        }
+        if let Some(platform) = filters.platform {
+            preferences.platform_filter = platform;
         }
     }
     if let Some(last_parent) = &patch.last_parent_folder {

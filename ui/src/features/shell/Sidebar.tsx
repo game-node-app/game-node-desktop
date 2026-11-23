@@ -144,7 +144,11 @@ export function Sidebar({
       typeof navigator !== 'undefined' ? navigator.userAgent : null,
       appInfo?.data?.platform,
     );
-  const showPortsDestination = signedIn && platform === 'windows';
+  // The catalog is browsable wherever the host serves it. Installs are still Windows-only, so a
+  // Linux build labels the destination as coming soon instead of hiding it.
+  const showPortsDestination =
+    signedIn && (platform === 'windows' || platform === 'linux');
+  const portsComingSoon = platform === 'linux';
 
   const collapsed = library?.layout?.sidebarCollapsed ?? false;
   const storedWidth = library?.layout?.sidebarWidth ?? 240;
@@ -491,7 +495,16 @@ export function Sidebar({
                   count={collapsed && unseenInstalls > 0 ? unseenInstalls : undefined}
                   countTone="brand"
                   trailing={
-                    !collapsed && unseenInstalls > 0 ? (
+                    portsComingSoon ? (
+                      !collapsed ? (
+                        <span
+                          data-testid="sidebar-ports-coming-soon"
+                          className="rounded-full bg-accent-subtle px-[6px] text-[10px] font-medium leading-[16px] text-brand"
+                        >
+                          {t('Ports::Coming soon')}
+                        </span>
+                      ) : undefined
+                    ) : !collapsed && unseenInstalls > 0 ? (
                       <span
                         data-testid="sidebar-ports-badge"
                         aria-label={formatI18n(

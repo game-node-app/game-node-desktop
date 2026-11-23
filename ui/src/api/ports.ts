@@ -119,6 +119,7 @@ export type PortNoAssetReason =
 
 /** Why Install is unavailable for an entry. */
 export type PortInstallBlockReason =
+  | 'comingSoon'
   | 'withdrawn'
   | 'noVerifiedRelease'
   | PortNoAssetReason;
@@ -306,9 +307,13 @@ export interface PortJobView {
 export type PortViewMode = 'grid' | 'list';
 
 /** Catalog filters; they combine with AND. */
+export type PortPlatformFilter = 'all' | 'nativeLinux' | 'windowsOnly';
+
 export interface PortFilters {
   /** Console names from `PortEntryView.consoles`; empty means every console. */
   consoles: string[];
+  /** Platform slice; only the Linux read-only phase shows the control. */
+  platform?: PortPlatformFilter;
   /** Only entries with guided setup. */
   guided: boolean;
   /** Only entries with a verified release. */

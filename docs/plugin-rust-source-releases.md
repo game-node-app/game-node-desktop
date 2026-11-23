@@ -12,26 +12,21 @@ Use Python 3.11+, Git and the Rust toolchain pinned in
 crates.io index and resolves the bundle lockfiles from locally available
 registry metadata. Have registry access for packaging and fetching dependencies.
 
-On the Linux development workstation, verify the external mount and target
-before packaging. From the repository root, use a fresh output directory to
-keep `SHA256SUMS` scoped to this release. The packager requires an absolute
-`CARGO_TARGET_DIR` outside the repository; use the worktree's own target as in
-[the development guide](development.md#required-cargo-target-location).
+From the repository root, use a fresh output directory to keep `SHA256SUMS`
+scoped to this release. The packager requires an absolute `CARGO_TARGET_DIR`
+outside the repository; pick any directory on a disk with room for a full build
+(see [Cargo build output](development.md#cargo-build-output)).
 
 ```sh
-area=/data/DADOS_LINUX/geral/area_troca_rust
-findmnt --mountpoint /data/DADOS_LINUX || exit 1
-export CARGO_TARGET_DIR="$area/target-$(basename "$PWD")"
+export CARGO_TARGET_DIR=/absolute/path/outside/the/repository/target
 mkdir -p "$CARGO_TARGET_DIR"
-export TMPDIR
-TMPDIR=$(mktemp -d "$area/plugin-rust.XXXXXXXX") || exit 1
-python3 scripts/package-plugin-rust-sources.py --output "$TMPDIR/artifacts"
+output=$(mktemp -d) || exit 1
+python3 scripts/package-plugin-rust-sources.py --output "$output/artifacts"
 ```
 
 The script requires clean public crate sources by default, checks Cargo's
 effective target directory with `cargo metadata` before packaging, creates
-versioned `.crate` packages, then extracts them into clean source workspaces on
-the external mount. It resolves lockfiles offline, checks the resolved
+versioned `.crate` packages, then extracts them into clean source workspaces. It resolves lockfiles offline, checks the resolved
 dependency paths, and runs the protocol and SDK tests from the extracted
 sources. Cargo build output stays in `CARGO_TARGET_DIR`. The packager removes
 its staging workspaces after the run.
@@ -86,12 +81,10 @@ publishing.
 
 Extract the matching `.tar.gz` into a fresh directory outside the repository.
 Run each command from the root of its respective bundle so rustup selects the
-pinned toolchain. On the Linux development workstation, use an external target
-outside the extracted bundle:
+pinned toolchain. Use a target directory outside the extracted bundle:
 
 ```sh
-area=/data/DADOS_LINUX/geral/area_troca_rust
-export CARGO_TARGET_DIR="$area/target-plugin-rust-bundle"
+export CARGO_TARGET_DIR=/absolute/path/outside/the/bundle/target
 cargo metadata --locked --no-deps --format-version 1
 cargo test --locked -p gamenode-plugin-protocol
 cargo test --locked -p gamenode-plugin-sdk --lib --tests

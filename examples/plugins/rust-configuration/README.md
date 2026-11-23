@@ -7,10 +7,8 @@ through the plugin's host-owned persistent storage namespace.
 From the repository root, build and run fixture checks with:
 
 ```sh
-CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target \
-  cargo check --manifest-path examples/plugins/rust-configuration/Cargo.toml
-CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target \
-  cargo test --manifest-path examples/plugins/rust-configuration/Cargo.toml
+cargo check --manifest-path examples/plugins/rust-configuration/Cargo.toml
+cargo test --manifest-path examples/plugins/rust-configuration/Cargo.toml
 ```
 
 Linux uses `zenity` for the window and `wmctrl` to focus it. Windows uses the bundled PowerShell

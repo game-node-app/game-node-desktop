@@ -13,8 +13,7 @@ The fake catalog and discovery records are fixtures; the executable does not sca
 After `gamenode-plugin-sdk@0.1.0` is published, run from the repository root:
 
 ```sh
-CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target \
-  cargo build --manifest-path examples/plugins/rust-sdk/Cargo.toml
+cargo build --manifest-path examples/plugins/rust-sdk/Cargo.toml
 ```
 
 GameNode starts the binary with its authenticated endpoint and session credential in the SDK's
@@ -22,8 +21,7 @@ documented environment variables. Before the SDK is published, run the fixture a
 checkout's SDK source with a temporary Cargo patch:
 
 ```sh
-CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target \
-  cargo test --manifest-path examples/plugins/rust-sdk/Cargo.toml --test provider_exchange \
+cargo test --manifest-path examples/plugins/rust-sdk/Cargo.toml --test provider_exchange \
   --config 'patch.crates-io.gamenode-plugin-sdk.path="crates/plugin-sdk"'
 ```
 
@@ -47,10 +45,9 @@ target tuple.
 1. Build a release binary and copy it to the declared entrypoint:
 
    ```sh
-   CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target \
-     cargo build --release --manifest-path examples/plugins/rust-sdk/Cargo.toml
+   cargo build --release --manifest-path examples/plugins/rust-sdk/Cargo.toml
    install -Dm755 \
-     /data/DADOS_LINUX/geral/area_troca_rust/target/release/gamenode-plugin-mvp-example \
+     examples/plugins/rust-sdk/target/release/gamenode-plugin-mvp-example \
      examples/plugins/rust-sdk/package/bin/linux-x64/plugin
    ```
 

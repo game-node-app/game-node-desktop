@@ -1,8 +1,8 @@
 //! The shared-data exchange recipes run against the same fixture host as the raw RPC tests.
 //!
 //! Each scenario also reads the checked-in contract fixture
-//! `crates/plugin-protocol/contracts/data_exchange_fixtures.json`, which the Go example reads too.
-//! The fixture is the parity source for identities, units and expected outcomes; the host still
+//! `crates/plugin-protocol/contracts/data_exchange_fixtures.json`.
+//! The fixture is the source for identities, units and expected outcomes; the host still
 //! decides every authorization answer.
 
 use gamenode_plugin_sdk::proto::{
@@ -75,7 +75,7 @@ async fn performance_fixture_exchanges_history_and_ends_the_series_explicitly() 
     .await;
     let context = fixture.context();
 
-    // The example builds the batch from the same fixture the Go client reads. Units, semantics and
+    // The example builds the batch from the shared contract fixture. Units, semantics and
     // the host-selected game are explicit; nothing here launches a collector.
     let samples = performance["samples"]
         .as_array()

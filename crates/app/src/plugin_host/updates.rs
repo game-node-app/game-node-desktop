@@ -4985,10 +4985,9 @@ pub(super) mod tests {
             plugin_registry::PluginPackageRegistry,
         };
 
-        for (example, plugin_id, seed, requested) in [
-            ("go-grpc", "org.example.gamenode.go-grpc", 71_u8, 8),
-            ("rust-sdk", "org.example.gamenode.rust-mvp", 72_u8, 4),
-        ] {
+        for (example, plugin_id, seed, requested) in
+            [("rust-sdk", "org.example.gamenode.rust-mvp", 72_u8, 4)]
+        {
             let base = tempfile::tempdir().unwrap();
             let paths = DataPaths::at(base.path().join("app"));
             let endpoint = base.path().join("plugins.sock");

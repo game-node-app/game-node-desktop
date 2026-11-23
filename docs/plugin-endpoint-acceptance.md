@@ -29,7 +29,7 @@ assumptions, and opaque ids leaking into labels.
 | **third-party** | A signed third-party bundle crossed it on a real host. |
 | **official** | Only a bundled official provider (Steam, Epic, PackageKit) crossed it. It proves the host path but not third-party parity. |
 | **example** | Only a reference example covers it, usually in test fixtures. |
-| **fixture** | Only Rust/Go fixtures cover it. No process, no user consent. |
+| **fixture** | Only Rust fixtures cover it. No process, no user consent. |
 | **none** | Advertised with no consumer evidence. |
 
 A row is **homologated** only at **third-party** status and after the full sequence: grant → use →
@@ -67,7 +67,7 @@ grant path.
 | Files read | `FilesRequestAccess`, `FilesList`, `FilesRead` | third-party (partial) | Dolphin requested a folder and read a ROM; `FilesList` unproven |
 | Files write/delete | `FilesWrite`, `FilesDelete` | none | — |
 | Network | `NetworkFetch` | none | — |
-| Private storage | `StorageGet`, `StoragePut`, `StorageDelete` | example | Go example for get/put; delete unproven |
+| Private storage | `StorageGet`, `StoragePut`, `StorageDelete` | example | `rust-configuration` for get/put; delete unproven |
 | Persistence | `PersistenceGetUsage`, `PersistenceListEntries`, `PersistenceDeleteEntries`, `PersistenceClear`, `PersistenceSetRetentionPolicy` | none | — |
 | Data publish | `DataPublish` | third-party | Dolphin catalog dataset (persisted) |
 | Data read | `DataGet`, `DataList`, `DataWatch` | none | — |
@@ -85,7 +85,7 @@ grant path.
 | Performance | `GamePerformancePublishSamples`, `GamePerformanceEndSeries` | none | — |
 | Sessions | `game.sessions.report` | none | — |
 | Declarative form | `ui.settings` | none | — |
-| Configuration window | `ui.configure` | example | Go example, `rust-configuration` |
+| Configuration window | `ui.configure` | example | `rust-configuration` |
 
 ## Cold paths, in risk order
 

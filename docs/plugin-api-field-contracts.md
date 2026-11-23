@@ -44,6 +44,4 @@ Runtime-session observations are sensitive and may be projected through Data onl
 relevant sharing consent; process handles, credentials and launch tokens are never part of that
 projection.
 
-Rust SDK patch preservation is covered by `crates/plugin-sdk/tests/reference_host.rs`; direct Go
-protobuf preservation and exact 64-bit field handling are covered by the runnable interoperability
-fixture in [`examples/go`](../examples/go/README.md).
+Rust SDK patch preservation is covered by `crates/plugin-sdk/tests/reference_host.rs`.

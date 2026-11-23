@@ -1,6 +1,6 @@
 {
   "api": "1.6",
-  "note": "Shared producer/consumer fixture for the Go and Rust examples. The host interprets the selected game, installation, computer context, units and sequence; source/tool names are descriptive. No value is a filesystem path or a collector claim.",
+  "note": "Shared producer/consumer fixture for the plugin examples. The host interprets the selected game, installation, computer context, units and sequence; source/tool names are descriptive. No value is a filesystem path or a collector claim.",
   "performance": {
     "series_id": "series-primary",
     "game_id": "5",

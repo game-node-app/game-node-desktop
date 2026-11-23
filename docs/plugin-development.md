@@ -398,8 +398,8 @@ every call both ways and compare the answers (a write is compared by replaying i
 SDK's idempotency key, which the host only honors for an identical request). The helpers add no
 authority: grants, scope and revisions are still checked by the host. Errors are the host's own
 `Status` (`gamenode_plugin_sdk::Status`, `Code`); the codes are in
-[`plugin-api-permissions.md`](plugin-api-permissions.md). Go and other clients use the generated
-client directly with the same rules.
+[`plugin-api-permissions.md`](plugin-api-permissions.md). Clients in other languages use a client
+generated from `plugin.proto` directly, with the same rules.
 
 | `Resources` method | Raw call | Needs |
 | --- | --- | --- |
@@ -467,7 +467,7 @@ active account profile. The request names only a key; see "Private storage" in
 
 The Rust SDK has typed helpers for storage (`storage_get`, `storage_put`, `storage_delete`) and
 recipes for them; see "Utility helpers and recipes (Rust SDK)" below. Other clients use the generated
-`ResourceHost` client, as the Go example does.
+`ResourceHost` client.
 
 ## Shared durable data
 
@@ -1126,14 +1126,9 @@ python3 -m unittest scripts.tests.test_plugin_conformance
 
 The checker verifies:
 
-- both checked-in Go binding trees (`examples/plugins/go-grpc/proto`, `examples/go/proto`) match
-  `plugin.proto`. It compares the embedded file descriptor and, when the pinned generators are on
-  `PATH`, performs a full regeneration diff. Install libprotoc 36.1 and the pinned `protoc-gen-go`
-  and `protoc-gen-go-grpc` versions recorded in `generate-proto.sh`.
-- the examples keep their public dependency boundary: the Rust example depends on the exact
-  published `gamenode-plugin-sdk` and no internal crate, and the Go modules import no workspace
-  package and carry no `replace` directive that escapes the module.
-- each example manifest's plugin/provider identity, SemVer version and `api.min`/`api.max` match
+- the Rust example keeps its public dependency boundary: it depends on the exact published
+  `gamenode-plugin-sdk` and no internal crate.
+- the example manifest's plugin/provider identity, SemVer version and `api.min`/`api.max` match
   its source constants and the host's supported window (`MIN_API_MINOR` through `API_MINOR`). The
   host's legacy 1.1–1.5 fallback and feature gating are covered by the
   `crates/plugin-protocol/src/capability.rs` tests; the checker keeps the examples aligned with

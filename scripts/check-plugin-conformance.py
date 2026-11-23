@@ -4,9 +4,8 @@
 These checks are intentionally independent of the Rust build: they can be run before
 committing a protocol or example change. They cover:
 
-* generated Go bindings freshness against the canonical ``plugin.proto``;
-* public dependency boundaries for the example modules (no internal Core crates);
-* the API window and identities declared by the example manifests and source constants;
+* public dependency boundaries for the Rust example (no internal Core crates);
+* the API window and identities declared by the example manifest and source constants;
 * the ``DescribeApi`` route allowlist parsed from the host's served-method tables.
 
 Nothing here executes plugin code. Exit status is non-zero when a check fails.
@@ -16,12 +15,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
-import shutil
-import subprocess
 import sys
-import tempfile
 import tomllib
 from pathlib import Path
 
@@ -34,21 +29,6 @@ ACCEPTANCE = REPO_ROOT / "docs/plugin-endpoint-acceptance.md"
 RESOURCES = REPO_ROOT / "crates/app/src/plugin_host/resources.rs"
 SAVES = REPO_ROOT / "crates/app/src/plugin_host/resources/saves.rs"
 LOCATIONS = REPO_ROOT / "crates/app/src/plugin_host/resources/locations.rs"
-GENERATE_PROTO = REPO_ROOT / "examples/plugins/go-grpc/scripts/generate-proto.sh"
-
-# (generated directory, Go import path of the generated package, files to compare)
-GO_BINDINGS = (
-    (
-        REPO_ROOT / "examples/plugins/go-grpc/proto",
-        "example.com/gamenode/plugins/go-grpc/proto",
-        ("plugin.pb.go", "plugin_grpc.pb.go"),
-    ),
-    (
-        REPO_ROOT / "examples/go/proto",
-        "example.com/gamenode/plugin-example/proto",
-        ("plugin.pb.go", "plugin_grpc.pb.go"),
-    ),
-)
 
 INTERNAL_CRATES = {
     "gamenode-core",
@@ -71,25 +51,6 @@ INTERNAL_IDENTIFIERS = {
     "gamenode_plugin_packagekit",
     "gamenode_plugin_epic",
 }
-GO_DEPENDENCY_DENYLIST = (
-    "github.com/game-node-app/",
-    "gamenode-core",
-    "gamenode-platform",
-)
-
-# Go string escapes used by protoc-gen-go's concatenated raw-descriptor literal.
-_GO_ESCAPES = {
-    "a": 7,
-    "b": 8,
-    "f": 12,
-    "n": 10,
-    "r": 13,
-    "t": 9,
-    "v": 11,
-    "\\": 92,
-    '"': 34,
-    "'": 39,
-}
 
 
 class Problems(list[str]):
@@ -101,244 +62,6 @@ class Problems(list[str]):
 
 def read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
-
-
-# ---------------------------------------------------------------------------
-# Protobuf and generated bindings
-# ---------------------------------------------------------------------------
-
-
-def decode_go_string(segment: str) -> bytes:
-    """Decode the escapes protoc-gen-go emits inside a concatenated Go string literal."""
-    out = bytearray()
-    index = 0
-    while index < len(segment):
-        char = segment[index]
-        if char != "\\":
-            out.extend(char.encode("utf-8"))
-            index += 1
-            continue
-        index += 1
-        if index >= len(segment):
-            raise ValueError("dangling escape in generated Go string")
-        escape = segment[index]
-        if escape == "x":
-            out.append(int(segment[index + 1 : index + 3], 16))
-            index += 3
-        elif escape in _GO_ESCAPES:
-            out.append(_GO_ESCAPES[escape])
-            index += 1
-        else:
-            raise ValueError(f"unsupported Go escape \\{escape}")
-    return bytes(out)
-
-
-def go_raw_descriptor(source: str) -> bytes:
-    """The FileDescriptorProto embedded by protoc-gen-go for ``plugin.proto``."""
-    match = re.search(
-        r'const file_plugin_proto_rawDesc = ((?:"(?:[^"\\]|\\.)*"\s*\+?\s*)+)',
-        source,
-    )
-    if not match:
-        raise ValueError("file_plugin_proto_rawDesc is missing")
-    segments = re.findall(r'"((?:[^"\\]|\\.)*)"', match.group(1))
-    return b"".join(decode_go_string(segment) for segment in segments)
-
-
-def _varint(data: bytes, index: int) -> tuple[int, int]:
-    value = 0
-    shift = 0
-    while True:
-        byte = data[index]
-        index += 1
-        value |= (byte & 0x7F) << shift
-        shift += 7
-        if not byte & 0x80:
-            return value, index
-
-
-def descriptor_set_files(data: bytes) -> list[bytes]:
-    """Split a serialized FileDescriptorSet into its FileDescriptorProto payloads."""
-    files: list[bytes] = []
-    index = 0
-    while index < len(data):
-        key, index = _varint(data, index)
-        field, wire = key >> 3, key & 7
-        if wire != 2:
-            raise ValueError(f"unexpected FileDescriptorSet wire type {wire}")
-        length, index = _varint(data, index)
-        payload = data[index : index + length]
-        if len(payload) != length:
-            raise ValueError("truncated FileDescriptorSet")
-        index += length
-        if field == 1:
-            files.append(payload)
-    return files
-
-
-def protoc_include_dir(protoc: str) -> Path | None:
-    """A directory that contains ``google/protobuf/struct.proto``."""
-    candidates = [
-        Path(value)
-        for value in (
-            os.environ.get("PROTOC_INCLUDE_DIR", ""),
-            "/usr/include",
-            "/usr/local/include",
-            str(Path(protoc).resolve().parent / "include"),
-        )
-        if value
-    ]
-    for candidate in candidates:
-        if (candidate / "google/protobuf/struct.proto").is_file():
-            return candidate
-    return None
-
-
-def compile_descriptor(protoc: str) -> bytes:
-    include = protoc_include_dir(protoc)
-    if include is None:
-        raise RuntimeError(
-            "set PROTOC_INCLUDE_DIR to a directory containing google/protobuf/struct.proto"
-        )
-    with tempfile.TemporaryDirectory(prefix="gamenode-conformance-") as temp:
-        output = Path(temp) / "plugin.desc"
-        result = subprocess.run(
-            [
-                protoc,
-                f"-I{PROTO.parent}",
-                f"-I{include}",
-                f"--descriptor_set_out={output}",
-                PROTO.name,
-            ],
-            cwd=PROTO.parent,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(f"protoc failed: {result.stderr.strip()}")
-        entries = descriptor_set_files(output.read_bytes())
-    if len(entries) != 1:
-        raise RuntimeError(f"expected one descriptor for plugin.proto, got {len(entries)}")
-    return entries[0]
-
-
-def first_difference(left: bytes, right: bytes) -> str:
-    for index, (one, two) in enumerate(zip(left, right)):
-        if one != two:
-            return f"first difference at byte {index} (bindings {one:#04x}, proto {two:#04x})"
-    return f"length differs: bindings {len(left)} bytes, proto {len(right)} bytes"
-
-
-def generated_versions(source: str) -> tuple[str | None, str | None]:
-    proto = re.search(r"protoc-gen-go v([0-9.]+)", source)
-    grpc = re.search(r"protoc-gen-go-grpc v([0-9.]+)", source)
-    return (
-        proto.group(1) if proto else None,
-        grpc.group(1) if grpc else None,
-    )
-
-
-def pinned_generator_versions() -> tuple[str, str]:
-    source = read(GENERATE_PROTO)
-    proto = re.search(r"^GO_PROTO_VERSION=([0-9.]+)$", source, re.M)
-    grpc = re.search(r"^GO_GRPC_VERSION=([0-9.]+)$", source, re.M)
-    if not proto or not grpc:
-        raise RuntimeError("generate-proto.sh does not pin both generator versions")
-    return proto.group(1), grpc.group(1)
-
-
-def check_bindings(protoc: str | None) -> tuple[Problems, list[str]]:
-    problems = Problems()
-    notes: list[str] = []
-    expected_proto, expected_grpc = pinned_generator_versions()
-    canonical: bytes | None = None
-    if protoc is None:
-        problems.fail(
-            "protoc is not available; install libprotoc 36.1 to check binding freshness"
-        )
-    else:
-        try:
-            canonical = compile_descriptor(protoc)
-        except (RuntimeError, ValueError) as error:
-            problems.fail(str(error))
-
-    go_proto = shutil.which("protoc-gen-go")
-    go_grpc = shutil.which("protoc-gen-go-grpc")
-    include = protoc_include_dir(protoc) if protoc else None
-    for directory, import_path, files in GO_BINDINGS:
-        relative = directory.relative_to(REPO_ROOT)
-        for name in files:
-            path = directory / name
-            if not path.is_file():
-                problems.fail(f"{relative}/{name} is missing")
-                continue
-            source = read(path)
-            proto_version, grpc_version = generated_versions(source)
-            if name == "plugin.pb.go":
-                if proto_version != expected_proto:
-                    problems.fail(
-                        f"{relative}/{name} was generated with protoc-gen-go "
-                        f"{proto_version or 'an unknown version'}, expected {expected_proto}"
-                    )
-                if canonical is not None:
-                    try:
-                        embedded = go_raw_descriptor(source)
-                    except ValueError as error:
-                        problems.fail(f"{relative}/{name}: {error}")
-                    else:
-                        if embedded != canonical:
-                            problems.fail(
-                                f"{relative}/{name} is stale against {PROTO.relative_to(REPO_ROOT)}: "
-                                f"{first_difference(embedded, canonical)}"
-                            )
-            elif grpc_version != expected_grpc:
-                problems.fail(
-                    f"{relative}/{name} was generated with protoc-gen-go-grpc "
-                    f"{grpc_version or 'an unknown version'}, expected {expected_grpc}"
-                )
-
-        # When both generators exist, a full regeneration is the strongest check: it also
-        # covers formatting and service stubs whose edits do not change the descriptor.
-        if protoc is None or include is None or go_proto is None or go_grpc is None:
-            notes.append(
-                f"{relative}: full regeneration skipped "
-                "(protoc, protoc-gen-go and protoc-gen-go-grpc are required)"
-            )
-            continue
-        with tempfile.TemporaryDirectory(prefix="gamenode-bindings-") as temp:
-            output = Path(temp)
-            result = subprocess.run(
-                [
-                    protoc,
-                    f"-I{PROTO.parent}",
-                    f"-I{include}",
-                    f"--plugin=protoc-gen-go={go_proto}",
-                    f"--plugin=protoc-gen-go-grpc={go_grpc}",
-                    f"--go_out={output}",
-                    "--go_opt=paths=source_relative",
-                    f"--go_opt=M{PROTO.name}={import_path}",
-                    f"--go-grpc_out={output}",
-                    "--go-grpc_opt=paths=source_relative",
-                    f"--go-grpc_opt=M{PROTO.name}={import_path}",
-                    PROTO.name,
-                ],
-                cwd=PROTO.parent,
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode != 0:
-                problems.fail(f"{relative}: regeneration failed: {result.stderr.strip()}")
-                continue
-            for name in files:
-                fresh = output / name
-                if not fresh.is_file():
-                    problems.fail(f"{relative}: regeneration did not produce {name}")
-                elif fresh.read_bytes() != (directory / name).read_bytes():
-                    problems.fail(
-                        f"{relative}/{name} differs from a fresh generation; "
-                        "run examples/plugins/go-grpc/scripts/generate-proto.sh"
-                    )
-    return problems, notes
 
 
 # ---------------------------------------------------------------------------
@@ -372,36 +95,9 @@ def check_rust_example(problems: Problems) -> None:
                 )
 
 
-def go_imports(source: str) -> list[str]:
-    imports: list[str] = []
-    for block in re.findall(r"import\s*\((.*?)\)", source, re.S):
-        for match in re.finditer(r'"([^"]+)"', block):
-            imports.append(match.group(1))
-    for match in re.finditer(r'import\s+"([^"]+)"', source):
-        imports.append(match.group(1))
-    return imports
-
-
-def check_go_module(problems: Problems, root: Path) -> None:
-    module = root.relative_to(REPO_ROOT)
-    source = read(root / "go.mod")
-    for line in source.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("replace"):
-            problems.fail(f"{module}/go.mod has a replace directive: {stripped}")
-    for path in sorted(root.rglob("*.go")):
-        for imported in go_imports(read(path)):
-            if imported.startswith(GO_DEPENDENCY_DENYLIST):
-                problems.fail(
-                    f"{path.relative_to(REPO_ROOT)} imports a workspace package: {imported}"
-                )
-
-
 def check_boundaries() -> tuple[Problems, list[str]]:
     problems = Problems()
     check_rust_example(problems)
-    check_go_module(problems, REPO_ROOT / "examples/plugins/go-grpc")
-    check_go_module(problems, REPO_ROOT / "examples/go")
     return problems, []
 
 
@@ -462,26 +158,6 @@ def check_versions() -> tuple[Problems, list[str]]:
     if constants["MIN_API_MINOR"] > constants["THIRD_PARTY_API_MINOR"]:
         problems.fail("the legacy API minimum is above the third-party minimum")
 
-    go_source = read(REPO_ROOT / "examples/plugins/go-grpc/provider/client.go")
-    go_major = re.search(r"APIMajor\s*=\s*(\d+)", go_source)
-    go_minor = re.search(r"APIMinor\s*=\s*(\d+)", go_source)
-    go_plugin = re.search(r'PluginID\s*=\s*"([^"]+)"', go_source)
-    go_provider = re.search(r'ProviderID\s*=\s*"([^"]+)"', go_source)
-    if not all((go_major, go_minor, go_plugin, go_provider)):
-        problems.fail("the Go example must declare APIMajor, APIMinor, PluginID and ProviderID")
-    else:
-        if int(go_major.group(1)) != constants["API_MAJOR"]:
-            problems.fail("the Go example API major does not match the protocol")
-        if int(go_minor.group(1)) != constants["API_MINOR"]:
-            problems.fail("the Go example API minor does not match the protocol")
-        compare_identity(
-            problems,
-            REPO_ROOT / "examples/plugins/go-grpc/package/plugin.json",
-            manifest(REPO_ROOT / "examples/plugins/go-grpc/package/plugin.json"),
-            go_plugin.group(1),
-            go_provider.group(1),
-        )
-
     rust_source = read(REPO_ROOT / "examples/plugins/rust-sdk/src/lib.rs")
     rust_plugin = re.search(r'PLUGIN_ID: &str = "([^"]+)"', rust_source)
     rust_provider = re.search(r'PROVIDER_ID: &str = "([^"]+)"', rust_source)
@@ -496,15 +172,12 @@ def check_versions() -> tuple[Problems, list[str]]:
             rust_provider.group(1),
         )
 
-    for relative in (
-        "examples/plugins/go-grpc/package/plugin.json",
-        "examples/plugins/rust-sdk/package/plugin.json",
-    ):
-        path = REPO_ROOT / relative
-        compare_api(problems, path, manifest(path), constants)
-        version = manifest(path).get("version", "")
-        if not re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", version):
-            problems.fail(f"{relative} version {version!r} is not SemVer")
+    relative = "examples/plugins/rust-sdk/package/plugin.json"
+    path = REPO_ROOT / relative
+    compare_api(problems, path, manifest(path), constants)
+    version = manifest(path).get("version", "")
+    if not re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", version):
+        problems.fail(f"{relative} version {version!r} is not SemVer")
     return problems, []
 
 
@@ -641,7 +314,6 @@ def check_acceptance() -> tuple[Problems, list[str]]:
 
 CHECKS = {
     "acceptance": check_acceptance,
-    "bindings": lambda: check_bindings(shutil.which("protoc")),
     "boundaries": check_boundaries,
     "versions": check_versions,
     "endpoints": check_endpoints,

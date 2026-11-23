@@ -28,15 +28,11 @@ official plugin implementations, or their assets.
 
 | `examples/plugins/rust-sdk/**` | First-party standalone provider example; latest authoring in commit `d16a70d` | MIT |
 | `examples/plugins/rust-configuration/**` | First-party configuration example preserved from the earlier Rust example | MIT |
-| `examples/plugins/go-grpc/**` | First-party standalone Go provider example, including its `package/` payload | MIT |
-| `examples/go/**` | First-party protocol interoperability fixture; it is test code, not a distributable plugin example | GPL-3.0-only |
 
-No Go or Rust example source existed in the repository when the initial audit was
+No example source existed in the repository when the initial audit was
 performed. The plugin examples added later are recorded above with their
 source/authority and license; new example files must be added here before
-inclusion in a public package. Generated Go bindings under the examples are
-derived from the MIT `plugin.proto` with the pinned generators, and each
-packaged example repeats its dependency notices in `package/licenses/`.
+inclusion in a public package. Each packaged example repeats its dependency notices in `package/licenses/`.
 
 These files are first-party GameNode implementation. The repository history
 attributes their existing source to Richelmy Monteiro in commit

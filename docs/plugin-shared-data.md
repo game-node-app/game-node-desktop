@@ -448,23 +448,18 @@ only the caller's own records.
 
 ## Runnable producer and consumer examples
 
-Two example clients exercise this contract end to end, and both read the same checked-in fixture
+The Rust SDK examples exercise this contract end to end against a checked-in fixture
 ([`data_exchange_fixtures.json`](../crates/plugin-protocol/contracts/data_exchange_fixtures.json)),
-so identities, units and expected outcomes cannot drift apart:
-
-- **Rust** — [`examples/data_exchange_recipes.rs`](../crates/plugin-sdk/examples/data_exchange_recipes.rs)
-  and [`examples/extension_data_recipes.rs`](../crates/plugin-sdk/examples/extension_data_recipes.rs)
-  are compiled with the SDK and run against the desktop's real fixture host by
-  `crates/app/src/plugin_host/resources/tests/sdk_data_exchange.rs` and `sdk_extension_data.rs`.
-- **Go** — [`examples/go/data_exchange.go`](../examples/go/data_exchange.go) and
-  [`extension_data.go`](../examples/go/extension_data.go) use the generated clients. Their tests
-  run a local gRPC fixture host and a message-level parity check against the same contract.
+so identities, units and expected outcomes are written down once:
+[`examples/data_exchange_recipes.rs`](../crates/plugin-sdk/examples/data_exchange_recipes.rs)
+and [`examples/extension_data_recipes.rs`](../crates/plugin-sdk/examples/extension_data_recipes.rs)
+are compiled with the SDK and run against the desktop's real fixture host by
+`crates/app/src/plugin_host/resources/tests/sdk_data_exchange.rs` and `sdk_extension_data.rs`.
 
 ```sh
 cargo test -p gamenode-app --lib -- plugin_host::resources::tests::sdk_data_exchange
 cargo test -p gamenode-app --lib -- plugin_host::resources::tests::sdk_extension_data
 cargo test -p gamenode-plugin-sdk --examples
-(cd examples/go && GOPROXY=off go test -count=1 ./...)
 ```
 
 The scenarios cover performance history (publish, explicit selector, aggregate, revocation,

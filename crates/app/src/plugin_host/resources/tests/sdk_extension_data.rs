@@ -1,5 +1,5 @@
 //! Hybrid records, opaque envelopes and custom datasets: the Rust example recipes against the
-//! real fixture host, with the Go example reading the same contract fixture.
+//! real fixture host.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -40,7 +40,7 @@ fn mutation(context: &ServiceContext, key: &str, expected_revision: u64) -> Muta
     }
 }
 
-/// A third-party plugin registered under the example identity the recipes and the Go fixture use.
+/// A third-party plugin registered under the example identity the recipes use.
 async fn example_producer(fixture: &Fixture, grants: &[&'static str]) -> Session {
     let mut capabilities = vec![cap::CONTEXT];
     capabilities.extend_from_slice(grants);
@@ -98,7 +98,7 @@ async fn hybrid_runtime_keeps_the_future_namespace_and_projects_only_known_field
     };
 
     // The fixture plugin owns the namespaces the real host accepts; the example's generic
-    // identities are asserted locally below and mirrored by the Go fixture.
+    // identities are asserted locally below.
     const HOST_KNOWN: &str = "fixture.plugin.runtime";
     const HOST_FUTURE: &str = "fixture.plugin.future-runtime";
 

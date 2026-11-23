@@ -8,6 +8,7 @@ pub mod cache;
 pub mod catalog_worker;
 pub mod extractor;
 pub mod job_runner;
+pub mod linux_asset;
 pub mod overlay_source;
 pub mod placement;
 pub mod quiver;
@@ -40,6 +41,7 @@ pub use job_runner::{
     JobRunner, JobRunnerConfig, PackageExtractor, PinnedExtractor, SystemExecutableIdentity,
     UserDataRoots, mark_job_seen,
 };
+pub use linux_asset::{LinuxAssetKind, kind as linux_asset_kind, normalize_executable};
 pub use placement::{
     CopyRoots, PlaceError, PlacedSlot, PlacementOutcome, SlotChoice, launch_arguments, place_slots,
 };

@@ -59,6 +59,14 @@ capabilities. Windows behavior and the existing Windows acceptance are not reope
 - [ ] 2.1 Select a native Linux release asset (AppImage, tar, zip or bare executable where the
   recipe allows it), verify its checksum and normalize the executable bit. Reject Windows-only
   assets and unsupported formats explicitly.
+  - Progress (2026-11-22): `select_asset_for(platform, ...)` in `crates/core/src/ports/plan.rs`
+    picks a Linux asset (AppImage, tar, tar.gz, tgz, zip, 7z, bin), applies the recipe asset
+    filter, ranks architecture, and refuses Windows-only releases (`NoLinuxAsset`), unsupported
+    formats (`UnsupportedFormat`) and macOS (`UnsupportedPlatform`); `select_asset` stays the
+    Windows entry point, so its tests and behavior are unchanged. `ports::linux_asset` classifies
+    executable versus archive formats and normalizes the executable bit with a test. Remaining:
+    wire the Linux install plan and job runner (download, checksum and placement), which is 2.2
+    and 2.4.
 - [ ] 2.2 Map `app`, `data`, `config` and `localData` to XDG placement roots, register the result
   as an ordinary DRM-free entry, and validate the Linux launcher/executable before launch.
 - [ ] 2.3 Support Linux guided setup only for overlay recipes explicitly reviewed for Linux. A

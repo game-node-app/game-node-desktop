@@ -24,6 +24,12 @@ pub const EXTRACTED_SIZE_ESTIMATE: u64 = 2;
 /// executable it copies into the folder.
 pub const SUPPORTED_FORMATS: [&str; 3] = ["zip", "7z", "exe"];
 
+/// The native Linux formats the installer handles: an AppImage or bare executable is placed and
+/// marked executable, an archive is extracted. A package format (`.deb`, `.rpm`) is not an install
+/// input here; the recipe would have to name its own extractor, which is a separate review.
+pub const SUPPORTED_LINUX_FORMATS: [&str; 7] =
+    ["appimage", "tar", "tar.gz", "tgz", "zip", "7z", "bin"];
+
 /// The bytes an install needs before it starts: the download, its extraction and the copies of
 /// supplied files.
 ///
@@ -154,16 +160,40 @@ pub fn select_release(
         .ok_or(PlanError::ReleaseUnavailable { version })
 }
 
-/// Chooses the Windows asset of a release: the entry's asset filter, then the operating system,
-/// then the architecture (64-bit first, then unknown, then anything else).
+/// Chooses the Windows asset of a release. Kept as the Windows entry point so the installed
+/// Windows path and its tests stay unchanged.
 pub fn select_asset(entry: &CatalogEntry, release: &PortRelease) -> Result<PortAsset, PlanError> {
-    let windows: Vec<&PortAsset> = release
+    select_asset_for(crate::ports::view::PortPlatform::Windows, entry, release)
+}
+
+/// Chooses the asset of a release for one platform: the entry's asset filter, then the operating
+/// system, then the architecture (64-bit first, then unknown, then anything else).
+pub fn select_asset_for(
+    platform: crate::ports::view::PortPlatform,
+    entry: &CatalogEntry,
+    release: &PortRelease,
+) -> Result<PortAsset, PlanError> {
+    use crate::ports::view::PortPlatform;
+    let (matches, missing, formats): (fn(&PortAsset) -> bool, PlanError, &[&str]) = match platform {
+        PortPlatform::Windows => (
+            PortAsset::is_windows,
+            PlanError::NoWindowsAsset,
+            &SUPPORTED_FORMATS,
+        ),
+        PortPlatform::Linux => (
+            PortAsset::is_linux,
+            PlanError::NoLinuxAsset,
+            &SUPPORTED_LINUX_FORMATS,
+        ),
+        PortPlatform::Macos => return Err(PlanError::UnsupportedPlatform),
+    };
+    let platform_assets: Vec<&PortAsset> = release
         .assets
         .iter()
-        .filter(|asset| asset.is_windows())
+        .filter(|asset| matches(asset))
         .collect();
-    if windows.is_empty() {
-        return Err(PlanError::NoWindowsAsset);
+    if platform_assets.is_empty() {
+        return Err(missing);
     }
     let filter = entry
         .launcher
@@ -174,7 +204,7 @@ pub fn select_asset(entry: &CatalogEntry, release: &PortRelease) -> Result<PortA
     let candidates: Vec<&PortAsset> = match filter {
         Some(filter) => {
             let needle = filter.to_ascii_lowercase();
-            let matched: Vec<&PortAsset> = windows
+            let matched: Vec<&PortAsset> = platform_assets
                 .into_iter()
                 .filter(|asset| asset.filename.to_ascii_lowercase().contains(&needle))
                 .collect();
@@ -185,7 +215,7 @@ pub fn select_asset(entry: &CatalogEntry, release: &PortRelease) -> Result<PortA
             }
             matched
         }
-        None => windows,
+        None => platform_assets,
     };
     let mut best: Option<&PortAsset> = None;
     let mut best_rank = u8::MAX;
@@ -196,11 +226,11 @@ pub fn select_asset(entry: &CatalogEntry, release: &PortRelease) -> Result<PortA
             best = Some(asset);
         }
     }
-    let asset = best.cloned().ok_or(PlanError::NoWindowsAsset)?;
+    let asset = best.cloned().ok_or(missing)?;
     let format = asset_format(&asset).ok_or_else(|| PlanError::UnknownAssetFormat {
         filename: asset.filename.clone(),
     })?;
-    if !SUPPORTED_FORMATS.contains(&format.as_str()) {
+    if !formats.contains(&format.as_str()) {
         return Err(PlanError::UnsupportedFormat { format });
     }
     Ok(asset)
@@ -432,6 +462,10 @@ pub enum PlanError {
     ReleaseUnavailable { version: String },
     #[error("the release has no Windows asset")]
     NoWindowsAsset,
+    #[error("the release has no Linux asset")]
+    NoLinuxAsset,
+    #[error("this platform has no PC port install strategy")]
+    UnsupportedPlatform,
     #[error("no asset file name matches the entry's asset filter {filter:?}")]
     NoMatchingAsset { filter: String },
     #[error("the asset {filename:?} has no file format")]
@@ -859,6 +893,76 @@ mod tests {
             Err(PlanError::NoMatchingAsset {
                 filter: "linux".into()
             })
+        );
+    }
+
+    #[test]
+    fn each_platform_selects_its_own_asset() {
+        use crate::ports::view::PortPlatform;
+        let release = verified_release();
+        assert_eq!(
+            select_asset_for(PortPlatform::Linux, &entry(), &release)
+                .expect("a Linux asset")
+                .id,
+            "linux"
+        );
+        assert_eq!(
+            select_asset_for(PortPlatform::Windows, &entry(), &release)
+                .expect("a Windows asset")
+                .id,
+            "windows-x64",
+            "the Windows choice is unchanged"
+        );
+    }
+
+    #[test]
+    fn a_windows_only_release_is_refused_on_linux() {
+        use crate::ports::view::PortPlatform;
+        let mut release = verified_release();
+        release.assets.retain(|asset| !asset.is_linux());
+        assert_eq!(
+            select_asset_for(PortPlatform::Linux, &entry(), &release),
+            Err(PlanError::NoLinuxAsset)
+        );
+    }
+
+    #[test]
+    fn linux_refuses_a_format_the_installer_cannot_handle() {
+        use crate::ports::view::PortPlatform;
+        let mut release = verified_release();
+        for asset in &mut release.assets {
+            if asset.is_linux() {
+                asset.filename = "bloodborne.deb".into();
+                asset.format = Some("deb".into());
+            }
+        }
+        assert_eq!(
+            select_asset_for(PortPlatform::Linux, &entry(), &release),
+            Err(PlanError::UnsupportedFormat {
+                format: "deb".into()
+            })
+        );
+    }
+
+    #[test]
+    fn linux_applies_the_recipe_asset_filter() {
+        use crate::ports::view::PortPlatform;
+        let mut filtered = entry();
+        filtered.launcher.release_asset_filter = Some("AppImage".into());
+        assert_eq!(
+            select_asset_for(PortPlatform::Linux, &filtered, &verified_release()),
+            Err(PlanError::NoMatchingAsset {
+                filter: "AppImage".into()
+            })
+        );
+    }
+
+    #[test]
+    fn macos_has_no_install_strategy() {
+        use crate::ports::view::PortPlatform;
+        assert_eq!(
+            select_asset_for(PortPlatform::Macos, &entry(), &verified_release()),
+            Err(PlanError::UnsupportedPlatform)
         );
     }
 

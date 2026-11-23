@@ -621,9 +621,19 @@ impl PortAsset {
     /// True when the file is built for Windows. An asset without an operating system is not
     /// assumed to be one.
     pub fn is_windows(&self) -> bool {
+        self.is_os("windows")
+    }
+
+    /// True when the file is built for Linux. An asset without an operating system is not assumed
+    /// to be one.
+    pub fn is_linux(&self) -> bool {
+        self.is_os("linux")
+    }
+
+    fn is_os(&self, expected: &str) -> bool {
         self.os
             .as_deref()
-            .is_some_and(|os| os.eq_ignore_ascii_case("windows"))
+            .is_some_and(|os| os.eq_ignore_ascii_case(expected))
     }
 
     /// The verified SHA-256 as lowercase hex, when the checksum is one.

@@ -250,6 +250,29 @@ describe('SettingsModal Feature Suite', () => {
       expect(screen.getByRole('heading', { level: 2, name: 'About' })).toBeInTheDocument();
     });
 
+    it('keeps settings topic navigation responsive while Configure awaits the external window', async () => {
+      vi.spyOn(commands, 'pluginInventory').mockResolvedValue([{
+        providerId: 'fixture', pluginId: 'org.example.fixture', pluginKind: 'extension', name: 'Fixture', source: 'community',
+        status: 'installed', capabilities: ['ui.configure'], session: 'active', nativeAccess: [],
+      }]);
+      vi.spyOn(commands, 'pluginConfigurationModes').mockResolvedValue({
+        externalDeclared: true, externalAuthorized: true,
+        declarativeDeclared: false, declarativeAuthorized: false,
+      });
+      let finishConfigure!: (result: { status: 'open'; windowId: string; message: null }) => void;
+      vi.spyOn(commands, 'pluginConfigurationOpen').mockReturnValue(new Promise((resolve) => { finishConfigure = resolve; }));
+
+      openSettingsModal('plugins');
+      renderSettings('en');
+      fireEvent.click(await screen.findByRole('button', { name: 'Details' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Stores' }));
+
+      expect(screen.getByRole('heading', { level: 2, name: 'Stores' })).toBeInTheDocument();
+      await act(async () => { finishConfigure({ status: 'open', windowId: 'window-1', message: null }); });
+      expect(uiStore.state.settingsTopic).toBe('stores');
+    });
+
     it('persists selected topic across closing and reopening in the same session', () => {
       openSettingsModal();
       renderSettings('en');

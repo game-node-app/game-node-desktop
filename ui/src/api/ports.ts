@@ -341,7 +341,10 @@ export interface PortPreferencesPatch {
  * `entries` and `provenance` are already merged with the GameNode overlay and filtered to
  * Windows entries; the UI does not see hidden or Linux-only entries.
  */
+export interface PortPluginSource { path: string; directory: boolean; }
+export interface PortPluginRequest { id: string; catalogId: string; pluginId: string; publisherFingerprint: string; sources: PortPluginSource[]; }
 export interface PortsView {
+  pluginRequest?: PortPluginRequest | null;
   catalog: PortCatalogStatus;
   entries: PortEntryView[];
   /** Provenance by registration key (`drmfree:<id>`). */
@@ -473,6 +476,7 @@ export interface PortSuppliedChoice {
 
 /** `ports_install` request. */
 export interface PortInstallRequest {
+  pluginRequestId?: string;
   catalogId: string;
   /** Parent folder chosen by the user; the host creates a subfolder inside it. */
   parentFolder: string;

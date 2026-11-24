@@ -1,5 +1,33 @@
 # Native development
 
+## OpenSpec task and design navigation
+
+Use the repository helper to query OpenSpec's structured task data and retrieve
+only the task or design section needed for the current work. It falls back to
+reading `tasks.md` directly if the OpenSpec CLI is unavailable.
+
+```sh
+python3 scripts/spec_progress.py status
+python3 scripts/spec_progress.py status --change add-third-party-plugins --section 7
+python3 scripts/spec_progress.py next --change add-third-party-plugins --design-section 11
+python3 scripts/spec_progress.py show 7.7
+python3 scripts/spec_progress.py outline
+python3 scripts/spec_progress.py outline --section 11
+```
+
+Use `next` to print progress, the full next pending task and, optionally, one
+numbered section from `design.md` in a single helper invocation. Add `--section`
+to select the next pending task within a task section. When more than one change
+is active or available, pass `--change` to avoid selecting one implicitly.
+
+`status --json` exposes the raw apply payload; `show --line-numbers` and
+`outline --json` are available when exact source locations or machine-readable
+output are useful. For code navigation in repositories with a `.codegraph/`
+index, use `codegraph explore "<symbols or focused question>"` before broad
+text searches. Keep design documents targeted: inspect the outline first, then
+retrieve the relevant numbered section rather than printing a large `design.md`
+in full.
+
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for the commit-message convention used
 by developers and AI agents.
 
@@ -48,10 +76,52 @@ helper `scripts/bundled_plugins.py` to derive the bundled plugin executables fro
 `plugins/*.toml`, and fails with an actionable message when Python 3.11+ is missing.
 
 Native Linux and Windows builds require their corresponding prerequisites above.
-This change does not configure hosted CI runners; its verification commands are
-run locally, and cross-compilation does not replace native OS acceptance.
+CI runs the Linux checks and a Windows cross-compilation check; cross-compilation
+does not replace native OS acceptance.
 
-## Required checks (both platforms)
+### Native Windows acceptance
+
+Cross-compiled checks (`cargo xwin check` or `cargo xwin test`) show that the
+Windows build compiles; they are not native acceptance. Record native Windows
+runs in [windows-verification.md](windows-verification.md), keep a change's
+native Windows acceptance task open until such a run is recorded, and do not
+claim native Windows execution in a pull request without one.
+
+## Scoped verification for implementation tasks
+
+Start with the smallest checks that exercise the changed behavior: the focused test
+or test filter, formatting for changed Rust files, `git diff --check`, and the
+relevant OpenSpec validation. Expand to the directly affected crate when the
+change crosses module boundaries or lacks a focused test. Run workspace-wide
+tests, Clippy or builds when the change affects shared contracts across crates,
+a focused check exposes an integration issue, the task explicitly requires the
+broader check, or release readiness is being evaluated. Do not run the full
+project test suite by default for a scoped task. Record any unrun broader checks
+as such instead of implying they passed.
+
+For example:
+
+```sh
+cargo test --locked -p gamenode-app custom_launch_without_its_own_grant
+```
+
+Supervised Linux launch fixtures, including the reviewed shared-resource launch, spawn the host
+binary in its internal helper mode. They skip when `GAMENODE_TEST_HELPER_BINARY` is unset; point it
+at a built binary to exercise them:
+
+```sh
+cargo build --locked -p gamenode-app --bin gamenode --no-default-features
+GAMENODE_TEST_HELPER_BINARY="$PWD/target/debug/gamenode" \
+  cargo test --locked -p gamenode-app --lib reviewed_shared_resource_use
+```
+
+## Full workspace and release checks (both platforms)
+
+These broader checks are appropriate for workspace integration, release
+readiness or when a change specifically calls for them. They are not the default
+validation for every individual implementation task; use
+[Scoped verification for implementation tasks](#scoped-verification-for-implementation-tasks)
+first.
 
 ```sh
 pnpm --dir ui build
@@ -212,6 +282,7 @@ without touching the native host:
 | Unavailable watched folder | `?watches=unavailable` seeds `D:\Jogos` and the unavailable `E:\Itch`; `?library=variants` also includes them |
 | Pending backup changes | Settings › **Backups**, change the destination, the automatic switch or the copies kept; the changed dots and unsaved bar appear until **Save changes** or **Revert** (no fixture is pre-dirty) |
 | Stopped community plugin | Settings › **Plugins**; **Prateleira Local** starts stopped. **Start** creates its session and **Stop** stops it again |
+| Live third-party plugin lifecycle | `?plugins=lifecycle` adds a signed Dolphin provider with two games. Settings › **Plugins** › **Details** removes it from the sidebar and library immediately; **Accept, install and enable** in the import form reinstalls it, and the rescan adds a third game. **Disable** marks the plugin unavailable but keeps its cached games visible |
 | Nightly cache | Settings › **Tools** › **Download cache**; 0.8.0-pre1 is the Nightly row and 0.7.9 is In use |
 | Non-Windows mode | `?platform=linux` hides the General › Startup card, the Epic card and the Windows-only Tools/ports surfaces, and makes DRM-free games and Backups report that they are unavailable |
 
@@ -249,6 +320,8 @@ default fixture; the default counts stay unchanged.
 | Marked as not a game | `steam:1302` | Wallpaper Foundry | Not-a-game note; no suggestions |
 | DRM-free running | `manual:brasa` | Brasa | Running session timer, matched `ongoing`, launch arguments, save folder, active protection and 12 backups |
 | DRM-free unmatched | `manual:drift` | Drift | Unmatched DRM-free row with two scored suggestions |
+| GameCube-emulated | `dolphin:pikmin` | Pikmin | Match dialog narrowed to NGC by default; **Show all** adds the Switch release |
+| Wii-emulated | `dolphin:metroid` | Metroid Prime | Match dialog narrowed to Wii; the platform-less release stays hidden until **Show all** |
 | Family shared, not installed | `steam:7` | Glass Garden | Install primary and the Steam Family note |
 | Hidden | `steam:900` | Hidden Harbor | Hidden until **Show hidden** |
 
@@ -398,7 +471,11 @@ Use the **Details panel** toggle and these fixtures:
 
 - **Match** — `?library=variants`, select **Neon Courier 2088**, then **Review…**.
   The ambiguous row opens three candidates at 96%, 74% and 38%; selecting one
-  changes the preview and **Match** commits it.
+  changes the preview and **Match** commits it. Select **Pikmin** (`dolphin:pikmin`)
+  or **Metroid Prime** (`dolphin:metroid`) to exercise the platform filter: the
+  dialog shows only the entry's platform (NGC or Wii) until **Show all** is used,
+  and an answer with no matching platform shows the filtered-empty notice instead
+  of a failed search. The other rows declare no platform and keep the full list.
 - **Add to GameNode** — select a matched game and choose **Add to GameNode**. The
   dialog has the five statuses and collection counts. **New collection** creates a
   collection; the name **Collection limit** answers with the localized
@@ -615,7 +692,7 @@ scripts/dev-windows-wsl.sh
 ```
 
 The launcher builds the Windows desktop and its bundled plugins under
-`target/windows-hmr`, verifies the plugins sit beside the host, prepares its
+`windows-hmr` in the Cargo target directory (`target/windows-hmr` by default), verifies the plugins sit beside the host, prepares its
 backup assets, starts a local Vite server, and opens the Windows app. It forces the real Tauri bridge rather than the UI
 mock. It uses the same Windows Credential Manager entry and local application
 data as the installed app, so an existing session can be restored and changes

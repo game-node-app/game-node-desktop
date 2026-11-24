@@ -12,6 +12,13 @@
 - These conventions do not authorize committing, pushing, or rewriting history;
   perform those actions only when requested.
 
+## Specification changes
+
+- When an instruction appears to change an OpenSpec specification, state the
+  interpretation and ask before editing specs, unless the user already asked
+  for the update. Once authorized, keep the proposal, design, delta and main
+  specs and tasks consistent, and report the files changed.
+
 ## Architecture Guardrails (Tauri v2 + React + TanStack)
 
 - **Async Tauri Commands**: All Rust commands exposed to the frontend must be
@@ -89,3 +96,7 @@ However, it **does not** replace native OS acceptance for:
 For those OS-level checks, use `cargo xwin test --workspace --target x86_64-pc-windows-msvc --locked`
 and `scripts/install-windows-wsl.sh` as documented in
 [docs/development.md](docs/development.md).
+
+Cross-compiled checks show that the Windows build compiles; they are not native Windows
+acceptance. Keep native Windows acceptance tasks open until a native run is recorded in
+[docs/windows-verification.md](docs/windows-verification.md).

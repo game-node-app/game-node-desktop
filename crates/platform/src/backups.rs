@@ -11,6 +11,78 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[derive(Clone)]
+struct Execution {
+    namespace: Vec<String>,
+    target: BackupTarget,
+    job_id: Option<String>,
+    profile: SaveProfile,
+    destination: String,
+    operation: BackupOperation,
+}
+
+struct LegacyAuthority;
+impl BackupAuthority for LegacyAuthority {
+    fn check(&self) -> Result<(), LocalError> {
+        Ok(())
+    }
+    fn validate_targets(&self, _: &[String], _: &[String]) -> Result<(), LocalError> {
+        Ok(())
+    }
+}
+
+impl Execution {
+    fn legacy(request: &BackupRequest) -> Result<Self, LocalError> {
+        let profile = request.profile.clone();
+        Ok(Self {
+            namespace: vec!["manual".into()],
+            target: BackupTarget {
+                installation_id: request.installation.id.clone(),
+                root: request.installation.root.clone(),
+                gameplay: request.installation.gameplay.clone(),
+                track_folder: false,
+            },
+            job_id: request.job_id.clone(),
+            profile,
+            destination: request.destination.clone(),
+            operation: request.operation.clone(),
+        })
+    }
+    fn scoped(request: &ScopedBackupRequest) -> Self {
+        Self {
+            namespace: vec!["plugins".into(), request.owner.clone()],
+            target: request.target.clone(),
+            job_id: request.job_id.clone(),
+            profile: request.profile.clone(),
+            destination: request.destination.clone(),
+            operation: request.operation.clone(),
+        }
+    }
+    fn suffix(&self) -> Result<PathBuf, LocalError> {
+        let mut path = PathBuf::new();
+        for id in self.namespace.iter().map(String::as_str).chain([
+            self.target.installation_id.as_str(),
+            self.profile.id.as_str(),
+        ]) {
+            if id.is_empty()
+                || !id
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+            {
+                return Err(LocalError::InvalidTarget);
+            }
+            path.push(id);
+        }
+        Ok(path)
+    }
+    fn namespace(&self) -> Result<PathBuf, LocalError> {
+        if !Path::new(&self.destination).is_absolute() {
+            return Err(LocalError::InvalidTarget);
+        }
+        Ok(Path::new(&self.destination).join(self.suffix()?))
+    }
+}
+
 pub struct Ludusavi {
     pub helper: PathBuf,
     pub private: PathBuf,
@@ -31,29 +103,16 @@ impl Ludusavi {
         })
     }
     pub fn namespace(request: &BackupRequest) -> Result<PathBuf, LocalError> {
-        if !Path::new(&request.destination).is_absolute() {
-            return Err(LocalError::InvalidTarget);
-        }
-        for id in [&request.installation.id, &request.profile.id] {
-            if id.is_empty()
-                || !id
-                    .bytes()
-                    .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
-            {
-                return Err(LocalError::InvalidTarget);
-            }
-        }
-        Ok(Path::new(&request.destination)
-            .join("manual")
-            .join(&request.installation.id)
-            .join(&request.profile.id))
+        Execution::legacy(request)?.namespace()
     }
     fn run(
         &self,
         args: &[String],
         cancelled: &AtomicBool,
-        stopped: Option<&Registration>,
+        stopped: Option<&BackupTarget>,
+        authority: &dyn BackupAuthority,
     ) -> Result<Value, LocalError> {
+        authority.check()?;
         if !self.helper.is_absolute() || !self.helper.is_file() {
             return Err(LocalError::Failed(
                 "bundled backup helper is unavailable".into(),
@@ -99,6 +158,11 @@ impl Ludusavi {
         let start = Instant::now();
         let mut next_check = Instant::now();
         let outcome = loop {
+            if let Err(error) = authority.check() {
+                let _ = child.kill();
+                let _ = child.wait();
+                break Err(error);
+            }
             if cancelled.load(Ordering::Relaxed)
                 || overflow.load(Ordering::Relaxed)
                 || start.elapsed() > Duration::from_secs(300)
@@ -153,13 +217,10 @@ impl Ludusavi {
         }
         Ok(value)
     }
-    fn config(&self, request: &BackupRequest) -> Result<PathBuf, LocalError> {
-        let path = self
-            .private
-            .join(&request.installation.id)
-            .join(&request.profile.id);
+    fn config(&self, request: &Execution) -> Result<PathBuf, LocalError> {
+        let path = self.private.join(request.suffix()?);
         std::fs::create_dir_all(&path).map_err(failed)?;
-        let definition = execution_definition(&request.profile, &request.installation)?;
+        let definition = execution_definition_at(&request.profile, &request.target.root)?;
         let mut manifest = serde_yaml::Mapping::new();
         manifest.insert(
             serde_yaml::Value::String(request.profile.title.clone()),
@@ -179,17 +240,25 @@ impl Ludusavi {
         Ok(path)
     }
 }
-fn ensure_stopped(installation: &Registration) -> Result<(), LocalError> {
+fn ensure_stopped(installation: &BackupTarget) -> Result<(), LocalError> {
     use gamenode_core::ports::Processes;
     let processes = crate::processes::HostProcesses::new()
         .list()
         .map_err(|_| failed("cannot confirm game is stopped"))?;
     let normalized = |p: &str| gamenode_core::provider::path::normalize(p).to_lowercase();
     if processes.iter().any(|p| {
-        installation
-            .gameplay
-            .iter()
-            .any(|exe| normalized(exe) == normalized(&p.exe_path))
+        let exe = normalized(&p.exe_path);
+        installation.gameplay.iter().any(|path| {
+            resolve_install_path(&installation.root, path)
+                .is_some_and(|path| normalized(&path) == exe)
+        }) || (installation.track_folder
+            && !installation.root.is_empty()
+            && exe.starts_with(
+                &(normalized(&installation.root)
+                    .trim_end_matches('/')
+                    .to_owned()
+                    + "/"),
+            ))
     }) {
         return Err(failed("game is running"));
     }
@@ -215,6 +284,12 @@ pub fn execution_definition(
     profile: &SaveProfile,
     installation: &Registration,
 ) -> Result<serde_yaml::Value, LocalError> {
+    execution_definition_at(profile, &installation.root)
+}
+fn execution_definition_at(
+    profile: &SaveProfile,
+    root: &str,
+) -> Result<serde_yaml::Value, LocalError> {
     let mut definition: serde_yaml::Value =
         serde_yaml::from_str(&profile.definition).map_err(failed)?;
     let map = definition
@@ -230,19 +305,19 @@ pub fn execution_definition(
         let mut bound = serde_yaml::Mapping::new();
         for (path, rule) in files.iter() {
             let path = path.as_str().ok_or(LocalError::InvalidTarget)?;
-            let game = Path::new(&installation.root)
+            let game = Path::new(root)
                 .file_name()
                 .ok_or(LocalError::InvalidTarget)?
                 .to_string_lossy();
-            let path = path.replace("<root>/<game>", &glob_literal(&installation.root));
+            let path = path.replace("<root>/<game>", &glob_literal(root));
             if path.contains("<root>") {
                 return Err(failed(
                     "save rule requires an explicit installation context",
                 ));
             }
             let path = path
-                .replace("<base>", &glob_literal(&installation.root))
-                .replace("<root>", &glob_literal(&installation.root))
+                .replace("<base>", &glob_literal(root))
+                .replace("<root>", &glob_literal(root))
                 .replace("<game>", &glob_literal(&game));
             bound.insert(serde_yaml::Value::String(path), rule.clone());
         }
@@ -250,6 +325,24 @@ pub fn execution_definition(
     }
     Ok(definition)
 }
+fn validate_report_targets(
+    value: &Value,
+    title: &str,
+    authority: &dyn BackupAuthority,
+) -> Result<(), LocalError> {
+    let game = value
+        .get("games")
+        .and_then(|g| g.get(title))
+        .ok_or(LocalError::InvalidTarget)?;
+    let targets = |kind: &str| {
+        game.get(kind)
+            .and_then(Value::as_object)
+            .map(|m| m.keys().cloned().collect::<Vec<_>>())
+            .unwrap_or_default()
+    };
+    authority.validate_targets(&targets("files"), &targets("registry"))
+}
+
 fn has_failure(value: &Value) -> bool {
     match value {
         Value::Object(map) => map.iter().any(|(key, value)| {
@@ -326,33 +419,98 @@ impl BackupEngine for Ludusavi {
             .writer
             .lock()
             .map_err(|_| failed("backup writer lock failed"))?;
-        self.execute_serialized(request, cancelled)
+        self.execute_serialized(&Execution::legacy(request)?, cancelled, &LegacyAuthority)
+    }
+
+    fn scoped_available(&self) -> bool {
+        cfg!(windows)
+    }
+
+    fn execute_scoped(
+        &self,
+        request: &ScopedBackupRequest,
+        cancelled: &AtomicBool,
+        authority: &dyn BackupAuthority,
+    ) -> Result<BackupReport, LocalError> {
+        if !self.scoped_available() {
+            return Err(LocalError::Unsupported);
+        }
+        let deadline = Instant::now() + Duration::from_secs(300);
+        let _guard = loop {
+            authority.check()?;
+            if cancelled.load(Ordering::Relaxed) {
+                return Err(LocalError::Cancelled);
+            }
+            match self.writer.try_lock() {
+                Ok(guard) => break guard,
+                Err(std::sync::TryLockError::Poisoned(_)) => {
+                    return Err(failed("backup writer lock failed"));
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    if Instant::now() >= deadline {
+                        return Err(failed("backup writer unavailable"));
+                    }
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+            }
+        };
+        if matches!(
+            request.operation,
+            BackupOperation::Backup | BackupOperation::Restore { .. }
+        ) {
+            if !request.target.track_folder && request.target.gameplay.is_empty() {
+                return Err(LocalError::Unsupported);
+            }
+            ensure_stopped(&request.target)?;
+        }
+        self.execute_serialized(&Execution::scoped(request), cancelled, authority)
     }
 }
 impl Ludusavi {
     fn execute_serialized(
         &self,
-        request: &BackupRequest,
+        request: &Execution,
         cancelled: &AtomicBool,
+        authority: &dyn BackupAuthority,
     ) -> Result<BackupReport, LocalError> {
         #[cfg(not(windows))]
         {
-            let _ = (request, cancelled);
+            let _ = (request, cancelled, authority);
             return Err(LocalError::Unsupported);
         }
         #[allow(unreachable_code)]
         {
+            authority.check()?;
+            if cancelled.load(Ordering::Relaxed) {
+                return Err(LocalError::Cancelled);
+            }
             if request.profile.title.trim().is_empty() {
                 return Err(LocalError::InvalidTarget);
             }
             if self.checked.get().is_none() {
-                self.run(&["--version".into()], cancelled, None)?;
+                self.run(&["--version".into()], cancelled, None, authority)?;
                 let _ = self.checked.set(());
             }
             if request.profile.title.trim().is_empty() {
                 return Err(LocalError::InvalidTarget);
             }
-            let active = Self::namespace(request)?;
+            let active = request.namespace()?;
+            if request.operation == BackupOperation::History {
+                match std::fs::metadata(&active) {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        // A reachable destination with no namespace has no versions yet. Never
+                        // create an archive folder just to list it, or hide an I/O/access error.
+                        resolved_destination(Path::new(&request.destination))?;
+                        return Ok(BackupReport {
+                            state: JobState::Successful,
+                            json: "{\"games\":{}}".into(),
+                        });
+                    }
+                    Err(error) => return Err(failed(error)),
+                    Ok(metadata) if !metadata.is_dir() => return Err(LocalError::InvalidTarget),
+                    Ok(_) => {}
+                }
+            }
             reconcile(&active)?;
             if matches!(request.operation, BackupOperation::Backup)
                 && let Some(job_id) = &request.job_id
@@ -382,7 +540,7 @@ impl Ludusavi {
                     "--".into(),
                     request.profile.title.clone(),
                 ];
-                let preview = self.run(&preview_args, cancelled, None)?;
+                let preview = self.run(&preview_args, cancelled, None, authority)?;
                 let files = preview
                     .get("games")
                     .and_then(|g| g.get(&request.profile.title))
@@ -395,23 +553,30 @@ impl Ludusavi {
                     &files
                         .iter()
                         .map(PathBuf::from)
-                        .chain([PathBuf::from(&request.installation.root)])
+                        .chain([PathBuf::from(&request.target.root)])
                         .collect::<Vec<_>>(),
                 )?;
+                if preview
+                    .get("games")
+                    .and_then(|g| g.get(&request.profile.title))
+                    .is_some()
+                {
+                    validate_report_targets(&preview, &request.profile.title, authority)?;
+                }
                 if has_failure(&preview) {
                     return Err(failed("save preview reported partial failure"));
                 }
             }
 
             if let BackupOperation::Restore { backup } = &request.operation {
-                ensure_stopped(&request.installation)?;
-                let preview_request = BackupRequest {
+                ensure_stopped(&request.target)?;
+                let preview_request = Execution {
                     operation: BackupOperation::RestorePreview {
                         backup: backup.clone(),
                     },
                     ..request.clone()
                 };
-                let preview = self.execute_serialized(&preview_request, cancelled)?;
+                let preview = self.execute_serialized(&preview_request, cancelled, authority)?;
                 if preview.state == JobState::Partial {
                     return Err(failed("restore preview failed"));
                 }
@@ -420,6 +585,7 @@ impl Ludusavi {
                     .get("games")
                     .and_then(|g| g.get(&request.profile.title))
                     .ok_or_else(|| failed("restore preview omitted game"))?;
+                validate_report_targets(&preview, &request.profile.title, authority)?;
                 let mut definition = serde_json::json!({"files":{},"registry":{}});
                 for kind in ["files", "registry"] {
                     if let Some(targets) = game.get(kind).and_then(Value::as_object) {
@@ -445,13 +611,13 @@ impl Ludusavi {
                     crate::random::session_id()
                 );
                 recovery.profile.definition = definition.to_string();
-                let report = self.execute_serialized(&recovery, cancelled)?;
+                let report = self.execute_serialized(&recovery, cancelled, authority)?;
                 if !matches!(report.state, JobState::Successful | JobState::Unchanged) {
                     return Err(failed("recovery backup failed; restore aborted"));
                 }
                 std::fs::create_dir_all(&active).map_err(failed)?;
-                std::fs::write(active.join(".gamenode-restore-recovery.json"), serde_json::to_vec(&serde_json::json!({"backup":backup,"recovery":Self::namespace(&recovery)?,"preview":preview,"state":report.state})).map_err(failed)?).map_err(failed)?;
-                ensure_stopped(&request.installation)?;
+                std::fs::write(active.join(".gamenode-restore-recovery.json"), serde_json::to_vec(&serde_json::json!({"backup":backup,"recovery":recovery.namespace()?,"preview":preview,"state":report.state})).map_err(failed)?).map_err(failed)?;
+                ensure_stopped(&request.target)?;
             }
 
             let stage = active.with_extension("staging");
@@ -515,10 +681,11 @@ impl Ludusavi {
                     request.operation,
                     BackupOperation::Backup | BackupOperation::Restore { .. }
                 ) {
-                    Some(&request.installation)
+                    Some(&request.target)
                 } else {
                     None
                 },
+                authority,
             )?;
             if !report.get("games").is_some_and(|g| g.is_object()) {
                 return Err(failed("backup helper report has no games"));
@@ -551,6 +718,10 @@ impl Ludusavi {
             } else {
                 JobState::Successful
             };
+            authority.check()?;
+            if cancelled.load(Ordering::Relaxed) {
+                return Err(LocalError::Cancelled);
+            }
             if backup && matches!(state, JobState::Successful | JobState::Unchanged) {
                 std::fs::write(
                     stage.join(".gamenode-verified.json"),
@@ -666,6 +837,62 @@ mod tests {
             "unknown values fall back to the default instead of reaching the helper"
         );
     }
+    #[test]
+    fn scoped_namespaces_preserve_installation_identity_without_claiming_manual_ownership() {
+        let temp = tempfile::tempdir().unwrap();
+        let request = ScopedBackupRequest {
+            owner: "owner_a".into(),
+            target: BackupTarget {
+                installation_id: "installation_a".into(),
+                root: "C:/Game".into(),
+                gameplay: vec![],
+                track_folder: true,
+            },
+            job_id: None,
+            profile: SaveProfile {
+                id: "profile_a".into(),
+                installation: "opaque-store-installation".into(),
+                revision: 1,
+                title: "Profile".into(),
+                manifest_hash: String::new(),
+                definition: "{}".into(),
+                files: vec![],
+                registry: vec![],
+                support: SaveSupport::Supported,
+                automatic: None,
+                retention: None,
+            },
+            destination: temp.path().to_string_lossy().into_owned(),
+            operation: BackupOperation::History,
+        };
+        let execution = Execution::scoped(&request);
+        assert_eq!(
+            execution.namespace().unwrap(),
+            temp.path().join("plugins/owner_a/installation_a/profile_a")
+        );
+        let mut other = request.clone();
+        other.owner = "owner_b".into();
+        assert_ne!(
+            Execution::scoped(&other).namespace().unwrap(),
+            execution.namespace().unwrap()
+        );
+        other.owner = "../escape".into();
+        assert_eq!(
+            Execution::scoped(&other).namespace(),
+            Err(LocalError::InvalidTarget)
+        );
+        #[cfg(not(windows))]
+        {
+            let adapter = Ludusavi::bundled(temp.path()).unwrap();
+            assert!(!adapter.scoped_available());
+            assert_eq!(
+                adapter.execute_scoped(&request, &AtomicBool::new(false), &LegacyAuthority),
+                Err(LocalError::Unsupported)
+            );
+            assert!(std::fs::read_dir(temp.path()).unwrap().next().is_none());
+        }
+    }
+
     #[test]
     fn partial_errors_and_glob_literals_are_preserved() {
         assert!(has_failure(

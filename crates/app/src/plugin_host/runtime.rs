@@ -2,27 +2,115 @@
 //! behind the public API; this layer owns process availability and initialization.
 
 use super::{
+    grants::{PermissionRequest, PluginIdentity},
     login::LoginBroker,
-    process::{PLUGIN_STOPPED, ProcessConfig, ProviderProcesses},
+    managed_packages::{ManagedPackageLifecycle, PackageLifecycleError, lock_publisher_identity},
+    process::{
+        ExtensionIntent, ExtensionLaunch, ExtensionTarget, PLUGIN_STOPPED, ProcessConfig,
+        ProviderProcesses,
+    },
+    profile::{PluginProfiles, PluginStateLayout},
     provider::{Completion, ProviderApi, Registration},
-    services::ProviderServices,
+    services::{ExternalAccountPersistence, ProviderServices},
+    sharing_policy::{
+        ActivationReadGrant, RecipientSharingSnapshot, SharedSharingPolicies, SharingPolicyError,
+        SourceRecipientPolicy,
+    },
 };
+use gamenode_platform::plugin_registry::{InstalledPluginVersion, PluginPackageRegistry};
+use gamenode_platform::plugin_shared_data::OwnerScope;
 use gamenode_plugin_protocol::{
     capability as cap, models,
-    proto::{OperationDisposition, ProviderOperation},
+    proto::{OperationDisposition, ProviderContext, ProviderOperation},
 };
 use std::{
     collections::BTreeMap,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tonic::Status;
 
+struct UnavailableExternalAccounts;
+
+impl ExternalAccountPersistence for UnavailableExternalAccounts {
+    fn load(
+        &self,
+        _owner: &super::namespace::NamespaceOwner,
+        _provider: &str,
+    ) -> Result<Option<models::StoreAccount>, Status> {
+        Ok(None)
+    }
+
+    fn save(
+        &self,
+        _owner: &super::namespace::NamespaceOwner,
+        _account: models::StoreAccount,
+        _clear_ownership: bool,
+    ) -> Result<(), Status> {
+        Err(Status::unavailable(
+            "plugin account storage is not configured",
+        ))
+    }
+
+    fn clear(
+        &self,
+        _owner: &super::namespace::NamespaceOwner,
+        _provider: &str,
+    ) -> Result<(), Status> {
+        Err(Status::unavailable(
+            "plugin account storage is not configured",
+        ))
+    }
+}
+
 pub type Observer = Arc<dyn Fn() + Send + Sync>;
+
+#[derive(Clone, Copy, Debug)]
+pub struct RuntimeContextRevision {
+    pub library_revision: u64,
+    pub binding_revision: u64,
+}
+
+#[tonic::async_trait]
+pub trait RuntimeSessionHandler: Send + Sync {
+    async fn authorize_context(
+        &self,
+        plugin_id: String,
+        publisher_fingerprint: String,
+        owner_key: String,
+        profile_epoch: u64,
+        request: gamenode_plugin_protocol::proto::RuntimeSessionContextRequest,
+    ) -> Result<RuntimeContextRevision, Status> {
+        let _ = (
+            plugin_id,
+            publisher_fingerprint,
+            owner_key,
+            profile_epoch,
+            request,
+        );
+        Err(Status::unimplemented(
+            "runtime context changes are unavailable",
+        ))
+    }
+    async fn report(
+        &self,
+        plugin_id: String,
+        owner_key: String,
+        report: gamenode_plugin_protocol::proto::RuntimeSessionReport,
+        context_authorized: bool,
+        context_revision: Option<RuntimeContextRevision>,
+        received_at: std::time::Instant,
+    ) -> gamenode_plugin_protocol::proto::RuntimeSessionResult;
+
+    async fn disconnected(&self, plugin_id: String);
+}
 
 #[async_trait::async_trait]
 pub trait ProviderRuntime: Send + Sync {
+    fn managed_plugin_inventory(&self) -> Vec<super::PluginInfo> {
+        Vec::new()
+    }
     fn accounts(&self) -> Vec<String>;
     fn has_provider(&self, provider: &str) -> bool;
     fn status(&self, provider: &str) -> Option<models::AccountStatus>;
@@ -39,11 +127,26 @@ pub trait ProviderRuntime: Send + Sync {
     }
     fn set_observer(&self, observer: Observer);
     fn set_account_persistence(&self, _accounts: Arc<dyn super::services::AccountPersistence>) {}
+    fn set_runtime_session_handler(&self, _handler: Arc<dyn RuntimeSessionHandler>) {}
     async fn execute(
         &self,
         provider: &str,
         operation: ProviderOperation,
     ) -> Result<Completion, Status>;
+    async fn start_extension(
+        &self,
+        _plugin_id: &str,
+        _target: ExtensionTarget,
+        _operation: super::intents::Operation,
+    ) -> Result<(), Status> {
+        Err(Status::unimplemented("extension actions are unavailable"))
+    }
+    async fn available_extensions(
+        &self,
+        _operation: super::intents::Operation,
+    ) -> Result<Vec<super::PluginInfo>, Status> {
+        Ok(Vec::new())
+    }
     async fn execute_achievements(
         &self,
         _provider: &str,
@@ -74,22 +177,2297 @@ struct Entry {
     initialize: bool,
 }
 
+pub(crate) fn managed_process_config(
+    installed: &gamenode_platform::plugin_registry::InstalledPluginVersion,
+    report: &super::managed_packages::PackageCandidateReport,
+    publisher_key: [u8; 32],
+) -> Result<ProcessConfig, Status> {
+    let manifest = &report.manifest;
+    if manifest.id != installed.plugin_id || manifest.version != installed.version {
+        return Err(Status::failed_precondition(
+            "managed package identity does not match its registry record",
+        ));
+    }
+    let provider_id = match manifest.kind {
+        super::package::PluginKind::Provider => manifest
+            .provider_id
+            .clone()
+            .ok_or_else(|| Status::failed_precondition("provider package has no provider id"))?,
+        super::package::PluginKind::Extension => {
+            super::provider::extension_registration_id(&manifest.id)
+        }
+    };
+    let target = report
+        .selected_target()
+        .map_err(|error| Status::failed_precondition(error.to_string()))?;
+    let mut manifest_capabilities = vec![cap::CONTEXT.to_owned()];
+    let mut required_capabilities = Vec::new();
+    for permission in &manifest.permissions {
+        if cap::KNOWN.contains(&permission.id.as_str()) {
+            manifest_capabilities.push(permission.id.clone());
+            if permission.required {
+                required_capabilities.push(permission.id.clone());
+            }
+        } else if permission.required {
+            return Err(Status::failed_precondition(
+                "required provider permission is unsupported",
+            ));
+        }
+    }
+    manifest_capabilities.sort();
+    manifest_capabilities.dedup();
+    required_capabilities.sort();
+    required_capabilities.dedup();
+    Ok(ProcessConfig {
+        provider_id,
+        executable: installed.package_path.join(&target.target.entrypoint),
+        arguments: vec![],
+        environment: vec![],
+        startup_timeout: Duration::from_secs(10),
+        manifest_capabilities,
+        required_capabilities,
+        blocked_capabilities: vec![],
+        integrity: Some(super::process::PackageIntegrity {
+            package_root: installed.package_path.clone(),
+            version: installed.version.clone(),
+            publisher_key,
+            emulation_policy: gamenode_platform::plugin_environment::EmulationPolicy::RequireNative,
+        }),
+    })
+}
+
+/// One active managed package that passed identity, publisher and compatibility validation and
+/// is ready for host registration.
+struct PreparedManagedPackage {
+    provider_id: String,
+    plugin_id: String,
+    publisher_fingerprint: String,
+    inventory: super::PluginInfo,
+    config: ProcessConfig,
+    registration: Registration,
+    extension_schemas: Vec<gamenode_plugin_protocol::proto::ExtensionSchemaDescriptor>,
+    entry: Option<Arc<Entry>>,
+}
+
+/// Host-owned composition surfaces used to register a package accepted after startup. The import
+/// flow must not need a restart, so it reuses the same verified package data and service surface
+/// as the startup loop instead of a weaker, second registration path.
+#[derive(Clone)]
+pub(crate) struct HostComposition {
+    paths: gamenode_platform::paths::DataPaths,
+    library: Arc<dyn gamenode_core::library::LibraryStore>,
+    login: Option<Arc<LoginBroker>>,
+    dynamic: Arc<DynamicHostState>,
+}
+
+/// One post-startup package registration attempt. A package that was installed but could not be
+/// registered keeps its review outcome and reports the explicit reason instead of running.
+pub(crate) struct InstalledPackageRegistration {
+    pub plugin_id: String,
+    pub error: Option<String>,
+}
+
+/// Provider entries and inventory rows added after the startup composition.
+#[derive(Default)]
+pub(crate) struct DynamicHostState {
+    entries: std::sync::RwLock<BTreeMap<String, Arc<Entry>>>,
+    inventory: std::sync::RwLock<Vec<super::PluginInfo>>,
+    /// Host callbacks wired before a package was registered. New provider services receive the
+    /// same observer and account persistence as the startup composition.
+    observer: Mutex<Option<Observer>>,
+    accounts: Mutex<Option<Arc<dyn super::services::AccountPersistence>>>,
+}
+
+impl DynamicHostState {
+    fn entry(&self, provider_id: &str) -> Option<Arc<Entry>> {
+        self.entries
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(provider_id)
+            .cloned()
+    }
+
+    fn entries(&self) -> Vec<(String, Arc<Entry>)> {
+        self.entries
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .map(|(id, entry)| (id.clone(), entry.clone()))
+            .collect()
+    }
+
+    fn inventory(&self) -> Vec<super::PluginInfo> {
+        self.inventory
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn insert_entry(&self, provider_id: String, entry: Arc<Entry>) {
+        if let Some(observer) = lock(&self.observer).clone() {
+            entry.services.set_observer(observer);
+        }
+        if let Some(accounts) = lock(&self.accounts).clone() {
+            entry.services.set_account_persistence(accounts);
+        }
+        self.entries
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(provider_id, entry);
+    }
+
+    fn set_observer(&self, observer: Observer) {
+        for (_, entry) in self.entries() {
+            entry.services.set_observer(observer.clone());
+        }
+        *lock(&self.observer) = Some(observer);
+    }
+
+    fn set_account_persistence(&self, accounts: Arc<dyn super::services::AccountPersistence>) {
+        for (_, entry) in self.entries() {
+            entry.services.set_account_persistence(accounts.clone());
+        }
+        *lock(&self.accounts) = Some(accounts);
+    }
+
+    fn push_inventory(&self, plugin: super::PluginInfo) {
+        self.inventory
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(plugin);
+    }
+}
+
+/// Reads, validates and describes one active managed package under the pinned publisher key.
+/// Every manifest, trust, compatibility and identity check runs here so the startup composition
+/// and post-install registration cannot drift apart.
+async fn prepare_managed_package(
+    installed: InstalledPluginVersion,
+    trust: &super::publisher_trust::PublisherTrustStore,
+    packages: &ManagedPackageLifecycle,
+    composition: Option<&HostComposition>,
+) -> Result<PreparedManagedPackage, Status> {
+    let package_root = installed.package_path.clone();
+    let manifest = tokio::task::spawn_blocking(move || {
+        let path = package_root.join("plugin.json");
+        let metadata = std::fs::symlink_metadata(&path).map_err(|error| {
+            Status::failed_precondition(format!("plugin manifest unavailable: {error}"))
+        })?;
+        if !metadata.is_file()
+            || metadata.file_type().is_symlink()
+            || metadata.len() > 4 * 1024 * 1024
+        {
+            return Err(Status::failed_precondition(
+                "plugin manifest is not a bounded regular file",
+            ));
+        }
+        let bytes = std::fs::read(path).map_err(|error| {
+            Status::failed_precondition(format!("plugin manifest unavailable: {error}"))
+        })?;
+        super::package::Manifest::parse_json(&bytes).map_err(|error| {
+            Status::failed_precondition(format!("plugin manifest is invalid: {error}"))
+        })
+    })
+    .await
+    .map_err(|_| Status::internal("plugin manifest worker failed"))??;
+    let plugin_manifest = manifest.manifest();
+    if plugin_manifest.id != installed.plugin_id || plugin_manifest.version != installed.version {
+        return Err(Status::failed_precondition(
+            "managed plugin registry identity does not match its manifest",
+        ));
+    }
+    let publisher_key = manifest.publisher_key();
+    let publisher_fingerprint = match trust.inspect(&installed.plugin_id, &publisher_key) {
+        Ok(super::publisher_trust::KeyStatus::Trusted { fingerprint }) => fingerprint,
+        _ => {
+            return Err(Status::failed_precondition(
+                "managed plugin publisher is not currently trusted",
+            ));
+        }
+    };
+    let report = packages
+        .inspect_candidate(
+            &installed.package_path,
+            publisher_key,
+            gamenode_platform::plugin_environment::EmulationPolicy::RequireNative,
+        )
+        .await
+        .map_err(|error| Status::failed_precondition(error.to_string()))?;
+    let config = managed_process_config(&installed, &report, publisher_key)?;
+    let provider_id = config.provider_id.clone();
+    let inventory = super::PluginInfo {
+        provider_id: report.manifest.provider_id.clone().unwrap_or_default(),
+        plugin_id: installed.plugin_id.clone(),
+        plugin_kind: match report.manifest.kind {
+            super::package::PluginKind::Provider => "provider".to_owned(),
+            super::package::PluginKind::Extension => "extension".to_owned(),
+        },
+        name: report.manifest.name.clone(),
+        source: "community".to_owned(),
+        status: "installed".to_owned(),
+        // Manifest declarations are not grants. The permission viewer exposes effective grants
+        // separately; this legacy field is only for bundled plugins.
+        capabilities: vec![],
+        session: "stopped".to_owned(),
+        native_access: report.manifest.native_access.clone(),
+        publisher_fingerprint: Some(publisher_fingerprint.clone()),
+        version: installed.version.clone(),
+        enabled: None,
+        runtime_available: None,
+        compatibility_details: Some(report.compatibility_review()),
+        bundle_id: None,
+        bundle_name: None,
+        bundle_version: None,
+        bundle_component_kind: None,
+        bundle_publisher_fingerprint: None,
+        bundle_components: None,
+    };
+    let services = if report.manifest.kind == super::package::PluginKind::Provider {
+        // ProviderServices validates the host context as a provider TOML manifest. A managed
+        // package has its own signed JSON manifest instead, so compose the minimal context from
+        // that already verified identity. Do not accept a manifest supplied over RPC or copy
+        // package data into host capabilities/actions.
+        match composition {
+            Some(composition) => {
+                let context_manifest = format!(
+                    "id = {:?}\nname = {:?}\nplatforms = [{:?}]\nsource = {:?}\n\n[scan]\n",
+                    provider_id,
+                    report.manifest.name,
+                    std::env::consts::OS,
+                    installed.plugin_id
+                );
+                Some(Arc::new(ProviderServices::new_external(
+                    ProviderContext {
+                        provider_id: provider_id.clone(),
+                        platform: std::env::consts::OS.into(),
+                        manifest_toml: context_manifest,
+                        ..Default::default()
+                    },
+                    composition.paths.clone(),
+                    composition.library.clone(),
+                    Arc::new(UnavailableExternalAccounts),
+                    composition.login.clone(),
+                    None,
+                )?))
+            }
+            // The startup host always provides its composition. A test host that only exercises
+            // lifecycle registration still gets the process slot and extension schemas.
+            None => None,
+        }
+    } else {
+        None
+    };
+    let host_services: Arc<dyn super::provider::HostServices> = match &services {
+        Some(services) => services.clone(),
+        None => Arc::new(super::provider::ExtensionServices),
+    };
+    let package_root = installed.package_path.clone();
+    let package_digest =
+        tokio::task::spawn_blocking(move || installed_package_digest(&package_root))
+            .await
+            .map_err(|_| Status::internal("installed package digest worker failed"))?
+            .map_err(|_| Status::internal("installed package integrity is unavailable"))?;
+    let registration = Registration {
+        provider_id: provider_id.clone(),
+        plugin_id: installed.plugin_id.clone(),
+        kind: match report.manifest.kind {
+            super::package::PluginKind::Provider => super::provider::RegistrationKind::Provider,
+            super::package::PluginKind::Extension => super::provider::RegistrationKind::Extension,
+        },
+        origin: super::provider::RegistrationOrigin::ThirdParty {
+            publisher_fingerprint: publisher_fingerprint.clone(),
+        },
+        declared_developer: report.manifest.name.clone(),
+        package_digest,
+        playtime: report.manifest.playtime,
+        capabilities: config.manifest_capabilities.clone(),
+        shared_catalog: false,
+        services: host_services,
+    };
+    let entry = services.map(|services| {
+        Arc::new(Entry {
+            services,
+            initialized: tokio::sync::Mutex::new(None),
+            packaged: true,
+            initialize: true,
+        })
+    });
+    Ok(PreparedManagedPackage {
+        provider_id,
+        plugin_id: installed.plugin_id,
+        publisher_fingerprint,
+        inventory,
+        config,
+        registration,
+        extension_schemas: report.extension_schemas,
+        entry,
+    })
+}
+
+/// Registers a prepared package with the shared API. A host rebuilt over an API that already
+/// holds the same signed package (a restart or a test composition) continues composing the
+/// process surface instead of dropping the package as a duplicate.
+async fn register_prepared_management(
+    api: &ProviderApi,
+    provider_id: &str,
+    plugin_id: &str,
+    publisher_fingerprint: &str,
+    registration: Registration,
+    extension_schemas: &[gamenode_plugin_protocol::proto::ExtensionSchemaDescriptor],
+) -> Result<(), Status> {
+    let registration_api = api.clone();
+    match tokio::task::spawn_blocking(move || registration_api.register(registration)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error))
+            if error.code() == tonic::Code::AlreadyExists
+                && api.third_party_identity(provider_id)
+                    == Some((plugin_id.to_owned(), publisher_fingerprint.to_owned())) => {}
+        Ok(Err(error)) => return Err(error),
+        Err(_) => return Err(Status::internal("plugin registration worker failed")),
+    }
+    api.set_extension_schemas(
+        provider_id,
+        plugin_id,
+        publisher_fingerprint,
+        extension_schemas.to_vec(),
+    )
+}
+
 pub struct HostedProviders {
     api: ProviderApi,
     processes: ProviderProcesses,
+    intents: Arc<super::intents::Intents>,
     endpoint_available: bool,
-    entries: BTreeMap<String, Entry>,
+    entries: BTreeMap<String, Arc<Entry>>,
+    managed_plugins: Vec<super::PluginInfo>,
+    /// Registrations and inventory rows added by an accepted import after startup.
+    dynamic: Arc<DynamicHostState>,
     failures: Mutex<BTreeMap<String, String>>,
     observer: Mutex<Option<Observer>>,
+    lifecycle: Arc<ThirdPartyPluginLifecycle>,
+}
+
+/// Account-scoped enable/disable controls for already registered managed plugins. Registration
+/// and package validation remain host-owned; this service only starts verified process slots and
+/// persists the user's per-account choice.
+pub struct ThirdPartyPluginLifecycle {
+    api: ProviderApi,
+    processes: ProviderProcesses,
+    state: PluginStateLayout,
+    registry: gamenode_platform::plugin_registry::PluginPackageRegistry,
+    packages: ManagedPackageLifecycle,
+    mutation: tokio::sync::Mutex<()>,
+    /// Host composition used to register packages accepted after startup. Absent in tests that
+    /// only exercise lifecycle registration.
+    composition: Mutex<Option<HostComposition>>,
+    /// Host-only private store worker, connected by the desktop host. Absent in hosts and tests
+    /// that did not open `plugin-data`; private retention is then skipped rather than guessed.
+    private_storage: Mutex<Option<Arc<super::storage::PluginStorage>>>,
+    /// Single-use host-wide cleanup reviews.
+    cleanup_reviews: super::cleanup::CleanupReviews,
+    /// Single-use reviewed publisher-migration previews.
+    migration_reviews: super::migration::MigrationReviews,
+    #[cfg(test)]
+    sharing_commit_hook: Mutex<Option<SharingCommitHook>>,
+    #[cfg(test)]
+    permission_commit_hook: Mutex<Option<PermissionCommitHook>>,
+}
+
+/// Host-owned permission state for one installed third-party provider in the active account.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginPermissionSnapshot {
+    pub plugin_id: String,
+    pub publisher_fingerprint: String,
+    pub profile_id: String,
+    pub grant_revision: u64,
+    pub requested_permissions: Vec<super::grants::PermissionRequest>,
+    pub effective_grants: Vec<super::grants::EffectiveGrant>,
+}
+
+/// Host-owned configuration availability and the active signed package revision.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginConfigurationState {
+    pub plugin_id: String,
+    pub available: bool,
+    pub revision: Option<String>,
+}
+
+pub use super::retention::{
+    DataRetention, DurableRetentionOutcome, DurableRetentionSink, PrivateReuseOutcome,
+};
+
+pub(crate) struct SharingIdentityObservation {
+    pub identity: PluginIdentity,
+    profile_epoch: u64,
+}
+
+/// Host-resolved identity and owner used by uninstall retention and reviewed reuse. It comes from
+/// the pinned registry and the active profile; a plugin RPC never supplies it.
+struct RemovalIdentity {
+    resolver: super::namespace::ExternalNamespaceResolver,
+    owner: OwnerScope,
+    epoch: u64,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy)]
+enum SharingCommitCheckpoint {
+    BeforeWrite,
+    AfterCommit,
+}
+
+#[cfg(test)]
+type SharingCommitHook = Arc<dyn Fn(SharingCommitCheckpoint) + Send + Sync>;
+
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PermissionCommitCheckpoint {
+    Prepared,
+    BeforeWrite,
+    AfterCommit,
+}
+
+#[cfg(test)]
+type PermissionCommitHook = Arc<dyn Fn(PermissionCommitCheckpoint) + Send + Sync>;
+
+impl ThirdPartyPluginLifecycle {
+    pub fn new(
+        api: ProviderApi,
+        processes: ProviderProcesses,
+        state: PluginStateLayout,
+        registry: gamenode_platform::plugin_registry::PluginPackageRegistry,
+        packages: ManagedPackageLifecycle,
+    ) -> Self {
+        Self {
+            api,
+            processes,
+            state,
+            registry,
+            packages,
+            mutation: tokio::sync::Mutex::new(()),
+            composition: Mutex::new(None),
+            private_storage: Mutex::new(None),
+            cleanup_reviews: super::cleanup::CleanupReviews::default(),
+            migration_reviews: super::migration::MigrationReviews::default(),
+            #[cfg(test)]
+            sharing_commit_hook: Mutex::new(None),
+            #[cfg(test)]
+            permission_commit_hook: Mutex::new(None),
+        }
+    }
+
+    /// Connects the host-owned composition surfaces a post-startup registration needs. This is
+    /// host wiring: no plugin IPC reaches it.
+    pub(crate) fn set_host_composition(&self, composition: HostComposition) {
+        *self
+            .composition
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(composition);
+    }
+
+    /// Connects the host-only private store worker used by uninstall retention and host cleanup.
+    /// This is host wiring: no plugin IPC reaches it.
+    pub fn set_private_storage(&self, storage: Arc<super::storage::PluginStorage>) {
+        *self
+            .private_storage
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(storage);
+    }
+
+    pub(crate) fn private_storage(&self) -> Option<Arc<super::storage::PluginStorage>> {
+        self.private_storage
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// The provider API the host cleanup review enumerates producers from.
+    pub(crate) fn host_api(&self) -> &ProviderApi {
+        &self.api
+    }
+
+    /// The issued host-wide cleanup reviews; single-use and bound to the active profile.
+    pub(crate) fn cleanup_reviews(&self) -> &super::cleanup::CleanupReviews {
+        &self.cleanup_reviews
+    }
+
+    /// The issued publisher-migration previews; single-use and bound to the active profile.
+    pub(crate) fn migration_reviews(&self) -> &super::migration::MigrationReviews {
+        &self.migration_reviews
+    }
+
+    /// The private trust directory, read by the reviewed migration preview for publisher history.
+    pub(crate) fn trust_dir(&self) -> std::path::PathBuf {
+        self.state.trust_dir()
+    }
+
+    /// Registers every active, publisher-pinned package this runtime has not composed yet.
+    ///
+    /// The startup composition registers packages once. An explicitly accepted import installs a
+    /// package later, so this host-only step repeats the same manifest, trust, compatibility and
+    /// identity checks and registers the process slot without replacing the shared provider API
+    /// or process manager. The returned outcomes let a caller report a package that was installed
+    /// but could not be registered instead of claiming it is running.
+    pub(crate) async fn register_installed_packages(
+        &self,
+    ) -> Result<Vec<InstalledPackageRegistration>, Status> {
+        let registry = self.registry.clone();
+        let active = tokio::task::spawn_blocking(move || registry.active_versions())
+            .await
+            .map_err(|_| Status::internal("plugin package registry worker failed"))?
+            .map_err(|_| Status::internal("plugin package registry is unavailable"))?;
+        let trust_dir = self.state.trust_dir();
+        let trust = tokio::task::spawn_blocking(move || {
+            super::publisher_trust::PublisherTrustStore::open(trust_dir)
+        })
+        .await
+        .map_err(|_| Status::internal("publisher trust worker failed"))?
+        .map_err(|_| Status::internal("publisher trust store is unavailable"))?;
+        let composition = self
+            .composition
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let mut outcomes = Vec::new();
+        for installed in active {
+            let plugin_id = installed.plugin_id.clone();
+            let registered = !self
+                .api
+                .third_party_provider_ids_for_plugin(&plugin_id)
+                .is_empty();
+            let prepared = match prepare_managed_package(
+                installed,
+                &trust,
+                &self.packages,
+                composition.as_ref(),
+            )
+            .await
+            {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    outcomes.push(InstalledPackageRegistration {
+                        plugin_id,
+                        error: Some(error.message().to_owned()),
+                    });
+                    continue;
+                }
+            };
+            let PreparedManagedPackage {
+                provider_id,
+                plugin_id,
+                publisher_fingerprint,
+                inventory,
+                config,
+                registration,
+                extension_schemas,
+                entry,
+            } = prepared;
+            if registered {
+                // A newer version replaced the package while its provider stayed registered.
+                // Keep the host-owned identity, but point the supervised process at the new
+                // immutable config so an accepted import takes effect without a restart. The
+                // same immutable package is already fully registered and stays untouched.
+                let current_version =
+                    self.processes
+                        .config(&provider_id)
+                        .ok()
+                        .and_then(|current| {
+                            current
+                                .integrity
+                                .as_ref()
+                                .map(|integrity| integrity.version.clone())
+                        });
+                let next_version = config
+                    .integrity
+                    .as_ref()
+                    .map(|integrity| integrity.version.clone());
+                if current_version == next_version {
+                    continue;
+                }
+                let replaced = if self.processes.config(&provider_id).is_ok() {
+                    self.processes.replace_config(&provider_id, config).await
+                } else {
+                    self.processes.register_config(config)
+                };
+                if let Err(error) = replaced {
+                    outcomes.push(InstalledPackageRegistration {
+                        plugin_id,
+                        error: Some(error.message().to_owned()),
+                    });
+                    continue;
+                }
+                if let Some(composition) = composition.as_ref() {
+                    if let Some(entry) = entry {
+                        composition.dynamic.insert_entry(provider_id, entry);
+                    }
+                    composition.dynamic.push_inventory(inventory);
+                }
+                outcomes.push(InstalledPackageRegistration {
+                    plugin_id,
+                    error: None,
+                });
+                continue;
+            }
+            if let Err(error) = register_prepared_management(
+                &self.api,
+                &provider_id,
+                &plugin_id,
+                &publisher_fingerprint,
+                registration,
+                &extension_schemas,
+            )
+            .await
+            {
+                outcomes.push(InstalledPackageRegistration {
+                    plugin_id,
+                    error: Some(error.message().to_owned()),
+                });
+                continue;
+            }
+            if let Err(error) = self.processes.register_config(config) {
+                // Never leave a plugin registered without a process slot: a later retry would
+                // skip it as already registered.
+                let _ = self.api.unregister_third_party_plugin(&plugin_id).await;
+                outcomes.push(InstalledPackageRegistration {
+                    plugin_id,
+                    error: Some(error.message().to_owned()),
+                });
+                continue;
+            }
+            if let Some(composition) = composition.as_ref() {
+                if let Some(entry) = entry {
+                    composition.dynamic.insert_entry(provider_id, entry);
+                }
+                composition.dynamic.push_inventory(inventory);
+            }
+            outcomes.push(InstalledPackageRegistration {
+                plugin_id,
+                error: None,
+            });
+        }
+        Ok(outcomes)
+    }
+
+    /// Test-only observation that a package has a registered provider and a composed process
+    /// slot, not a half-applied registration.
+    #[cfg(test)]
+    pub(crate) fn has_process_slot(&self, plugin_id: &str) -> bool {
+        self.process_ids(plugin_id).is_ok()
+    }
+
+    pub async fn enabled(&self, plugin_id: String) -> Result<bool, Status> {
+        let profile = self.api.profiles().require()?;
+        let state = self.state.clone();
+        tokio::task::spawn_blocking(move || {
+            state
+                .open_activation(&profile)
+                .map(|activation| activation.is_enabled(&plugin_id))
+                .map_err(|error| Status::internal(format!("plugin activation state: {error}")))
+        })
+        .await
+        .map_err(|_| Status::internal("plugin activation worker failed"))?
+    }
+
+    pub fn require_active_profile(&self) -> Result<(), Status> {
+        self.api.profiles().require().map(|_| ())
+    }
+
+    pub fn is_registered(&self, plugin_id: &str) -> bool {
+        self.api
+            .third_party_provider_ids_for_plugin(plugin_id)
+            .len()
+            == 1
+    }
+
+    pub(crate) fn extension_runtime_available(&self, plugin_id: &str) -> bool {
+        let slot = super::provider::extension_registration_id(plugin_id);
+        self.api.is_extension(&slot) && self.processes.extension_runtime_available(&slot)
+    }
+
+    pub async fn enable(&self, plugin_id: String) -> Result<(), Status> {
+        self.set_enabled(plugin_id, true).await
+    }
+
+    pub async fn disable(&self, plugin_id: String) -> Result<(), Status> {
+        self.set_enabled(plugin_id, false).await
+    }
+
+    /// Reads the persisted permission decisions for one registered provider in the active
+    /// account. Disk access runs on a blocking worker, and a profile switch during that read
+    /// invalidates the result rather than returning another account's grants.
+    pub async fn permission_snapshot(
+        &self,
+        plugin_id: String,
+    ) -> Result<PluginPermissionSnapshot, Status> {
+        let profile = self.api.profiles().require()?;
+        let provider_ids = self.api.third_party_provider_ids_for_plugin(&plugin_id);
+        let [provider_id] = provider_ids.as_slice() else {
+            return Err(Status::failed_precondition(
+                "plugin has no unique registered third-party provider",
+            ));
+        };
+        let (registered_plugin_id, publisher_fingerprint) = self
+            .api
+            .third_party_identity(provider_id)
+            .ok_or_else(|| Status::failed_precondition("plugin identity is unavailable"))?;
+        if registered_plugin_id != plugin_id {
+            return Err(Status::failed_precondition(
+                "registered plugin identity changed",
+            ));
+        }
+        let requested_permissions = self
+            .managed_permission_requests(&plugin_id, &publisher_fingerprint)
+            .await?;
+        let profile_epoch = profile.epoch();
+        let identity = super::grants::PluginIdentity {
+            plugin_id: registered_plugin_id.clone(),
+            publisher_fingerprint: publisher_fingerprint.clone(),
+            profile_id: profile.profile_id().to_owned(),
+        };
+        let state = self.state.clone();
+        let account = profile.clone();
+        let (grant_revision, effective_grants) = tokio::task::spawn_blocking(move || {
+            let grants = state
+                .open_grants(&account)
+                .map_err(|error| Status::internal(format!("plugin grants unavailable: {error}")))?;
+            Ok::<_, Status>((
+                grants.revision(&identity),
+                grants.effective_grants(&identity),
+            ))
+        })
+        .await
+        .map_err(|_| Status::internal("plugin permission worker failed"))??;
+        if !self.api.profiles().is_current(profile_epoch) {
+            return Err(Status::failed_precondition(
+                "plugin profile changed while reading permissions",
+            ));
+        }
+        Ok(PluginPermissionSnapshot {
+            plugin_id: registered_plugin_id,
+            publisher_fingerprint,
+            profile_id: profile.profile_id().to_owned(),
+            grant_revision,
+            requested_permissions,
+            effective_grants,
+        })
+    }
+
+    /// Reads the permission review of a package that was just installed through a reviewed import
+    /// but whose provider is not registered for the active account yet. It resolves the same
+    /// verified manifest and grant store as [`Self::permission_snapshot`], so an import decision is
+    /// expressed in host-enforced scopes rather than manifest text.
+    pub(crate) async fn installed_permission_snapshot(
+        &self,
+        plugin_id: String,
+        publisher_fingerprint: String,
+    ) -> Result<PluginPermissionSnapshot, Status> {
+        let profile = self.api.profiles().require()?;
+        let requested_permissions = self
+            .managed_permission_requests(&plugin_id, &publisher_fingerprint)
+            .await?;
+        let profile_epoch = profile.epoch();
+        let identity = super::grants::PluginIdentity {
+            plugin_id: plugin_id.clone(),
+            publisher_fingerprint: publisher_fingerprint.clone(),
+            profile_id: profile.profile_id().to_owned(),
+        };
+        let state = self.state.clone();
+        let account = profile.clone();
+        let (grant_revision, effective_grants) = tokio::task::spawn_blocking(move || {
+            let grants = state
+                .open_grants(&account)
+                .map_err(|error| Status::internal(format!("plugin grants unavailable: {error}")))?;
+            Ok::<_, Status>((
+                grants.revision(&identity),
+                grants.effective_grants(&identity),
+            ))
+        })
+        .await
+        .map_err(|_| Status::internal("plugin permission worker failed"))??;
+        if !self.api.profiles().is_current(profile_epoch) {
+            return Err(Status::failed_precondition(
+                "plugin profile changed while reading permissions",
+            ));
+        }
+        Ok(PluginPermissionSnapshot {
+            plugin_id,
+            publisher_fingerprint,
+            profile_id: profile.profile_id().to_owned(),
+            grant_revision,
+            requested_permissions,
+            effective_grants,
+        })
+    }
+
+    /// Observe the registered, trusted publisher and the active profile together. Package
+    /// signature verification uses the captured immutable installed version on a worker.
+    pub(crate) async fn observe_sharing_identity(
+        &self,
+        plugin_id: String,
+        expected_profile_id: &str,
+    ) -> Result<SharingIdentityObservation, Status> {
+        let api = self.api.clone();
+        let profiles = api.profiles();
+        let registry = self.registry.clone();
+        let trust_dir = self.state.trust_dir();
+        let expected_profile_id = expected_profile_id.to_owned();
+        let (observation, installed, key) = tokio::task::spawn_blocking(move || {
+            let _publisher = lock_publisher_identity();
+            let profile = profiles.require()?;
+            if profile.profile_id() != expected_profile_id {
+                return Err(Status::failed_precondition("plugin profile changed"));
+            }
+            let fingerprint = registered_publisher(&api, &plugin_id)?;
+            let (installed, key) =
+                trusted_managed_package(&registry, &trust_dir, &plugin_id, &fingerprint)?;
+            let observation = SharingIdentityObservation {
+                identity: PluginIdentity {
+                    plugin_id,
+                    publisher_fingerprint: fingerprint,
+                    profile_id: profile.profile_id().to_owned(),
+                },
+                profile_epoch: profile.epoch(),
+            };
+            Ok((observation, installed, key))
+        })
+        .await
+        .map_err(|_| Status::internal("plugin identity worker failed"))??;
+        self.verified_permission_requests(&installed, key).await?;
+        Ok(observation)
+    }
+
+    pub(crate) async fn sharing_identity(
+        &self,
+        plugin_id: String,
+        expected_profile_id: &str,
+    ) -> Result<PluginIdentity, Status> {
+        let observation = self
+            .observe_sharing_identity(plugin_id, expected_profile_id)
+            .await?;
+        validate_sharing_profile(&self.api.profiles(), &observation)?;
+        Ok(observation.identity)
+    }
+
+    /// The host-resolved durable shared-data owner of one installed plugin in the expected
+    /// profile. Settings use it to read retained usage and to delete it without uninstalling; the
+    /// publisher is verified exactly as for a policy review.
+    pub(crate) async fn durable_owner(
+        &self,
+        plugin_id: String,
+        expected_profile_id: &str,
+    ) -> Result<OwnerScope, Status> {
+        let observation = self
+            .observe_sharing_identity(plugin_id, expected_profile_id)
+            .await?;
+        validate_sharing_profile(&self.api.profiles(), &observation)?;
+        let resolver = self.api.profiles().resolver(
+            &observation.identity.plugin_id,
+            &observation.identity.publisher_fingerprint,
+            None,
+        )?;
+        OwnerScope::new(*resolver.storage_owner().key(), observation.profile_epoch)
+            .map_err(|_| Status::failed_precondition("plugin profile is invalid"))
+    }
+
+    pub(crate) async fn replace_sharing_policy(
+        &self,
+        observation: SharingIdentityObservation,
+        policies: Arc<SharedSharingPolicies>,
+        expected_revision: u64,
+        grant: ActivationReadGrant,
+        source_policies: Vec<SourceRecipientPolicy>,
+        required_sources: Vec<PluginIdentity>,
+    ) -> Result<RecipientSharingSnapshot, Status> {
+        let api = self.api.clone();
+        let registry = self.registry.clone();
+        let trust_dir = self.state.trust_dir();
+        #[cfg(test)]
+        let commit_hook = lock(&self.sharing_commit_hook).clone();
+        tokio::task::spawn_blocking(move || {
+            // Fixed order: publisher identity, profile transition, then policy store.
+            // Publisher changes are fenced from validation through the durable commit.
+            let publisher = lock_publisher_identity();
+            for identity in std::iter::once(&observation.identity).chain(&required_sources) {
+                let current =
+                    registered_publisher(&api, &identity.plugin_id).and_then(|registered| {
+                        if registered != identity.publisher_fingerprint {
+                            return Err(sharing_identity_conflict());
+                        }
+                        trusted_managed_package(
+                            &registry,
+                            &trust_dir,
+                            &identity.plugin_id,
+                            &registered,
+                        )
+                    });
+                match current {
+                    Ok(_) => {}
+                    Err(error) if error.code() == tonic::Code::Internal => return Err(error),
+                    Err(_) => return Err(sharing_identity_conflict()),
+                }
+            }
+            let profiles = api.profiles();
+            let transition = profiles.lock_transition();
+            validate_sharing_profile(&profiles, &observation)?;
+            #[cfg(test)]
+            if let Some(hook) = &commit_hook {
+                hook(SharingCommitCheckpoint::BeforeWrite);
+            }
+            let saved = policies
+                .replace_recipient_policies_snapshot(
+                    &observation.identity,
+                    expected_revision,
+                    grant,
+                    source_policies,
+                )
+                .map_err(|error| match error {
+                    SharingPolicyError::StaleRevision => Status::aborted(error.to_string()),
+                    _ => Status::internal(error.to_string()),
+                })?;
+            drop(transition);
+            drop(publisher);
+            #[cfg(test)]
+            if let Some(hook) = &commit_hook {
+                hook(SharingCommitCheckpoint::AfterCommit);
+            }
+            Ok(saved)
+        })
+        .await
+        .map_err(|_| Status::internal("shared-data permission worker failed"))?
+    }
+
+    /// Atomically replaces permissions only for the active account and the declarations in the
+    /// currently trusted package. The reviewed publisher, profile and revision fence stale UI writes.
+    pub(super) async fn replace_permissions(
+        &self,
+        activations: &tokio::sync::Mutex<()>,
+        plugin_id: String,
+        expected_profile_id: String,
+        expected_publisher_fingerprint: String,
+        expected_revision: u64,
+        decisions: Vec<super::grants::PermissionDecision>,
+    ) -> Result<PluginPermissionSnapshot, Status> {
+        self.replace_reviewed_permissions(
+            activations,
+            plugin_id,
+            expected_profile_id,
+            expected_publisher_fingerprint,
+            expected_revision,
+            decisions,
+            true,
+        )
+        .await
+    }
+
+    /// Applies a reviewed import's permission decisions to the active profile. The package was
+    /// installed and publisher-pinned by the import, but its provider is only registered when the
+    /// host next composes the runtime, so the registration check is replaced by the installed and
+    /// trusted package verification the commit already performs.
+    pub(super) async fn replace_installed_permissions(
+        &self,
+        activations: &tokio::sync::Mutex<()>,
+        plugin_id: String,
+        expected_profile_id: String,
+        expected_publisher_fingerprint: String,
+        expected_revision: u64,
+        decisions: Vec<super::grants::PermissionDecision>,
+    ) -> Result<PluginPermissionSnapshot, Status> {
+        self.replace_reviewed_permissions(
+            activations,
+            plugin_id,
+            expected_profile_id,
+            expected_publisher_fingerprint,
+            expected_revision,
+            decisions,
+            false,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn replace_reviewed_permissions(
+        &self,
+        activations: &tokio::sync::Mutex<()>,
+        plugin_id: String,
+        expected_profile_id: String,
+        expected_publisher_fingerprint: String,
+        expected_revision: u64,
+        decisions: Vec<super::grants::PermissionDecision>,
+        require_registration: bool,
+    ) -> Result<PluginPermissionSnapshot, Status> {
+        let profiles = self.api.profiles();
+        let profile = profiles.require()?;
+        if profile.profile_id() != expected_profile_id {
+            return Err(Status::failed_precondition("plugin profile changed"));
+        }
+        // Capture the profile before waiting on update activation so even a round trip
+        // to another account while queued invalidates this request.
+        let _activation = activations.lock().await;
+        let _mutation = self.mutation.lock().await;
+        let (installed, key) = self
+            .managed_package_for_permissions(&plugin_id, &expected_publisher_fingerprint)
+            .await?;
+        let requests = self.verified_permission_requests(&installed, key).await?;
+        let identity = PluginIdentity {
+            plugin_id,
+            publisher_fingerprint: expected_publisher_fingerprint,
+            profile_id: expected_profile_id,
+        };
+        // A permission change fences a running extension before the new grants are saved.
+        let provider_ids = self
+            .api
+            .third_party_provider_ids_for_plugin(&identity.plugin_id);
+        if let [provider_id] = provider_ids.as_slice()
+            && self.api.is_extension(provider_id)
+        {
+            self.processes.terminate_provider(provider_id).await;
+        }
+        let state = self.state.clone();
+        let registry = self.registry.clone();
+        let api = self.api.clone();
+        #[cfg(test)]
+        let commit_hook = lock(&self.permission_commit_hook).clone();
+        tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            let checkpoint = |point| {
+                if let Some(hook) = &commit_hook {
+                    hook(point);
+                }
+            };
+            #[cfg(test)]
+            checkpoint(PermissionCommitCheckpoint::Prepared);
+
+            // Match the shared-data commit's lock order. The package was verified outside these
+            // locks. Recheck its immutable version and trusted publisher before saving.
+            let publisher = lock_publisher_identity();
+            if require_registration
+                && registered_publisher(&api, &identity.plugin_id)?
+                    != identity.publisher_fingerprint
+            {
+                return Err(Status::failed_precondition("plugin identity changed"));
+            }
+            let current = trusted_managed_package(
+                &registry,
+                &state.trust_dir(),
+                &identity.plugin_id,
+                &identity.publisher_fingerprint,
+            )?;
+            if current != (installed, key) {
+                return Err(Status::failed_precondition(
+                    "plugin package changed; reload and review",
+                ));
+            }
+
+            let transition = profiles.lock_transition();
+            if !profiles.current().is_some_and(|current| {
+                current.epoch() == profile.epoch() && current.profile_id() == identity.profile_id
+            }) {
+                return Err(Status::failed_precondition(
+                    "plugin profile changed while saving permissions",
+                ));
+            }
+            let mut grants = state
+                .open_grants(&profile)
+                .map_err(|error| Status::internal(format!("plugin grants unavailable: {error}")))?;
+            if grants.revision(&identity) != expected_revision {
+                return Err(Status::aborted(
+                    "plugin grants changed; refresh and try again",
+                ));
+            }
+            #[cfg(test)]
+            checkpoint(PermissionCommitCheckpoint::BeforeWrite);
+            let grant_revision = grants
+                .replace_grants(identity.clone(), &requests, &decisions)
+                .map_err(|error| {
+                    Status::invalid_argument(format!("plugin permission decision: {error}"))
+                })?;
+            profiles.notify_permissions_changed();
+            let saved = PluginPermissionSnapshot {
+                effective_grants: grants.effective_grants(&identity),
+                plugin_id: identity.plugin_id,
+                publisher_fingerprint: identity.publisher_fingerprint,
+                profile_id: identity.profile_id,
+                grant_revision,
+                requested_permissions: requests,
+            };
+            drop(transition);
+            drop(publisher);
+            #[cfg(test)]
+            checkpoint(PermissionCommitCheckpoint::AfterCommit);
+            Ok(saved)
+        })
+        .await
+        .map_err(|_| Status::internal("plugin permission worker failed"))?
+    }
+
+    async fn managed_permission_requests(
+        &self,
+        plugin_id: &str,
+        registered_fingerprint: &str,
+    ) -> Result<Vec<PermissionRequest>, Status> {
+        let (installed, publisher_key) = self
+            .managed_package_for_permissions(plugin_id, registered_fingerprint)
+            .await?;
+        self.verified_permission_requests(&installed, publisher_key)
+            .await
+    }
+
+    async fn managed_package_for_permissions(
+        &self,
+        plugin_id: &str,
+        fingerprint: &str,
+    ) -> Result<(InstalledPluginVersion, [u8; 32]), Status> {
+        let registry = self.registry.clone();
+        let trust_dir = self.state.trust_dir();
+        let plugin_id = plugin_id.to_owned();
+        let fingerprint = fingerprint.to_owned();
+        tokio::task::spawn_blocking(move || {
+            trusted_managed_package(&registry, &trust_dir, &plugin_id, &fingerprint)
+        })
+        .await
+        .map_err(|_| Status::internal("plugin publisher worker failed"))?
+    }
+
+    async fn verified_permission_requests(
+        &self,
+        installed: &InstalledPluginVersion,
+        publisher_key: [u8; 32],
+    ) -> Result<Vec<PermissionRequest>, Status> {
+        let report = self
+            .packages
+            .inspect_candidate(
+                &installed.package_path,
+                publisher_key,
+                gamenode_platform::plugin_environment::EmulationPolicy::RequireNative,
+            )
+            .await
+            .map_err(|_| Status::failed_precondition("plugin package validation failed"))?;
+        if report.manifest.id != installed.plugin_id || report.manifest.version != installed.version
+        {
+            return Err(Status::failed_precondition(
+                "plugin manifest does not match the installed package",
+            ));
+        }
+        super::grants::manifest_permission_requests(&report.manifest.permissions).map_err(|error| {
+            Status::failed_precondition(format!(
+                "plugin permission scopes are unsupported: {error}"
+            ))
+        })
+    }
+
+    /// Reports only whether the active signed manifest offers host-supported configuration
+    /// modes and which package revision declared them. Plugin-owned preferences are never read.
+    pub async fn configuration_state(
+        &self,
+        plugin_id: String,
+    ) -> Result<PluginConfigurationState, Status> {
+        let provider_ids = self.api.third_party_provider_ids_for_plugin(&plugin_id);
+        let [provider_id] = provider_ids.as_slice() else {
+            return Err(Status::failed_precondition(
+                "plugin has no unique registered third-party provider",
+            ));
+        };
+        let (registered_plugin_id, registered_fingerprint) = self
+            .api
+            .third_party_identity(provider_id)
+            .ok_or_else(|| Status::failed_precondition("plugin identity is unavailable"))?;
+        if registered_plugin_id != plugin_id {
+            return Err(Status::failed_precondition(
+                "registered plugin identity changed",
+            ));
+        }
+
+        let registry = self.registry.clone();
+        let lookup_id = plugin_id.clone();
+        let installed = tokio::task::spawn_blocking(move || registry.active(&lookup_id))
+            .await
+            .map_err(|_| Status::internal("plugin package state worker failed"))?
+            .map_err(|_| Status::internal("plugin package state is unavailable"))?;
+        let Some(installed) = installed else {
+            return Ok(PluginConfigurationState {
+                plugin_id,
+                available: false,
+                revision: None,
+            });
+        };
+
+        let package_path = installed.package_path.clone();
+        let package_plugin_id = installed.plugin_id.clone();
+        let trust_dir = self.state.trust_dir();
+        let (publisher_key, trusted_fingerprint) = tokio::task::spawn_blocking(move || {
+            let publisher_key = super::updates::package_key(&package_path)
+                .map_err(|_| Status::failed_precondition("active plugin package is invalid"))?;
+            let trust = super::publisher_trust::PublisherTrustStore::open(trust_dir)
+                .map_err(|_| Status::internal("plugin publisher trust is unavailable"))?;
+            if !trust
+                .is_pinned(&package_plugin_id, &publisher_key)
+                .map_err(|_| Status::internal("plugin publisher trust is invalid"))?
+            {
+                return Err(Status::permission_denied(
+                    "active plugin publisher is not trusted",
+                ));
+            }
+            use sha2::Digest as _;
+            let fingerprint = format!("SHA256:{:x}", sha2::Sha256::digest(publisher_key));
+            Ok((publisher_key, fingerprint))
+        })
+        .await
+        .map_err(|_| Status::internal("plugin publisher trust worker failed"))??;
+        if trusted_fingerprint != registered_fingerprint {
+            return Err(Status::failed_precondition(
+                "active plugin publisher does not match its registration",
+            ));
+        }
+        let report = self
+            .packages
+            .inspect_candidate(
+                &installed.package_path,
+                publisher_key,
+                gamenode_platform::plugin_environment::EmulationPolicy::RequireNative,
+            )
+            .await
+            .map_err(|_| Status::failed_precondition("active plugin package is invalid"))?;
+        if report.manifest.id != plugin_id || report.manifest.version != installed.version {
+            return Err(Status::failed_precondition(
+                "active plugin manifest does not match its package revision",
+            ));
+        }
+        let modes = report.manifest.configuration;
+        Ok(PluginConfigurationState {
+            plugin_id,
+            available: modes.external || modes.declarative,
+            revision: Some(format!(
+                "{}:external={}:declarative={}",
+                installed.version, modes.external, modes.declarative
+            )),
+        })
+    }
+
+    /// Probes an inactive package in an Extension session before changing the active pointer.
+    async fn activate_extension_update(
+        &self,
+        previous_version: String,
+        installed: gamenode_platform::plugin_registry::InstalledPluginVersion,
+        mut config: ProcessConfig,
+        target: ExtensionTarget,
+    ) -> Result<(), Status> {
+        use super::{grants::PluginIdentity, publisher_trust};
+        let profiles = self.api.profiles();
+        let profile = profiles.require()?;
+        let validate_target = move |target: &ExtensionTarget| {
+            if !target.is_current()
+                || profiles.current().is_none_or(|profile| {
+                    !profile.verified()
+                        || profile.epoch() != target.profile_epoch
+                        || profile.profile_id() != target.context.profile_id
+                })
+            {
+                return Err(Status::failed_precondition(
+                    "selected extension target or profile changed",
+                ));
+            }
+            Ok(())
+        };
+        validate_target(&target)?;
+        let slot = config.provider_id.clone();
+        if !self.processes.extension_runtime_available(&slot) {
+            return Err(Status::unavailable("extension runtime is unavailable"));
+        }
+        let previous = self.processes.config(&slot)?;
+        let key = config
+            .integrity
+            .as_ref()
+            .filter(|integrity| {
+                integrity.version == installed.version
+                    && integrity.package_root == installed.package_path
+            })
+            .map(|integrity| integrity.publisher_key)
+            .ok_or_else(|| Status::failed_precondition("candidate package identity changed"))?;
+        let previous_root = previous
+            .integrity
+            .as_ref()
+            .filter(|integrity| {
+                integrity.version == previous_version && integrity.publisher_key == key
+            })
+            .map(|integrity| integrity.package_root.clone())
+            .ok_or_else(|| {
+                Status::failed_precondition("active extension package identity changed")
+            })?;
+        let identity = PluginIdentity {
+            plugin_id: installed.plugin_id.clone(),
+            publisher_fingerprint: publisher_trust::key_fingerprint(&key),
+            profile_id: profile.profile_id().to_owned(),
+        };
+        let validate_package = {
+            let state = self.state.clone();
+            let registry = self.registry.clone();
+            let api = self.api.clone();
+            let slot = slot.clone();
+            let installed = installed.clone();
+            let identity = identity.clone();
+            let previous_version = previous_version.clone();
+            move || {
+                let registered = api.third_party_identity(&slot);
+                let trusted = publisher_trust::PublisherTrustStore::open(state.trust_dir())
+                    .and_then(|trust| trust.is_pinned(&installed.plugin_id, &key))
+                    .map_err(|error| Status::internal(error.to_string()))?;
+                let active = registry
+                    .active(&installed.plugin_id)
+                    .map_err(|error| Status::internal(error.to_string()))?;
+                if !trusted
+                    || !api.is_extension(&slot)
+                    || registered.as_ref()
+                        != Some(&(
+                            identity.plugin_id.clone(),
+                            identity.publisher_fingerprint.clone(),
+                        ))
+                    || active.is_none_or(|active| {
+                        active.version != previous_version
+                            || active.package_path != previous_root
+                            || super::updates::package_key(&active.package_path).ok() != Some(key)
+                    })
+                {
+                    return Err(Status::failed_precondition(
+                        "active extension identity changed",
+                    ));
+                }
+                Ok(())
+            }
+        };
+        // Fence the old process before changing grants. An old action is never restarted.
+        self.processes
+            .replace_config(&slot, previous.clone())
+            .await?;
+        let grant_revision = {
+            let validate_package = validate_package.clone();
+            let validate_target = validate_target.clone();
+            let target = target.clone();
+            let profiles = self.api.profiles();
+            let state = self.state.clone();
+            let profile = profile.clone();
+            let identity = identity.clone();
+            let blocked = config.blocked_capabilities.iter().cloned().collect();
+            tokio::task::spawn_blocking(move || {
+                let _publisher = lock_publisher_identity();
+                let _profile = profiles.lock_transition();
+                validate_package()?;
+                validate_target(&target)?;
+                let mut grants = state
+                    .open_grants(&profile)
+                    .map_err(|error| Status::internal(error.to_string()))?;
+                grants
+                    .revoke_permissions(&identity, &blocked)
+                    .map_err(|error| Status::internal(error.to_string()))
+            })
+            .await
+            .map_err(|_| Status::internal("extension grant worker failed"))??
+        };
+        let ready = self
+            .processes
+            .ensure_extension_ready_for_update(&slot, target.clone(), config.clone())
+            .await;
+        // Wait for the provisional tree and fence its session before committing.
+        // The slot retains the previous configuration even if cleanup fails.
+        self.processes.replace_config(&slot, previous).await?;
+        ready?;
+        let registry = self.registry.clone();
+        let profiles = self.api.profiles();
+        let state = self.state.clone();
+        tokio::task::spawn_blocking(move || {
+            let _publisher = lock_publisher_identity();
+            let _profile = profiles.lock_transition();
+            validate_package()?;
+            let grants = state.open_grants(&profile)
+                .map_err(|error| Status::internal(error.to_string()))?;
+            if grants.revision(&identity) != grant_revision {
+                return Err(Status::failed_precondition("extension grants changed during readiness"));
+            }
+            validate_target(&target)?;
+            let outcome = registry.set_active(&installed.plugin_id, &installed.version)
+                .map_err(|error| Status::internal(error.to_string()))
+                // Also catch library changes while the registry write was in progress.
+                .and_then(|()| validate_target(&target));
+            if let Err(error) = outcome {
+                // set_active can report a sync error after replacing the pointer.
+                if registry.active(&installed.plugin_id).ok().flatten().as_ref() == Some(&installed) {
+                    registry.set_active(&installed.plugin_id, &previous_version)
+                        .map_err(|restore| Status::internal(format!(
+                            "extension activation failed ({error}); previous version could not be restored ({restore})"
+                        )))?;
+                }
+                return Err(error);
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|_| Status::internal("extension activation worker failed"))??;
+        // Ordinary extension starts share the mutation lock and can only see this config
+        // once the guarded registry commit above has completed.
+        config.blocked_capabilities.clear();
+        self.processes.replace_config(&slot, config).await
+    }
+
+    /// Atomically activates an already-installed candidate only after its supervised process
+    /// completes the bounded Ready handshake with the account's current grants.
+    pub(crate) async fn activate_update(
+        &self,
+        plugin_id: String,
+        previous_version: String,
+        installed: gamenode_platform::plugin_registry::InstalledPluginVersion,
+        config: ProcessConfig,
+        extension_target: Option<ExtensionTarget>,
+    ) -> Result<(), Status> {
+        let _mutation = self.mutation.lock().await;
+        if installed.plugin_id != plugin_id || installed.version == previous_version {
+            return Err(Status::invalid_argument("invalid staged plugin update"));
+        }
+        let provider_ids = self.api.third_party_provider_ids_for_plugin(&plugin_id);
+        if provider_ids.len() != 1 || provider_ids[0] != config.provider_id {
+            return Err(Status::failed_precondition(
+                "managed plugin has no unique registered provider runtime",
+            ));
+        }
+        if self.api.is_extension(&config.provider_id) {
+            let target = extension_target.ok_or_else(|| {
+                Status::failed_precondition("select a game for the extension readiness check")
+            })?;
+            return self
+                .activate_extension_update(previous_version, installed, config, target)
+                .await;
+        }
+        if extension_target.is_some() {
+            return Err(Status::invalid_argument(
+                "provider updates take no extension target",
+            ));
+        }
+        let profile = self.api.profiles().require()?;
+        let profile_epoch = profile.epoch();
+        let state = self.state.clone();
+        let account = profile.clone();
+        let enabled = tokio::task::spawn_blocking(move || {
+            state
+                .open_activation(&account)
+                .map(|activation| activation.is_enabled(&plugin_id))
+                .map_err(|error| Status::internal(format!("plugin activation state: {error}")))
+        })
+        .await
+        .map_err(|_| Status::internal("plugin activation worker failed"))??;
+        let previous_config = self.processes.config(&config.provider_id)?;
+        self.processes.stop_plugin(&installed.plugin_id).await;
+
+        let registry = self.registry.clone();
+        let candidate_id = installed.plugin_id.clone();
+        let candidate_version = installed.version.clone();
+        let expected_previous = previous_version.clone();
+        let transaction = tokio::task::spawn_blocking(move || {
+            let _publisher = lock_publisher_identity();
+            registry.begin_activation(&candidate_id, &expected_previous, &candidate_version)
+        })
+        .await
+        .map_err(|_| Status::internal("plugin activation worker failed"))?
+        .map_err(|error| Status::failed_precondition(error.to_string()))?;
+
+        let result = async {
+            if !config.blocked_capabilities.is_empty() {
+                let (plugin_id, publisher_fingerprint) = self
+                    .api
+                    .third_party_identity(&config.provider_id)
+                    .ok_or_else(|| Status::failed_precondition("plugin identity is unavailable"))?;
+                let blocked = config.blocked_capabilities.iter().cloned().collect();
+                let state = self.state.clone();
+                let account = profile.clone();
+                tokio::task::spawn_blocking(move || {
+                    let mut grants = state
+                        .open_grants(&account)
+                        .map_err(|error| Status::internal(format!("plugin grants: {error}")))?;
+                    grants
+                        .revoke_permissions(
+                            &super::grants::PluginIdentity {
+                                plugin_id,
+                                publisher_fingerprint,
+                                profile_id: account.profile_id().to_owned(),
+                            },
+                            &blocked,
+                        )
+                        .map_err(|error| {
+                            Status::internal(format!("plugin grant revocation: {error}"))
+                        })
+                })
+                .await
+                .map_err(|_| Status::internal("plugin grant worker failed"))??;
+            }
+            self.processes
+                .replace_config(&config.provider_id, config.clone())
+                .await?;
+            if !self.api.profiles().is_current(profile_epoch) {
+                return Err(Status::failed_precondition(
+                    "plugin profile changed during update activation",
+                ));
+            }
+            self.processes
+                .ensure_ready_for_update(&config.provider_id)
+                .await?;
+            if !self.api.profiles().is_current(profile_epoch) {
+                return Err(Status::failed_precondition(
+                    "plugin profile changed during update readiness check",
+                ));
+            }
+            if !enabled {
+                self.processes.terminate_provider(&config.provider_id).await;
+            }
+            let registry = self.registry.clone();
+            let transaction_to_commit = transaction.clone();
+            let commit = tokio::task::spawn_blocking(move || {
+                let _publisher = lock_publisher_identity();
+                registry.commit_activation(transaction_to_commit)
+            })
+            .await;
+            match commit {
+                Ok(result) => result.map_err(|error| Status::internal(error.to_string()))?,
+                Err(_) => {
+                    // The blocking worker cannot be aborted after it starts. Retry by transaction
+                    // idempotently in case it durably committed before its JoinError was observed.
+                    let registry = self.registry.clone();
+                    let retry = transaction.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let _publisher = lock_publisher_identity();
+                        registry.commit_activation(retry)
+                    })
+                    .await
+                    .map_err(|_| Status::internal("plugin activation worker failed"))?
+                    .map_err(|error| Status::internal(error.to_string()))?;
+                }
+            }
+            Ok(())
+        }
+        .await;
+
+        if let Err(error) = result {
+            self.processes.terminate_provider(&config.provider_id).await;
+            let registry = self.registry.clone();
+            let transaction_to_rollback = transaction;
+            let rollback = tokio::task::spawn_blocking(move || {
+                let _publisher = lock_publisher_identity();
+                registry.rollback_activation(transaction_to_rollback)
+            })
+            .await
+            .map_err(|_| Status::internal("plugin rollback worker failed"))?;
+            if let Err(rollback_error) = rollback {
+                return Err(Status::internal(format!(
+                    "candidate activation failed ({error}); rollback is pending recovery ({rollback_error})"
+                )));
+            }
+            let previous_provider_id = previous_config.provider_id.clone();
+            self.processes
+                .replace_config(&previous_provider_id, previous_config)
+                .await?;
+            if enabled
+                && !self.api.is_extension(&config.provider_id)
+                && self.api.profiles().is_current(profile_epoch)
+                && let Err(restart_error) = self.processes.ensure_started(&config.provider_id).await
+            {
+                return Err(Status::unavailable(format!(
+                    "candidate activation failed ({error}); previous version was restored but could not restart ({restart_error})"
+                )));
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Starts the plugins enabled in the active account after registration has been restored.
+    pub async fn start_enabled_plugins(&self) -> Result<(), Status> {
+        let profile = self.api.profiles().require()?;
+        let profile_epoch = profile.epoch();
+        let state = self.state.clone();
+        let account_profile = profile.clone();
+        let enabled = tokio::task::spawn_blocking(move || {
+            state
+                .open_activation(&account_profile)
+                .map(|activation| activation.enabled().map(str::to_owned).collect::<Vec<_>>())
+                .map_err(|error| Status::internal(format!("plugin activation state: {error}")))
+        })
+        .await
+        .map_err(|_| Status::internal("plugin activation worker failed"))??;
+        for plugin_id in enabled {
+            if !self.api.profiles().is_current(profile_epoch) {
+                return Err(Status::failed_precondition(
+                    "plugin profile changed during lifecycle restore",
+                ));
+            }
+            self.set_enabled_for_profile(plugin_id, true, Some(profile_epoch))
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn set_enabled(&self, plugin_id: String, enabled: bool) -> Result<(), Status> {
+        self.set_enabled_for_profile(plugin_id, enabled, None).await
+    }
+
+    async fn set_enabled_for_profile(
+        &self,
+        plugin_id: String,
+        enabled: bool,
+        expected_epoch: Option<u64>,
+    ) -> Result<(), Status> {
+        let _mutation = self.mutation.lock().await;
+        let profile = self.api.profiles().require()?;
+        if expected_epoch.is_some_and(|expected| expected != profile.epoch()) {
+            return Err(Status::failed_precondition(
+                "plugin profile changed during lifecycle restore",
+            ));
+        }
+        let process_ids = self.process_ids(&plugin_id)?;
+        for id in process_ids.iter().filter(|id| self.api.is_extension(id)) {
+            if enabled {
+                if !self.processes.extension_runtime_available(id) {
+                    return Err(Status::unavailable("extension runtime is unavailable"));
+                }
+            } else {
+                self.processes.terminate_provider(id).await;
+            }
+        }
+        let state = self.state.clone();
+        let account = profile.clone();
+        let plugin = plugin_id.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut activation = state
+                .open_activation(&account)
+                .map_err(|error| Status::internal(format!("plugin activation state: {error}")))?;
+            activation
+                .set_enabled(&plugin, enabled)
+                .map_err(|error| Status::internal(format!("plugin activation state: {error}")))
+        })
+        .await
+        .map_err(|_| Status::internal("plugin activation worker failed"))??;
+
+        if !enabled {
+            for provider_id in process_ids {
+                if !self.api.is_extension(&provider_id) {
+                    self.processes.terminate_provider(&provider_id).await;
+                    self.api.disconnect(&provider_id).await;
+                }
+            }
+            return Ok(());
+        }
+
+        if !self.api.profiles().is_current(profile.epoch())
+            || expected_epoch.is_some_and(|expected| expected != profile.epoch())
+        {
+            return Err(Status::failed_precondition(
+                "plugin profile changed during lifecycle restore",
+            ));
+        }
+        for provider_id in &process_ids {
+            if self.api.is_extension(provider_id) {
+                continue;
+            }
+            if let Err(error) = self.processes.ensure_started(provider_id).await {
+                for provider_id in &process_ids {
+                    self.processes.terminate_provider(provider_id).await;
+                    self.api.disconnect(provider_id).await;
+                }
+                let state = self.state.clone();
+                let account = profile;
+                let plugin = plugin_id;
+                let _ = tokio::task::spawn_blocking(move || {
+                    if let Ok(mut activation) = state.open_activation(&account) {
+                        let _ = activation.set_enabled(&plugin, false);
+                    }
+                })
+                .await;
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    /// The host-resolved durable owner of an installed plugin, without re-reading its manifest.
+    ///
+    /// Uninstall must not depend on package byte verification: a broken or incompatible package
+    /// still has to be removable, while its retained data must stay attributed to the identity the
+    /// pinned registry and the active profile already established.
+    async fn removal_identity(&self, plugin_id: &str) -> Result<RemovalIdentity, Status> {
+        let profile = self.api.profiles().require()?;
+        let provider_ids = self.api.third_party_provider_ids_for_plugin(plugin_id);
+        let [provider_id] = provider_ids.as_slice() else {
+            return Err(Status::failed_precondition(
+                "third-party plugin has no unique registered provider",
+            ));
+        };
+        let (registered_id, publisher_fingerprint) =
+            self.api.third_party_identity(provider_id).ok_or_else(|| {
+                Status::failed_precondition("third-party plugin identity is unavailable")
+            })?;
+        if registered_id != plugin_id {
+            return Err(Status::failed_precondition(
+                "registered plugin identity changed",
+            ));
+        }
+        let resolver = self
+            .api
+            .profiles()
+            .resolver(plugin_id, &publisher_fingerprint, None)?;
+        let owner = OwnerScope::new(*resolver.storage_owner().key(), profile.epoch())
+            .map_err(|_| Status::failed_precondition("plugin profile is invalid"))?;
+        Ok(RemovalIdentity {
+            resolver,
+            owner,
+            epoch: profile.epoch(),
+        })
+    }
+
+    /// Applies one keep-or-delete choice to a producer's durable shared records. Keep archives
+    /// them under the original owner; delete removes them and reports the reclaimed bytes. Another
+    /// owner's rows and the private plugin stores are never touched.
+    pub(crate) async fn apply_durable_retention(
+        &self,
+        plugin_id: &str,
+        retention: DataRetention,
+    ) -> Result<DurableRetentionOutcome, Status> {
+        let identity = self.removal_identity(plugin_id).await?;
+        self.apply_identity_retention(plugin_id, &identity, retention)
+            .await
+    }
+
+    /// Applies the same choice to the durable shared rows and the private persistence entries of
+    /// one resolved identity. Private retention is skipped, not guessed, when this host has no
+    /// private store worker.
+    async fn apply_identity_retention(
+        &self,
+        plugin_id: &str,
+        identity: &RemovalIdentity,
+        retention: DataRetention,
+    ) -> Result<DurableRetentionOutcome, Status> {
+        let now = unix_now()?;
+        let pool = self.api.shared_pool();
+        let mut outcome = DurableRetentionOutcome {
+            plugin_id: plugin_id.to_owned(),
+            data_retention: retention.as_str(),
+            archived_records: 0,
+            removed_records: 0,
+            reclaimed_bytes: 0,
+            private_archived_records: 0,
+            private_removed_records: 0,
+            private_reclaimed_bytes: 0,
+        };
+        match retention {
+            DataRetention::Keep => {
+                outcome.archived_records = pool
+                    .archive_owner(identity.owner, now)
+                    .await?
+                    .map_or(0, |archived| archived.records);
+            }
+            DataRetention::Delete => {
+                if let Some(deleted) = pool.delete_owner(identity.owner, now).await? {
+                    outcome.removed_records = deleted.removed_records;
+                    outcome.reclaimed_bytes = deleted.reclaimed_bytes;
+                }
+            }
+        }
+        if let Some(storage) = self.private_storage() {
+            match retention {
+                DataRetention::Keep => {
+                    let archived = storage
+                        .archive_persistence(&identity.resolver, identity.epoch)
+                        .await?;
+                    outcome.private_archived_records = archived.records;
+                }
+                DataRetention::Delete => {
+                    let removed = storage
+                        .remove_persistence_namespace(&identity.resolver, identity.epoch)
+                        .await?;
+                    outcome.private_removed_records = removed.records;
+                    outcome.private_reclaimed_bytes = removed.logical_bytes;
+                }
+            }
+        }
+        Ok(outcome)
+    }
+
+    /// Restores one reinstall's archived private entries after a separate host review. The owner
+    /// comes from the pinned registry identity and the active profile, so a consumer or a new
+    /// package cannot call this on another producer's data. Nothing changes without confirmation.
+    pub async fn reuse_archived_private_data(
+        &self,
+        plugin_id: String,
+        expected_profile_id: &str,
+        confirmed: bool,
+    ) -> Result<PrivateReuseOutcome, Status> {
+        if !confirmed {
+            return Err(Status::failed_precondition(
+                "reusing archived private data requires confirmation",
+            ));
+        }
+        let profile = self.api.profiles().require()?;
+        if profile.profile_id() != expected_profile_id {
+            return Err(Status::failed_precondition("plugin profile changed"));
+        }
+        let identity = self.removal_identity(&plugin_id).await?;
+        let storage = self.private_storage().ok_or_else(|| {
+            Status::failed_precondition("private plugin data is unavailable on this host")
+        })?;
+        let restored = storage
+            .reuse_archived_persistence(&identity.resolver, identity.epoch)
+            .await?;
+        Ok(PrivateReuseOutcome {
+            plugin_id,
+            restored_records: restored.records,
+            logical_bytes: restored.logical_bytes,
+        })
+    }
+
+    /// Restores one reinstall's archived durable records after a separate host review. The owner
+    /// comes from the pinned registry identity and the active profile, so a consumer or a new
+    /// package cannot call this on another producer's data.
+    pub async fn reuse_archived_durable_data(
+        &self,
+        plugin_id: String,
+        expected_profile_id: &str,
+        confirmed: bool,
+    ) -> Result<DurableRetentionOutcome, Status> {
+        if !confirmed {
+            return Err(Status::failed_precondition(
+                "reusing archived shared data requires confirmation",
+            ));
+        }
+        let profile = self.api.profiles().require()?;
+        if profile.profile_id() != expected_profile_id {
+            return Err(Status::failed_precondition("plugin profile changed"));
+        }
+        // The package identity is pinned in the registry; byte verification is not required to
+        // find the owner, so a damaged reinstall can still be reviewed and cleaned up.
+        let identity = self.removal_identity(&plugin_id).await?;
+        let now = unix_now()?;
+        let reused = self
+            .api
+            .shared_pool()
+            .reuse_archived_owner(identity.owner, now)
+            .await?
+            .map_or(0, |reused| reused.records);
+        Ok(DurableRetentionOutcome {
+            plugin_id,
+            data_retention: DataRetention::Keep.as_str(),
+            archived_records: reused,
+            removed_records: 0,
+            reclaimed_bytes: 0,
+            private_archived_records: 0,
+            private_removed_records: 0,
+            private_reclaimed_bytes: 0,
+        })
+    }
+
+    /// Uninstalls one plugin after applying an explicit durable-data retention choice. The choice
+    /// is applied before the package and account state are removed, so the verified installation
+    /// identity is still available; keeping archives the rows, deleting removes only that owner.
+    pub async fn remove_with_retention(
+        &self,
+        plugin_id: String,
+        retention: DataRetention,
+    ) -> Result<DurableRetentionOutcome, Status> {
+        let _mutation = self.mutation.lock().await;
+        let profile = self.api.profiles().require()?;
+        let registry = self.registry.clone();
+        let lookup_id = plugin_id.clone();
+        let installed = tokio::task::spawn_blocking(move || registry.active(&lookup_id))
+            .await
+            .map_err(|_| Status::internal("plugin package worker failed"))?
+            .map_err(|_| Status::internal("plugin package state is unavailable"))?;
+        if installed.is_none() {
+            return Err(Status::not_found("third-party plugin is not installed"));
+        }
+        let provider_ids = self.api.third_party_provider_ids_for_plugin(&plugin_id);
+        for id in provider_ids.iter().filter(|id| self.api.is_extension(id)) {
+            self.processes.terminate_provider(id).await;
+        }
+
+        let state = self.state.clone();
+        let account = profile.clone();
+        let plugin = plugin_id.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut activation = state
+                .open_activation(&account)
+                .map_err(|error| Status::internal(format!("plugin activation state: {error}")))?;
+            activation
+                .set_enabled(&plugin, false)
+                .map_err(|error| Status::internal(format!("plugin activation state: {error}")))
+        })
+        .await
+        .map_err(|_| Status::internal("plugin activation worker failed"))??;
+        for provider_id in provider_ids.iter().filter(|id| !self.api.is_extension(id)) {
+            self.processes.terminate_provider(provider_id).await;
+            self.api.disconnect(provider_id).await;
+        }
+        // Drop the immutable slots now, while the registration still lets us resolve them.
+        // Otherwise a reinstall accepted in this same session would collide with the old slot.
+        for provider_id in &provider_ids {
+            self.processes.unregister_config(provider_id).await;
+        }
+        // Apply the choice after the producer sessions are gone, so a publication racing the
+        // uninstall cannot leave a new live row behind. The registration is still available for
+        // resolving the owner; it is removed below. A plugin that was installed without a unique
+        // registration has no resolvable owner and must still be removable; no other identity's
+        // rows are guessed or touched.
+        let durable = match self.removal_identity(&plugin_id).await {
+            Ok(identity) => {
+                self.apply_identity_retention(&plugin_id, &identity, retention)
+                    .await?
+            }
+            Err(error) if error.code() == tonic::Code::FailedPrecondition => {
+                tracing::warn!(plugin = %plugin_id, %error, "retention skipped at uninstall");
+                DurableRetentionOutcome {
+                    plugin_id: plugin_id.clone(),
+                    data_retention: retention.as_str(),
+                    archived_records: 0,
+                    removed_records: 0,
+                    reclaimed_bytes: 0,
+                    private_archived_records: 0,
+                    private_removed_records: 0,
+                    private_reclaimed_bytes: 0,
+                }
+            }
+            Err(error) => return Err(error),
+        };
+        if !provider_ids.is_empty() {
+            self.api.unregister_third_party_plugin(&plugin_id).await?;
+        }
+        self.packages
+            .remove_plugin(plugin_id.clone())
+            .await
+            .map_err(package_status)?;
+        let state = self.state.clone();
+        tokio::task::spawn_blocking(move || state.remove_plugin_account_state(&plugin_id))
+            .await
+            .map_err(|_| Status::internal("plugin state removal worker failed"))?
+            .map_err(|error| Status::internal(format!("plugin account state: {error}")))?;
+        Ok(durable)
+    }
+
+    /// Removes one plugin and keeps its durable shared records (the default uninstall choice).
+    pub async fn remove(&self, plugin_id: String) -> Result<(), Status> {
+        self.remove_with_retention(plugin_id, DataRetention::Keep)
+            .await
+            .map(|_| ())
+    }
+
+    /// Stops the supervised processes of one bundle component with the ordinary bounded grace
+    /// before a bundle update or rollback swaps its active package. Activation state, grants and
+    /// registrations are left untouched.
+    pub async fn stop_bundle_component(&self, plugin_id: &str) {
+        let provider_ids = self.api.third_party_provider_ids_for_plugin(plugin_id);
+        for provider_id in &provider_ids {
+            self.processes.terminate_provider(provider_id).await;
+        }
+        for provider_id in provider_ids.iter().filter(|id| !self.api.is_extension(id)) {
+            self.api.disconnect(provider_id).await;
+        }
+    }
+
+    /// Uninstalls one installed bundle: the shared removal primitive stops every active component
+    /// with the bounded grace and deletes the mapped package versions and mapping, then this
+    /// wrapper unregisters the removed components, clears their activation and grants for the
+    /// active account, and applies one private-data retention choice.
+    ///
+    /// A partial failure is returned in the outcome, never dropped: each component that could not
+    /// be removed (or whose account state or data could not be cleared) is listed by plugin id.
+    pub async fn remove_bundle(
+        &self,
+        bundle_id: String,
+        bundles: gamenode_platform::plugin_bundle_db::SqlitePluginBundleStore,
+        delete_data: bool,
+    ) -> Result<super::bundles::BundleUninstallOutcome, super::bundles::BundleUninstallError> {
+        let _mutation = self.mutation.lock().await;
+        let profile = self
+            .api
+            .profiles()
+            .require()
+            .map_err(|_| super::bundles::BundleUninstallError::SignInRequired)?;
+        let retention = if delete_data {
+            super::bundles::BundleDataRetention::Delete
+        } else {
+            super::bundles::BundleDataRetention::Keep
+        };
+        let data_root = self.state.plugin_data_root().map(Path::to_path_buf);
+        let private_data = data_root
+            .as_deref()
+            .map(|root| super::bundles::BundlePrivateData {
+                root,
+                profile_id: profile.profile_id(),
+            });
+        let mut outcome = super::bundles::uninstall_bundle(
+            bundle_id,
+            self.registry.clone(),
+            bundles,
+            &self.processes,
+            retention,
+            private_data,
+        )
+        .await?;
+
+        // The bundle mapping only covers packages, so the same keep-or-delete choice is applied
+        // separately to each removed component's durable shared records. Keeping archives them
+        // under the owner; deleting removes only that owner's rows.
+        let durable = super::bundles::apply_bundle_durable_retention(
+            &outcome.removed,
+            if delete_data {
+                DataRetention::Delete
+            } else {
+                DataRetention::Keep
+            },
+            self,
+        )
+        .await;
+        outcome
+            .failures
+            .extend(durable.failures.into_iter().map(|failure| {
+                super::bundles::BundleRemovalFailure {
+                    plugin_id: failure.plugin_id,
+                    version: failure.version,
+                    error: format!("durable shared data: {}", failure.error),
+                }
+            }));
+
+        // The private namespaces were archived or deleted directly on disk. Drop any cached
+        // connection now, while each removed component's registration still resolves its owner,
+        // so a later install cannot read through an old handle.
+        self.forget_removed_private_namespaces(&outcome.removed)
+            .await;
+
+        let state = self.state.clone();
+        let removed = outcome.removed.clone();
+        let mut failures = Vec::new();
+        for component in &removed {
+            // Resolve the slots before unregistering the plugin: the mapping is the only way to
+            // find them, and an uninstall followed by a reinstall in the same session must not
+            // collide with a stale immutable configuration.
+            let slot_ids = self
+                .api
+                .third_party_provider_ids_for_plugin(&component.plugin_id);
+            // Packages are gone, so the runtime must not keep a registration that could start
+            // them again. A failure here is reported instead of aborting the other components.
+            if let Err(error) = self
+                .api
+                .unregister_third_party_plugin(&component.plugin_id)
+                .await
+            {
+                failures.push(super::bundles::BundleRemovalFailure {
+                    plugin_id: component.plugin_id.clone(),
+                    version: component.version.clone(),
+                    error: format!("runtime registration: {}", error.message()),
+                });
+            } else {
+                for slot_id in &slot_ids {
+                    self.processes.unregister_config(slot_id).await;
+                }
+            }
+        }
+        let account_failures = tokio::task::spawn_blocking(move || {
+            let mut problems = Vec::new();
+            for component in removed {
+                if let Err(error) = state.remove_plugin_account_state(&component.plugin_id) {
+                    problems.push(super::bundles::BundleRemovalFailure {
+                        plugin_id: component.plugin_id,
+                        version: component.version,
+                        error: format!("account state: {error}"),
+                    });
+                }
+            }
+            problems
+        })
+        .await
+        .map_err(|_| super::bundles::BundleUninstallError::WorkerFailed)?;
+        failures.extend(account_failures);
+        outcome.failures.extend(failures);
+        Ok(outcome)
+    }
+
+    /// Drops cached private namespaces for removed bundle components. A component whose identity
+    /// no longer resolves is skipped; its files were already handled by the uninstall.
+    async fn forget_removed_private_namespaces(
+        &self,
+        removed: &[super::bundles::RemovedBundleComponent],
+    ) {
+        let Some(storage) = self.private_storage() else {
+            return;
+        };
+        for component in removed {
+            let Ok(identity) = self.removal_identity(&component.plugin_id).await else {
+                continue;
+            };
+            if let Err(error) = storage
+                .forget_persistence_namespace(&identity.resolver, identity.epoch)
+                .await
+            {
+                tracing::warn!(
+                    plugin = %component.plugin_id,
+                    %error,
+                    "private namespace cache could not be dropped after bundle uninstall"
+                );
+            }
+        }
+    }
+
+    fn process_ids(&self, plugin_id: &str) -> Result<Vec<String>, Status> {
+        let registered = self.api.third_party_provider_ids_for_plugin(plugin_id);
+        if registered.is_empty() {
+            return Err(Status::not_found("third-party plugin is not registered"));
+        }
+        let process_ids = registered
+            .into_iter()
+            .filter(|provider_id| self.processes.has_provider(provider_id))
+            .collect::<Vec<_>>();
+        if process_ids.is_empty() {
+            return Err(Status::failed_precondition(
+                "third-party plugin has no verified process configuration",
+            ));
+        }
+        Ok(process_ids)
+    }
+
+    pub(crate) fn spawn_profile_lifecycle(self: &Arc<Self>, runtime: &tokio::runtime::Handle) {
+        let lifecycle = self.clone();
+        let mut changes = self.api.profiles().subscribe();
+        runtime.spawn(async move {
+            let mut epoch = lifecycle.api.profiles().epoch();
+            if lifecycle.api.profiles().current().is_some()
+                && let Err(error) = lifecycle.start_enabled_plugins().await
+            {
+                tracing::warn!(%error, "could not restore enabled third-party plugins");
+            }
+            while changes.changed().await.is_ok() {
+                let current_epoch = lifecycle.api.profiles().epoch();
+                if current_epoch == epoch {
+                    continue;
+                }
+                epoch = current_epoch;
+                lifecycle.api.fence_third_party_sessions().await;
+                for provider_id in lifecycle.api.third_party_provider_ids() {
+                    if !lifecycle.api.is_extension(&provider_id) {
+                        lifecycle.processes.terminate_provider(&provider_id).await;
+                    }
+                }
+                if lifecycle.api.profiles().current().is_some()
+                    && let Err(error) = lifecycle.start_enabled_plugins().await
+                {
+                    tracing::warn!(%error, "could not restore enabled third-party plugins");
+                }
+            }
+        });
+    }
+}
+
+impl DurableRetentionSink for ThirdPartyPluginLifecycle {
+    fn apply<'a>(
+        &'a self,
+        plugin_id: &'a str,
+        retention: DataRetention,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<DurableRetentionOutcome, String>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            self.apply_durable_retention(plugin_id, retention)
+                .await
+                .map_err(|error| error.message().to_owned())
+        })
+    }
+}
+
+fn unix_now() -> Result<i64, Status> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs().max(1) as i64)
+        .map_err(|_| Status::failed_precondition("the system clock is before the Unix epoch"))
+}
+
+fn package_status(error: PackageLifecycleError) -> Status {
+    Status::internal(format!("plugin package lifecycle failed: {error}"))
+}
+
+fn sharing_identity_conflict() -> Status {
+    Status::aborted(
+        "plugin identity changed while saving shared-data permissions; reload and review",
+    )
+}
+
+fn validate_sharing_profile(
+    profiles: &PluginProfiles,
+    observation: &SharingIdentityObservation,
+) -> Result<(), Status> {
+    if profiles.current().is_some_and(|current| {
+        current.epoch() == observation.profile_epoch
+            && current.profile_id() == observation.identity.profile_id
+    }) {
+        Ok(())
+    } else {
+        Err(sharing_identity_conflict())
+    }
+}
+
+// Call while holding the publisher identity lock so registration stays stable between lookups.
+fn registered_publisher(api: &ProviderApi, plugin_id: &str) -> Result<String, Status> {
+    let provider_ids = api.third_party_provider_ids_for_plugin(plugin_id);
+    let [provider_id] = provider_ids.as_slice() else {
+        return Err(Status::failed_precondition(
+            "plugin has no unique registered third-party provider",
+        ));
+    };
+    api.third_party_identity(provider_id)
+        .filter(|(registered_id, _)| registered_id == plugin_id)
+        .map(|(_, fingerprint)| fingerprint)
+        .ok_or_else(|| Status::failed_precondition("plugin identity is unavailable"))
+}
+
+fn trusted_managed_package(
+    registry: &PluginPackageRegistry,
+    trust_dir: &Path,
+    plugin_id: &str,
+    registered_fingerprint: &str,
+) -> Result<(InstalledPluginVersion, [u8; 32]), Status> {
+    let installed = registry
+        .active(plugin_id)
+        .map_err(|_| Status::internal("plugin package state is unavailable"))?
+        .ok_or_else(|| Status::failed_precondition("plugin package is not installed"))?;
+    let key = super::updates::package_key(&installed.package_path)
+        .map_err(|_| Status::failed_precondition("plugin package manifest is invalid"))?;
+    let trust = super::publisher_trust::PublisherTrustStore::open(trust_dir)
+        .map_err(|_| Status::internal("plugin publisher trust is unavailable"))?;
+    let status = trust
+        .inspect(plugin_id, &key)
+        .map_err(|_| Status::internal("plugin publisher trust is invalid"))?;
+    let super::publisher_trust::KeyStatus::Trusted { fingerprint } = status else {
+        return Err(Status::permission_denied("plugin publisher is not trusted"));
+    };
+    if fingerprint != registered_fingerprint {
+        return Err(Status::failed_precondition(
+            "plugin publisher does not match its registration",
+        ));
+    }
+    Ok((installed, key))
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// The digest of the signed `integrity.json` that authenticated this installed package tree.
+///
+/// The registry stores the verified tree rather than the original archive. The signed integrity
+/// manifest is the stable package identity: it lists every payload digest and is itself covered by
+/// the package signature, so shared-record provenance can name a 32-byte package digest without
+/// trusting a caller-supplied value.
+fn installed_package_digest(root: &Path) -> std::io::Result<Vec<u8>> {
+    use sha2::Digest as _;
+    let bytes = std::fs::read(root.join("integrity.json"))?;
+    Ok(sha2::Sha256::digest(&bytes).to_vec())
+}
+
 impl HostedProviders {
     pub async fn bundled(
         api: ProviderApi,
+        intents: Arc<super::intents::Intents>,
         endpoint: Option<PathBuf>,
         paths: gamenode_platform::paths::DataPaths,
         library: Arc<dyn gamenode_core::library::LibraryStore>,
@@ -105,6 +2483,23 @@ impl HostedProviders {
         .ok_or_else(|| Status::unavailable("provider directory unavailable"))?;
         let mut entries = BTreeMap::new();
         let mut configs = vec![];
+        let mut managed_plugins = vec![];
+        let state = PluginStateLayout::managed(&paths);
+        let registry_paths = paths.clone();
+        let registry = tokio::task::spawn_blocking(move || {
+            gamenode_platform::plugin_registry::PluginPackageRegistry::open(&registry_paths)
+        })
+        .await
+        .map_err(|_| Status::internal("plugin package registry worker failed"))?
+        .map_err(|_| Status::internal("plugin package registry is unavailable"))?;
+        let packages = ManagedPackageLifecycle::new(registry.clone());
+        let trust_path = state.trust_dir();
+        let trust = tokio::task::spawn_blocking(move || {
+            super::publisher_trust::PublisherTrustStore::open(trust_path)
+        })
+        .await
+        .map_err(|_| Status::internal("publisher trust worker failed"))?
+        .map_err(|_| Status::internal("publisher trust store is unavailable"))?;
         for descriptor in super::descriptors().iter().filter(|p| p.has(cap::CONTEXT)) {
             if gamenode_core::provider::Platform::current()
                 .is_none_or(|platform| !descriptor.supports(platform))
@@ -123,8 +2518,13 @@ impl HostedProviders {
             api.register(Registration {
                 provider_id: descriptor.provider_id.clone(),
                 plugin_id: descriptor.plugin_id.clone(),
+                kind: super::provider::RegistrationKind::Provider,
+                origin: crate::plugin_host::provider::RegistrationOrigin::Official,
+                declared_developer: descriptor.name.clone(),
+                package_digest: Vec::new(),
                 capabilities: descriptor.capabilities.clone(),
                 shared_catalog: descriptor.shared_catalog,
+                playtime: Default::default(),
                 services: services.clone(),
             })?;
             let executable = executable_dir.join(descriptor.executable_name());
@@ -138,31 +2538,144 @@ impl HostedProviders {
                 arguments: vec![],
                 environment: vec![],
                 startup_timeout: Duration::from_secs(10),
+                manifest_capabilities: vec![],
+                required_capabilities: vec![],
+                blocked_capabilities: vec![],
+                integrity: None,
             });
             entries.insert(
                 descriptor.provider_id.clone(),
-                Entry {
+                Arc::new(Entry {
                     services,
                     initialized: tokio::sync::Mutex::new(None),
                     packaged,
                     initialize: descriptor.has(cap::CONTEXT),
-                },
+                }),
             );
         }
+
+        let dynamic = Arc::new(DynamicHostState::default());
+        let composition = HostComposition {
+            paths: paths.clone(),
+            library: library.clone(),
+            login: login.clone(),
+            dynamic: dynamic.clone(),
+        };
+        let active_packages = {
+            let registry = registry.clone();
+            tokio::task::spawn_blocking(move || registry.active_versions())
+                .await
+                .map_err(|_| Status::internal("plugin package registry worker failed"))?
+                .map_err(|_| Status::internal("plugin package registry is unavailable"))?
+        };
+        for installed in active_packages {
+            let plugin_id = installed.plugin_id.clone();
+            let prepared = match prepare_managed_package(
+                installed,
+                &trust,
+                &packages,
+                Some(&composition),
+            )
+            .await
+            {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    tracing::warn!(%plugin_id, %error, "managed plugin is not eligible for runtime registration");
+                    continue;
+                }
+            };
+            let PreparedManagedPackage {
+                provider_id,
+                plugin_id,
+                publisher_fingerprint,
+                inventory,
+                config,
+                registration,
+                extension_schemas,
+                entry,
+            } = prepared;
+            if let Err(error) = register_prepared_management(
+                &api,
+                &provider_id,
+                &plugin_id,
+                &publisher_fingerprint,
+                registration,
+                &extension_schemas,
+            )
+            .await
+            {
+                tracing::warn!(%plugin_id, %error, "managed plugin registration was rejected");
+                continue;
+            }
+            managed_plugins.push(inventory);
+            configs.push(config);
+            if let Some(entry) = entry {
+                entries.insert(provider_id, entry);
+            }
+        }
         let endpoint_available = endpoint.is_some();
-        let processes = ProviderProcesses::new(api.clone(), endpoint.unwrap_or_default(), configs)?;
+        let processes = ProviderProcesses::new_for_lifecycle(
+            api.clone(),
+            endpoint.unwrap_or_default(),
+            configs,
+            state.clone(),
+        )?;
+        let lifecycle = Arc::new(ThirdPartyPluginLifecycle::new(
+            api.clone(),
+            processes.clone(),
+            state,
+            registry,
+            packages,
+        ));
+        lifecycle.set_host_composition(composition);
+        lifecycle.spawn_profile_lifecycle(&tokio::runtime::Handle::try_current().map_err(
+            |_| Status::failed_precondition("plugin lifecycle requires an async runtime"),
+        )?);
         Ok(Arc::new(Self {
             api,
             processes,
+            intents,
             endpoint_available,
             entries,
+            managed_plugins,
+            dynamic,
             failures: Mutex::new(BTreeMap::new()),
             observer: Mutex::new(None),
+            lifecycle,
         }))
     }
 
+    pub fn lifecycle(&self) -> Arc<ThirdPartyPluginLifecycle> {
+        self.lifecycle.clone()
+    }
+
+    /// The composed process slots. Tests use this to point a real provider at a temporary
+    /// collection without changing production configuration.
+    #[cfg(test)]
+    pub(crate) fn processes(&self) -> &ProviderProcesses {
+        &self.processes
+    }
+
+    /// The composed entry for a provider, including packages registered after startup.
+    fn entry(&self, id: &str) -> Option<Arc<Entry>> {
+        self.entries
+            .get(id)
+            .cloned()
+            .or_else(|| self.dynamic.entry(id))
+    }
+
+    fn entries_snapshot(&self) -> Vec<(String, Arc<Entry>)> {
+        let mut entries = self
+            .entries
+            .iter()
+            .map(|(id, entry)| (id.clone(), entry.clone()))
+            .collect::<Vec<_>>();
+        entries.extend(self.dynamic.entries());
+        entries
+    }
+
     pub fn availability(&self, id: &str) -> &'static str {
-        let Some(entry) = self.entries.get(id) else {
+        let Some(entry) = self.entry(id) else {
             return "unavailable";
         };
         if !entry.packaged {
@@ -187,7 +2700,7 @@ impl HostedProviders {
     }
 
     pub fn services(&self, provider: &str) -> Option<Arc<ProviderServices>> {
-        self.entries.get(provider).map(|e| e.services.clone())
+        self.entry(provider).map(|e| e.services.clone())
     }
 
     async fn initialized(&self, id: &str) -> Result<(), Status> {
@@ -195,8 +2708,7 @@ impl HostedProviders {
             return Err(Status::unavailable("provider endpoint unavailable"));
         }
         let entry = self
-            .entries
-            .get(id)
+            .entry(id)
             .ok_or_else(|| Status::unavailable("provider is not registered"))?;
         self.processes.ensure_started(id).await?;
         let mut initialized = entry.initialized.lock().await;
@@ -261,19 +2773,50 @@ impl HostedProviders {
 
 #[async_trait::async_trait]
 impl ProviderRuntime for HostedProviders {
-    fn accounts(&self) -> Vec<String> {
-        self.entries
+    fn managed_plugin_inventory(&self) -> Vec<super::PluginInfo> {
+        self.managed_plugins
             .iter()
+            .cloned()
+            .chain(self.dynamic.inventory())
+            .map(|mut plugin| {
+                let slot = if plugin.plugin_kind == "extension" {
+                    plugin.status = if self
+                        .lifecycle
+                        .extension_runtime_available(&plugin.plugin_id)
+                    {
+                        "installed"
+                    } else {
+                        "unavailable"
+                    }
+                    .into();
+                    super::provider::extension_registration_id(&plugin.plugin_id)
+                } else {
+                    plugin.status = self.availability(&plugin.provider_id).to_owned();
+                    plugin.provider_id.clone()
+                };
+                plugin.session = if self.api.connected(&slot) {
+                    "active"
+                } else {
+                    "stopped"
+                }
+                .into();
+                plugin
+            })
+            .collect()
+    }
+
+    fn accounts(&self) -> Vec<String> {
+        self.entries_snapshot()
+            .into_iter()
             .filter(|(_, e)| e.services.initial_status().is_some())
-            .map(|(id, _)| id.clone())
+            .map(|(id, _)| id)
             .collect()
     }
     fn has_provider(&self, id: &str) -> bool {
-        self.entries.contains_key(id)
+        self.entry(id).is_some()
     }
     fn status(&self, id: &str) -> Option<models::AccountStatus> {
-        self.entries
-            .get(id)
+        self.entry(id)
             .and_then(|e| e.services.status().or_else(|| e.services.initial_status()))
     }
     fn available(&self, id: &str) -> bool {
@@ -286,15 +2829,20 @@ impl ProviderRuntime for HostedProviders {
         self.api.connected(id)
     }
     fn set_observer(&self, observer: Observer) {
-        for entry in self.entries.values() {
+        for (_, entry) in self.entries_snapshot() {
             entry.services.set_observer(observer.clone());
         }
+        self.dynamic.set_observer(observer.clone());
         *lock(&self.observer) = Some(observer);
     }
     fn set_account_persistence(&self, accounts: Arc<dyn super::services::AccountPersistence>) {
-        for entry in self.entries.values() {
+        for (_, entry) in self.entries_snapshot() {
             entry.services.set_account_persistence(accounts.clone());
         }
+        self.dynamic.set_account_persistence(accounts);
+    }
+    fn set_runtime_session_handler(&self, handler: Arc<dyn RuntimeSessionHandler>) {
+        self.api.set_runtime_session_handler(handler);
     }
     async fn execute(&self, id: &str, operation: ProviderOperation) -> Result<Completion, Status> {
         let result = async {
@@ -304,6 +2852,168 @@ impl ProviderRuntime for HostedProviders {
         .await;
         self.record_result(id, &result);
         result
+    }
+
+    async fn start_extension(
+        &self,
+        plugin_id: &str,
+        target: ExtensionTarget,
+        operation: super::intents::Operation,
+    ) -> Result<(), Status> {
+        let permission = match operation {
+            super::intents::Operation::Launch => cap::GAME_LAUNCH,
+            super::intents::Operation::Install => cap::GAMES_INSTALL,
+            _ => return Err(Status::invalid_argument("unsupported extension action")),
+        };
+        let _mutation = self.lifecycle.mutation.lock().await;
+        if !self.endpoint_available {
+            return Err(Status::unavailable("extension runtime is unavailable"));
+        }
+        let provider_id = super::provider::extension_registration_id(plugin_id);
+        if !self.api.is_extension(&provider_id) {
+            return Err(Status::not_found("extension is not installed and trusted"));
+        }
+        let profile = self.api.profiles().require()?;
+        if !profile.verified()
+            || profile.epoch() != target.profile_epoch
+            || profile.profile_id() != target.context.profile_id
+            || !target.is_current()
+        {
+            return Err(Status::failed_precondition(
+                "selected extension target is unavailable",
+            ));
+        }
+        let (registered_plugin, publisher_fingerprint) = self
+            .api
+            .third_party_identity(&provider_id)
+            .ok_or_else(|| Status::not_found("extension is not available"))?;
+        if registered_plugin != plugin_id {
+            return Err(Status::permission_denied("extension identity mismatch"));
+        }
+        let binding = super::intents::Binding {
+            plugin_id: registered_plugin,
+            publisher_fingerprint,
+            profile_epoch: profile.epoch(),
+            game_id: target.context.game_id.clone(),
+            installation_id: target.context.installation_id.clone(),
+            operation,
+            target_revision: target
+                .context
+                .revision
+                .parse()
+                .map_err(|_| Status::invalid_argument("invalid target revision"))?,
+            recipe_id: String::new(),
+            recipe_revision: 0,
+            plan_fingerprint: String::new(),
+        };
+        let intent = ExtensionIntent {
+            id: self.intents.issue(binding)?,
+            store: self.intents.clone(),
+        };
+        self.processes
+            .ensure_extension_started(
+                &provider_id,
+                ExtensionLaunch {
+                    target,
+                    required_permission: permission,
+                },
+                intent,
+            )
+            .await
+    }
+
+    async fn available_extensions(
+        &self,
+        operation: super::intents::Operation,
+    ) -> Result<Vec<super::PluginInfo>, Status> {
+        let permission = match operation {
+            super::intents::Operation::Launch => cap::GAME_LAUNCH,
+            super::intents::Operation::Install => cap::GAMES_INSTALL,
+            _ => return Err(Status::invalid_argument("unsupported extension action")),
+        };
+        if !self.endpoint_available {
+            return Ok(Vec::new());
+        }
+        let profile = self.api.profiles().require()?;
+        if !profile.verified() {
+            return Ok(Vec::new());
+        }
+        let mut eligible = Vec::new();
+        let managed_extensions = self
+            .managed_plugins
+            .iter()
+            .cloned()
+            .chain(self.dynamic.inventory())
+            .collect::<Vec<_>>();
+        for plugin in managed_extensions
+            .iter()
+            .filter(|plugin| plugin.plugin_kind == "extension")
+        {
+            let slot = super::provider::extension_registration_id(&plugin.plugin_id);
+            if !self
+                .lifecycle
+                .extension_runtime_available(&plugin.plugin_id)
+            {
+                continue;
+            }
+            let config = self.processes.config(&slot)?;
+            if config
+                .blocked_capabilities
+                .iter()
+                .any(|blocked| blocked == permission)
+                || !config
+                    .manifest_capabilities
+                    .iter()
+                    .any(|capability| capability == permission)
+            {
+                continue;
+            }
+            let Some((plugin_id, publisher_fingerprint)) = self.api.third_party_identity(&slot)
+            else {
+                continue;
+            };
+            let identity = super::grants::PluginIdentity {
+                plugin_id: plugin_id.clone(),
+                publisher_fingerprint,
+                profile_id: profile.profile_id().to_owned(),
+            };
+            let state = self.lifecycle.state.clone();
+            let account = profile.clone();
+            let plugin_id_for_check = plugin_id.clone();
+            let permission = permission.to_owned();
+            let mut required = config.required_capabilities;
+            required.push(permission);
+            let can_start = tokio::task::spawn_blocking(move || -> Result<bool, Status> {
+                let activation = state.open_activation(&account).map_err(|error| {
+                    Status::internal(format!("plugin activation state: {error}"))
+                })?;
+                if !activation.is_enabled(&plugin_id_for_check) {
+                    return Ok(false);
+                }
+                let grants = state
+                    .open_grants(&account)
+                    .map_err(|error| Status::internal(format!("plugin grants: {error}")))?;
+                let granted = grants.effective_grants(&identity);
+                Ok(required.iter().all(|permission| {
+                    !config.blocked_capabilities.contains(permission)
+                        && granted.iter().any(|grant| {
+                            grant.permission_id == *permission
+                                && grant.state == super::grants::PermissionState::Granted
+                        })
+                }))
+            })
+            .await
+            .map_err(|_| Status::internal("plugin eligibility worker failed"))??;
+            if can_start {
+                let mut plugin = plugin.clone();
+                plugin.runtime_available = Some(true);
+                eligible.push(plugin);
+            }
+        }
+        if !self.api.profiles().is_current(profile.epoch()) {
+            return Ok(Vec::new());
+        }
+        Ok(eligible)
     }
     async fn execute_achievements(
         &self,
@@ -319,7 +3029,7 @@ impl ProviderRuntime for HostedProviders {
         result
     }
     async fn stop(&self, id: &str) -> Result<(), Status> {
-        if !self.entries.contains_key(id) {
+        if self.entry(id).is_none() {
             return Err(Status::not_found("provider is not registered"));
         }
         // A pending sign-in owns a native window; ask the plugin to close it before the process
@@ -336,7 +3046,7 @@ impl ProviderRuntime for HostedProviders {
         Ok(())
     }
     async fn start(&self, id: &str) -> Result<(), Status> {
-        if !self.entries.contains_key(id) {
+        if self.entry(id).is_none() {
             return Err(Status::not_found("provider is not registered"));
         }
         self.processes.start_provider(id).await?;
@@ -349,9 +3059,892 @@ impl ProviderRuntime for HostedProviders {
     }
     async fn shutdown(&self) {
         self.processes.shutdown().await;
-        for id in self.entries.keys() {
-            let _ = tokio::time::timeout(Duration::from_secs(3), self.api.disconnect(id)).await;
+        for (id, _) in self.entries_snapshot() {
+            let _ = tokio::time::timeout(Duration::from_secs(3), self.api.disconnect(&id)).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod managed_runtime_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct PermissionSnapshotServices;
+
+    #[tonic::async_trait]
+    impl super::super::provider::HostServices for PermissionSnapshotServices {
+        async fn context(
+            &self,
+            _lease: super::super::provider::Lease,
+        ) -> Result<gamenode_plugin_protocol::proto::ProviderContext, Status> {
+            Err(Status::unimplemented("fixture"))
+        }
+
+        async fn account(
+            &self,
+            _lease: super::super::provider::Lease,
+            _action: gamenode_plugin_protocol::proto::account_request::Action,
+        ) -> Result<gamenode_plugin_protocol::proto::AccountReply, Status> {
+            Err(Status::unimplemented("fixture"))
+        }
+
+        async fn secret(
+            &self,
+            _lease: super::super::provider::Lease,
+            _request: gamenode_plugin_protocol::proto::SecretRequest,
+        ) -> Result<gamenode_plugin_protocol::proto::SecretReply, Status> {
+            Err(Status::unimplemented("fixture"))
+        }
+
+        async fn login(
+            &self,
+            _lease: super::super::provider::Lease,
+            _request: gamenode_plugin_protocol::proto::LoginRequest,
+        ) -> Result<gamenode_plugin_protocol::proto::LoginReply, Status> {
+            Err(Status::unimplemented("fixture"))
+        }
+
+        async fn actions(
+            &self,
+            _lease: super::super::provider::Lease,
+            _actions: gamenode_plugin_protocol::proto::ActionDeclaration,
+        ) -> Result<gamenode_plugin_protocol::proto::ActionReply, Status> {
+            Err(Status::unimplemented("fixture"))
+        }
+    }
+
+    fn permission_lifecycle(
+        root: &std::path::Path,
+        api: ProviderApi,
+        state: PluginStateLayout,
+    ) -> ThirdPartyPluginLifecycle {
+        let registry =
+            gamenode_platform::plugin_registry::PluginPackageRegistry::at(root.join("registry"))
+                .unwrap();
+        let processes = ProviderProcesses::new_for_lifecycle(
+            api.clone(),
+            root.join("provider.sock"),
+            vec![],
+            state.clone(),
+        )
+        .unwrap();
+        ThirdPartyPluginLifecycle::new(
+            api,
+            processes,
+            state,
+            registry.clone(),
+            ManagedPackageLifecycle::new(registry),
+        )
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    mod sharing_policy_races {
+        use super::*;
+        use crate::plugin_host::{
+            managed_packages::tests::write_signed_package,
+            profile::profile_id_for_account,
+            provider::{RegistrationKind, RegistrationOrigin},
+            publisher_trust::{PublisherTrustStore, key_fingerprint},
+            updates::{PluginUpdateService, tests::add_tree},
+        };
+        use gamenode_platform::{paths::DataPaths, plugin_environment::EmulationPolicy};
+        use gamenode_plugin_protocol::proto::CommonDataCategory;
+        use ring::signature::{Ed25519KeyPair, KeyPair};
+
+        const PLUGIN_ID: &str = "org.example.lifecycle";
+        const WAIT: Duration = Duration::from_secs(10);
+
+        struct Fixture {
+            root: tempfile::TempDir,
+            lifecycle: Arc<ThirdPartyPluginLifecycle>,
+            policies: Arc<SharedSharingPolicies>,
+            original: RecipientSharingSnapshot,
+        }
+
+        impl Fixture {
+            async fn new() -> (Self, SharingIdentityObservation) {
+                let root = tempfile::tempdir().unwrap();
+                let api = ProviderApi::default();
+                api.profiles().update(Some("account-a"), true);
+                let paths = DataPaths::at(root.path().join("app"));
+                let state = PluginStateLayout::new(paths.plugin_data_dir().join("state"));
+                let lifecycle = Arc::new(permission_lifecycle(root.path(), api.clone(), state));
+                let key = install_package(&lifecycle, root.path(), "1.0.0", 42, true).await;
+                let fingerprint = key_fingerprint(&key);
+                let trust_dir = lifecycle.state.trust_dir();
+                std::fs::create_dir_all(&trust_dir).unwrap();
+                PublisherTrustStore::open(trust_dir)
+                    .unwrap()
+                    .confirm_first_key(PLUGIN_ID, &key, &fingerprint)
+                    .unwrap();
+                api.register(Registration {
+                    provider_id: "lifecycle-fixture".into(),
+                    plugin_id: PLUGIN_ID.into(),
+                    kind: RegistrationKind::Provider,
+                    origin: RegistrationOrigin::ThirdParty {
+                        publisher_fingerprint: fingerprint,
+                    },
+                    declared_developer: "Fixture developer".into(),
+                    package_digest: vec![],
+                    capabilities: vec![cap::CONTEXT.into()],
+                    shared_catalog: false,
+                    playtime: Default::default(),
+                    services: Arc::new(PermissionSnapshotServices),
+                })
+                .unwrap();
+                let policies =
+                    Arc::new(SharedSharingPolicies::open(root.path().join("policies")).unwrap());
+                let observation = lifecycle
+                    .observe_sharing_identity(
+                        PLUGIN_ID.into(),
+                        &profile_id_for_account("account-a"),
+                    )
+                    .await
+                    .unwrap();
+                policies
+                    .replace_recipient_policies(
+                        &observation.identity,
+                        0,
+                        grant(CommonDataCategory::GamePaths),
+                        vec![],
+                    )
+                    .unwrap();
+                let original = policies.recipient_snapshot(&observation.identity).unwrap();
+                let fixture = Self {
+                    root,
+                    lifecycle,
+                    policies,
+                    original,
+                };
+                (fixture, observation)
+            }
+
+            async fn save(
+                &self,
+                observation: SharingIdentityObservation,
+            ) -> Result<RecipientSharingSnapshot, Status> {
+                self.lifecycle
+                    .replace_sharing_policy(
+                        observation,
+                        self.policies.clone(),
+                        self.original.revision,
+                        grant(CommonDataCategory::RuntimeCatalog),
+                        vec![],
+                        vec![],
+                    )
+                    .await
+            }
+
+            fn on_disk(&self, identity: &PluginIdentity) -> RecipientSharingSnapshot {
+                SharedSharingPolicies::open(self.root.path().join("policies"))
+                    .unwrap()
+                    .recipient_snapshot(identity)
+                    .unwrap()
+            }
+
+            async fn assert_conflict(&self, observation: SharingIdentityObservation) {
+                let old_identity = observation.identity.clone();
+                let error = self.save(observation).await.unwrap_err();
+                assert_eq!(error.code(), tonic::Code::Aborted);
+                assert_eq!(self.on_disk(&old_identity), self.original);
+            }
+        }
+
+        fn grant(category: CommonDataCategory) -> ActivationReadGrant {
+            ActivationReadGrant::new([category], []).unwrap()
+        }
+
+        async fn install_package(
+            lifecycle: &ThirdPartyPluginLifecycle,
+            root: &Path,
+            version: &str,
+            seed: u8,
+            activate: bool,
+        ) -> [u8; 32] {
+            let key = Ed25519KeyPair::from_seed_unchecked(&[seed; 32]).unwrap();
+            let public_key: [u8; 32] = key.public_key().as_ref().try_into().unwrap();
+            let package = root.join(version);
+            write_signed_package(&package, version, "linux", &key);
+            lifecycle
+                .packages
+                .install_candidate(
+                    &package,
+                    public_key,
+                    EmulationPolicy::RequireNative,
+                    activate,
+                )
+                .await
+                .unwrap();
+            public_key
+        }
+
+        #[tokio::test]
+        async fn profile_switch_after_review_rejects_the_durable_save() {
+            let (fixture, observation) = Fixture::new().await;
+            fixture
+                .lifecycle
+                .api
+                .profiles()
+                .update(Some("account-b"), true);
+            fixture.assert_conflict(observation).await;
+        }
+
+        #[tokio::test]
+        async fn profile_switch_back_after_review_still_rejects_the_durable_save() {
+            let (fixture, observation) = Fixture::new().await;
+            let profiles = fixture.lifecycle.api.profiles();
+            profiles.update(Some("account-b"), true);
+            profiles.update(Some("account-a"), true);
+            assert_eq!(
+                profiles.current().unwrap().profile_id(),
+                observation.identity.profile_id
+            );
+            fixture.assert_conflict(observation).await;
+        }
+
+        #[tokio::test]
+        async fn active_package_with_new_publisher_rejects_the_durable_save() {
+            let (fixture, observation) = Fixture::new().await;
+            let key =
+                install_package(&fixture.lifecycle, fixture.root.path(), "2.0.0", 43, false).await;
+            fixture
+                .lifecycle
+                .packages
+                .activate_version(
+                    PLUGIN_ID.into(),
+                    "2.0.0".into(),
+                    key,
+                    EmulationPolicy::RequireNative,
+                )
+                .await
+                .unwrap();
+            assert_ne!(
+                key_fingerprint(&key),
+                observation.identity.publisher_fingerprint
+            );
+            // The existing registration is still for the original key.
+            assert_eq!(
+                registered_publisher(&fixture.lifecycle.api, PLUGIN_ID).unwrap(),
+                observation.identity.publisher_fingerprint,
+            );
+            fixture.assert_conflict(observation).await;
+        }
+
+        #[tokio::test]
+        async fn import_retrust_rejects_the_durable_save_before_install() {
+            let (fixture, observation) = Fixture::new().await;
+            let paths = DataPaths::at(fixture.root.path().join("app"));
+            let updates = PluginUpdateService::open(&paths).unwrap();
+            updates.set_lifecycle(fixture.lifecycle.clone());
+            let key = Ed25519KeyPair::from_seed_unchecked(&[43; 32]).unwrap();
+            let package = fixture.root.path().join("import");
+            write_signed_package(&package, "2.0.0", "linux", &key);
+            let archive = fixture.root.path().join("import.gnplugin");
+            let mut zip = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
+            add_tree(&mut zip, &package, &package);
+            zip.finish().unwrap();
+
+            let review = updates.import_review(archive).await.unwrap();
+            assert_eq!(review.package.trust, "changed");
+            let trusted = updates
+                .import_confirm_publisher(&review.token, &review.package.publisher_fingerprint)
+                .await
+                .unwrap();
+            assert_eq!(trusted.package.trust, "trusted");
+            assert_eq!(
+                fixture
+                    .lifecycle
+                    .registry
+                    .active(PLUGIN_ID)
+                    .unwrap()
+                    .unwrap()
+                    .version,
+                "1.0.0",
+            );
+            fixture.assert_conflict(observation).await;
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn committed_save_returns_saved_revision_after_profile_switch() {
+            use std::sync::mpsc;
+
+            let (fixture, observation) = Fixture::new().await;
+            let fixture = Arc::new(fixture);
+            let old_identity = observation.identity.clone();
+            let profiles = fixture.lifecycle.api.profiles();
+            let (checkpoint_tx, checkpoint_rx) = mpsc::channel();
+            let (release_tx, release_rx) = mpsc::channel();
+            let release_rx = Mutex::new(release_rx);
+            *lock(&fixture.lifecycle.sharing_commit_hook) = Some(Arc::new(move |checkpoint| {
+                checkpoint_tx.send(checkpoint).unwrap();
+                lock(&release_rx).recv_timeout(WAIT).unwrap();
+            }));
+            let saver = fixture.clone();
+            let save = tokio::spawn(async move { saver.save(observation).await });
+            assert!(matches!(
+                checkpoint_rx.recv_timeout(WAIT).unwrap(),
+                SharingCommitCheckpoint::BeforeWrite,
+            ));
+            assert!(profiles.transition_is_locked());
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let switch = tokio::task::spawn_blocking(move || {
+                started_tx.send(()).unwrap();
+                profiles.update(Some("account-b"), true);
+            });
+            started_rx.await.unwrap();
+            release_tx.send(()).unwrap();
+
+            assert!(matches!(
+                checkpoint_rx.recv_timeout(WAIT).unwrap(),
+                SharingCommitCheckpoint::AfterCommit,
+            ));
+            switch.await.unwrap();
+            let durable = fixture.on_disk(&old_identity);
+            assert_eq!(durable.revision, fixture.original.revision + 1);
+            assert_eq!(
+                durable.categories,
+                [CommonDataCategory::RuntimeCatalog].into()
+            );
+            let new_identity = PluginIdentity {
+                profile_id: profile_id_for_account("account-b"),
+                ..old_identity
+            };
+            assert_eq!(
+                fixture.on_disk(&new_identity),
+                RecipientSharingSnapshot::default()
+            );
+            release_tx.send(()).unwrap();
+            assert_eq!(save.await.unwrap().unwrap(), durable);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    mod network_origin_review {
+        use super::*;
+        use crate::plugin_host::{
+            PluginApi,
+            grants::{EffectiveGrant, GrantScope, PermissionDecision, PermissionState},
+            profile::ProfileContext,
+            provider::{RegistrationKind, RegistrationOrigin},
+            publisher_trust::{PublisherTrustStore, key_fingerprint},
+            updates::tests::signed_package_with_permissions,
+        };
+        use gamenode_platform::plugin_environment::EmulationPolicy;
+        use ring::signature::{Ed25519KeyPair, KeyPair};
+
+        const PLUGIN_ID: &str = "org.example.update";
+        const WAIT: Duration = Duration::from_secs(10);
+
+        struct Fixture {
+            _temp: tempfile::TempDir,
+            lifecycle: Arc<ThirdPartyPluginLifecycle>,
+            identity: PluginIdentity,
+            profile: ProfileContext,
+            activations: tokio::sync::Mutex<()>,
+        }
+
+        impl Fixture {
+            async fn new() -> Self {
+                let temp = tempfile::tempdir().unwrap();
+                let root = temp.path().join("package");
+                let paths = gamenode_platform::paths::DataPaths::at(temp.path().join("app"));
+                paths.ensure_data_dir().unwrap();
+                let state = PluginStateLayout::prepare_managed(&paths).unwrap();
+                let key = Ed25519KeyPair::from_seed_unchecked(&[52; 32]).unwrap();
+                let public_key: [u8; 32] = key.public_key().as_ref().try_into().unwrap();
+                let fingerprint = key_fingerprint(&public_key);
+                signed_package_with_permissions(
+                    &root,
+                    "1.0.0",
+                    &key,
+                    vec![serde_json::json!({
+                        "id": cap::NETWORK_FETCH, "required": false,
+                        "scope": "https://API.example.com:443, https://cdn.example.com:8443",
+                        "reason": "Fetch plugin data"
+                    })],
+                );
+                PublisherTrustStore::open(state.trust_dir())
+                    .unwrap()
+                    .confirm_first_key(PLUGIN_ID, &public_key, &fingerprint)
+                    .unwrap();
+                let api = PluginApi::default();
+                api.set_state_layout(state.clone());
+                api.providers.profiles().update(Some("account-one"), true);
+                api.providers
+                    .register(Registration {
+                        declared_developer: "Fixture developer".into(),
+                        package_digest: Vec::new(),
+                        provider_id: "update-fixture".into(),
+                        plugin_id: PLUGIN_ID.into(),
+                        kind: RegistrationKind::Provider,
+                        origin: RegistrationOrigin::ThirdParty {
+                            publisher_fingerprint: fingerprint.clone(),
+                        },
+                        capabilities: vec![cap::CONTEXT.into(), cap::NETWORK_FETCH.into()],
+                        shared_catalog: false,
+                        playtime: Default::default(),
+                        services: Arc::new(PermissionSnapshotServices),
+                    })
+                    .unwrap();
+                let profile = api.providers.profiles().require().unwrap();
+                let lifecycle = Arc::new(permission_lifecycle(
+                    temp.path(),
+                    api.providers.clone(),
+                    state,
+                ));
+                lifecycle
+                    .packages
+                    .install_candidate(&root, public_key, EmulationPolicy::RequireNative, true)
+                    .await
+                    .unwrap();
+                let identity = PluginIdentity {
+                    plugin_id: PLUGIN_ID.into(),
+                    publisher_fingerprint: fingerprint,
+                    profile_id: profile.profile_id().to_owned(),
+                };
+                Self {
+                    _temp: temp,
+                    lifecycle,
+                    identity,
+                    profile,
+                    activations: tokio::sync::Mutex::new(()),
+                }
+            }
+
+            fn on_disk(
+                &self,
+                profile: &ProfileContext,
+                identity: &PluginIdentity,
+            ) -> (u64, Vec<EffectiveGrant>) {
+                let store = self.lifecycle.state.open_grants(profile).unwrap();
+                (store.revision(identity), store.effective_grants(identity))
+            }
+
+            async fn save(
+                &self,
+                revision: u64,
+                granted: bool,
+            ) -> Result<PluginPermissionSnapshot, Status> {
+                self.lifecycle
+                    .replace_permissions(
+                        &self.activations,
+                        PLUGIN_ID.into(),
+                        self.identity.profile_id.clone(),
+                        self.identity.publisher_fingerprint.clone(),
+                        revision,
+                        vec![decision(granted)],
+                    )
+                    .await
+            }
+        }
+
+        fn decision(granted: bool) -> PermissionDecision {
+            PermissionDecision {
+                permission_id: cap::NETWORK_FETCH.into(),
+                scope: GrantScope::Declared {
+                    value: "https://api.example.com".into(),
+                },
+                granted,
+            }
+        }
+
+        #[tokio::test]
+        async fn saves_only_explicit_choices_for_the_reviewed_publisher() {
+            let fixture = Fixture::new().await;
+            let snapshot = fixture
+                .lifecycle
+                .permission_snapshot(PLUGIN_ID.into())
+                .await
+                .unwrap();
+            assert!(snapshot.effective_grants.is_empty());
+            let [request] = snapshot.requested_permissions.as_slice() else {
+                panic!("expected network permission");
+            };
+            assert_eq!(request.allowed_scopes.len(), 2);
+            assert!(request.allowed_scopes.contains(&decision(true).scope));
+            let error = fixture
+                .lifecycle
+                .replace_permissions(
+                    &fixture.activations,
+                    PLUGIN_ID.into(),
+                    snapshot.profile_id.clone(),
+                    "old publisher".into(),
+                    snapshot.grant_revision,
+                    vec![decision(true)],
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+            let saved = fixture.save(snapshot.grant_revision, true).await.unwrap();
+            let granted: Vec<_> = saved
+                .effective_grants
+                .iter()
+                .filter(|grant| grant.state == PermissionState::Granted)
+                .collect();
+            assert_eq!(granted.len(), 1);
+            assert_eq!(granted[0].scope, decision(true).scope);
+            let stale = fixture
+                .save(snapshot.grant_revision, false)
+                .await
+                .unwrap_err();
+            assert_eq!(stale.code(), tonic::Code::Aborted);
+            assert_eq!(
+                fixture.on_disk(&fixture.profile, &fixture.identity),
+                (saved.grant_revision, saved.effective_grants)
+            );
+            let revoked = fixture.save(saved.grant_revision, false).await.unwrap();
+            assert!(
+                revoked
+                    .effective_grants
+                    .iter()
+                    .all(|grant| grant.state == PermissionState::Denied)
+            );
+        }
+
+        async fn profile_transition_wins(switch_back: bool) {
+            let fixture = Fixture::new().await;
+            let original = fixture.save(0, true).await.unwrap();
+            let profiles = fixture.lifecycle.api.profiles();
+            let changes = profiles.subscribe_permissions();
+            *lock(&fixture.lifecycle.permission_commit_hook) = Some(Arc::new(move |checkpoint| {
+                assert_eq!(checkpoint, PermissionCommitCheckpoint::Prepared);
+                profiles.update(Some("account-two"), true);
+                if switch_back {
+                    profiles.update(Some("account-one"), true);
+                }
+            }));
+            let error = fixture
+                .save(original.grant_revision, false)
+                .await
+                .unwrap_err();
+            assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+            assert_eq!(
+                fixture.on_disk(&fixture.profile, &fixture.identity),
+                (original.grant_revision, original.effective_grants)
+            );
+            assert!(!changes.has_changed().unwrap());
+        }
+
+        #[tokio::test]
+        async fn profile_switch_before_commit_preserves_saved_origins() {
+            profile_transition_wins(false).await;
+        }
+
+        #[tokio::test]
+        async fn profile_switch_back_before_commit_preserves_saved_origins() {
+            profile_transition_wins(true).await;
+        }
+
+        #[tokio::test]
+        async fn profile_round_trip_while_queued_for_activation_rejects_save() {
+            let fixture = Fixture::new().await;
+            let original = fixture.save(0, true).await.unwrap();
+            let activation = fixture.activations.lock().await;
+            let save = fixture.save(original.grant_revision, false);
+            tokio::pin!(save);
+            tokio::select! {
+                biased;
+                _ = &mut save => panic!("save must wait for update activation"),
+                _ = std::future::ready(()) => {}
+            }
+            let profiles = fixture.lifecycle.api.profiles();
+            profiles.update(Some("account-two"), true);
+            profiles.update(Some("account-one"), true);
+            drop(activation);
+
+            assert_eq!(
+                save.await.unwrap_err().code(),
+                tonic::Code::FailedPrecondition
+            );
+            assert_eq!(
+                fixture.on_disk(&fixture.profile, &fixture.identity),
+                (original.grant_revision, original.effective_grants)
+            );
+        }
+
+        #[tokio::test]
+        async fn retrust_before_commit_preserves_saved_origins() {
+            let fixture = Fixture::new().await;
+            let original = fixture.save(0, true).await.unwrap();
+            let trust_dir = fixture.lifecycle.state.trust_dir();
+            *lock(&fixture.lifecycle.permission_commit_hook) = Some(Arc::new(move |checkpoint| {
+                assert_eq!(checkpoint, PermissionCommitCheckpoint::Prepared);
+                let _publisher = lock_publisher_identity();
+                let key = Ed25519KeyPair::from_seed_unchecked(&[53; 32]).unwrap();
+                let public_key: [u8; 32] = key.public_key().as_ref().try_into().unwrap();
+                PublisherTrustStore::open(&trust_dir)
+                    .unwrap()
+                    .retrust_key(PLUGIN_ID, &public_key, &key_fingerprint(&public_key))
+                    .unwrap();
+            }));
+            let error = fixture
+                .save(original.grant_revision, false)
+                .await
+                .unwrap_err();
+            assert_eq!(error.code(), tonic::Code::PermissionDenied);
+            assert_eq!(
+                fixture.on_disk(&fixture.profile, &fixture.identity),
+                (original.grant_revision, original.effective_grants)
+            );
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn committed_save_returns_original_identity_after_switch() {
+            use std::sync::mpsc;
+
+            let fixture = Arc::new(Fixture::new().await);
+            let original = fixture.save(0, true).await.unwrap();
+            let profiles = fixture.lifecycle.api.profiles();
+            let changes = profiles.subscribe_permissions();
+            let (checkpoint_tx, checkpoint_rx) = mpsc::channel();
+            let (release_tx, release_rx) = mpsc::channel();
+            let release_rx = Mutex::new(release_rx);
+            *lock(&fixture.lifecycle.permission_commit_hook) = Some(Arc::new(move |checkpoint| {
+                if checkpoint != PermissionCommitCheckpoint::Prepared {
+                    checkpoint_tx.send(checkpoint).unwrap();
+                    lock(&release_rx).recv_timeout(WAIT).unwrap();
+                }
+            }));
+            let saver = fixture.clone();
+            let revision = original.grant_revision;
+            let save = tokio::spawn(async move { saver.save(revision, false).await });
+            assert_eq!(
+                checkpoint_rx.recv_timeout(WAIT).unwrap(),
+                PermissionCommitCheckpoint::BeforeWrite
+            );
+            assert!(profiles.transition_is_locked());
+            assert!(!changes.has_changed().unwrap());
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let switch = tokio::task::spawn_blocking(move || {
+                started_tx.send(()).unwrap();
+                profiles.update(Some("account-two"), true);
+                profiles.require().unwrap()
+            });
+            started_rx.await.unwrap();
+            release_tx.send(()).unwrap();
+            assert_eq!(
+                checkpoint_rx.recv_timeout(WAIT).unwrap(),
+                PermissionCommitCheckpoint::AfterCommit
+            );
+            let next_profile = switch.await.unwrap();
+            assert!(changes.has_changed().unwrap());
+
+            let durable = fixture.on_disk(&fixture.profile, &fixture.identity);
+            assert_eq!(durable.0, revision + 1);
+            assert_eq!(durable.1.len(), 2);
+            assert!(
+                durable
+                    .1
+                    .iter()
+                    .all(|grant| grant.state == PermissionState::Denied)
+            );
+            let next_identity = PluginIdentity {
+                profile_id: next_profile.profile_id().to_owned(),
+                ..fixture.identity.clone()
+            };
+            assert_eq!(fixture.on_disk(&next_profile, &next_identity), (0, vec![]));
+
+            release_tx.send(()).unwrap();
+            let saved = save.await.unwrap().unwrap();
+            assert_eq!(saved.plugin_id, fixture.identity.plugin_id);
+            assert_eq!(
+                saved.publisher_fingerprint,
+                fixture.identity.publisher_fingerprint
+            );
+            assert_eq!(saved.profile_id, fixture.identity.profile_id);
+            assert_eq!((saved.grant_revision, saved.effective_grants), durable);
+        }
+    }
+
+    #[tokio::test]
+    async fn permission_snapshot_requires_the_installed_signed_package_for_scope_choices() {
+        use super::super::provider::{RegistrationKind, RegistrationOrigin};
+
+        let temp = tempfile::tempdir().unwrap();
+        let api = ProviderApi::default();
+        api.profiles().update(Some("account-one"), true);
+        let plugin_id = "org.example.community";
+        let fingerprint = "cd".repeat(32);
+        api.register(Registration {
+            declared_developer: "Fixture developer".into(),
+            package_digest: Vec::new(),
+            provider_id: "community".into(),
+            plugin_id: plugin_id.into(),
+            kind: RegistrationKind::Provider,
+            origin: RegistrationOrigin::ThirdParty {
+                publisher_fingerprint: fingerprint.clone(),
+            },
+            capabilities: vec![cap::CONTEXT.into()],
+            shared_catalog: false,
+            playtime: Default::default(),
+            services: Arc::new(PermissionSnapshotServices),
+        })
+        .unwrap();
+        let state = PluginStateLayout::new(temp.path().join("state"));
+        let lifecycle = permission_lifecycle(temp.path(), api, state);
+
+        let error = lifecycle
+            .permission_snapshot(plugin_id.into())
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+        assert_eq!(error.message(), "plugin package is not installed");
+    }
+
+    #[tokio::test]
+    async fn permission_snapshot_requires_active_profile_and_unique_third_party_provider() {
+        use super::super::provider::{RegistrationKind, RegistrationOrigin};
+
+        let temp = tempfile::tempdir().unwrap();
+        let api = ProviderApi::default();
+        let state = PluginStateLayout::new(temp.path().join("state"));
+        let lifecycle = permission_lifecycle(temp.path(), api.clone(), state.clone());
+        assert_eq!(
+            lifecycle
+                .permission_snapshot("org.example.community".into())
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::Unavailable
+        );
+
+        api.profiles().update(Some("account-one"), true);
+        api.register(Registration {
+            declared_developer: "Fixture developer".into(),
+            package_digest: Vec::new(),
+            provider_id: "official".into(),
+            plugin_id: "org.example.official".into(),
+            kind: RegistrationKind::Provider,
+            origin: RegistrationOrigin::Official,
+            capabilities: vec![cap::CONTEXT.into()],
+            shared_catalog: false,
+            playtime: Default::default(),
+            services: Arc::new(PermissionSnapshotServices),
+        })
+        .unwrap();
+        assert_eq!(
+            lifecycle
+                .permission_snapshot("org.example.official".into())
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::FailedPrecondition
+        );
+    }
+
+    #[tokio::test]
+    async fn removal_requires_an_active_profile_but_can_remove_a_not_yet_registered_package() {
+        let temp = tempfile::tempdir().unwrap();
+        let api = ProviderApi::default();
+        let state = PluginStateLayout::new(temp.path().join("state"));
+        let package = temp.path().join("package");
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::write(package.join("payload"), b"not executed").unwrap();
+        let registry = gamenode_platform::plugin_registry::PluginPackageRegistry::at(
+            temp.path().join("registry"),
+        )
+        .unwrap();
+        registry
+            .install_verified("org.example.imported", "1.0.0", &package, true)
+            .unwrap();
+        let lifecycle = permission_lifecycle(temp.path(), api.clone(), state);
+
+        assert_eq!(
+            lifecycle
+                .remove("org.example.imported".into())
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::Unavailable
+        );
+        assert!(registry.active("org.example.imported").unwrap().is_some());
+
+        api.profiles().update(Some("account-one"), true);
+        lifecycle
+            .remove("org.example.imported".into())
+            .await
+            .unwrap();
+        assert!(registry.active("org.example.imported").unwrap().is_none());
+    }
+
+    #[test]
+    fn managed_process_config_uses_the_selected_signed_provider_target() {
+        let target = super::super::package::Target {
+            os: "linux".into(),
+            arch: "x86_64".into(),
+            abi: "gnu".into(),
+            entrypoint: "bin/provider".into(),
+            requires: None,
+            tested_on: vec![],
+        };
+        let manifest = super::super::package::Manifest {
+            schema: 1,
+            id: "org.example.community".into(),
+            kind: super::super::package::PluginKind::Provider,
+            provider_id: Some("community".into()),
+            name: "Community provider".into(),
+            version: "1.2.3".into(),
+            api: super::super::package::ApiRange {
+                min: "1.6.0".into(),
+                max: "1.6.0".into(),
+            },
+            permissions: vec![super::super::package::PermissionRequest {
+                id: cap::CONTEXT.into(),
+                required: true,
+                scope: "provider session".into(),
+                reason: "Open a provider session".into(),
+                impact_if_disabled: None,
+            }],
+            native_access: vec![],
+            supported_platforms: vec![],
+            targets: vec![target.clone()],
+            publisher: super::super::package::Publisher {
+                key_id: "publisher-key".into(),
+                public_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
+            },
+            license: super::super::package::LicenseNotice {
+                expression: "MIT".into(),
+                files: vec!["LICENSE".into()],
+                notices: vec![],
+            },
+            source_url: None,
+            update_url: None,
+            configuration: Default::default(),
+            resources: BTreeMap::new(),
+            schemas: vec![],
+            playtime: Default::default(),
+        };
+        let package_path = PathBuf::from("managed-package");
+        let installed = gamenode_platform::plugin_registry::InstalledPluginVersion {
+            plugin_id: manifest.id.clone(),
+            version: manifest.version.clone(),
+            package_path: package_path.clone(),
+        };
+        let report = super::super::managed_packages::PackageCandidateReport {
+            manifest,
+            environment: gamenode_platform::plugin_environment::PluginEnvironment::default(),
+            targets: vec![super::super::compatibility::TargetCompatibilityAssessment {
+                target,
+                verdict: super::super::compatibility::CompatibilityVerdict {
+                    state: super::super::compatibility::CompatibilityState::Compatible,
+                    reasons: vec![],
+                    unknown_facts: vec![],
+                },
+            }],
+            extension_schemas: vec![],
+        };
+
+        let config = managed_process_config(&installed, &report, [7; 32]).unwrap();
+        assert_eq!(config.provider_id, "community");
+        assert_eq!(config.executable, package_path.join("bin/provider"));
+        assert_eq!(config.manifest_capabilities, [cap::CONTEXT]);
+        assert_eq!(config.required_capabilities, [cap::CONTEXT]);
+        assert!(config.blocked_capabilities.is_empty());
+        assert_eq!(
+            config.integrity.unwrap().package_root,
+            installed.package_path
+        );
     }
 }
 

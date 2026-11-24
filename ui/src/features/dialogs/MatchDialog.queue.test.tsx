@@ -49,6 +49,8 @@ function dialogFor(entryKey: string): MatchDialogView {
     results: [],
     selected: null,
     noResults: false,
+    platformFilter: null,
+    filteredOut: 0,
     current: 'unmatched',
     canClear: false,
   };

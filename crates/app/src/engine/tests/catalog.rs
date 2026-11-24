@@ -89,6 +89,7 @@ async fn a_selected_unmatched_entry_gets_engine_fetched_suggestions_and_can_use_
             name: Some("hollow_knight".to_owned()),
             install_dir: "/games/Hollow_Knight_2017".to_owned(),
             fields: Default::default(),
+            target: None,
             installed: false,
             owned: true,
             shared: false,

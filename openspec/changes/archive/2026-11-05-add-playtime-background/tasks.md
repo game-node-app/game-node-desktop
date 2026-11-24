@@ -145,3 +145,17 @@ Prerequisite satisfied: `add-steam-library` is archived. Its artifacts are left 
 - [x] 13.1 Add pure account-scoped display aggregation that selects store totals or internal sessions without merging, includes live session duration and distinguishes unknown store data from zero. Verify source switching, account isolation and live elapsed time.
 - [x] 13.2 Load display history on the storage worker and propagate refreshed playtime into library rows and details after counter/session/account changes. Verify imported totals, internal running time and source switching in engine tests.
 - [x] 13.3 Show translated playtime in grid, list and details, identify the source in details and verify formatted known/unknown values and UI bindings on Linux and Windows. Build an updated Windows package.
+
+## Reconciliação documental do histórico — 2026-11-09
+
+As seis tarefas abertas conservam o texto e os checkboxes originais. Esta nota identifica substituições técnicas e evidências registradas, sem executar novos testes nem validar reboot, tray, Startup Apps ou jogos reais.
+
+| Tarefa original | Constatação e evidência | Destino e condição restante |
+| --- | --- | --- |
+| 9.2, 9.3 | As APIs Slint foram substituídas pelo [host Tauri](../../../../crates/app/src/main.rs) com CloseRequested, hide, tray, tooltip e Quit; sucessor declarado na tarefa 4.1 da [migração](../2026-11-07-migrate-slint-to-tauri-v2-react/tasks.md). | Substituição técnica documentada. Aceitação nativa tem sobreposição com [integração Steam](../../integrate-steam-plugin-into-main/tasks.md) 8.3/9.1/9.3; critérios originais sem resultado permanecem aqui. |
+| 9.4 | [Autostart](../../../../crates/platform/src/autostart.rs) verifica o marcador de instalação, grava o Run citado e inclui teste isolado; não altera StartupApproved. | Implementação/teste identificados. Desabilitar em Startup Apps e confirmar após reinício/reboot permanece aqui e no checklist Windows, sem conclusão inferida. |
+| 9.5 | O [desinstalador](../../../../packaging/windows/uninstall.ps1) remove o Run e o [README](../../../../packaging/windows/README.md) documenta a política. | Instalar, iniciar e desinstalar em Windows confirmando a remoção do valor permanece nesta tarefa. |
+| 10.2 | [SyncExplanationModal](../../../../ui/src/features/shell/SyncExplanationModal.tsx) e [testes de shell](../../../../ui/src/features/shell/shell.test.tsx) são sucessores do overlay; migração 4.2 registra a implementação React. | Substituição da UI documentada. Gate de envio em background-first e interação nativa/foco continuam pendentes onde não há resultado específico registrado. |
+| 11.1 | [windows-verification.md](../../../../docs/windows-verification.md) mantém a matriz manual e separa testes automatizados históricos dos casos de desktop/reboot. | Integração Steam 9.1/9.3 cobre parte de tray/tracking/counters. Reboot, Startup Apps, interrupção de energia, background-first e demais resultados completos permanecem rastreados nesta tarefa até evidência própria. |
+
+O histórico de validação anterior permanece válido apenas para os candidatos e ambientes registrados. A migração da implementação e o gate da integração Steam não completam automaticamente os testes manuais desta change.

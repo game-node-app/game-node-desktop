@@ -59,6 +59,7 @@ pub(crate) fn stored_with(
         install_dir: format!("/games/{name}"),
         fields: Default::default(),
         installed,
+        target: None,
         owned,
         shared,
         first_seen: 100,
@@ -145,6 +146,7 @@ pub(crate) fn scanned(
     now: i64,
 ) -> Vec<Effect> {
     machine.handle(Input::ProviderScanned {
+        targets: Default::default(),
         op,
         provider: provider.to_owned(),
         result: result.map_err(str::to_owned),
@@ -272,7 +274,10 @@ fn a_scan_adds_entries_and_persists_the_outcome() {
         effects,
         [Effect::PersistScan {
             provider: "steam".to_owned(),
-            outcome: ScanOutcome::Scanned(records),
+            outcome: ScanOutcome::Scanned {
+                records,
+                targets: Default::default()
+            },
             now: 50
         }]
     );
@@ -312,6 +317,7 @@ fn a_reinstalled_game_returns_with_its_match_and_cover() {
         entry_key: "steam:2".to_owned(),
         game_id: Some(42),
         chosen_at: 5,
+        source: Default::default(),
     };
     let game = GameRecord {
         game_id: 42,
@@ -355,6 +361,7 @@ fn a_moved_install_folder_keeps_the_entry() {
             entry_key: "steam:620".to_owned(),
             game_id: Some(7),
             chosen_at: 1,
+            source: Default::default(),
         }],
         ..LibraryCache::default()
     };
@@ -488,11 +495,13 @@ fn artwork_machine() -> LibraryMachine {
                 entry_key: "steam:1".into(),
                 game_id: Some(7),
                 chosen_at: 0,
+                source: Default::default(),
             },
             ChosenMatch {
                 entry_key: "steam:2".into(),
                 game_id: Some(8),
                 chosen_at: 0,
+                source: Default::default(),
             },
         ],
         ..LibraryCache::default()
@@ -986,6 +995,7 @@ fn clearing_the_catalog_keeps_entries_matches_and_covers() {
         entry_key: "steam:70".to_owned(),
         game_id: Some(7),
         chosen_at: 3,
+        source: Default::default(),
     };
     let game = GameRecord {
         game_id: 7,
@@ -1846,4 +1856,241 @@ fn fresh_for(game_id: u64) -> LibraryEntry {
         platform_ids: vec![6],
         finished_at: None,
     }
+}
+
+#[test]
+fn putting_a_provider_adds_it_without_losing_entries_matches_or_settings_and_requests_a_scan() {
+    let (mut machine, effects) = loaded(false, matched_cache());
+    let (op, _) = scan_ops(&effects)[0].clone();
+    scanned(
+        &mut machine,
+        op,
+        "steam",
+        Ok(vec![record("620", "Portal 2", "/g/Portal 2")]),
+        50,
+    );
+    assert_eq!(machine.providers().len(), 1);
+    assert!(machine.entry("steam:620").is_some());
+    let matches_before = machine.auto_matches.len();
+    let layout_before = machine.layout.clone();
+
+    // The already-known provider is replaced in place rather than appended twice.
+    let loaded = registry::tests::load(&[("shop.toml", SHOP_MANIFEST)], Platform::Linux);
+    let shop = loaded.providers.into_iter().next().unwrap();
+    assert!(machine.put_provider(shop));
+    assert_eq!(
+        machine
+            .providers()
+            .iter()
+            .map(|provider| provider.id())
+            .collect::<Vec<_>>(),
+        ["steam", "shop"]
+    );
+    assert!(machine.entry("steam:620").is_some(), "entries are kept");
+    assert_eq!(
+        machine.auto_matches.len(),
+        matches_before,
+        "matches are kept"
+    );
+    assert_eq!(machine.layout, layout_before, "layout settings are kept");
+
+    machine.put_provider(providers(true).pop().unwrap());
+    assert_eq!(
+        machine
+            .providers()
+            .iter()
+            .map(|provider| provider.id())
+            .collect::<Vec<_>>(),
+        ["steam", "shop"],
+        "replacing by id keeps the position"
+    );
+
+    // A scan request now includes the new provider.
+    let effects = machine.handle(Input::ScanRequested);
+    assert_eq!(
+        scan_ops(&effects)
+            .into_iter()
+            .map(|(_, provider)| provider)
+            .collect::<Vec<_>>(),
+        ["shop", "steam"]
+    );
+    assert!(machine.entry("steam:620").is_some(), "entries are kept");
+}
+
+#[test]
+fn removing_a_provider_drops_its_live_rows_and_a_reinstall_restores_them() {
+    let (mut machine, effects) = loaded(true, LibraryCache::default());
+    let ops = scan_ops(&effects);
+    let shop_op = ops.iter().find(|(_, id)| id == "shop").unwrap().0;
+    let steam_op = ops.iter().find(|(_, id)| id == "steam").unwrap().0;
+    scanned(
+        &mut machine,
+        shop_op,
+        "shop",
+        Ok(vec![record("1", "Shop One", "/shop/one")]),
+        10,
+    );
+    assert!(machine.entry("shop:1").is_some());
+
+    assert!(machine.remove_provider("shop"));
+    assert!(machine.provider("shop").is_none());
+    assert!(machine.entry("shop:1").is_none(), "live rows are dropped");
+    assert!(
+        !machine
+            .visible_entries()
+            .any(|entry| entry.provider == "shop")
+    );
+    assert!(!machine.remove_provider("shop"), "removal is idempotent");
+
+    // A late answer for the uninstalled provider is ignored instead of recreating its rows.
+    let effects = scanned(
+        &mut machine,
+        shop_op,
+        "shop",
+        Ok(vec![record("9", "Late", "/shop/late")]),
+        11,
+    );
+    assert!(effects.is_empty());
+    assert!(machine.entry("shop:9").is_none());
+
+    // The rest of the scan still completes.
+    scanned(&mut machine, steam_op, "steam", Ok(vec![]), 12);
+
+    // Reinstalling puts the provider back and the next scan repopulates the rows.
+    let shop = registry::tests::load(&[("shop.toml", SHOP_MANIFEST)], Platform::Linux)
+        .providers
+        .into_iter()
+        .next()
+        .unwrap();
+    machine.put_provider(shop);
+    let effects = machine.handle(Input::ScanRequested);
+    let (op, _) = scan_ops(&effects)
+        .into_iter()
+        .find(|(_, id)| id == "shop")
+        .unwrap();
+    scanned(
+        &mut machine,
+        op,
+        "shop",
+        Ok(vec![record("1", "Shop One", "/shop/one")]),
+        20,
+    );
+    assert!(machine.entry("shop:1").is_some());
+}
+
+#[test]
+fn removing_a_provider_by_plugin_id_resolves_the_composed_provider_id() {
+    let (mut machine, effects) = loaded(false, LibraryCache::default());
+    let (op, _) = scan_ops(&effects)[0].clone();
+    scanned(
+        &mut machine,
+        op,
+        "steam",
+        Ok(vec![record("620", "Portal 2", "/g/Portal 2")]),
+        10,
+    );
+    assert_eq!(
+        machine.providers()[0].discovery_plugin(),
+        Some("org.gamenode.plugin.steam-discovery"),
+        "the installed plugin id is not the provider id"
+    );
+    assert!(machine.entry("steam:620").is_some());
+
+    assert!(machine.remove_provider_for_plugin("org.gamenode.plugin.steam-discovery"));
+    assert!(machine.provider("steam").is_none());
+    assert!(
+        machine.entry("steam:620").is_none(),
+        "live rows are dropped"
+    );
+    assert!(
+        !machine
+            .visible_entries()
+            .any(|entry| entry.provider == "steam")
+    );
+    assert!(
+        !machine.remove_provider_for_plugin("org.gamenode.plugin.steam-discovery"),
+        "removal is idempotent"
+    );
+
+    // An unknown plugin id changes nothing.
+    assert!(!machine.remove_provider_for_plugin("dev.example.unknown"));
+}
+
+#[test]
+fn a_reinstalled_provider_keeps_the_users_chosen_match() {
+    let cache = LibraryCache {
+        entries: vec![stored("shop", "1", "Shop One", true)],
+        chosen_matches: vec![ChosenMatch {
+            entry_key: "shop:1".to_owned(),
+            game_id: Some(42),
+            chosen_at: 5,
+            source: Default::default(),
+        }],
+        ..LibraryCache::default()
+    };
+    let (mut machine, effects) = loaded(true, cache);
+    let ops = scan_ops(&effects);
+    for (op, provider) in &ops {
+        let records = if provider == "shop" {
+            vec![record("1", "Shop One", "/shop/one")]
+        } else {
+            Vec::new()
+        };
+        scanned(&mut machine, *op, provider, Ok(records), 10);
+    }
+    assert_eq!(
+        machine
+            .match_status(machine.entry("shop:1").unwrap())
+            .game_id(),
+        Some(42),
+        "the host cache restores the user's chosen match"
+    );
+
+    let shop = registry::tests::load(&[("shop.toml", SHOP_MANIFEST)], Platform::Linux)
+        .providers
+        .into_iter()
+        .next()
+        .unwrap();
+    assert!(machine.remove_provider("shop"));
+    assert!(machine.entry("shop:1").is_none());
+    assert!(machine.put_provider(shop));
+    let effects = machine.handle(Input::ScanRequested);
+    let (op, _) = scan_ops(&effects)
+        .into_iter()
+        .find(|(_, provider)| provider == "shop")
+        .unwrap();
+    scanned(
+        &mut machine,
+        op,
+        "shop",
+        Ok(vec![record("1", "Shop One", "/shop/one")]),
+        20,
+    );
+    assert_eq!(
+        machine
+            .match_status(machine.entry("shop:1").unwrap())
+            .game_id(),
+        Some(42),
+        "reinstalling the provider must not lose the host-owned association"
+    );
+}
+
+#[test]
+fn cached_entries_of_a_provider_that_is_not_loaded_stay_hidden() {
+    let cache = LibraryCache {
+        entries: vec![stored("shop", "1", "Shop One", true)],
+        ..LibraryCache::default()
+    };
+    let (machine, _) = loaded(false, cache);
+    assert!(machine.provider("shop").is_none());
+    assert!(
+        machine.entry("shop:1").is_some(),
+        "the persisted row stays available for a reinstall"
+    );
+    assert!(
+        !machine
+            .visible_entries()
+            .any(|entry| entry.provider == "shop"),
+        "an uninstalled store cannot keep showing cached games"
+    );
 }

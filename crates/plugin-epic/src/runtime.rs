@@ -192,6 +192,7 @@ impl ProviderPlugin for EpicPlugin {
                                 name: record.name.unwrap_or_default(),
                                 install_dir: record.install_dir,
                                 fields: record.fields.into_iter().collect(),
+                                target: None,
                             })
                             .collect(),
                         install_root: scan.install_root,

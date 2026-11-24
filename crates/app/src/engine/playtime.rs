@@ -6,7 +6,9 @@ use gamenode_core::playtime::{
 };
 use gamenode_core::ports::ProcessError;
 use gamenode_core::sync::{SyncNowError, SyncPreferences, SyncSummary, SyncView};
-use gamenode_core::tracker::{Effect as TrackEffect, Entry, Input as TrackInput, Tracker};
+use gamenode_core::tracker::{
+    Effect as TrackEffect, Entry, Input as TrackInput, Tracker, runtime_sessions::RuntimeSessions,
+};
 
 /// How long a rejected total waits before a normal automatic pass retries it. An explicit
 /// "Sync now" is itself the next opportunity and does not wait.
@@ -14,6 +16,7 @@ const REJECTED_RETRY_AFTER_SECS: i64 = 300;
 
 pub(super) struct Playtime {
     pub tracker: Tracker,
+    pub runtime_sessions: RuntimeSessions,
     pub preferences: SyncPreferences,
     pub source: PlaytimeSource,
     pub available: bool,
@@ -58,9 +61,14 @@ pub(super) struct Playtime {
     display_dirty: bool,
 }
 impl Playtime {
+    pub(super) fn is_stopped(&self) -> bool {
+        self.stopped
+    }
+
     pub fn new(platform: Platform) -> Self {
         Self {
             tracker: Tracker::new(platform == Platform::Windows),
+            runtime_sessions: RuntimeSessions::default(),
             preferences: SyncPreferences::default(),
             source: PlaytimeSource::Store,
             available: true,
@@ -106,6 +114,27 @@ impl Playtime {
         }
     }
 }
+
+/// Package-manager games declare an exact executable (for example `/usr/bin/0ad`) while their
+/// install root is the shared `/usr/bin`. Without this exact policy the tracker matches every
+/// process under `/usr/bin`, so a long-running shell can be attributed to an arbitrary package.
+/// The field only narrows process matching; it is not launch authority.
+fn package_executable_policy(
+    entry: &gamenode_core::library::StoredEntry,
+) -> Option<(String, gamenode_core::drm_free::ProcessPolicy)> {
+    let executable = entry.fields.get("executable")?.trim();
+    if executable.is_empty() {
+        return None;
+    }
+    Some((
+        entry.key.clone(),
+        gamenode_core::drm_free::ProcessPolicy::Explicit {
+            gameplay: vec![executable.to_owned()],
+            launchers: Vec::new(),
+        },
+    ))
+}
+
 impl Engine {
     pub(super) fn start_playtime(&self) -> Result<(), StorageError> {
         let store = &self.shared.ports.playtime;
@@ -161,6 +190,9 @@ impl Engine {
             .collect();
         let changed = account != state.playtime.owner;
         if changed {
+            let runtime_effects = state.playtime.runtime_sessions.reset();
+            let runtime_effects = runtime_track_effects(runtime_effects);
+            self.track_effects(state, runtime_effects);
             self.cancel_submissions(state);
             state.playtime.display_totals.clear();
             state.playtime.display_sessions.clear();
@@ -171,27 +203,25 @@ impl Engine {
                 self.load_sync_summary(account);
             }
         }
-        state.playtime.tracker.set_policies(
-            state
-                .local
-                .registrations
-                .iter()
-                .filter(|r| !r.removed)
-                .map(|r| (r.key(), r.process_policy()))
-                .chain(
-                    state
-                        .local
-                        .registrations
-                        .iter()
-                        .filter(|r| !r.removed)
-                        .filter_map(|r| {
-                            r.transferred_from
-                                .clone()
-                                .map(|key| (key, gamenode_core::drm_free::ProcessPolicy::Ignored))
-                        }),
-                )
-                .collect(),
-        );
+        // Package-manager entries share a broad install root such as `/usr/bin`, so a prefix
+        // match would attribute any process under that root (a shell, for example) to an
+        // arbitrary package. A declared executable is an exact process policy and takes
+        // precedence over that broad root. Local registrations are inserted last and still win.
+        let mut policies = std::collections::BTreeMap::new();
+        for entry in state.library.installed_entries() {
+            if let Some((key, policy)) = package_executable_policy(entry) {
+                policies.insert(key, policy);
+            }
+        }
+        for registration in state.local.registrations.iter().filter(|r| !r.removed) {
+            policies.insert(registration.key(), registration.process_policy());
+        }
+        for registration in state.local.registrations.iter().filter(|r| !r.removed) {
+            if let Some(key) = &registration.transferred_from {
+                policies.insert(key.clone(), gamenode_core::drm_free::ProcessPolicy::Ignored);
+            }
+        }
+        state.playtime.tracker.set_policies(policies);
         let effects = state.playtime.tracker.update(
             TrackInput::Library {
                 account: account.clone(),
@@ -200,7 +230,7 @@ impl Engine {
             },
             gamenode_platform::random::session_id,
         );
-        let tracker_changed = self.track_effects(state, effects);
+        let tracker_changed = self.track_process_effects(state, effects);
         state.playtime.owner = account;
         if changed {
             self.refresh_playtime_display(state);
@@ -214,7 +244,7 @@ impl Engine {
     }
     /// Runs the tracker effects and returns whether there were any: any effect is a real change
     /// worth publishing, even when it only writes history in the background.
-    fn track_effects(&self, state: &mut State, effects: Vec<TrackEffect>) -> bool {
+    pub(super) fn track_effects(&self, state: &mut State, effects: Vec<TrackEffect>) -> bool {
         let changed = !effects.is_empty();
         let changed_history = effects.iter().any(|e| {
             matches!(
@@ -305,6 +335,21 @@ impl Engine {
         }
         changed
     }
+    fn track_process_effects(&self, state: &mut State, effects: Vec<TrackEffect>) -> bool {
+        let keys: std::collections::BTreeSet<_> = effects
+            .iter()
+            .filter_map(|effect| match effect {
+                TrackEffect::OpenSession(session) => Some(session.entry_key.clone()),
+                _ => None,
+            })
+            .collect();
+        let runtime_effects = keys
+            .into_iter()
+            .flat_map(|key| state.playtime.runtime_sessions.fence_entry(&key))
+            .collect();
+        let runtime_changed = self.track_effects(state, runtime_track_effects(runtime_effects));
+        self.track_effects(state, effects) || runtime_changed
+    }
     fn tracker_input(&self, input: TrackInput) {
         let mut state = self.lock();
         if state.playtime.stopped {
@@ -314,7 +359,7 @@ impl Engine {
             .playtime
             .tracker
             .update(input, gamenode_platform::random::session_id);
-        self.track_effects(&mut state, effects);
+        self.track_process_effects(&mut state, effects);
         let running = state.playtime.tracker.running_started_at();
         state.library.set_running(running);
         self.read_counters(&mut state);
@@ -335,13 +380,20 @@ impl Engine {
         // rebuilding the whole library just to refresh the tray tooltip is wasteful, and the UI
         // already holds the previous snapshot.
         let mut changed = self.sync_tracker(&mut state);
+        let expired_runtime = state
+            .playtime
+            .runtime_sessions
+            .expire(std::time::Instant::now());
+        if !expired_runtime.is_empty() {
+            changed |= self.track_effects(&mut state, runtime_track_effects(expired_runtime));
+        }
         if now >= state.playtime.next_checkpoint {
             state.playtime.next_checkpoint = now + 60;
             let effects = state.playtime.tracker.update(
                 TrackInput::Tick { now },
                 gamenode_platform::random::session_id,
             );
-            changed |= self.track_effects(&mut state, effects);
+            changed |= self.track_process_effects(&mut state, effects);
         }
         if now >= state.playtime.next_scan {
             state.playtime.next_scan = now + 1800;
@@ -467,6 +519,8 @@ impl Engine {
             gamenode_platform::random::session_id,
         );
         self.track_effects(&mut state, effects);
+        let runtime_effects = state.playtime.runtime_sessions.reset();
+        self.track_effects(&mut state, runtime_track_effects(runtime_effects));
         state.playtime.tracker.set_floor(now);
         state.playtime.source = source;
         self.cancel_submissions(&mut state);
@@ -501,6 +555,8 @@ impl Engine {
             gamenode_platform::random::session_id,
         );
         self.track_effects(state, effects);
+        let runtime_effects = state.playtime.runtime_sessions.reset();
+        self.track_effects(state, runtime_track_effects(runtime_effects));
         self.cancel_submissions(state);
         state.library.set_running(Default::default());
     }
@@ -897,7 +953,7 @@ impl Engine {
                 SubmitEffect::SessionRejected => {
                     let engine = self.clone();
                     self.shared.runtime.spawn(async move {
-                        engine.dispatch(Input::SessionRejected);
+                        engine.dispatch_on_worker(Input::SessionRejected).await;
                     });
                 }
                 SubmitEffect::Send { submission, .. } => {
@@ -1019,6 +1075,31 @@ impl Engine {
     }
 }
 
+fn runtime_track_effects(
+    effects: Vec<gamenode_core::tracker::runtime_sessions::Effect>,
+) -> Vec<TrackEffect> {
+    effects
+        .into_iter()
+        .map(|effect| match effect {
+            gamenode_core::tracker::runtime_sessions::Effect::Open(session) => {
+                TrackEffect::OpenSession(session)
+            }
+            gamenode_core::tracker::runtime_sessions::Effect::Checkpoint { id, at } => {
+                TrackEffect::Checkpoint { id, at }
+            }
+            gamenode_core::tracker::runtime_sessions::Effect::Close {
+                id,
+                ended_at,
+                game_id,
+            } => TrackEffect::CloseSession {
+                id,
+                ended_at,
+                game_id,
+            },
+        })
+        .collect()
+}
+
 /// The totals that can be submitted right now: the entry is known, its provider reports playtime
 /// and its game match exists. A pass and its summary both use this rule.
 fn submission_candidates(state: &State, totals: &[Total]) -> Vec<Candidate> {
@@ -1036,4 +1117,60 @@ fn submission_candidates(state: &State, totals: &[Total]) -> Vec<Candidate> {
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gamenode_core::drm_free::ProcessPolicy;
+    use gamenode_core::library::StoredEntry;
+    use std::collections::BTreeMap;
+
+    fn package_entry(key: &str, executable: Option<&str>) -> StoredEntry {
+        let mut fields = BTreeMap::new();
+        if let Some(executable) = executable {
+            fields.insert("executable".to_owned(), executable.to_owned());
+        }
+        StoredEntry {
+            key: key.to_owned(),
+            provider: "packagekit".to_owned(),
+            store_id: key.trim_start_matches("packagekit:").to_owned(),
+            name: None,
+            install_dir: "/usr/bin".to_owned(),
+            fields,
+            installed: true,
+            target: None,
+            owned: false,
+            shared: false,
+            first_seen: 0,
+            last_seen: 0,
+        }
+    }
+
+    #[test]
+    fn package_manager_entries_get_an_exact_executable_policy() {
+        let entry = package_entry("packagekit:0ad", Some("/usr/bin/0ad"));
+        assert_eq!(
+            package_executable_policy(&entry),
+            Some((
+                "packagekit:0ad".to_owned(),
+                ProcessPolicy::Explicit {
+                    gameplay: vec!["/usr/bin/0ad".to_owned()],
+                    launchers: Vec::new(),
+                },
+            ))
+        );
+    }
+
+    #[test]
+    fn entries_without_an_executable_keep_the_existing_root_match() {
+        assert_eq!(
+            package_executable_policy(&package_entry("packagekit:0ad", None)),
+            None
+        );
+        assert_eq!(
+            package_executable_policy(&package_entry("packagekit:0ad", Some("  "))),
+            None
+        );
+    }
 }

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { MantineProvider } from '@mantine/core';
@@ -204,6 +204,29 @@ function backupVersion(id: string): BackupVersion {
 }
 
 describe('DetailPane', () => {
+  it('requires approval before a detected launch target can be used', async () => {
+    const reviewSpy = vi.spyOn(commands, 'reviewDetectedTarget').mockResolvedValue(undefined);
+    const detail = createDetail({
+      detectedTarget: {
+        spec: {
+          executable: {
+            root: 'C:\\Games\\Hades',
+            path: 'Hades.exe',
+            arguments: [],
+            workingDirectory: '',
+          },
+        },
+        revision: 3,
+        approved: false,
+        available: true,
+      },
+    });
+    renderDetail(createSnapshot(createLibrary([detail.row], detail)));
+    expect(screen.getByTestId('detected-target-review')).toHaveTextContent('Hades.exe');
+    fireEvent.click(screen.getByTestId('approve-detected-target'));
+    await waitFor(() => expect(reviewSpy).toHaveBeenCalledWith(detail.row.key, 3));
+  });
+
   beforeEach(() => {
     resetUiStore();
     vi.restoreAllMocks();
@@ -211,6 +234,30 @@ describe('DetailPane', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it('stops only supervised launches for the selected entry', async () => {
+    const user = userEvent.setup();
+    const list = vi.spyOn(commands, 'customLaunchIds').mockResolvedValue([41, 42]);
+    const stop = vi.spyOn(commands, 'customLaunchStop').mockResolvedValue(undefined);
+    renderDetail(createSnapshot(createLibrary([createRow()], createDetail())));
+    await user.click(screen.getByTestId('detail-more-btn'));
+    const action = await screen.findByRole('menuitem', { name: 'Stop custom launch' });
+    expect(list).toHaveBeenCalledWith('steam:620');
+    await user.click(action);
+    await waitFor(() => expect(stop).toHaveBeenCalledTimes(2));
+    expect(stop).toHaveBeenCalledWith(41);
+    expect(stop).toHaveBeenCalledWith(42);
+  });
+
+  it('reports when termination cannot be confirmed', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(commands, 'customLaunchIds').mockResolvedValue([41]);
+    vi.spyOn(commands, 'customLaunchStop').mockRejectedValue(new Error('unknown state'));
+    renderDetail(createSnapshot(createLibrary([createRow()], createDetail())));
+    await user.click(screen.getByTestId('detail-more-btn'));
+    await user.click(await screen.findByRole('menuitem', { name: 'Stop custom launch' }));
+    expect(await screen.findByText('Could not confirm that the launch stopped. Try again.')).toBeInTheDocument();
   });
 
   it('shows the matched Steam sections and sends the single-game status change', async () => {

@@ -22,14 +22,29 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::Semaphore;
 use tonic::Status;
 
-static ACHIEVEMENT_ACTIVE: AtomicUsize = AtomicUsize::new(0);
-pub(crate) static ACHIEVEMENT_MAX_ACTIVE: AtomicUsize = AtomicUsize::new(0);
-pub(crate) static ACHIEVEMENT_FAIL_NEXT: AtomicBool = AtomicBool::new(false);
+/// Achievement calls seen by one fixture `Runtime`. Each engine harness owns its own probe, so
+/// tests running in parallel never observe each other's batches.
+#[derive(Default)]
+pub(crate) struct AchievementProbe {
+    active: AtomicUsize,
+    pub(crate) max_active: AtomicUsize,
+    pub(crate) fail_next: AtomicBool,
+}
+
+/// Leaves the in-flight count even when the call is dropped mid-batch.
+struct ActiveBatch<'a>(&'a AtomicUsize);
+
+impl Drop for ActiveBatch<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, AtomicOrdering::SeqCst);
+    }
+}
 
 pub(crate) struct Runtime {
     files: Arc<dyn gamenode_core::ports::HostFiles>,
     roots: Arc<dyn gamenode_core::ports::RootResolver>,
     platform: Platform,
+    achievements: Arc<AchievementProbe>,
 }
 
 struct Files(Arc<dyn gamenode_core::ports::HostFiles>);
@@ -63,7 +78,11 @@ impl Runtime {
             files: ports.files.clone(),
             roots: ports.roots.clone(),
             platform: ports.platform,
+            achievements: Arc::default(),
         }
+    }
+    pub(crate) fn achievement_probe(&self) -> Arc<AchievementProbe> {
+        self.achievements.clone()
     }
     fn manifest() -> discovery::Manifest {
         toml::from_str(include_str!("../../../../../providers/steam.toml")).unwrap()
@@ -97,11 +116,13 @@ impl ProviderRuntime for Runtime {
         _: &str,
         request: models::AchievementsRequest,
     ) -> Result<Completion, Status> {
-        if ACHIEVEMENT_FAIL_NEXT.swap(false, AtomicOrdering::SeqCst) {
+        let probe = &self.achievements;
+        if probe.fail_next.swap(false, AtomicOrdering::SeqCst) {
             return Err(Status::unavailable("fixture achievement failure"));
         }
-        let active = ACHIEVEMENT_ACTIVE.fetch_add(1, AtomicOrdering::SeqCst) + 1;
-        ACHIEVEMENT_MAX_ACTIVE.fetch_max(active, AtomicOrdering::SeqCst);
+        let active = probe.active.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+        let _batch = ActiveBatch(&probe.active);
+        probe.max_active.fetch_max(active, AtomicOrdering::SeqCst);
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         let outcomes = request
             .game_ids
@@ -121,7 +142,6 @@ impl ProviderRuntime for Runtime {
                 }],
             })
             .collect();
-        ACHIEVEMENT_ACTIVE.fetch_sub(1, AtomicOrdering::SeqCst);
         Ok(Completion::fixture_achievements(outcomes))
     }
     async fn execute(&self, _: &str, operation: ProviderOperation) -> Result<Completion, Status> {
@@ -153,6 +173,7 @@ impl ProviderRuntime for Runtime {
                                 name: r.name.unwrap_or_default(),
                                 install_dir: r.install_dir,
                                 fields: r.fields.into_iter().collect(),
+                                target: None,
                             })
                             .collect(),
                         install_root: scan.install_root,
@@ -467,6 +488,7 @@ fn entry(key: &str, name: &str, installed: bool, owned: bool, shared: bool) -> S
         },
         fields: Default::default(),
         installed,
+        target: None,
         owned,
         shared,
         first_seen: 1,

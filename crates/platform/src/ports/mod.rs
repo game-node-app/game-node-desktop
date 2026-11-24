@@ -30,9 +30,10 @@ pub use quiver::{
 };
 
 pub use extractor::{
-    CancelFlag, ExtractorError, ExtractorFailure, ExtractorRunOutcome, ExtractorRunRequest,
-    ExtractorRunner, InstalledTool, MAX_CAPTURED_OUTPUT_BYTES, OutputFolderValidator,
-    SuppliedFolderValidator, run_extractor, supplied_folder_validator,
+    CancelFlag, DEFAULT_EXTRACTION_TIMEOUT, ExtractorError, ExtractorFailure, ExtractorRunOutcome,
+    ExtractorRunRequest, ExtractorRunner, InstalledTool, MAX_CAPTURED_OUTPUT_BYTES,
+    OutputFolderValidator, SuppliedFolderValidator, run_extractor, run_extractor_with_timeout,
+    supplied_folder_validator,
 };
 pub use job_runner::{
     ExecutableIdentity, InstallCompletion, InstallJobRequest, JobError, JobEvent, JobProgress,

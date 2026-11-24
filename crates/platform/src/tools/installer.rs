@@ -256,6 +256,28 @@ impl ToolInstallerHost for PlatformToolInstaller {
         request: &InstallRequest,
         install_dir: &str,
     ) -> Result<ToolInstallation, ToolError> {
+        self.install_or_update_checked(
+            store,
+            catalog,
+            descriptor,
+            release,
+            request,
+            install_dir,
+            &|| Ok(()),
+        )
+    }
+
+    fn install_or_update_checked(
+        &self,
+        store: &dyn ToolStore,
+        catalog: &dyn ToolCatalogApi,
+        descriptor: &ToolDescriptor,
+        release: &ToolRelease,
+        request: &InstallRequest,
+        install_dir: &str,
+        check: &dyn Fn() -> Result<(), ToolError>,
+    ) -> Result<ToolInstallation, ToolError> {
+        check()?;
         // 1. Validate install_dir exists and canonicalize
         let install_path = Path::new(install_dir);
         let canonical_install_dir = inspect::strip_verbatim_prefix(
@@ -299,6 +321,7 @@ impl ToolInstallerHost for PlatformToolInstaller {
             PathBuf::from(cached.path)
         };
 
+        check()?;
         // 6. Extract into temporary staging directory
         let staging_dir = TempDirGuard::new("staging")?;
         let entries = match catalog::extract_archive_to_dir(&archive_path, staging_dir.path()) {
@@ -358,6 +381,8 @@ impl ToolInstallerHost for PlatformToolInstaller {
             &installed_ini_patches,
         )?;
 
+        check()?;
+        self.ensure_game_stopped(&canonical_install_dir)?;
         // 10. Record transient state
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -395,6 +420,7 @@ impl ToolInstallerHost for PlatformToolInstaller {
         let mut journal = InstallRollbackJournal::new(rollback_temp.path().to_path_buf());
 
         let deploy_result: Result<Vec<ToolFileRecord>, ToolError> = (|| {
+            check()?;
             std::fs::create_dir_all(&tool_backup_dir).map_err(|e| ToolError::Io(e.to_string()))?;
 
             // A. If updating: handle obsolete files from prior_tool_files
@@ -405,6 +431,7 @@ impl ToolInstallerHost for PlatformToolInstaller {
                 .collect();
 
             for prior_file in &prior_tool_files {
+                check()?;
                 if !new_destinations.contains(&prior_file.relative_path) {
                     // Check if overridden by a higher tool layer
                     let overriding_tool = all_installed_files.iter().find(|other| {
@@ -470,6 +497,7 @@ impl ToolInstallerHost for PlatformToolInstaller {
             let mut new_records = Vec::new();
 
             for file in &plan.files {
+                check()?;
                 let dest_full = canonical_install_dir.join(&file.destination_path);
                 for comp in Path::new(&file.destination_path).components() {
                     if let std::path::Component::ParentDir = comp {
@@ -704,6 +732,7 @@ impl ToolInstallerHost for PlatformToolInstaller {
                 }
             }
 
+            check()?;
             // D. Save updated file records
             store.delete_files(&request.entry_key, &descriptor.id)?;
             store.save_files(&new_records)?;
@@ -738,6 +767,18 @@ impl ToolInstallerHost for PlatformToolInstaller {
         tool_id: &str,
         install_dir: &str,
     ) -> Result<(), ToolError> {
+        self.uninstall_checked(store, entry_key, tool_id, install_dir, &|| Ok(()))
+    }
+
+    fn uninstall_checked(
+        &self,
+        store: &dyn ToolStore,
+        entry_key: &str,
+        tool_id: &str,
+        install_dir: &str,
+        check: &dyn Fn() -> Result<(), ToolError>,
+    ) -> Result<(), ToolError> {
+        check()?;
         let install_path = Path::new(install_dir);
         let canonical_install_dir = inspect::strip_verbatim_prefix(
             &install_path
@@ -751,6 +792,7 @@ impl ToolInstallerHost for PlatformToolInstaller {
         self.ensure_game_stopped(&canonical_install_dir)?;
 
         let tool_id_obj = ToolId::new(tool_id);
+        check()?;
 
         if let Some(mut inst) = store.get_installation(entry_key, &tool_id_obj)? {
             inst.state = ToolInstallState::Uninstalling;
@@ -1925,6 +1967,86 @@ mod tests {
                 .ensure_game_stopped(&game_dir.canonicalize().unwrap())
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn guarded_install_revalidates_after_download_and_rolls_back_revocation_during_deployment() {
+        for during_deployment in [false, true] {
+            let temp = TempDir::new().unwrap();
+            let game = temp.path().join("game");
+            setup_unreal_game_folder(&game);
+            let before = collect_dir_fingerprint(&game);
+            let payload = temp.path().join("OptiScaler.dll");
+            std::fs::write(&payload, b"guarded-fixture-payload").unwrap();
+            let installer = PlatformToolInstaller::new(
+                temp.path().join("backups"),
+                Arc::new(MockProcesses::new(vec![])),
+            );
+            let store = InMemoryToolStore::default();
+            let catalog = MockCatalog::new();
+            let descriptor = optiscaler_descriptor();
+            catalog.register_archive(
+                descriptor.id.clone(),
+                ToolChannel::Stable,
+                "fixture",
+                &payload,
+            );
+            let release = ToolRelease {
+                tool_id: descriptor.id.clone(),
+                channel: ToolChannel::Stable,
+                version: "fixture".into(),
+                tag_name: "fixture".into(),
+                name: "Fixture".into(),
+                published_at: String::new(),
+                download_url: "https://example.invalid/fixture".into(),
+                asset_name: "OptiScaler.dll".into(),
+                size_bytes: 23,
+                sha256: None,
+                cached_path: None,
+            };
+            let request = InstallRequest {
+                entry_key: "fixture:1".into(),
+                tool_id: descriptor.id.clone(),
+                channel: ToolChannel::Stable,
+                version: release.version.clone(),
+                target_exe: "Binaries/Win64/Game-Win64-Shipping.exe".into(),
+                proxy_dll: Some(ProxyDllName::Dxgi),
+                reset_config: false,
+                anticheat_confirmed: true,
+                custom_payload_path: None,
+            };
+            let checks = std::cell::Cell::new(0);
+            let after_write = std::cell::Cell::new(false);
+            let check = || {
+                checks.set(checks.get() + 1);
+                let written = std::fs::read(game.join("Binaries/Win64/dxgi.dll"))
+                    .is_ok_and(|b| b == b"guarded-fixture-payload");
+                after_write.set(after_write.get() || written);
+                if (during_deployment && written) || (!during_deployment && checks.get() == 2) {
+                    Err(ToolError::Failed("authority revoked".into()))
+                } else {
+                    Ok(())
+                }
+            };
+            let error = installer
+                .install_or_update_checked(
+                    &store,
+                    &catalog,
+                    &descriptor,
+                    &release,
+                    &request,
+                    game.to_str().unwrap(),
+                    &check,
+                )
+                .unwrap_err();
+            assert!(
+                matches!(error, ToolError::Failed(ref message) if message == "authority revoked"),
+                "{error:?}"
+            );
+            assert_eq!(after_write.get(), during_deployment);
+            assert_eq!(collect_dir_fingerprint(&game), before);
+            assert!(store.list_installations().unwrap().is_empty());
+        }
     }
 
     #[test]

@@ -3,15 +3,108 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-pub use gamenode_plugin_protocol::{achievements, capability, models, proto, settings};
+pub use gamenode_plugin_protocol::{
+    achievements, capability, extensions, models, prost_types, proto, settings,
+};
 use proto::{plugin_host_client::PluginHostClient, provider_host_client::ProviderHostClient, *};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::{Channel, Endpoint};
 
+pub mod actions;
+pub mod resources;
+pub mod utilities;
+
+pub use actions::Actions;
+pub use resources::{
+    Cover, CustomLaunchRecipe, LibrarySnapshot, Outcome, Resources, RuntimeArgumentTemplate,
+    RuntimeContentBinding, RuntimeSpec, Written, idempotency_key,
+};
+pub use tonic::{Code, Status};
+pub use utilities::{
+    Durability, Fetch, Fetched, Notice, Severity, StoredValue, StoredWrite, declared_location,
+};
+
 pub const MAX_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
 pub const EVENT_QUEUE: usize = 32;
 const SERVICE_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Build an explicit, typed per-query category selector. An empty iterator is
+/// valid and means private/owner-visible records only. The host still checks
+/// the matching activation grant and its scope for every query.
+pub fn common_data_selector(
+    categories: impl IntoIterator<Item = CommonDataCategory>,
+) -> Result<CommonDataSelector, gamenode_plugin_protocol::common_data::SelectorError> {
+    let selector = CommonDataSelector {
+        categories: categories
+            .into_iter()
+            .map(|category| category as i32)
+            .collect(),
+        ..Default::default()
+    };
+    gamenode_plugin_protocol::common_data::categories(Some(&selector))?;
+    Ok(selector)
+}
+
+/// Build a selector for explicitly granted published records without asking
+/// for category-wide access. The host must authorize every id independently.
+pub fn selected_record_selector(
+    record_ids: impl IntoIterator<Item = impl Into<String>>,
+) -> Result<CommonDataSelector, gamenode_plugin_protocol::common_data::SelectorError> {
+    let selector = CommonDataSelector {
+        selected_record_ids: record_ids.into_iter().map(Into::into).collect(),
+        ..Default::default()
+    };
+    gamenode_plugin_protocol::common_data::selected_record_ids(Some(&selector))?;
+    Ok(selector)
+}
+
+/// Build a selector combining category-wide and selected-record grants.
+pub fn common_data_selector_with_records(
+    categories: impl IntoIterator<Item = CommonDataCategory>,
+    record_ids: impl IntoIterator<Item = impl Into<String>>,
+) -> Result<CommonDataSelector, gamenode_plugin_protocol::common_data::SelectorError> {
+    let mut selector = common_data_selector(categories)?;
+    selector.selected_record_ids = record_ids.into_iter().map(Into::into).collect();
+    gamenode_plugin_protocol::common_data::selected_record_ids(Some(&selector))?;
+    Ok(selector)
+}
+
+#[cfg(test)]
+mod common_data_selector_tests {
+    use super::*;
+
+    #[test]
+    fn selector_is_explicit_and_empty_means_private_only() {
+        let private = common_data_selector([]).unwrap();
+        assert!(private.categories.is_empty());
+        assert!(private.selected_record_ids.is_empty());
+
+        let selected = common_data_selector([
+            CommonDataCategory::GamePaths,
+            CommonDataCategory::GamePerformanceHistory,
+        ])
+        .unwrap();
+        assert_eq!(
+            selected.categories,
+            vec![
+                CommonDataCategory::GamePaths as i32,
+                CommonDataCategory::GamePerformanceHistory as i32,
+            ]
+        );
+
+        let selected_records = selected_record_selector(["runtime:one", "save:two"]).unwrap();
+        assert!(selected_records.categories.is_empty());
+        assert_eq!(
+            selected_records.selected_record_ids,
+            ["runtime:one", "save:two"]
+        );
+        assert!(
+            common_data_selector([CommonDataCategory::GamePaths, CommonDataCategory::GamePaths,])
+                .is_err()
+        );
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
@@ -42,6 +135,45 @@ impl From<tonic::Status> for Error {
     }
 }
 
+/// Opt-in detailed status classification. The legacy [`Error`] conversion is
+/// unchanged so existing official plugins retain their matching behavior.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DetailedError {
+    Denied(Option<DenialDetail>),
+    Unauthenticated,
+    Stale,
+    Unsupported,
+    Invalid,
+    Unavailable,
+    Protocol,
+}
+
+impl From<&tonic::Status> for DetailedError {
+    fn from(status: &tonic::Status) -> Self {
+        use gamenode_plugin_protocol::StatusKind as K;
+        match gamenode_plugin_protocol::classify_status(status.code()) {
+            K::Denied => Self::Denied(status.details().get(..).and_then(|bytes| {
+                // The status detail payload uses a length-delimited protobuf
+                // DenialDetail. Malformed/absent details remain a plain denial.
+                use gamenode_plugin_protocol::prost::Message;
+                DenialDetail::decode(bytes).ok()
+            })),
+            K::Unauthenticated => Self::Unauthenticated,
+            K::Stale => Self::Stale,
+            K::Unsupported => Self::Unsupported,
+            K::Invalid => Self::Invalid,
+            K::Unavailable => Self::Unavailable,
+            K::Protocol => Self::Protocol,
+        }
+    }
+}
+
+impl DetailedError {
+    pub fn from_status(status: &tonic::Status) -> Self {
+        status.into()
+    }
+}
+
 impl From<gamenode_plugin_protocol::WireError> for Error {
     fn from(_: gamenode_plugin_protocol::WireError) -> Self {
         Self::Protocol
@@ -55,7 +187,59 @@ pub struct Launch {
     pub operation_id: String,
 }
 
+#[derive(Clone, Debug)]
+pub struct SessionOptions {
+    pub min_api_major: u32,
+    pub min_api_minor: u32,
+    pub max_api_major: u32,
+    pub max_api_minor: u32,
+    pub features: Vec<(String, bool)>,
+    pub session_kind: SessionKind,
+    pub target_game: Option<TargetGameContext>,
+}
+
+impl Default for SessionOptions {
+    fn default() -> Self {
+        Self {
+            min_api_major: 0,
+            min_api_minor: 0,
+            max_api_major: 0,
+            max_api_minor: 0,
+            features: Vec::new(),
+            session_kind: SessionKind::Unspecified,
+            target_game: None,
+        }
+    }
+}
+
 impl Launch {
+    /// The opaque, host-issued user intent for a Core-started extension action, if present.
+    /// Provider sessions and extensions started outside that Core action have no intent.
+    pub fn user_intent_id(&self) -> Option<String> {
+        std::env::var("GAMENODE_PLUGIN_USER_INTENT_ID")
+            .ok()
+            .filter(|id| !id.is_empty())
+    }
+
+    /// The target Core selected for a one-shot extension session, if present. The host still
+    /// verifies this exact value during `OpenSession`; editing environment values cannot widen it.
+    pub fn selected_target(&self) -> Option<TargetGameContext> {
+        Some(TargetGameContext {
+            game_id: std::env::var("GAMENODE_PLUGIN_TARGET_GAME_ID")
+                .ok()
+                .filter(|value| !value.is_empty())?,
+            installation_id: std::env::var("GAMENODE_PLUGIN_TARGET_INSTALLATION_ID")
+                .ok()
+                .filter(|value| !value.is_empty())?,
+            profile_id: std::env::var("GAMENODE_PLUGIN_TARGET_PROFILE_ID")
+                .ok()
+                .filter(|value| !value.is_empty())?,
+            revision: std::env::var("GAMENODE_PLUGIN_TARGET_REVISION")
+                .ok()
+                .filter(|value| !value.is_empty())?,
+        })
+    }
+
     pub fn from_env() -> Result<Self, Error> {
         let endpoint = std::env::var_os("GAMENODE_PLUGIN_ENDPOINT")
             .or_else(|| std::env::var_os("GAMENODE_PLUGIN_SOCKET"))
@@ -115,10 +299,13 @@ pub async fn connect(endpoint: &Path) -> Result<Channel, Error> {
 #[derive(Clone)]
 pub struct HostClient {
     client: ProviderHostClient<Channel>,
+    channel: Channel,
     context: ServiceContext,
     events: mpsc::Sender<ProviderEvent>,
     plugin_id: std::sync::Arc<str>,
     settings_supported: bool,
+    configure_supported: bool,
+    resource_context: Option<ServiceContext>,
 }
 
 fn request<T>(message: T) -> tonic::Request<T> {
@@ -128,8 +315,136 @@ fn request<T>(message: T) -> tonic::Request<T> {
 }
 
 impl HostClient {
+    /// Raw generated client for the API 1.6 resource surface. It remains bound
+    /// to the same local authenticated channel; callers provide scoped request
+    /// contexts explicitly so the SDK adds no authority implicitly.
+    pub fn resource_client(&self) -> proto::resource_host_client::ResourceHostClient<Channel> {
+        proto::resource_host_client::ResourceHostClient::new(self.channel.clone())
+            .max_decoding_message_size(MAX_MESSAGE_BYTES)
+            .max_encoding_message_size(MAX_MESSAGE_BYTES)
+    }
+
+    /// The raw client of the `Saves` service (save profiles contributed by plugins). Like
+    /// [`resource_client`](Self::resource_client), callers put the session's resource context in
+    /// each request; the SDK adds no authority.
+    pub fn saves_client(&self) -> proto::saves_client::SavesClient<Channel> {
+        proto::saves_client::SavesClient::new(self.channel.clone())
+            .max_decoding_message_size(MAX_MESSAGE_BYTES)
+            .max_encoding_message_size(MAX_MESSAGE_BYTES)
+    }
+
+    /// The raw client of the `Locations` service (inspection of approved places). Like
+    /// [`resource_client`](Self::resource_client), callers put the session's resource context in
+    /// each request; the SDK adds no authority.
+    pub fn locations_client(&self) -> proto::locations_client::LocationsClient<Channel> {
+        proto::locations_client::LocationsClient::new(self.channel.clone())
+            .max_decoding_message_size(MAX_MESSAGE_BYTES)
+            .max_encoding_message_size(MAX_MESSAGE_BYTES)
+    }
+
+    /// The raw client of the `StorageDiagnostics` service. Calls still require the session's
+    /// resource context and the corresponding host-reviewed permission.
+    pub fn storage_diagnostics_client(
+        &self,
+    ) -> proto::storage_diagnostics_client::StorageDiagnosticsClient<Channel> {
+        proto::storage_diagnostics_client::StorageDiagnosticsClient::new(self.channel.clone())
+            .max_decoding_message_size(MAX_MESSAGE_BYTES)
+            .max_encoding_message_size(MAX_MESSAGE_BYTES)
+    }
+
+    /// The raw client of the `Computer` service (sensitive hardware observations). Calls still
+    /// require the session's resource context and the corresponding host-reviewed permission.
+    pub fn computer_client(&self) -> proto::computer_client::ComputerClient<Channel> {
+        proto::computer_client::ComputerClient::new(self.channel.clone())
+            .max_decoding_message_size(MAX_MESSAGE_BYTES)
+            .max_encoding_message_size(MAX_MESSAGE_BYTES)
+    }
+
+    /// The raw client of the `GamePresence` service (expiring game/session status). Calls still
+    /// require the session's resource context and the corresponding host-reviewed permission.
+    pub fn game_presence_client(&self) -> proto::game_presence_client::GamePresenceClient<Channel> {
+        proto::game_presence_client::GamePresenceClient::new(self.channel.clone())
+            .max_decoding_message_size(MAX_MESSAGE_BYTES)
+            .max_encoding_message_size(MAX_MESSAGE_BYTES)
+    }
+
+    /// The raw client of the `GamePerformance` service (retained FPS/CPU/RAM observations).
+    /// Calls require the session's resource context and the corresponding read permission.
+    pub fn game_performance_client(
+        &self,
+    ) -> proto::game_performance_client::GamePerformanceClient<Channel> {
+        proto::game_performance_client::GamePerformanceClient::new(self.channel.clone())
+            .max_decoding_message_size(MAX_MESSAGE_BYTES)
+            .max_encoding_message_size(MAX_MESSAGE_BYTES)
+    }
+
+    /// Typed convenience calls for the library resources (library reads, display names,
+    /// favorites, catalog matching and covers), bound to this session's resource context. `None`
+    /// when the session negotiated a minor before API 1.6, like [`resource_context`](Self::resource_context).
+    /// They send exactly what the raw [`resource_client`](Self::resource_client) would.
+    pub fn resources(&self) -> Option<Resources> {
+        self.resource_context
+            .clone()
+            .map(|context| Resources::new(self.channel.clone(), context))
+    }
+
+    /// Typed convenience calls for the host action services (launch/install, backups, tools,
+    /// ports and their jobs), bound to this session's resource context. `None` when the session
+    /// negotiated a minor before API 1.6, like [`resource_context`](Self::resource_context).
+    /// They send exactly what the raw [`resource_client`](Self::resource_client) would.
+    pub fn actions(&self) -> Option<Actions> {
+        self.resource_context
+            .clone()
+            .map(|context| Actions::new(self.channel.clone(), context))
+    }
+
     pub fn context(&self) -> &ServiceContext {
         &self.context
+    }
+
+    /// The host-issued context for plugin-initiated `ResourceHost` calls, from `OpenSession`.
+    /// `None` when the session negotiated a minor before API 1.6. It is bound to this session
+    /// and the active profile and adds no authority beyond the session's grants; after a profile
+    /// change the host ends the session and a new one issues a new context.
+    pub fn resource_context(&self) -> Option<&ServiceContext> {
+        self.resource_context.as_ref()
+    }
+
+    pub async fn describe_api(&self) -> Result<DescribeApiReply, DetailedError> {
+        PluginHostClient::new(self.channel.clone())
+            .describe_api(request(DescribeApiRequest {
+                session_id: self.context.session_id.clone(),
+                session_credential: self.context.session_credential.clone(),
+            }))
+            .await
+            .map(|reply| reply.into_inner())
+            .map_err(|status| DetailedError::from_status(&status))
+    }
+
+    pub async fn get_permissions(&self) -> Result<GetPermissionsReply, DetailedError> {
+        PluginHostClient::new(self.channel.clone())
+            .get_permissions(request(GetPermissionsRequest {
+                session_id: self.context.session_id.clone(),
+                session_credential: self.context.session_credential.clone(),
+            }))
+            .await
+            .map(|reply| reply.into_inner())
+            .map_err(|status| DetailedError::from_status(&status))
+    }
+
+    pub async fn watch_permission_changes(
+        &self,
+        after_revision: u64,
+    ) -> Result<tonic::Streaming<PermissionChange>, DetailedError> {
+        PluginHostClient::new(self.channel.clone())
+            .watch_permission_changes(request(WatchPermissionChangesRequest {
+                session_id: self.context.session_id.clone(),
+                session_credential: self.context.session_credential.clone(),
+                after_revision,
+            }))
+            .await
+            .map(|reply| reply.into_inner())
+            .map_err(|status| DetailedError::from_status(&status))
     }
 
     pub fn for_command(&self, command: &ProviderCommand) -> Result<Self, Error> {
@@ -137,16 +452,21 @@ impl HostClient {
         if context.session_id != self.context.session_id
             || context.provider_id != self.context.provider_id
             || context.session_credential != self.context.session_credential
+            || context.session_kind != self.context.session_kind
+            || context.target_game != self.context.target_game
             || context.operation_id.is_empty()
         {
             return Err(Error::Protocol);
         }
         Ok(Self {
             client: self.client.clone(),
+            channel: self.channel.clone(),
             context: context.clone(),
             events: self.events.clone(),
             plugin_id: self.plugin_id.clone(),
             settings_supported: self.settings_supported,
+            configure_supported: self.configure_supported,
+            resource_context: self.resource_context.clone(),
         })
     }
 
@@ -343,10 +663,69 @@ impl HostClient {
         self.send(provider_event::Event::Result(result)).await
     }
 
+    /// Reports one plugin-observed runtime lifecycle transition using the host-issued API 1.6
+    /// resource context. This does not grant launch, process inspection or file access.
+    pub async fn report_runtime_session(&self, report: RuntimeSessionReport) -> Result<(), Error> {
+        let context = self.resource_context.clone().ok_or(Error::Configuration)?;
+        let target = context.target_game.as_ref().ok_or(Error::Denied)?;
+        if report.correlation_id.is_empty()
+            || ((report.runtime_context_id.is_empty())
+                && (report.game_id != target.game_id
+                    || report.installation_id != target.installation_id))
+            || report.content_id.is_empty()
+            || report.runtime_id.is_empty()
+            || report.runtime_instance_id.is_empty()
+            || report.reporter_session_id != context.session_id
+            || report.sequence == 0
+            || report.observed_at <= 0
+            || report.source_observation_id.is_empty()
+            || !matches!(
+                RuntimeSessionTransition::try_from(report.transition),
+                Ok(transition) if transition != RuntimeSessionTransition::Unspecified
+            )
+        {
+            return Err(Error::Protocol);
+        }
+        self.send_with_context(context, provider_event::Event::RuntimeSession(report))
+            .await
+    }
+
+    /// Requests one explicitly approved reporting context for a game/install observed by this
+    /// already-running runtime instance. The identifiers are proposals; the host resolves and
+    /// validates the current library binding before asking the user.
+    pub async fn request_runtime_session_context(
+        &self,
+        request: RuntimeSessionContextRequest,
+    ) -> Result<(), Error> {
+        if request.correlation_id.is_empty()
+            || request.game_id.is_empty()
+            || request.installation_id.is_empty()
+            || request.runtime_id.is_empty()
+            || request.runtime_instance_id.is_empty()
+            || request.content_id.is_empty()
+        {
+            return Err(Error::Protocol);
+        }
+        let context = self.resource_context.clone().ok_or(Error::Configuration)?;
+        self.send_with_context(
+            context,
+            provider_event::Event::RuntimeSessionContext(request),
+        )
+        .await
+    }
+
     async fn send(&self, event: provider_event::Event) -> Result<(), Error> {
+        self.send_with_context(self.context.clone(), event).await
+    }
+
+    async fn send_with_context(
+        &self,
+        context: ServiceContext,
+        event: provider_event::Event,
+    ) -> Result<(), Error> {
         self.events
             .send(ProviderEvent {
-                context: Some(self.context.clone()),
+                context: Some(context),
                 event: Some(event),
             })
             .await
@@ -379,6 +758,78 @@ impl Session {
         .await
     }
 
+    pub async fn open_with_options(
+        launch: Launch,
+        plugin_id: &str,
+        provider_id: &str,
+        plugin_version: &str,
+        capabilities: &[&str],
+        options: SessionOptions,
+    ) -> Result<Self, Error> {
+        let channel = connect(&launch.endpoint).await?;
+        Self::from_channel_with_options(
+            channel,
+            launch,
+            plugin_id,
+            provider_id,
+            plugin_version,
+            capabilities,
+            options,
+        )
+        .await
+    }
+
+    /// Opens an extension session scoped to exactly one target game. The
+    /// extension has no provider identity of its own and must use the resource
+    /// client instead of provider-owned account/catalog operations.
+    pub async fn open_extension(
+        launch: Launch,
+        plugin_id: &str,
+        plugin_version: &str,
+        target: TargetGameContext,
+        capabilities: &[&str],
+    ) -> Result<Self, Error> {
+        let channel = connect(&launch.endpoint).await?;
+        let mut session_capabilities = Vec::with_capacity(capabilities.len() + 1);
+        session_capabilities.push(capability::CONTEXT);
+        session_capabilities.extend(
+            capabilities
+                .iter()
+                .copied()
+                .filter(|permission| *permission != capability::CONTEXT),
+        );
+        Self::from_channel_with_options(
+            channel,
+            launch,
+            plugin_id,
+            "",
+            plugin_version,
+            &session_capabilities,
+            SessionOptions {
+                min_api_major: 1,
+                min_api_minor: gamenode_plugin_protocol::API_MINOR,
+                max_api_major: 1,
+                max_api_minor: gamenode_plugin_protocol::API_MINOR,
+                features: vec![(capability::FEATURE_EXTENSION_SESSION.into(), true)],
+                session_kind: SessionKind::Extension,
+                target_game: Some(target),
+            },
+        )
+        .await
+    }
+
+    /// Opens the one-shot extension session using only the target selected by Core at process
+    /// startup. Prefer this for packages launched from the desktop's game actions.
+    pub async fn open_extension_from_launch(
+        launch: Launch,
+        plugin_id: &str,
+        plugin_version: &str,
+        capabilities: &[&str],
+    ) -> Result<Self, Error> {
+        let target = launch.selected_target().ok_or(Error::Configuration)?;
+        Self::open_extension(launch, plugin_id, plugin_version, target, capabilities).await
+    }
+
     /// Also allows independent reference hosts to exercise the public protocol.
     pub async fn from_channel(
         channel: Channel,
@@ -388,17 +839,71 @@ impl Session {
         plugin_version: &str,
         capabilities: &[&str],
     ) -> Result<Self, Error> {
+        Self::from_channel_with_options(
+            channel,
+            launch,
+            plugin_id,
+            provider_id,
+            plugin_version,
+            capabilities,
+            SessionOptions::default(),
+        )
+        .await
+    }
+
+    /// API 1.6+ handshake with an explicit compatibility range and optional
+    /// feature requests. The legacy `from_channel` method keeps its API 1.1–1.5
+    /// request shape for existing official plugins.
+    pub async fn from_channel_with_options(
+        channel: Channel,
+        launch: Launch,
+        plugin_id: &str,
+        provider_id: &str,
+        plugin_version: &str,
+        capabilities: &[&str],
+        options: SessionOptions,
+    ) -> Result<Self, Error> {
         if launch.credential.len() != 32 {
             return Err(Error::Configuration);
+        }
+        capability::validate_session_scope(
+            options.session_kind as u32,
+            options.target_game.is_some(),
+        )
+        .map_err(|_| Error::Configuration)?;
+        if let Some(target) = options.target_game.as_ref() {
+            capability::validate_target(target).map_err(|_| Error::Configuration)?;
         }
         let reply = PluginHostClient::new(channel.clone())
             .open_session(request(OpenSessionRequest {
                 plugin_id: plugin_id.into(),
                 plugin_version: plugin_version.into(),
                 api_major: gamenode_plugin_protocol::API_MAJOR,
-                api_minor: gamenode_plugin_protocol::API_MINOR,
+                api_minor: if options.min_api_major == 0
+                    && options.min_api_minor == 0
+                    && options.max_api_major == 0
+                    && options.max_api_minor == 0
+                {
+                    gamenode_plugin_protocol::LEGACY_API_MINOR
+                } else {
+                    gamenode_plugin_protocol::API_MINOR
+                },
                 session_credential: launch.credential.clone(),
                 requested_capabilities: capabilities.iter().map(|s| (*s).into()).collect(),
+                min_api_major: options.min_api_major,
+                min_api_minor: options.min_api_minor,
+                max_api_major: options.max_api_major,
+                max_api_minor: options.max_api_minor,
+                features: options
+                    .features
+                    .iter()
+                    .map(|(id, required)| FeatureRequest {
+                        id: id.clone(),
+                        required: *required,
+                    })
+                    .collect(),
+                session_kind: options.session_kind as i32,
+                target_game: options.target_game.clone(),
             }))
             .await?
             .into_inner();
@@ -419,6 +924,17 @@ impl Session {
         {
             return Err(Error::Protocol);
         }
+        for (id, required) in &options.features {
+            let Some(status) = reply.features.iter().find(|status| &status.id == id) else {
+                if *required {
+                    return Err(Error::Protocol);
+                }
+                continue;
+            };
+            if *required && status.availability != FeatureAvailability::Supported as i32 {
+                return Err(Error::Protocol);
+            }
+        }
         let settings_supported = capabilities.contains(&capability::SETTINGS);
         if settings_supported && reply.api_minor < capability::SETTINGS_API_MINOR {
             return Err(Error::Protocol);
@@ -428,6 +944,11 @@ impl Session {
         {
             return Err(Error::Protocol);
         }
+        let resource_context = reply.resource_context.filter(|context| {
+            reply.api_minor >= capability::THIRD_PARTY_API_MINOR
+                && context.session_id == reply.session_id
+                && context.session_credential == launch.credential
+        });
         let context = ServiceContext {
             session_id: reply.session_id,
             session_credential: launch.credential,
@@ -435,9 +956,11 @@ impl Session {
             operation_id: launch.operation_id,
             account_epoch: 0,
             profile_epoch: 0,
+            session_kind: options.session_kind as i32,
+            target_game: options.target_game.clone(),
         };
         let (events, receive) = mpsc::channel(EVENT_QUEUE);
-        let mut client = ProviderHostClient::new(channel)
+        let mut client = ProviderHostClient::new(channel.clone())
             .max_decoding_message_size(MAX_MESSAGE_BYTES)
             .max_encoding_message_size(MAX_MESSAGE_BYTES);
         events
@@ -456,10 +979,13 @@ impl Session {
         Ok(Self {
             host: HostClient {
                 client,
+                channel: channel.clone(),
                 context,
                 events,
                 plugin_id: plugin_id.into(),
                 settings_supported,
+                configure_supported: capabilities.contains(&capability::CONFIGURE),
+                resource_context,
             },
             commands,
         })
@@ -473,6 +999,21 @@ pub trait ProviderPlugin: Send + Sync + 'static {
         command: ProviderCommand,
         host: HostClient,
     ) -> Result<OperationResult, Error>;
+    /// Receives correlated runtime-session acknowledgements without treating them as operations.
+    async fn runtime_session_result(
+        &self,
+        _result: RuntimeSessionResult,
+        _host: HostClient,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+    async fn runtime_session_context_result(
+        &self,
+        _result: RuntimeSessionContextResult,
+        _host: HostClient,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
     /// Plugin-owned semantic validation and persistence. Check the immutable
     /// request's profile/session scope again immediately before applying work.
     /// The default keeps settings unavailable for existing provider plugins.
@@ -488,7 +1029,124 @@ pub trait ProviderPlugin: Send + Sync + 'static {
             },
         })
     }
+    /// Optional external configuration lifecycle. The default explicitly
+    /// declines; it does not turn an SDK plugin into an external UI provider.
+    async fn configure(
+        &self,
+        command: ProviderCommand,
+        _host: HostClient,
+    ) -> Result<OperationResult, Error> {
+        let context = command.context.ok_or(Error::Protocol)?;
+        Ok(OperationResult {
+            disposition: OperationDisposition::Failed as i32,
+            configuration: Some(ConfigurationResult {
+                session_id: context.session_id,
+                profile_id: String::new(),
+                window_id: command.target_operation_id,
+                accepted: false,
+                failure: "unsupported".into(),
+            }),
+            ..Default::default()
+        })
+    }
     async fn shutdown(&self) {}
+}
+
+#[async_trait::async_trait]
+pub trait ExtensionPlugin: Send + Sync + 'static {
+    async fn handle(
+        &self,
+        command: ProviderCommand,
+        host: HostClient,
+    ) -> Result<OperationResult, Error>;
+
+    async fn runtime_session_result(
+        &self,
+        _result: RuntimeSessionResult,
+        _host: HostClient,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn runtime_session_context_result(
+        &self,
+        _result: RuntimeSessionContextResult,
+        _host: HostClient,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn configure(
+        &self,
+        command: ProviderCommand,
+        _host: HostClient,
+    ) -> Result<OperationResult, Error> {
+        let context = command.context.ok_or(Error::Protocol)?;
+        Ok(OperationResult {
+            disposition: OperationDisposition::Failed as i32,
+            configuration: Some(ConfigurationResult {
+                session_id: context.session_id,
+                profile_id: String::new(),
+                window_id: command.target_operation_id,
+                accepted: false,
+                failure: "unsupported".into(),
+            }),
+            ..Default::default()
+        })
+    }
+
+    async fn shutdown(&self) {}
+}
+
+struct ExtensionAdapter<P>(std::sync::Arc<P>);
+
+#[async_trait::async_trait]
+impl<P: ExtensionPlugin> ProviderPlugin for ExtensionAdapter<P> {
+    async fn handle(
+        &self,
+        command: ProviderCommand,
+        host: HostClient,
+    ) -> Result<OperationResult, Error> {
+        self.0.handle(command, host).await
+    }
+    async fn configure(
+        &self,
+        command: ProviderCommand,
+        host: HostClient,
+    ) -> Result<OperationResult, Error> {
+        self.0.configure(command, host).await
+    }
+    async fn runtime_session_result(
+        &self,
+        result: RuntimeSessionResult,
+        host: HostClient,
+    ) -> Result<(), Error> {
+        self.0.runtime_session_result(result, host).await
+    }
+    async fn runtime_session_context_result(
+        &self,
+        result: RuntimeSessionContextResult,
+        host: HostClient,
+    ) -> Result<(), Error> {
+        self.0.runtime_session_context_result(result, host).await
+    }
+    async fn shutdown(&self) {
+        self.0.shutdown().await;
+    }
+}
+
+/// Dispatches the shared authenticated command stream to an extension after
+/// checking the negotiated session is target-scoped.
+pub async fn run_extension<P: ExtensionPlugin>(
+    session: Session,
+    plugin: std::sync::Arc<P>,
+) -> Result<(), Error> {
+    if session.host.context.session_kind != SessionKind::Extension as i32
+        || session.host.context.target_game.is_none()
+    {
+        return Err(Error::Configuration);
+    }
+    run(session, std::sync::Arc::new(ExtensionAdapter(plugin))).await
 }
 
 /// Dispatch bounded operations concurrently so control requests can reach a
@@ -507,8 +1165,30 @@ pub async fn run<P: ProviderPlugin>(
                 let host = session.host.for_command(&command)?;
                 let operation = ProviderOperation::try_from(command.operation).map_err(|_| Error::Protocol)?;
                 if operation == ProviderOperation::Acknowledge { continue; }
+                if operation == ProviderOperation::RuntimeSessionResult {
+                    let result = command.runtime_session_result.clone().ok_or(Error::Protocol)?;
+                    if result.correlation_id != command.target_operation_id {
+                        return Err(Error::Protocol);
+                    }
+                    let plugin = plugin.clone();
+                    tasks.spawn(async move {
+                        plugin.runtime_session_result(result, host).await
+                    });
+                    continue;
+                }
+                if operation == ProviderOperation::RuntimeSessionContextResult {
+                    let result = command.runtime_session_context_result.clone().ok_or(Error::Protocol)?;
+                    if result.correlation_id != command.target_operation_id {
+                        return Err(Error::Protocol);
+                    }
+                    let plugin = plugin.clone();
+                    tasks.spawn(async move {
+                        plugin.runtime_session_context_result(result, host).await
+                    });
+                    continue;
+                }
                 if operation == ProviderOperation::Shutdown { break; }
-                let control = matches!(operation, ProviderOperation::FocusSignIn | ProviderOperation::CancelSignIn | ProviderOperation::Cancel | ProviderOperation::SignOut | ProviderOperation::SettingsCancel);
+                let control = matches!(operation, ProviderOperation::FocusSignIn | ProviderOperation::CancelSignIn | ProviderOperation::Cancel | ProviderOperation::SignOut | ProviderOperation::SettingsCancel | ProviderOperation::ConfigurationFocus | ProviderOperation::ConfigurationClose);
                 let permit = if control { controls.clone() } else { work.clone() }.try_acquire_owned();
                 let Ok(permit) = permit else {
                     let busy = if is_settings(operation) {
@@ -530,6 +1210,17 @@ pub async fn run<P: ProviderPlugin>(
                     let _permit = permit;
                     let result = if is_settings(operation) {
                         dispatch_settings(plugin.as_ref(), command, host.clone()).await
+                    } else if matches!(operation, ProviderOperation::ConfigurationOpen | ProviderOperation::ConfigurationFocus | ProviderOperation::ConfigurationClose) {
+                        if !host.configure_supported {
+                            Ok(failure(Error::Denied))
+                        } else {
+                            let expected_session = host.context.session_id.clone();
+                            let expected_window = command.target_operation_id.clone();
+                            let result = plugin.configure(command, host.clone()).await?;
+                            if result.configuration.as_ref().is_none_or(|reply| reply.session_id != expected_session || reply.window_id != expected_window) {
+                                Ok(failure(Error::Protocol))
+                            } else { Ok(result) }
+                        }
                     } else {
                         plugin.handle(command, host.clone()).await
                     }.unwrap_or_else(failure);

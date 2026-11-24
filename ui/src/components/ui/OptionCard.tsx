@@ -215,7 +215,9 @@ export const OptionCard = React.forwardRef<HTMLButtonElement, OptionCardProps>(
         >
           <span
             className={cx(
-              'truncate',
+              variant === 'status'
+                ? 'whitespace-normal leading-note'
+                : 'truncate',
               variant === 'row' || isSelected
                 ? 'text-body font-semibold text-text-primary'
                 : 'text-body font-normal text-text-default',

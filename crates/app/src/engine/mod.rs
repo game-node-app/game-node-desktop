@@ -32,14 +32,17 @@ use tokio::runtime::Handle;
 
 mod achievements;
 mod artwork;
+mod detected_target;
 mod drm_free;
 pub mod pc_ports;
 mod playtime;
+mod plugin_ports;
 mod providers;
 mod sign_in;
 mod tools;
 
 pub use pc_ports::{PortProgressPublisher, PortsService};
+pub use providers::{ExtensionReadinessChoice, ExtensionReadinessSelection};
 
 /// Longest the app waits for the server to confirm a sign-out.
 const REMOTE_SIGN_OUT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -76,6 +79,68 @@ pub enum GameNodePageError {
     Browser,
 }
 
+/// A human summary of what a recipe would execute, using the host-owned runtime template and the
+/// game's detected ROM name. No path, handle or recipe id is included.
+fn runtime_launch_summary(
+    runtime: Option<&gamenode_core::library::RuntimeResource>,
+    recipe: &gamenode_core::library::CustomLaunchRecipe,
+    content_name: &str,
+) -> String {
+    let Some(runtime) = runtime else {
+        return String::new();
+    };
+    let content = if content_name.trim().is_empty() {
+        "<content>".to_owned()
+    } else {
+        content_name.trim().to_owned()
+    };
+    let mut arguments = Vec::new();
+    for argument in &runtime.launch_arguments {
+        match argument {
+            gamenode_core::library::RuntimeArgumentTemplate::Literal(value) => {
+                arguments.push(value.clone());
+            }
+            gamenode_core::library::RuntimeArgumentTemplate::ContentPath => {
+                arguments.push(content.clone());
+            }
+        }
+    }
+    arguments.extend(recipe.arguments.iter().cloned());
+    let name = if runtime.version.trim().is_empty() {
+        runtime.name.clone()
+    } else {
+        format!("{} {}", runtime.name, runtime.version)
+    };
+    if arguments.is_empty() {
+        name
+    } else {
+        format!("{} — {}", name, arguments.join(" "))
+    }
+}
+
+/// A recipe the authenticated plugin profile currently exposes for a matched library game.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaunchRecipeOption {
+    pub plugin_id: String,
+    pub publisher_fingerprint: String,
+    pub recipe_id: String,
+    pub recipe_revision: u64,
+    /// Human-readable runtime/version and argument summary, never opaque recipe ids.
+    #[serde(default)]
+    pub summary: String,
+}
+
+/// Selection state shown beside one library entry's detected launch target.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaunchRecipeChoices {
+    pub target_revision: u64,
+    pub detected_default_available: bool,
+    pub selected: Option<gamenode_core::library::LaunchRecipeSelection>,
+    pub recipes: Vec<LaunchRecipeOption>,
+}
+
 /// Why a provider's achievements page could not be opened. The code is stable; the UI words the
 /// message and never receives or passes the URL itself.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
@@ -93,6 +158,7 @@ const COVER_FLUSH_INTERVAL: Duration = Duration::from_millis(300);
 /// The adapters the engine drives.
 #[derive(Clone)]
 pub struct Ports {
+    pub discovery: Option<Arc<dyn gamenode_core::drm_free::DiscoveryHost>>,
     pub backups: Option<Arc<dyn gamenode_core::drm_free::BackupEngine>>,
     pub local_games: Option<Arc<dyn gamenode_core::drm_free::LocalGameStore>>,
     pub installations: Option<Arc<dyn gamenode_core::drm_free::InstallationHost>>,
@@ -133,6 +199,36 @@ fn unix_now() -> i64 {
         .map_or(0, |elapsed| {
             i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)
         })
+}
+
+fn validate_user_launch_authority(
+    profiles: &crate::plugin_host::profile::PluginProfiles,
+    authority: &crate::plugin_host::library::UserLaunchAuthority,
+) -> Result<(), tonic::Status> {
+    let current = profiles.require()?;
+    if !current.verified()
+        || current.epoch() != authority.profile_epoch
+        || current.profile_id() != authority.profile_id
+        || !profiles.is_enabled(&authority.plugin_id)?
+    {
+        return Err(tonic::Status::permission_denied(
+            "plugin profile or activation changed",
+        ));
+    }
+    let (revision, grants) =
+        profiles.granted_permissions(&authority.plugin_id, &authority.publisher_fingerprint)?;
+    if authority
+        .grant_revision
+        .is_some_and(|expected| revision != expected)
+        || !grants.contains(gamenode_plugin_protocol::capability::GAME_CUSTOM_LAUNCH)
+        || (authority.requires_files
+            && !grants.contains(gamenode_plugin_protocol::capability::FILES_READ))
+    {
+        return Err(tonic::Status::permission_denied(
+            "plugin launch permission changed",
+        ));
+    }
+    Ok(())
 }
 
 type Job = Box<dyn FnOnce() + Send>;
@@ -196,6 +292,7 @@ struct State {
         Instant,
     >,
     tool_selected_target_exe: Option<String>,
+    plugin_tool_request: Option<tools::PluginToolRequest>,
     playtime: playtime::Playtime,
     machine: AuthMachine,
     settings: Settings,
@@ -215,6 +312,7 @@ struct State {
     published_selection: Option<Vec<String>>,
     /// The PC ports projection built by the service on a worker thread.
     ports_view: gamenode_core::ports::PortsView,
+    plugin_port_request: Option<plugin_ports::PendingPort>,
     /// Cached achievement summaries for the connected store accounts.
     achievement_summaries: std::collections::BTreeMap<
         (String, String),
@@ -238,6 +336,8 @@ struct Shared {
     /// Without it, a refresh that read the store before a write can apply after a newer
     /// view and temporarily hide registrations or inferences from the snapshot.
     local_views: Mutex<()>,
+    plugin_scan_roots:
+        Mutex<std::collections::HashMap<String, Vec<crate::plugin_host::library::PluginScanRoot>>>,
     ports: Ports,
     runtime: Handle,
     storage: StorageWorker,
@@ -248,6 +348,17 @@ struct Shared {
     #[cfg(test)]
     autostart_hook: Mutex<Option<AutostartHook>>,
     providers: Mutex<Option<Arc<dyn crate::plugin_host::runtime::ProviderRuntime>>>,
+    /// Third-party plugin profiles follow the signed-in GameNode account.
+    plugin_profiles: Mutex<Option<Arc<crate::plugin_host::profile::PluginProfiles>>>,
+    /// Shared host resource adapter used for user-initiated custom Play selections.
+    selected_launch_api: Mutex<Option<Arc<crate::plugin_host::resources::ResourceApi>>>,
+    /// Owns reviewed custom launches and their shared-resource leases off the UI thread.
+    #[cfg(any(target_os = "linux", windows))]
+    custom_launch_supervisor: Option<Arc<crate::plugin_host::launch_supervisor::LaunchSupervisor>>,
+    #[cfg(any(target_os = "linux", windows))]
+    custom_launch_leases: Arc<crate::plugin_host::resource_leases::ResourceLeases>,
+    /// The library projection plugins read through `ResourceHost`.
+    library_feed: Mutex<Option<Arc<crate::plugin_host::library::LibraryFeed>>>,
     /// Serialize checks and catalog commits without delaying account cancellation.
     provider_checks: Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// One catalog sync per provider, coalescing requests made while one runs.
@@ -280,6 +391,17 @@ struct CatalogSync {
 }
 
 /// Cheap to clone; all clones share one state.
+/// Why [`Engine::open_entry_then`] did not hand the entry's link to the operating system.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum OpenError {
+    /// The same opening is under way, or the game is already running.
+    Busy,
+    /// The entry or its provider is not in the library any more.
+    NotFound,
+    /// The provider's action could not run.
+    Launch(gamenode_core::library::LaunchError),
+}
+
 #[derive(Clone)]
 pub struct Engine {
     shared: Arc<Shared>,
@@ -295,8 +417,11 @@ impl Engine {
         settings: Settings,
         library: LibraryMachine,
         nonce: NonceSource,
+        custom_launch_leases: Arc<crate::plugin_host::resource_leases::ResourceLeases>,
         publish: impl Fn(Snapshot) + Send + Sync + 'static,
     ) -> Self {
+        #[cfg(not(any(target_os = "linux", windows)))]
+        let _ = custom_launch_leases;
         #[cfg(test)]
         let test_runtime = Arc::new(tests::provider_runtime::Runtime::new(&ports));
         let mut library = library;
@@ -330,6 +455,7 @@ impl Engine {
                 tool_reset_config: false,
                 tool_last_fetch: Default::default(),
                 tool_selected_target_exe: None,
+                plugin_tool_request: None,
                 playtime: playtime::Playtime::new(ports.platform),
                 machine: AuthMachine::new(nonce),
                 settings,
@@ -342,6 +468,7 @@ impl Engine {
                 library_loading: false,
                 published_selection: None,
                 ports_view: gamenode_core::ports::PortsView::default(),
+                plugin_port_request: None,
                 achievement_summaries: Default::default(),
                 achievement_language: crate::commands::normalize_locale(
                     &crate::commands::system_locale(),
@@ -349,6 +476,7 @@ impl Engine {
                 .to_owned(),
             }),
             local_views: Mutex::new(()),
+            plugin_scan_roots: Mutex::default(),
             ports,
             runtime,
             storage: StorageWorker::new(),
@@ -356,6 +484,14 @@ impl Engine {
             #[cfg(test)]
             autostart_hook: Mutex::new(None),
             providers: Mutex::new(None),
+            plugin_profiles: Mutex::new(None),
+            selected_launch_api: Mutex::new(None),
+            #[cfg(any(target_os = "linux", windows))]
+            custom_launch_supervisor:
+                crate::plugin_host::launch_supervisor::LaunchSupervisor::start_monitor().ok(),
+            #[cfg(any(target_os = "linux", windows))]
+            custom_launch_leases,
+            library_feed: Mutex::new(None),
             provider_checks: Mutex::new(std::collections::HashMap::new()),
             catalog_syncs: Mutex::new(std::collections::HashMap::new()),
             local_checking: Mutex::new(std::collections::BTreeSet::new()),
@@ -389,7 +525,9 @@ impl Engine {
             pc_ports::PortsEvent::Changed { view, completion } => {
                 {
                     let mut state = self.lock();
+                    let review = state.ports_view.plugin_request.clone();
                     state.ports_view = view;
+                    state.ports_view.plugin_request = review;
                     self.publish(&mut state);
                 }
                 if let Some(completion) = completion {
@@ -407,7 +545,7 @@ impl Engine {
 
     /// Publishes the current state without holding any adapter lock. Used by the provider status
     /// observer, which runs from whichever background thread changed the account.
-    fn publish_current(&self) {
+    pub(crate) fn publish_current(&self) {
         let mut state = self.lock();
         self.publish(&mut state);
     }
@@ -620,7 +758,282 @@ impl Engine {
     }
 
     fn publish(&self, state: &mut State) {
+        self.sync_library_feed(state);
         (self.shared.publish)(self.snapshot_of(state));
+    }
+
+    /// Feeds the plugin library projection. Plugins see the entries the library shows while an
+    /// account's library is open, each with its current GameNode match; never a store id, path
+    /// or scan field. An entry stays hidden until the storage worker has given it a durable
+    /// installation id, so an id a plugin saw never changes.
+    fn sync_library_feed(&self, state: &State) {
+        use crate::plugin_host::library::{InstallState, LibrarySource};
+        let Some(feed) = self
+            .shared
+            .library_feed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+        else {
+            return;
+        };
+        let library = &state.library;
+        let sources = if library.is_active() {
+            library
+                .visible_entries()
+                .map(|entry| {
+                    let game_id = library.match_status(entry).game_id();
+                    LibrarySource {
+                        entry_key: entry.key.clone(),
+                        provider_id: entry.provider.clone(),
+                        game_id,
+                        name: entry
+                            .name
+                            .clone()
+                            .filter(|name| !name.trim().is_empty())
+                            .or_else(|| {
+                                game_id
+                                    .and_then(|id| library.game(id))
+                                    .map(|g| g.name.clone())
+                            })
+                            .unwrap_or_default(),
+                        display_name: library
+                            .display_override(&entry.key)
+                            .and_then(|over| over.display_name.clone()),
+                        metadata_revision: library
+                            .display_override(&entry.key)
+                            .map_or(0, |over| over.revision),
+                        artwork_revision: library
+                            .artwork_override(&entry.key)
+                            .map_or(0, |over| over.revision),
+                        install_dir: entry.install_dir.clone(),
+                        detected_target: entry
+                            .target
+                            .as_ref()
+                            .map(|target| (target.revision, target.approved, target.available)),
+                        install_state: if entry.installed {
+                            InstallState::Installed
+                        } else if entry.owned {
+                            InstallState::Owned
+                        } else {
+                            InstallState::Shared
+                        },
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let missing = feed.sync(sources);
+        if missing.is_empty() {
+            return;
+        }
+        let store = self.shared.ports.library.clone();
+        self.shared
+            .storage
+            .submit(move || match store.installation_ids(&missing) {
+                Ok(ids) => feed.assign_ids(&missing, ids),
+                Err(error) => {
+                    tracing::warn!(%error, "could not assign library installation ids");
+                    feed.ids_failed(&missing);
+                }
+            });
+    }
+
+    /// Connects the plugin library projection and its write side, and fills the projection from
+    /// the current library.
+    pub fn set_library_feed(&self, feed: Arc<crate::plugin_host::library::LibraryFeed>) {
+        feed.set_host(Arc::new(PluginLibraryHost {
+            shared: Arc::downgrade(&self.shared),
+        }));
+        *self
+            .shared
+            .library_feed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(feed);
+        let state = self.lock();
+        self.sync_library_feed(&state);
+    }
+
+    pub fn set_selected_launch_api(&self, api: Arc<crate::plugin_host::resources::ResourceApi>) {
+        *self
+            .shared
+            .selected_launch_api
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(api);
+    }
+
+    async fn launch_authorized_uri(
+        &self,
+        uri: url::Url,
+        arguments: Vec<String>,
+        working_directory: String,
+        environment: gamenode_core::drm_free::LaunchEnvironmentDelta,
+        authority: crate::plugin_host::library::UserLaunchAuthority,
+    ) -> Result<(), tonic::Status> {
+        let profiles = self
+            .shared
+            .plugin_profiles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| tonic::Status::unavailable("plugin profile is unavailable"))?;
+        let opener = Arc::clone(&self.shared.ports.uri);
+        tokio::task::spawn_blocking(move || {
+            let _transition = profiles.lock_transition();
+            validate_user_launch_authority(&profiles, &authority)?;
+            opener
+                .open_custom(&uri, &arguments, &working_directory, &environment)
+                .map_err(|error| match error {
+                    gamenode_core::ports::UriError::NoHandler => {
+                        tonic::Status::failed_precondition("no application handles this launch URI")
+                    }
+                    gamenode_core::ports::UriError::Unsupported => tonic::Status::unimplemented(
+                        "the URI handler cannot apply custom launch fields",
+                    ),
+                    gamenode_core::ports::UriError::Failed => {
+                        tonic::Status::unavailable("the launch URI failed")
+                    }
+                })
+        })
+        .await
+        .map_err(|_| tonic::Status::unavailable("custom launch worker stopped"))?
+    }
+
+    /// Starts a reviewed executable on a worker and returns its host-owned launch identity.
+    /// The caller supplies only resource keys resolved by the host, never plugin-provided keys.
+    #[cfg(any(target_os = "linux", windows))]
+    pub(crate) async fn start_supervised_custom_launch(
+        &self,
+        command: gamenode_core::drm_free::CustomLaunchCommand,
+        keys: Vec<crate::plugin_host::resource_leases::ResourceLeaseKey>,
+        entry_key: Option<String>,
+        authority: Option<crate::plugin_host::library::UserLaunchAuthority>,
+    ) -> Result<u64, tonic::Status> {
+        let supervisor = self
+            .shared
+            .custom_launch_supervisor
+            .clone()
+            .ok_or_else(|| tonic::Status::unavailable("custom launch supervisor is unavailable"))?;
+        let leases = Arc::clone(&self.shared.custom_launch_leases);
+        let installations = self.shared.ports.installations.clone().ok_or_else(|| {
+            tonic::Status::unimplemented("custom executable launch is unavailable")
+        })?;
+        let profiles = self
+            .shared
+            .plugin_profiles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        tokio::task::spawn_blocking(move || {
+            // Persisted permission changes and profile transitions take this same lock. A
+            // revocation that commits first must prevent spawn, while a revocation after spawn
+            // must leave the already-running game alone.
+            let _transition = match (&authority, &profiles) {
+                (Some(_), Some(profiles)) => Some(profiles.lock_transition()),
+                (Some(_), None) => {
+                    return Err(tonic::Status::unavailable("plugin profile is unavailable"));
+                }
+                (None, _) => None,
+            };
+            if let Some(authority) = &authority {
+                validate_user_launch_authority(
+                    profiles.as_ref().expect("authority requires profiles"),
+                    authority,
+                )?;
+            }
+            let inspected = installations.inspect(&command.executable).map_err(|_| {
+                tonic::Status::failed_precondition("approved executable cannot be inspected")
+            })?;
+            if inspected.file_identity != command.file_identity
+                || !std::fs::canonicalize(&command.working_directory)
+                    .is_ok_and(|path| path.is_dir())
+                || !command.environment.validate()
+            {
+                return Err(tonic::Status::failed_precondition(
+                    "approved launch inputs changed",
+                ));
+            }
+            supervisor
+                .start_for_entry(leases.as_ref(), &keys, entry_key, || {
+                    // Repeat identity inspection after reserving resources and immediately before
+                    // handing the command to the OS. Failed inspection must never spawn a process.
+                    let valid = installations
+                        .inspect(&command.executable)
+                        .is_ok_and(|current| current.file_identity == command.file_identity);
+                    if valid {
+                        crate::plugin_host::launch_supervisor::spawn_native(&command)
+                    } else {
+                        crate::plugin_host::launch_supervisor::SpawnOutcome::NotStarted
+                    }
+                })
+                .map_err(|error| match error {
+                    crate::plugin_host::resource_leases::ResourceLeaseError::Busy => {
+                        tonic::Status::failed_precondition("a shared resource is busy")
+                    }
+                    crate::plugin_host::resource_leases::ResourceLeaseError::Unknown => {
+                        tonic::Status::unavailable("custom launch could not be confirmed")
+                    }
+                })
+        })
+        .await
+        .map_err(|_| tonic::Status::unavailable("custom launch worker stopped"))?
+    }
+
+    /// Explicitly terminates and fences a previously supervised launch on a worker.
+    #[cfg(any(target_os = "linux", windows))]
+    pub async fn stop_supervised_custom_launch(&self, id: u64) -> Result<(), tonic::Status> {
+        let supervisor = self
+            .shared
+            .custom_launch_supervisor
+            .clone()
+            .ok_or_else(|| tonic::Status::unavailable("custom launch supervisor is unavailable"))?;
+        tokio::task::spawn_blocking(move || supervisor.stop(id))
+            .await
+            .map_err(|_| tonic::Status::unavailable("custom launch worker stopped"))?
+            .map(|_| ())
+            .map_err(|_| {
+                tonic::Status::unavailable("custom launch termination could not be confirmed")
+            })
+    }
+
+    /// Returns identifiers for running or indeterminate reviewed custom launches.
+    #[cfg(any(target_os = "linux", windows))]
+    pub async fn supervised_custom_launch_ids(&self) -> Result<Vec<u64>, tonic::Status> {
+        let supervisor = self
+            .shared
+            .custom_launch_supervisor
+            .clone()
+            .ok_or_else(|| tonic::Status::unavailable("custom launch supervisor is unavailable"))?;
+        tokio::task::spawn_blocking(move || supervisor.active_ids())
+            .await
+            .map_err(|_| tonic::Status::unavailable("custom launch worker stopped"))?
+            .map_err(|_| tonic::Status::unavailable("custom launch state is unavailable"))
+    }
+
+    /// Finds supervised launches belonging to a specific library entry.
+    #[cfg(any(target_os = "linux", windows))]
+    pub async fn supervised_custom_launch_ids_for_entry(
+        &self,
+        entry_key: String,
+    ) -> Result<Vec<u64>, tonic::Status> {
+        let supervisor = self
+            .shared
+            .custom_launch_supervisor
+            .clone()
+            .ok_or_else(|| tonic::Status::unavailable("custom launch supervisor is unavailable"))?;
+        tokio::task::spawn_blocking(move || supervisor.ids_for_entry(&entry_key))
+            .await
+            .map_err(|_| tonic::Status::unavailable("custom launch worker stopped"))?
+            .map_err(|_| tonic::Status::unavailable("custom launch state is unavailable"))
+    }
+
+    /// Returns the same host-owned coordinator used by launches for backup/restore integration.
+    #[cfg(all(test, any(target_os = "linux", windows)))]
+    pub(crate) fn shared_resource_leases(
+        &self,
+    ) -> Arc<crate::plugin_host::resource_leases::ResourceLeases> {
+        Arc::clone(&self.shared.custom_launch_leases)
     }
 
     /// Reads the last signed-in account, then the stored session and, if there is one,
@@ -766,8 +1179,25 @@ impl Engine {
         self.sync_provider_catalog(op, provider.to_owned()).await;
     }
 
-    /// Feeds an input to the state machine and launches its effects. Never blocks on I/O.
+    /// Feeds an input to the state machine and launches its effects on a worker. An account
+    /// transition can wait for an in-flight shared-data policy commit.
+    pub async fn dispatch_on_worker(&self, input: Input) {
+        let engine = self.clone();
+        if let Err(error) = tokio::task::spawn_blocking(move || engine.dispatch(input)).await {
+            tracing::error!(%error, "auth dispatch worker failed");
+        }
+    }
+
+    /// Called by blocking workers and tests. Take the profile transition lock before the engine
+    /// lock so unrelated UI work can read the engine state while a policy commit is syncing.
     pub fn dispatch(&self, input: Input) {
+        let profiles = self
+            .shared
+            .plugin_profiles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let transition = profiles.as_ref().map(|profiles| profiles.lock_transition());
         let mut state = self.lock();
         let is_tick = matches!(&input, Input::Tick);
         let auth_before = is_tick.then(|| (state.machine.state().clone(), state.machine.notice()));
@@ -789,7 +1219,7 @@ impl Engine {
         for effect in effects {
             self.execute(effect);
         }
-        self.sync_library(&mut state);
+        self.sync_library(&mut state, transition);
         self.sync_tracker(&mut state);
         if submit_trigger {
             self.submit_totals(&mut state);
@@ -1013,67 +1443,364 @@ impl Engine {
     /// Opens the provider's Play or Install link for an entry. The result appears in the
     /// snapshot's `launch`: "opening" until the operating system accepted the link.
     pub fn open_entry(&self, entry_key: String, kind: LaunchKind) {
+        self.open_entry_then(entry_key, kind, |_| {});
+    }
+
+    /// Loads active recipe choices for a matched game without blocking the UI thread.
+    pub async fn launch_recipe_choices(
+        &self,
+        entry_key: String,
+    ) -> Result<LaunchRecipeChoices, String> {
+        let (game_id, target_revision, detected_default_available, content_name) = {
+            let state = self.lock();
+            let entry = state
+                .library
+                .entry(&entry_key)
+                .ok_or_else(|| "library entry is unavailable".to_owned())?;
+            let game_id = state.library.match_status(entry).game_id().ok_or_else(|| {
+                "choose a GameNode game before selecting a launch recipe".to_owned()
+            })?;
+            let target = entry.target.as_ref();
+            let content_name = entry
+                .fields
+                .get("rom")
+                .cloned()
+                .or_else(|| entry.name.clone())
+                .unwrap_or_default();
+            (
+                game_id,
+                target.map_or(0, |target| target.revision),
+                target.is_some_and(|target| target.available),
+                content_name,
+            )
+        };
+        let profiles = self
+            .shared
+            .plugin_profiles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| "plugin profiles are unavailable".to_owned())?;
+        let store = self.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || {
+            let selection = store
+                .launch_recipe_selection(&entry_key)
+                .map_err(|error| error.to_string())?;
+            let identities = profiles.identities().map_err(|error| error.to_string())?;
+            let mut recipes = Vec::new();
+            for identity in identities {
+                if !profiles
+                    .is_enabled(&identity.plugin_id)
+                    .map_err(|error| error.to_string())?
+                {
+                    continue;
+                }
+                let resolver = profiles
+                    .resolver(&identity.plugin_id, &identity.publisher_fingerprint, None)
+                    .map_err(|error| error.to_string())?;
+                let owner_key = resolver.library_recipe_owner_key();
+                for recipe in store
+                    .custom_launch_recipes(&owner_key, game_id)
+                    .map_err(|error| error.to_string())?
+                {
+                    if recipe.base_target_revision == target_revision && recipe.validate() {
+                        let runtime = store
+                            .runtime_resource(&owner_key, &recipe.runtime_handle)
+                            .ok()
+                            .flatten();
+                        let summary =
+                            runtime_launch_summary(runtime.as_ref(), &recipe, &content_name);
+                        recipes.push(LaunchRecipeOption {
+                            plugin_id: identity.plugin_id.clone(),
+                            publisher_fingerprint: identity.publisher_fingerprint.clone(),
+                            recipe_id: recipe.recipe_id,
+                            recipe_revision: recipe.revision,
+                            summary,
+                        });
+                    }
+                }
+            }
+            recipes.sort_by(|left, right| {
+                (&left.plugin_id, &left.recipe_id).cmp(&(&right.plugin_id, &right.recipe_id))
+            });
+            Ok(LaunchRecipeChoices {
+                target_revision,
+                detected_default_available,
+                selected: selection,
+                recipes,
+            })
+        })
+        .await
+        .map_err(|_| "launch recipe worker stopped".to_owned())?
+    }
+
+    /// Selects an authenticated plugin recipe only while its game and detected target revisions
+    /// still match the current library entry.
+    pub async fn select_launch_recipe(
+        &self,
+        entry_key: String,
+        plugin_id: String,
+        publisher_fingerprint: String,
+        recipe_id: String,
+        recipe_revision: u64,
+        expected_target_revision: u64,
+    ) -> Result<(), String> {
+        let (game_id, target_revision) = {
+            let state = self.lock();
+            let entry = state
+                .library
+                .entry(&entry_key)
+                .ok_or_else(|| "library entry is unavailable".to_owned())?;
+            let game_id = state.library.match_status(entry).game_id().ok_or_else(|| {
+                "choose a GameNode game before selecting a launch recipe".to_owned()
+            })?;
+            let target_revision = entry.target.as_ref().map_or(0, |target| target.revision);
+            (game_id, target_revision)
+        };
+        if target_revision != expected_target_revision {
+            return Err("the detected target changed; refresh launch choices".into());
+        }
+        let profiles = self
+            .shared
+            .plugin_profiles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| "plugin profiles are unavailable".to_owned())?;
+        let store = self.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || {
+            use gamenode_core::library::{LaunchRecipeSelection, LaunchRecipeSelectionWrite};
+
+            let identity = profiles
+                .identities()
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .find(|identity| {
+                    identity.plugin_id == plugin_id
+                        && identity.publisher_fingerprint == publisher_fingerprint
+                })
+                .ok_or_else(|| {
+                    "plugin identity is not authenticated for this profile".to_owned()
+                })?;
+            if !profiles
+                .is_enabled(&identity.plugin_id)
+                .map_err(|error| error.to_string())?
+            {
+                return Err("the recipe's plugin is disabled".into());
+            }
+            let resolver = profiles
+                .resolver(&identity.plugin_id, &identity.publisher_fingerprint, None)
+                .map_err(|error| error.to_string())?;
+            let owner_key = resolver.library_recipe_owner_key();
+            let recipe = store
+                .custom_launch_recipes(&owner_key, game_id)
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .find(|recipe| {
+                    recipe.recipe_id == recipe_id
+                        && recipe.revision == recipe_revision
+                        && recipe.base_target_revision == expected_target_revision
+                        && recipe.validate()
+                })
+                .ok_or_else(|| {
+                    "the selected recipe changed or is no longer available".to_owned()
+                })?;
+            let selection = LaunchRecipeSelection {
+                entry_key: entry_key.clone(),
+                owner_key,
+                plugin_id: identity.plugin_id,
+                publisher_fingerprint: identity.publisher_fingerprint,
+                recipe_id: recipe.recipe_id,
+                recipe_revision: recipe.revision,
+                base_target_revision: expected_target_revision,
+                approved_plan_fingerprint: String::new(),
+            };
+            match store
+                .save_launch_recipe_selection(&selection, expected_target_revision)
+                .map_err(|error| error.to_string())?
+            {
+                LaunchRecipeSelectionWrite::Applied => Ok(()),
+                LaunchRecipeSelectionWrite::Conflict => {
+                    Err("the detected target or recipe changed; refresh launch choices".into())
+                }
+                LaunchRecipeSelectionWrite::RecipeMissing => {
+                    Err("the selected recipe is no longer available".into())
+                }
+            }
+        })
+        .await
+        .map_err(|_| "launch recipe worker stopped".to_owned())?
+    }
+
+    /// Clears a custom recipe so the detected default is selected explicitly.
+    pub async fn use_detected_default(
+        &self,
+        entry_key: String,
+        expected_target_revision: u64,
+    ) -> Result<(), String> {
+        let current_revision = {
+            let state = self.lock();
+            let entry = state
+                .library
+                .entry(&entry_key)
+                .ok_or_else(|| "library entry is unavailable".to_owned())?;
+            entry.target.as_ref().map_or(0, |target| target.revision)
+        };
+        if current_revision != expected_target_revision {
+            return Err("the detected target changed; refresh launch choices".into());
+        }
+        let store = self.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || {
+            match store
+                .clear_launch_recipe_selection(&entry_key, expected_target_revision)
+                .map_err(|error| error.to_string())?
+            {
+                gamenode_core::library::LaunchRecipeSelectionWrite::Applied => Ok(()),
+                gamenode_core::library::LaunchRecipeSelectionWrite::Conflict => {
+                    Err("the detected target changed; refresh launch choices".into())
+                }
+                gamenode_core::library::LaunchRecipeSelectionWrite::RecipeMissing => {
+                    Err("library entry is unavailable".into())
+                }
+            }
+        })
+        .await
+        .map_err(|_| "launch recipe worker stopped".to_owned())?
+    }
+
+    /// [`open_entry`](Self::open_entry) that also reports how it ended to `done`, which runs
+    /// exactly once: on the worker when the link was handled, or at once when nothing was
+    /// started (the same opening is already under way, the game is already running, or the
+    /// entry is gone).
+    pub(crate) fn open_entry_then(
+        &self,
+        entry_key: String,
+        kind: LaunchKind,
+        done: impl FnOnce(Result<(), OpenError>) + Send + 'static,
+    ) {
         let mut state = self.lock();
         if state.launch.as_ref().is_some_and(|launch| {
             launch.entry_key == entry_key
                 && launch.kind == kind
                 && matches!(launch.state, LaunchState::Opening)
         }) {
-            return;
+            drop(state);
+            return done(Err(OpenError::Busy));
         }
         if kind == LaunchKind::Play && state.playtime.tracker.running().contains(&entry_key) {
-            return;
+            drop(state);
+            return done(Err(OpenError::Busy));
         }
         let Some(entry) = state.library.entry(&entry_key).cloned() else {
-            return;
+            drop(state);
+            return done(Err(OpenError::NotFound));
         };
         let Some(provider) = state.library.provider(&entry.provider).cloned() else {
-            return;
+            drop(state);
+            return done(Err(OpenError::NotFound));
         };
         state.launch_seq += 1;
         let seq = state.launch_seq;
         state.launch = Some(LaunchStatus {
-            entry_key,
+            entry_key: entry_key.clone(),
             kind,
             state: LaunchState::Opening,
         });
         self.publish(&mut state);
         let (engine, opener) = (self.clone(), self.shared.ports.uri.clone());
-        self.shared.runtime.spawn_blocking(move || {
-            let result = if provider.is_manual_executable() {
-                if kind != LaunchKind::Play {
-                    Err(gamenode_core::library::LaunchError::Unsupported)
-                } else {
-                    engine
-                        .shared
-                        .ports
-                        .local_games
-                        .as_ref()
-                        .zip(engine.shared.ports.installations.as_ref())
-                        .ok_or(gamenode_core::library::LaunchError::Unsupported)
-                        .and_then(|(store, host)| {
-                            let registrations = store
-                                .registrations()
-                                .map_err(|_| gamenode_core::library::LaunchError::Failed)?;
-                            let registration = registrations
-                                .iter()
-                                .find(|r| r.key() == entry.key && !r.removed)
-                                .ok_or(gamenode_core::library::LaunchError::Incomplete)?;
-                            let environment = engine.port_launch_environment(&registration.id);
-                            gamenode_core::library::launch::launch_manual_with_environment(
-                                &**host,
-                                &provider,
-                                &entry.record(),
-                                registration,
-                                &environment,
-                                kind,
-                            )
-                        })
-                }
+        self.shared.runtime.spawn(async move {
+            let selection_store = engine.shared.ports.library.clone();
+            let selection_key = entry_key.clone();
+            let selection = if kind == LaunchKind::Play {
+                tokio::task::spawn_blocking(move || {
+                    selection_store.launch_recipe_selection(&selection_key)
+                })
+                .await
+                .map_err(|_| gamenode_core::library::LaunchError::Failed)
+                .and_then(|result| result.map_err(|_| gamenode_core::library::LaunchError::Failed))
             } else {
-                open_action(&*opener, &provider, &entry.record(), kind)
+                Ok(None)
+            };
+            let run_detected = {
+                let engine = engine.clone();
+                let opener = opener.clone();
+                let entry = entry.clone();
+                let provider = provider.clone();
+                move || {
+                    if kind == LaunchKind::Play
+                        && let Some(target) = entry.target.as_ref()
+                    {
+                        detected_target::launch(&engine, &entry, target)
+                    } else if provider.is_manual_executable() {
+                        if kind != LaunchKind::Play {
+                            Err(gamenode_core::library::LaunchError::Unsupported)
+                        } else {
+                            engine
+                                .shared
+                                .ports
+                                .local_games
+                                .as_ref()
+                                .zip(engine.shared.ports.installations.as_ref())
+                                .ok_or(gamenode_core::library::LaunchError::Unsupported)
+                                .and_then(|(store, host)| {
+                                    let registrations = store
+                                        .registrations()
+                                        .map_err(|_| gamenode_core::library::LaunchError::Failed)?;
+                                    let registration = registrations
+                                        .iter()
+                                        .find(|r| r.key() == entry.key && !r.removed)
+                                        .ok_or(gamenode_core::library::LaunchError::Incomplete)?;
+                                    let environment =
+                                        engine.port_launch_environment(&registration.id);
+                                    gamenode_core::library::launch::launch_manual_with_environment(
+                                        &**host,
+                                        &provider,
+                                        &entry.record(),
+                                        registration,
+                                        &environment,
+                                        kind,
+                                    )
+                                })
+                        }
+                    } else {
+                        open_action(&*opener, &provider, &entry.record(), kind)
+                    }
+                }
+            };
+            let result = match selection {
+                Err(error) => Err(error),
+                Ok(Some(_)) => {
+                    let api = engine
+                        .shared
+                        .selected_launch_api
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .clone();
+                    match api {
+                        Some(api) => match api.launch_selected_recipe(entry_key).await {
+                            Ok(true) => Ok(()),
+                            Ok(false) => Ok(()),
+                            Err(status) => Err(match status.code() {
+                                tonic::Code::Unimplemented => {
+                                    gamenode_core::library::LaunchError::Unsupported
+                                }
+                                tonic::Code::FailedPrecondition
+                                | tonic::Code::PermissionDenied
+                                | tonic::Code::NotFound => {
+                                    gamenode_core::library::LaunchError::RecipeNeedsAttention
+                                }
+                                _ => gamenode_core::library::LaunchError::Failed,
+                            }),
+                        },
+                        None => Err(gamenode_core::library::LaunchError::RecipeNeedsAttention),
+                    }
+                }
+                Ok(None) => tokio::task::spawn_blocking(run_detected)
+                    .await
+                    .unwrap_or(Err(gamenode_core::library::LaunchError::Failed)),
             };
             let mut state = engine.lock();
+            let outcome = result.clone().map_err(OpenError::Launch);
             if state.launch_seq == seq {
                 state.launch = result.err().map(|error| LaunchStatus {
                     state: LaunchState::Failed(error),
@@ -1081,6 +1808,8 @@ impl Engine {
                 });
                 engine.publish(&mut state);
             }
+            drop(state);
+            done(outcome);
         });
     }
 
@@ -1092,10 +1821,28 @@ impl Engine {
         self.publish(&mut state);
     }
 
+    /// Binds third-party plugin profiles to who is signed in. The engine applies the same account
+    /// it opens the library for, so plugins see the cached last account while a restored session
+    /// is unverified, and no profile at all after sign-out or a rejected session.
+    pub fn set_plugin_profiles(&self, profiles: Arc<crate::plugin_host::profile::PluginProfiles>) {
+        let transition = profiles.lock_transition();
+        *self
+            .shared
+            .plugin_profiles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(profiles.clone());
+        let mut state = self.lock();
+        self.sync_library(&mut state, Some(transition));
+    }
+
     /// Brings the library in line with who is signed in: opens the cached library of the last
     /// account while the session is being verified, enables GameNode features once it is, and
     /// closes the library on sign-out or a rejected session.
-    fn sync_library(&self, state: &mut State) {
+    fn sync_library(
+        &self,
+        state: &mut State,
+        transition: Option<crate::plugin_host::profile::LockedProfileTransition<'_>>,
+    ) {
         let (account, access) = match state.machine.state() {
             AuthState::SignedIn(user) => (
                 Some(LastAccount {
@@ -1111,6 +1858,12 @@ impl Engine {
             // Nothing is known yet, or a different session is being set up.
             AuthState::Starting | AuthState::Pending { .. } | AuthState::Verifying(_) => return,
         };
+        if let Some(transition) = transition {
+            transition.update(
+                account.as_ref().map(|account| account.id.as_str()),
+                access == Access::Verified,
+            );
+        }
         match &account {
             Some(account) if state.last_account.as_ref() != Some(account) => {
                 state.last_account = Some(account.clone());
@@ -1177,9 +1930,9 @@ impl Engine {
     }
 
     /// A `401` on a library request is a rejected session, like a failed session check.
-    fn check_rejected(&self, rejected: bool) {
+    async fn check_rejected(&self, rejected: bool) {
         if rejected {
-            self.dispatch(Input::SessionRejected);
+            self.dispatch_on_worker(Input::SessionRejected).await;
         }
     }
 
@@ -1206,6 +1959,7 @@ impl Engine {
                 });
                 let Some(found) = state.library.provider(&provider).cloned() else {
                     self.later(LibInput::ProviderScanned {
+                        targets: Default::default(),
                         op,
                         provider,
                         result: Err("unknown provider".to_owned()),
@@ -1221,6 +1975,7 @@ impl Engine {
                         self.scan_provider(runtime, found, op, provider);
                     } else {
                         self.later(LibInput::ProviderScanned {
+                            targets: Default::default(),
                             op,
                             provider,
                             result: Err("provider plugin is unavailable".to_owned()),
@@ -1258,6 +2013,7 @@ impl Engine {
                             .map_err(|error| error.to_string())
                     };
                     engine.library_input(LibInput::ProviderScanned {
+                        targets: Default::default(),
                         op,
                         provider,
                         result,
@@ -1270,7 +2026,9 @@ impl Engine {
                 outcome,
                 now,
             } => self.persist(move |store| match outcome {
-                ScanOutcome::Scanned(records) => store.save_scan(&provider, &records, now),
+                ScanOutcome::Scanned { records, targets } => {
+                    store.save_scan(&provider, &records, &targets, now)
+                }
                 ScanOutcome::Failed(error) => store.save_scan_failure(&provider, &error),
             }),
             // The account service validates the session (persisting a rotated cookie) and fetches
@@ -1336,7 +2094,7 @@ impl Engine {
                         result,
                         now: unix_now(),
                     });
-                    engine.check_rejected(rejected);
+                    engine.check_rejected(rejected).await;
                 });
             }
             LibEffect::PushFavorite {
@@ -1364,7 +2122,7 @@ impl Engine {
                         result,
                         now: unix_now(),
                     });
-                    engine.check_rejected(rejected);
+                    engine.check_rejected(rejected).await;
                 });
             }
             LibEffect::PersistExcluded(excluded) => {
@@ -1406,7 +2164,7 @@ impl Engine {
                         result,
                         now: unix_now(),
                     });
-                    engine.check_rejected(rejected);
+                    engine.check_rejected(rejected).await;
                 });
             }
             LibEffect::SearchGames { op, query } => {
@@ -1421,7 +2179,7 @@ impl Engine {
                     let result = api.search_games(&credential, &query).await;
                     let rejected = matches!(result, Err(ApiError::Rejected));
                     engine.library_input(LibInput::MatchSearched { op, result });
-                    engine.check_rejected(rejected);
+                    engine.check_rejected(rejected).await;
                 });
             }
             LibEffect::SuggestMatches { op, key, query } => {
@@ -1437,7 +2195,7 @@ impl Engine {
                     let result = api.search_page(&credential, &query).await;
                     let rejected = matches!(result, Err(ApiError::Rejected));
                     engine.library_input(LibInput::SuggestionsFound { op, key, result });
-                    engine.check_rejected(rejected);
+                    engine.check_rejected(rejected).await;
                 });
             }
             LibEffect::CatalogSearch { op, query } => {
@@ -1453,7 +2211,7 @@ impl Engine {
                     let result = api.search_page(&credential, &query).await;
                     let rejected = matches!(result, Err(ApiError::Rejected));
                     engine.library_input(LibInput::CatalogSearchDone { op, query, result });
-                    engine.check_rejected(rejected);
+                    engine.check_rejected(rejected).await;
                 });
             }
             LibEffect::FetchCover { game_id, url } => {
@@ -1491,7 +2249,7 @@ impl Engine {
                         game_id,
                         result,
                     });
-                    engine.check_rejected(rejected);
+                    engine.check_rejected(rejected).await;
                 });
             }
             LibEffect::ReadEntry { op, game_id } => {
@@ -1511,7 +2269,7 @@ impl Engine {
                         game_id,
                         result,
                     });
-                    engine.check_rejected(rejected);
+                    engine.check_rejected(rejected).await;
                 });
             }
             LibEffect::SyncAccountLibrary { op, user_id } => {
@@ -1539,7 +2297,7 @@ impl Engine {
                         result,
                         now: unix_now(),
                     });
-                    engine.check_rejected(rejected);
+                    engine.check_rejected(rejected).await;
                 });
             }
             LibEffect::PersistAccountLibrary {
@@ -1569,7 +2327,7 @@ impl Engine {
                     let result = api.list_collections(&credential, &user_id).await;
                     let rejected = matches!(result, Err(ApiError::Rejected));
                     engine.library_input(LibInput::CollectionsListed { op, result });
-                    engine.check_rejected(rejected);
+                    engine.check_rejected(rejected).await;
                 });
             }
             LibEffect::CreateCollection { op, name, .. } => {
@@ -1584,7 +2342,7 @@ impl Engine {
                     let result = api.create_collection(&credential, &name).await;
                     let rejected = matches!(result, Err(CreateCollectionError::Rejected));
                     engine.library_input(LibInput::CollectionCreated { op, result });
-                    engine.check_rejected(rejected);
+                    engine.check_rejected(rejected).await;
                 });
             }
             LibEffect::CreateEntry {
@@ -1611,7 +2369,7 @@ impl Engine {
                         game_id,
                         result,
                     });
-                    engine.check_rejected(rejected);
+                    engine.check_rejected(rejected).await;
                 });
             }
             LibEffect::UpdateEntry {
@@ -1639,7 +2397,7 @@ impl Engine {
                         game_id,
                         result,
                     });
-                    engine.check_rejected(rejected);
+                    engine.check_rejected(rejected).await;
                 });
             }
             LibEffect::DeleteEntry {
@@ -1663,7 +2421,7 @@ impl Engine {
                         game_id,
                         result,
                     });
-                    engine.check_rejected(rejected);
+                    engine.check_rejected(rejected).await;
                 });
             }
         }
@@ -1870,22 +2628,28 @@ impl Engine {
                     {
                         Ok(url) => url,
                         Err(reason) => {
-                            engine.dispatch(Input::SignInFailed { op, reason });
+                            engine
+                                .dispatch_on_worker(Input::SignInFailed { op, reason })
+                                .await;
                             return;
                         }
                     };
                     // Mark the browser as opened first so a prompt callback is never rejected
                     // for arriving "too early"; a launch failure then cancels the attempt.
-                    engine.dispatch(Input::BrowserOpened {
-                        op,
-                        url: url.as_str().to_owned(),
-                    });
+                    engine
+                        .dispatch_on_worker(Input::BrowserOpened {
+                            op,
+                            url: url.as_str().to_owned(),
+                        })
+                        .await;
                     let opened = tokio::task::spawn_blocking(move || browser.open(&url)).await;
                     if !matches!(opened, Ok(Ok(()))) {
-                        engine.dispatch(Input::SignInFailed {
-                            op,
-                            reason: SignInFailure::BrowserLaunch,
-                        });
+                        engine
+                            .dispatch_on_worker(Input::SignInFailed {
+                                op,
+                                reason: SignInFailure::BrowserLaunch,
+                            })
+                            .await;
                     }
                 });
             }
@@ -1908,7 +2672,9 @@ impl Engine {
                 let (engine, api) = (self.clone(), ports.api.clone());
                 self.shared.runtime.spawn(async move {
                     let result = api.get_session(&credential).await;
-                    engine.dispatch(Input::SessionChecked { op, result });
+                    engine
+                        .dispatch_on_worker(Input::SessionChecked { op, result })
+                        .await;
                 });
             }
             Effect::SignOut { op, credential } => self.sign_out(op, credential),
@@ -1939,14 +2705,1211 @@ impl Engine {
             };
             drop(credential); // held only long enough to attempt invalidation
             let local_deleted = local_rx.await.unwrap_or(false);
-            engine.dispatch(Input::SignOutFinished {
-                op,
-                remote,
-                local_deleted,
-            });
+            engine
+                .dispatch_on_worker(Input::SignOutFinished {
+                    op,
+                    remote,
+                    local_deleted,
+                })
+                .await;
         });
     }
 }
 
 #[cfg(test)]
 mod tests;
+
+/// The engine's side of plugin library services. It holds the engine weakly, so the projection
+/// the engine feeds does not keep the engine alive.
+struct PluginLibraryHost {
+    shared: std::sync::Weak<Shared>,
+}
+
+impl PluginLibraryHost {
+    fn engine(&self) -> Result<Engine, tonic::Status> {
+        self.shared
+            .upgrade()
+            .map(|shared| Engine { shared })
+            .ok_or_else(|| tonic::Status::unavailable("the library is not available"))
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::plugin_host::library::LibraryHost for PluginLibraryHost {
+    async fn runtime_resources(
+        &self,
+        owner_key: String,
+    ) -> Result<Vec<gamenode_core::library::RuntimeResource>, tonic::Status> {
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || store.runtime_resources(&owner_key))
+            .await
+            .map_err(|_| tonic::Status::unavailable("library worker stopped"))?
+            .map_err(|_| tonic::Status::internal("could not read runtime resources"))
+    }
+
+    async fn runtime_resource(
+        &self,
+        owner_key: String,
+        runtime_id: String,
+    ) -> Result<Option<gamenode_core::library::RuntimeResource>, tonic::Status> {
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || store.runtime_resource(&owner_key, &runtime_id))
+            .await
+            .map_err(|_| tonic::Status::unavailable("library worker stopped"))?
+            .map_err(|_| tonic::Status::internal("could not read runtime resource"))
+    }
+
+    async fn save_runtime_resource(
+        &self,
+        owner_key: String,
+        runtime: gamenode_core::library::RuntimeResource,
+    ) -> Result<gamenode_core::library::RuntimeMutation, tonic::Status> {
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || store.save_runtime_resource(&owner_key, &runtime))
+            .await
+            .map_err(|_| tonic::Status::unavailable("library worker stopped"))?
+            .map_err(|_| tonic::Status::internal("could not save runtime resource"))
+    }
+
+    async fn remove_runtime_resource(
+        &self,
+        owner_key: String,
+        runtime_id: String,
+        expected_revision: u64,
+    ) -> Result<gamenode_core::library::RuntimeMutation, tonic::Status> {
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || {
+            store.remove_runtime_resource(&owner_key, &runtime_id, expected_revision)
+        })
+        .await
+        .map_err(|_| tonic::Status::unavailable("library worker stopped"))?
+        .map_err(|_| tonic::Status::internal("could not remove runtime resource"))
+    }
+
+    async fn runtime_content_bindings(
+        &self,
+        owner_key: String,
+        game_id: u64,
+        installation_id: String,
+    ) -> Result<Vec<gamenode_core::library::RuntimeContentBinding>, tonic::Status> {
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || {
+            store.runtime_content_bindings(&owner_key, game_id, &installation_id)
+        })
+        .await
+        .map_err(|_| tonic::Status::unavailable("library worker stopped"))?
+        .map_err(|_| tonic::Status::internal("could not read runtime content bindings"))
+    }
+
+    async fn save_runtime_content_binding(
+        &self,
+        owner_key: String,
+        binding: gamenode_core::library::RuntimeContentBinding,
+    ) -> Result<gamenode_core::library::RuntimeMutation, tonic::Status> {
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || {
+            store.save_runtime_content_binding(&owner_key, &binding)
+        })
+        .await
+        .map_err(|_| tonic::Status::unavailable("library worker stopped"))?
+        .map_err(|_| tonic::Status::internal("could not save runtime content binding"))
+    }
+
+    async fn remove_runtime_content_binding(
+        &self,
+        owner_key: String,
+        binding: gamenode_core::library::RuntimeContentBinding,
+    ) -> Result<gamenode_core::library::RuntimeMutation, tonic::Status> {
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || {
+            store.remove_runtime_content_binding(&owner_key, &binding)
+        })
+        .await
+        .map_err(|_| tonic::Status::unavailable("library worker stopped"))?
+        .map_err(|_| tonic::Status::internal("could not remove runtime content binding"))
+    }
+
+    async fn runtime_catalog_revision(&self, owner_key: String) -> Result<u64, tonic::Status> {
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || store.runtime_catalog_revision(&owner_key))
+            .await
+            .map_err(|_| tonic::Status::unavailable("library worker stopped"))?
+            .map_err(|_| tonic::Status::internal("could not read runtime catalog revision"))
+    }
+
+    async fn shared_runtime_resources(
+        &self,
+    ) -> Result<Vec<(String, gamenode_core::library::RuntimeResource)>, tonic::Status> {
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || store.shared_runtime_resources())
+            .await
+            .map_err(|_| tonic::Status::unavailable("library worker stopped"))?
+            .map_err(|_| tonic::Status::internal("could not read shared runtime resources"))
+    }
+
+    async fn shared_runtime_catalog_revision(&self) -> Result<u64, tonic::Status> {
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || store.shared_runtime_catalog_revision())
+            .await
+            .map_err(|_| tonic::Status::unavailable("library worker stopped"))?
+            .map_err(|_| tonic::Status::internal("could not read shared runtime catalog revision"))
+    }
+
+    async fn runtime_availability(
+        &self,
+        owner_key: Option<String>,
+        installation_ids: Vec<String>,
+    ) -> Result<Vec<gamenode_core::library::RuntimeAvailabilityEntry>, tonic::Status> {
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || {
+            store.runtime_availability(owner_key.as_deref(), &installation_ids)
+        })
+        .await
+        .map_err(|_| tonic::Status::unavailable("library worker stopped"))?
+        .map_err(|_| tonic::Status::internal("could not read runtime availability"))
+    }
+
+    async fn installed_programs(
+        &self,
+    ) -> Result<Vec<crate::plugin_host::runtime_access::InstalledProgram>, tonic::Status> {
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || {
+            let cache = store.load_cache(None)?;
+            Ok::<_, gamenode_core::ports::StorageError>(
+                crate::plugin_host::runtime_access::installed_programs_from_entries(&cache.entries),
+            )
+        })
+        .await
+        .map_err(|_| tonic::Status::unavailable("library worker stopped"))?
+        .map_err(|_| tonic::Status::internal("could not read the installed-program inventory"))
+    }
+
+    async fn custom_launch_recipe(
+        &self,
+        owner_key: String,
+        recipe_id: String,
+    ) -> Result<Option<gamenode_core::library::CustomLaunchRecipe>, tonic::Status> {
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || store.custom_launch_recipe(&owner_key, &recipe_id))
+            .await
+            .map_err(|_| tonic::Status::unavailable("library worker stopped"))?
+            .map_err(|_| tonic::Status::internal("could not read custom launch recipe"))
+    }
+
+    async fn save_custom_launch_recipe(
+        &self,
+        owner_key: String,
+        recipe: gamenode_core::library::CustomLaunchRecipe,
+    ) -> Result<gamenode_core::library::CustomLaunchMutation, tonic::Status> {
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || store.save_custom_launch_recipe(&owner_key, &recipe))
+            .await
+            .map_err(|_| tonic::Status::unavailable("library worker stopped"))?
+            .map_err(|_| tonic::Status::internal("could not save custom launch recipe"))
+    }
+
+    async fn remove_custom_launch_recipe(
+        &self,
+        owner_key: String,
+        recipe_id: String,
+        expected_revision: u64,
+    ) -> Result<gamenode_core::library::CustomLaunchMutation, tonic::Status> {
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || {
+            store.remove_custom_launch_recipe(&owner_key, &recipe_id, expected_revision)
+        })
+        .await
+        .map_err(|_| tonic::Status::unavailable("library worker stopped"))?
+        .map_err(|_| tonic::Status::internal("could not remove custom launch recipe"))
+    }
+
+    async fn launch_recipe_selection(
+        &self,
+        entry_key: String,
+    ) -> Result<Option<gamenode_core::library::LaunchRecipeSelection>, tonic::Status> {
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || store.launch_recipe_selection(&entry_key))
+            .await
+            .map_err(|_| tonic::Status::unavailable("library worker stopped"))?
+            .map_err(|_| tonic::Status::internal("could not read launch recipe selection"))
+    }
+
+    async fn approve_launch_recipe_plan(
+        &self,
+        entry_key: String,
+        recipe_id: String,
+        recipe_revision: u64,
+        target_revision: u64,
+        fingerprint: String,
+    ) -> Result<gamenode_core::library::LaunchRecipeSelectionWrite, tonic::Status> {
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || {
+            store.approve_launch_recipe_plan(
+                &entry_key,
+                &recipe_id,
+                recipe_revision,
+                target_revision,
+                &fingerprint,
+            )
+        })
+        .await
+        .map_err(|_| tonic::Status::unavailable("library worker stopped"))?
+        .map_err(|_| tonic::Status::internal("could not remember launch plan"))
+    }
+
+    async fn detected_launch(
+        &self,
+        entry_key: String,
+        expected_revision: u64,
+    ) -> Result<gamenode_core::drm_free::CustomLaunchCommand, tonic::Status> {
+        let engine = self.engine()?;
+        tokio::task::spawn_blocking(move || {
+            detected_target::resolved_command(&engine, &entry_key, expected_revision)
+        })
+        .await
+        .map_err(|_| tonic::Status::unavailable("detected launch worker stopped"))?
+    }
+
+    async fn prepare_custom_launch(
+        &self,
+        recipe: gamenode_core::library::CustomLaunchRecipe,
+        executable_path: Option<String>,
+        working_directory_path: Option<String>,
+        runtime: Option<crate::plugin_host::library::ResolvedRuntimeLaunch>,
+    ) -> Result<crate::plugin_host::library::CustomLaunchDispatch, tonic::Status> {
+        let engine = self.engine()?;
+        let ports = engine.shared.ports.clone();
+        tokio::task::spawn_blocking(move || {
+            use crate::plugin_host::library::CustomLaunchDispatch;
+            use gamenode_core::drm_free::CustomLaunchCommand;
+            if !recipe.validate() {
+                return Err(tonic::Status::invalid_argument(
+                    "invalid custom launch recipe",
+                ));
+            }
+            if !recipe.uri.is_empty() {
+                let uri = url::Url::parse(&recipe.uri)
+                    .map_err(|_| tonic::Status::invalid_argument("invalid launch URI"))?;
+                let environment = recipe.effective_environment();
+                return Ok(CustomLaunchDispatch::Uri {
+                    uri,
+                    arguments: recipe.effective_arguments(),
+                    working_directory: working_directory_path.unwrap_or_default(),
+                    environment,
+                });
+            }
+            if let Some(runtime) = runtime {
+                if !recipe.executable_handle.is_empty() || recipe.executable.is_some() {
+                    return Err(tonic::Status::invalid_argument(
+                        "a runtime recipe cannot also select a direct executable",
+                    ));
+                }
+                if recipe.runtime_handle != runtime.runtime_id {
+                    return Err(tonic::Status::failed_precondition(
+                        "the selected runtime changed during launch preparation",
+                    ));
+                }
+                let installations = ports.installations.ok_or_else(|| {
+                    tonic::Status::unimplemented("runtime launch is unavailable on this platform")
+                })?;
+                let registration = installations
+                    .inspect(&runtime.executable)
+                    .map_err(|error| match error {
+                        gamenode_core::drm_free::LocalError::Unsupported => {
+                            tonic::Status::unimplemented(
+                                "runtime launch is unavailable on this platform",
+                            )
+                        }
+                        gamenode_core::drm_free::LocalError::InvalidTarget => {
+                            tonic::Status::failed_precondition(
+                                "the approved runtime executable changed or is invalid",
+                            )
+                        }
+                        _ => tonic::Status::unavailable("could not inspect approved runtime"),
+                    })?;
+                let mut arguments =
+                    Vec::with_capacity(runtime.arguments.len() + recipe.arguments.len());
+                for argument in runtime.arguments {
+                    match argument {
+                        gamenode_core::library::RuntimeArgumentTemplate::Literal(value) => {
+                            arguments.push(value)
+                        }
+                        gamenode_core::library::RuntimeArgumentTemplate::ContentPath => {
+                            let path = runtime.content_path.as_ref().ok_or_else(|| {
+                                tonic::Status::failed_precondition(
+                                    "the selected runtime requires a content binding",
+                                )
+                            })?;
+                            arguments.push(path.clone());
+                        }
+                    }
+                }
+                arguments.extend(recipe.effective_arguments());
+                let working_directory = working_directory_path
+                    .unwrap_or_else(|| registration.working_directory.clone());
+                let command = CustomLaunchCommand {
+                    executable: registration.executable,
+                    file_identity: registration.file_identity,
+                    arguments,
+                    working_directory,
+                    environment: recipe.effective_environment(),
+                };
+                return Ok(CustomLaunchDispatch::Runtime {
+                    command,
+                    runtime_id: runtime.runtime_id,
+                    runtime_version: runtime.version,
+                    runtime_revision: runtime.runtime_revision,
+                    content_id: runtime.content_id,
+                    binding_revision: runtime.binding_revision,
+                    lease_keys: runtime.lease_keys,
+                });
+            }
+            if !recipe.runtime_handle.is_empty() {
+                return Err(tonic::Status::failed_precondition(
+                    "the selected runtime could not be resolved",
+                ));
+            }
+            let executable = executable_path.ok_or_else(|| {
+                tonic::Status::permission_denied("executable handle is unavailable")
+            })?;
+            let installations = ports.installations.ok_or_else(|| {
+                tonic::Status::unimplemented("custom executable launch is unavailable")
+            })?;
+            let registration = installations
+                .inspect(&executable)
+                .map_err(|error| match error {
+                    gamenode_core::drm_free::LocalError::Unsupported => {
+                        tonic::Status::unimplemented("custom executable launch is unavailable")
+                    }
+                    gamenode_core::drm_free::LocalError::InvalidTarget => {
+                        tonic::Status::failed_precondition(
+                            "approved executable changed or is invalid",
+                        )
+                    }
+                    _ => tonic::Status::unavailable("could not inspect approved executable"),
+                })?;
+            let working_directory =
+                working_directory_path.unwrap_or_else(|| registration.working_directory.clone());
+            let environment = recipe.effective_environment();
+            let command = CustomLaunchCommand {
+                executable: registration.executable,
+                file_identity: registration.file_identity,
+                arguments: recipe.effective_arguments(),
+                working_directory,
+                environment,
+            };
+            Ok(CustomLaunchDispatch::Executable(command))
+        })
+        .await
+        .map_err(|_| tonic::Status::unavailable("custom launch preparation worker stopped"))?
+    }
+
+    async fn launch_custom(
+        &self,
+        dispatch: crate::plugin_host::library::CustomLaunchDispatch,
+    ) -> Result<(), tonic::Status> {
+        let engine = self.engine()?;
+        #[cfg(any(target_os = "linux", windows))]
+        let dispatch = match dispatch {
+            crate::plugin_host::library::CustomLaunchDispatch::Executable(command)
+            | crate::plugin_host::library::CustomLaunchDispatch::Detected { command } => {
+                return engine
+                    .start_supervised_custom_launch(command, Vec::new(), None, None)
+                    .await
+                    .map(|_| ());
+            }
+            crate::plugin_host::library::CustomLaunchDispatch::Runtime {
+                command,
+                lease_keys,
+                ..
+            } => {
+                return engine
+                    .start_supervised_custom_launch(command, lease_keys, None, None)
+                    .await
+                    .map(|_| ());
+            }
+            uri => uri,
+        };
+        let ports = engine.shared.ports.clone();
+        tokio::task::spawn_blocking(move || {
+            use crate::plugin_host::library::CustomLaunchDispatch;
+            use gamenode_core::ports::UriError;
+            match dispatch {
+                CustomLaunchDispatch::Uri {
+                    uri,
+                    arguments,
+                    working_directory,
+                    environment,
+                } => ports
+                    .uri
+                    .open_custom(&uri, &arguments, &working_directory, &environment)
+                    .map_err(|error| match error {
+                        UriError::NoHandler => tonic::Status::failed_precondition(
+                            "no application handles this launch URI",
+                        ),
+                        UriError::Unsupported => tonic::Status::unimplemented(
+                            "the URI handler cannot apply custom launch fields",
+                        ),
+                        UriError::Failed => tonic::Status::unavailable("the launch URI failed"),
+                    }),
+                CustomLaunchDispatch::Executable(command)
+                | CustomLaunchDispatch::Detected { command } => {
+                    let installations = ports.installations.ok_or_else(|| {
+                        tonic::Status::unimplemented("custom executable launch is unavailable")
+                    })?;
+                    installations
+                        .launch_custom(&command)
+                        .map_err(|error| match error {
+                            gamenode_core::drm_free::LocalError::Unsupported => {
+                                tonic::Status::unimplemented(
+                                    "custom executable launch is unavailable",
+                                )
+                            }
+                            gamenode_core::drm_free::LocalError::InvalidTarget => {
+                                tonic::Status::failed_precondition(
+                                    "approved executable changed or is invalid",
+                                )
+                            }
+                            _ => tonic::Status::unavailable("custom executable launch failed"),
+                        })
+                }
+                CustomLaunchDispatch::Runtime { command, .. } => {
+                    let installations = ports.installations.ok_or_else(|| {
+                        tonic::Status::unimplemented(
+                            "runtime launch is unavailable on this platform",
+                        )
+                    })?;
+                    installations
+                        .launch_custom(&command)
+                        .map_err(|error| match error {
+                            gamenode_core::drm_free::LocalError::Unsupported => {
+                                tonic::Status::unimplemented(
+                                    "runtime launch is unavailable on this platform",
+                                )
+                            }
+                            gamenode_core::drm_free::LocalError::InvalidTarget => {
+                                tonic::Status::failed_precondition(
+                                    "approved runtime executable changed or is invalid",
+                                )
+                            }
+                            _ => tonic::Status::unavailable("runtime launch failed"),
+                        })
+                }
+            }
+        })
+        .await
+        .map_err(|_| tonic::Status::unavailable("custom launch worker stopped"))?
+    }
+
+    async fn launch_custom_for_entry(
+        &self,
+        dispatch: crate::plugin_host::library::CustomLaunchDispatch,
+        entry_key: String,
+    ) -> Result<(), tonic::Status> {
+        #[cfg(any(target_os = "linux", windows))]
+        {
+            let engine = self.engine()?;
+            match dispatch {
+                crate::plugin_host::library::CustomLaunchDispatch::Executable(command)
+                | crate::plugin_host::library::CustomLaunchDispatch::Detected { command } => {
+                    return engine
+                        .start_supervised_custom_launch(command, Vec::new(), Some(entry_key), None)
+                        .await
+                        .map(|_| ());
+                }
+                crate::plugin_host::library::CustomLaunchDispatch::Runtime {
+                    command,
+                    lease_keys,
+                    ..
+                } => {
+                    return engine
+                        .start_supervised_custom_launch(command, lease_keys, Some(entry_key), None)
+                        .await
+                        .map(|_| ());
+                }
+                uri => return self.launch_custom(uri).await,
+            }
+        }
+        #[cfg(not(any(target_os = "linux", windows)))]
+        {
+            let _ = entry_key;
+            self.launch_custom(dispatch).await
+        }
+    }
+
+    async fn launch_custom_for_entry_authorized(
+        &self,
+        dispatch: crate::plugin_host::library::CustomLaunchDispatch,
+        entry_key: String,
+        authority: crate::plugin_host::library::UserLaunchAuthority,
+    ) -> Result<(), tonic::Status> {
+        let engine = self.engine()?;
+        match dispatch {
+            #[cfg(any(target_os = "linux", windows))]
+            crate::plugin_host::library::CustomLaunchDispatch::Executable(command)
+            | crate::plugin_host::library::CustomLaunchDispatch::Detected { command } => engine
+                .start_supervised_custom_launch(
+                    command,
+                    Vec::new(),
+                    Some(entry_key),
+                    Some(authority),
+                )
+                .await
+                .map(|_| ()),
+            #[cfg(any(target_os = "linux", windows))]
+            crate::plugin_host::library::CustomLaunchDispatch::Runtime {
+                command,
+                lease_keys,
+                ..
+            } => engine
+                .start_supervised_custom_launch(
+                    command,
+                    lease_keys,
+                    Some(entry_key),
+                    Some(authority),
+                )
+                .await
+                .map(|_| ()),
+            crate::plugin_host::library::CustomLaunchDispatch::Uri {
+                uri,
+                arguments,
+                working_directory,
+                environment,
+            } => {
+                engine
+                    .launch_authorized_uri(
+                        uri,
+                        arguments,
+                        working_directory,
+                        environment,
+                        authority,
+                    )
+                    .await
+            }
+            #[cfg(not(any(target_os = "linux", windows)))]
+            _ => Err(tonic::Status::unimplemented(
+                "custom executable launch is unavailable",
+            )),
+        }
+    }
+
+    fn ports_supported(&self) -> bool {
+        self.engine()
+            .ok()
+            .and_then(|e| e.ports_service())
+            .is_some_and(|s| s.is_supported())
+    }
+    async fn ports_catalog(
+        &self,
+        detail: Option<String>,
+    ) -> Result<Vec<gamenode_plugin_protocol::proto::PortRecord>, tonic::Status> {
+        self.engine()?.plugin_ports_catalog(detail).await
+    }
+    async fn request_port(
+        &self,
+        port_id: String,
+        review: gamenode_core::ports::view::PortPluginRequest,
+        check: crate::plugin_host::jobs::Fence,
+    ) -> Result<(), tonic::Status> {
+        self.engine()?
+            .review_plugin_port(port_id, review, check)
+            .await
+    }
+
+    fn tools_supported(&self) -> bool {
+        self.engine().is_ok_and(|e| {
+            cfg!(windows)
+                && e.shared.ports.tool_installer.is_some()
+                && e.shared.ports.tools.is_some()
+                && e.shared.ports.tool_catalog.is_some()
+        })
+    }
+    async fn tools_list(
+        &self,
+        entry_key: String,
+    ) -> Result<Vec<gamenode_plugin_protocol::proto::ToolRecord>, tonic::Status> {
+        let engine = self.engine()?;
+        tokio::task::spawn_blocking(move || engine.plugin_tools_list(&entry_key))
+            .await
+            .map_err(|_| tonic::Status::unavailable("tools worker unavailable"))?
+    }
+    async fn request_tool(
+        &self,
+        entry_key: String,
+        tool_id: String,
+        review: gamenode_core::tools::ToolPluginRequest,
+        check: crate::plugin_host::jobs::Fence,
+    ) -> Result<(), tonic::Status> {
+        self.engine()?
+            .request_plugin_tool(entry_key, tool_id, review, check)
+            .await
+    }
+
+    async fn backup_context(
+        &self,
+        entry_key: String,
+    ) -> Result<crate::plugin_host::library::BackupHostContext, tonic::Status> {
+        let engine = self.engine()?;
+        tokio::task::spawn_blocking(move || {
+            use gamenode_core::drm_free::BackupTarget;
+            let adapter = engine
+                .shared
+                .ports
+                .backups
+                .clone()
+                .filter(|adapter| adapter.scoped_available())
+                .ok_or_else(|| {
+                    tonic::Status::unavailable("backups are unavailable on this platform")
+                })?;
+            let (root, manual_id) = {
+                let state = engine.lock();
+                let entry = state
+                    .library
+                    .entry(&entry_key)
+                    .filter(|entry| entry.installed)
+                    .ok_or_else(|| tonic::Status::not_found("installed game not found"))?;
+                (
+                    entry.install_dir.clone(),
+                    entry_key.strip_prefix("manual:").map(str::to_owned),
+                )
+            };
+            let mut target = BackupTarget {
+                installation_id: String::new(),
+                root,
+                gameplay: vec![],
+                track_folder: manual_id.is_none(),
+            };
+            let local = engine.load_local_view();
+            if let Some(id) = manual_id {
+                let registration = local
+                    .registrations
+                    .iter()
+                    .find(|r| r.id == id && !r.removed)
+                    .ok_or_else(|| tonic::Status::not_found("installed game not found"))?;
+                target.gameplay = registration.gameplay.clone();
+            }
+            if target.root.is_empty() {
+                return Err(tonic::Status::failed_precondition(
+                    "installation folder unavailable",
+                ));
+            }
+            Ok(crate::plugin_host::library::BackupHostContext {
+                engine: adapter,
+                target,
+                destination: local.settings.destination,
+            })
+        })
+        .await
+        .map_err(|_| tonic::Status::unavailable("backup context unavailable"))?
+    }
+
+    fn plugin_roots_supported(&self) -> bool {
+        true
+    }
+    fn set_plugin_roots(
+        &self,
+        owner: String,
+        roots: Vec<crate::plugin_host::library::PluginScanRoot>,
+    ) -> Result<(), tonic::Status> {
+        let engine = self.engine()?;
+        let mut active = engine
+            .shared
+            .plugin_scan_roots
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let previous = active
+            .get(&owner)
+            .map(|roots| roots.iter().map(|r| r.root.clone()).collect::<Vec<_>>())
+            .unwrap_or_default();
+        let changed = previous != roots.iter().map(|r| r.root.clone()).collect::<Vec<_>>();
+        if roots.is_empty() {
+            active.remove(&owner);
+        } else {
+            active.insert(owner, roots);
+        }
+        drop(active);
+        if changed || !previous.is_empty() {
+            engine.rescan_local_folders();
+        }
+        Ok(())
+    }
+
+    fn favorites(&self, provider_id: &str) -> Vec<(u64, bool)> {
+        let Ok(engine) = self.engine() else {
+            return Vec::new();
+        };
+        let state = engine.lock();
+        let library = &state.library;
+        if !library.is_active() {
+            return Vec::new();
+        }
+        let mut games = std::collections::BTreeMap::new();
+        for entry in library
+            .visible_entries()
+            .filter(|entry| entry.provider == provider_id)
+        {
+            if let Some(game) = library.match_status(entry).game_id() {
+                games.insert(
+                    game,
+                    library
+                        .favorite_state(game)
+                        .is_some_and(|favorite| favorite.is_favorite),
+                );
+            }
+        }
+        games.into_iter().collect()
+    }
+
+    fn set_favorite(
+        &self,
+        provider_id: &str,
+        game_id: u64,
+        favorite: bool,
+        guard: &dyn Fn() -> Result<(), tonic::Status>,
+    ) -> Result<crate::plugin_host::library::FavoriteWrite, tonic::Status> {
+        use crate::plugin_host::library::FavoriteWrite;
+        let engine = self.engine()?;
+        let mut state = engine.lock();
+        // Checked under the engine lock, in the same section that commits.
+        guard()?;
+        let library = &state.library;
+        let key = library
+            .is_active()
+            .then(|| {
+                library
+                    .visible_entries()
+                    .filter(|entry| entry.provider == provider_id)
+                    .find(|entry| library.match_status(entry).game_id() == Some(game_id))
+                    .map(|entry| entry.key.clone())
+            })
+            .flatten();
+        let Some(key) = key else {
+            return Ok(FavoriteWrite::NoMatchedEntry);
+        };
+        let is_favorite = |state: &State| {
+            state
+                .library
+                .favorite_state(game_id)
+                .is_some_and(|favorite| favorite.is_favorite)
+        };
+        if is_favorite(&state) == favorite {
+            return Ok(FavoriteWrite::AlreadyApplied);
+        }
+        engine.run_library(
+            &mut state,
+            LibInput::SetFavorite {
+                key,
+                favorite,
+                now: unix_now(),
+            },
+        );
+        engine.publish(&mut state);
+        if is_favorite(&state) != favorite {
+            // The library had no account to keep the favorite for.
+            return Err(tonic::Status::unavailable("the library is not available"));
+        }
+        Ok(FavoriteWrite::Applied)
+    }
+
+    async fn search_catalog(
+        &self,
+        query: String,
+        limit: usize,
+    ) -> Result<Vec<crate::plugin_host::library::CatalogGame>, tonic::Status> {
+        use crate::plugin_host::library::CatalogGame;
+        let engine = self.engine()?;
+        let (credential, api) = {
+            let state = engine.lock();
+            // The catalog is the user's GameNode account: never searched without a verified,
+            // online session.
+            let credential = state
+                .library
+                .is_active()
+                .then(|| state.library.network_block().is_none())
+                .filter(|online| *online)
+                .and_then(|_| state.machine.verified_credential().cloned());
+            let Some(credential) = credential else {
+                return Err(tonic::Status::unavailable(
+                    "the GameNode catalog needs a verified, online session",
+                ));
+            };
+            (credential, engine.shared.ports.games.clone())
+        };
+        match api.search_games(&credential, &query).await {
+            Ok(mut games) => {
+                games.truncate(limit);
+                engine.library_input(LibInput::CatalogSearched {
+                    games: games.clone(),
+                });
+                Ok(games
+                    .into_iter()
+                    .map(|game| CatalogGame {
+                        id: game.id,
+                        name: game.name,
+                        release_year: game.release_year,
+                    })
+                    .collect())
+            }
+            Err(error) => {
+                engine
+                    .check_rejected(matches!(error, ApiError::Rejected))
+                    .await;
+                Err(tonic::Status::unavailable(
+                    "the GameNode catalog could not answer",
+                ))
+            }
+        }
+    }
+
+    fn assign_match(
+        &self,
+        entry_key: &str,
+        game_id: u64,
+        expected_revision: u64,
+        guard: &dyn Fn() -> Result<(), tonic::Status>,
+    ) -> Result<crate::plugin_host::library::MatchWrite, tonic::Status> {
+        use crate::plugin_host::library::MatchWrite;
+        use gamenode_core::library::PluginMatch;
+        let engine = self.engine()?;
+        let feed = engine
+            .shared
+            .library_feed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| tonic::Status::unavailable("the library is not available"))?;
+        let mut state = engine.lock();
+        // Checked under the engine lock, in the same section that commits.
+        guard()?;
+        // Bring the projection up to date under the same lock, so the revision compared is the
+        // one the entry has now.
+        engine.sync_library_feed(&state);
+        let not_found = || tonic::Status::not_found("library entry not found");
+        let current = feed.revision_of(entry_key).ok_or_else(not_found)?;
+        let plan = state.library.plan_plugin_match(entry_key, game_id);
+        match plan {
+            PluginMatch::NoAccount => {
+                return Err(tonic::Status::unavailable("the library is not available"));
+            }
+            PluginMatch::UnknownEntry => return Err(not_found()),
+            PluginMatch::Already => {
+                return Ok(MatchWrite::AlreadyApplied { revision: current });
+            }
+            _ => {}
+        }
+        if expected_revision != current {
+            return Ok(MatchWrite::Conflict { current });
+        }
+        match plan {
+            PluginMatch::UnknownGame => return Ok(MatchWrite::UnknownGame),
+            PluginMatch::UserChoice => return Ok(MatchWrite::UserChoice),
+            _ => {}
+        }
+        engine.run_library(
+            &mut state,
+            LibInput::AssignPluginMatch {
+                key: entry_key.to_owned(),
+                game_id,
+                now: unix_now(),
+            },
+        );
+        // Playtime is submitted per game, so a new match is a moment to submit, as for the
+        // user's own pick.
+        engine.submit_totals(&mut state);
+        engine.publish(&mut state);
+        if state.library.plan_plugin_match(entry_key, game_id) != PluginMatch::Already {
+            return Err(tonic::Status::unavailable("the library is not available"));
+        }
+        let revision = feed.revision_of(entry_key).unwrap_or(current);
+        Ok(MatchWrite::Applied { revision })
+    }
+
+    async fn read_artwork(
+        &self,
+        entry_key: String,
+        max_bytes: u64,
+    ) -> Result<crate::plugin_host::library::StoredArtwork, tonic::Status> {
+        use gamenode_platform::plugin_artwork::{self, ReadError};
+        let engine = self.engine()?;
+        let (file, revision, dir) = {
+            let state = engine.lock();
+            let library = &state.library;
+            (
+                library
+                    .is_active()
+                    .then(|| library.entry_cover_file(&entry_key))
+                    .flatten(),
+                library
+                    .artwork_override(&entry_key)
+                    .map_or(0, |over| over.revision),
+                engine.shared.ports.covers_dir.clone(),
+            )
+        };
+        let file = file.ok_or_else(|| tonic::Status::not_found("the entry has no cover"))?;
+        let name = file.clone();
+        let read =
+            tokio::task::spawn_blocking(move || plugin_artwork::read(&dir, &name, max_bytes))
+                .await
+                .map_err(|_| tonic::Status::unavailable("the library is not available"))?;
+        match read {
+            Ok(bytes) => Ok(crate::plugin_host::library::StoredArtwork {
+                bytes,
+                media_type: plugin_artwork::media_type_of(&file),
+                revision,
+            }),
+            Err(ReadError::TooLarge) => Err(tonic::Status::resource_exhausted(
+                "the cover is larger than max_bytes; ask for more",
+            )),
+            Err(ReadError::Unavailable) => Err(tonic::Status::not_found(
+                "the cover is not on this device yet",
+            )),
+        }
+    }
+
+    async fn set_artwork(
+        &self,
+        entry_key: String,
+        expected_revision: u64,
+        image: Option<gamenode_platform::plugin_artwork::Prepared>,
+        guard: crate::plugin_host::library::CommitGuard,
+    ) -> Result<gamenode_core::library::ArtworkWrite, tonic::Status> {
+        use gamenode_core::library::ArtworkWrite;
+        use gamenode_platform::plugin_artwork;
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        let dir = engine.shared.ports.covers_dir.clone();
+        let name = image
+            .as_ref()
+            .map(|image| plugin_artwork::file_name(&entry_key, image));
+        let (done, written) = tokio::sync::oneshot::channel();
+        {
+            let (key, name) = (entry_key.clone(), name.clone());
+            // The storage worker runs jobs in order, so this write cannot overtake or be
+            // overtaken by other library writes; authorization is rechecked where it commits.
+            engine.shared.storage.submit(move || {
+                let result = guard().and_then(|()| {
+                    // The file goes first and the row second: a crash in between leaves a file
+                    // nothing refers to, never a row that points at nothing.
+                    let existed = match (&image, &name) {
+                        (Some(image), Some(name)) => {
+                            Some(plugin_artwork::store(&dir, name, image).map_err(|error| {
+                                tracing::warn!(%error, "could not store a plugin cover");
+                                tonic::Status::unavailable("could not store the cover")
+                            })?)
+                        }
+                        _ => None,
+                    };
+                    let outcome = store
+                        .save_artwork(&key, expected_revision, name.as_deref())
+                        .map_err(|error| {
+                            tracing::warn!(%error, "could not record a plugin cover");
+                            tonic::Status::unavailable("could not store the cover")
+                        });
+                    match &outcome {
+                        Ok(ArtworkWrite::Applied { replaced, .. }) => {
+                            if let Some(old) = replaced
+                                && Some(old) != name.as_ref()
+                            {
+                                plugin_artwork::remove(&dir, old);
+                            }
+                        }
+                        // The same file is the live one.
+                        Ok(ArtworkWrite::Unchanged { .. }) => {}
+                        // Nothing refers to the file just written, unless it was already there.
+                        Ok(ArtworkWrite::Conflict { .. }) | Err(_) => {
+                            if let (Some(false), Some(name)) = (existed, &name) {
+                                plugin_artwork::remove(&dir, name);
+                            }
+                        }
+                    }
+                    outcome
+                });
+                let _ = done.send(result);
+            });
+        }
+        let written = written
+            .await
+            .map_err(|_| tonic::Status::unavailable("the library is not available"))??;
+        if let ArtworkWrite::Applied { revision, .. } = &written {
+            engine.library_input(LibInput::ArtworkStored {
+                key: entry_key,
+                file: name,
+                revision: *revision,
+            });
+        }
+        Ok(written)
+    }
+
+    async fn launch_fingerprint(&self, entry_key: String) -> Result<u64, tonic::Status> {
+        use sha2::{Digest, Sha256};
+        let engine = self.engine()?;
+        let (entry, provider) = {
+            let state = engine.lock();
+            let entry = state
+                .library
+                .entry(&entry_key)
+                .cloned()
+                .ok_or_else(|| tonic::Status::not_found("library entry not found"))?;
+            let provider = state
+                .library
+                .provider(&entry.provider)
+                .cloned()
+                .ok_or_else(|| tonic::Status::not_found("library entry not found"))?;
+            (entry, provider)
+        };
+        let worker = engine.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut hash = Sha256::new();
+            let mut part = |bytes: &[u8]| {
+                hash.update((bytes.len() as u64).to_be_bytes());
+                hash.update(bytes);
+            };
+            if provider.is_manual_executable() {
+                let store = worker.shared.ports.local_games.as_ref().ok_or_else(|| {
+                    tonic::Status::unimplemented("starting games is not available")
+                })?;
+                let registrations = store
+                    .registrations()
+                    .map_err(|_| tonic::Status::unavailable("the library is not available"))?;
+                let registration = registrations
+                    .iter()
+                    .find(|r| r.key() == entry.key && !r.removed)
+                    .ok_or_else(|| {
+                        tonic::Status::failed_precondition("the game has no approved executable")
+                    })?;
+                part(b"manual");
+                part(registration.id.as_bytes());
+                part(registration.executable.as_bytes());
+                part(registration.working_directory.as_bytes());
+                for argument in &registration.arguments {
+                    part(argument.as_bytes());
+                }
+                part(&registration.revision.to_be_bytes());
+            } else {
+                match provider.launch_uri(&entry.record()) {
+                    Ok(uri) => {
+                        part(b"uri");
+                        part(uri.as_str().as_bytes());
+                    }
+                    Err(_) => part(b"none"),
+                }
+            }
+            let digest = hash.finalize();
+            Ok(u64::from_be_bytes(
+                digest[..8].try_into().expect("a digest has eight bytes"),
+            ))
+        })
+        .await
+        .map_err(|_| tonic::Status::unavailable("the library is not available"))?
+    }
+
+    async fn launch_target_revision(&self, entry_key: String) -> Result<u64, tonic::Status> {
+        let engine = self.engine()?;
+        let state = engine.lock();
+        let entry = state
+            .library
+            .entry(&entry_key)
+            .ok_or_else(|| tonic::Status::not_found("library entry not found"))?;
+        // Zero means the provider reports no detected executable/URI target. A runtime recipe is
+        // still a complete launch for a ROM store, so that is a revision, not an error.
+        Ok(entry.target.as_ref().map_or(0, |target| target.revision))
+    }
+
+    async fn open_entry(&self, entry_key: String, install: bool) -> Result<(), tonic::Status> {
+        use gamenode_core::library::LaunchError;
+        let engine = self.engine()?;
+        let (done, opened) = tokio::sync::oneshot::channel();
+        let kind = if install {
+            LaunchKind::Install
+        } else {
+            LaunchKind::Play
+        };
+        engine.open_entry_then(entry_key, kind, move |result| {
+            let _ = done.send(result);
+        });
+        match opened
+            .await
+            .map_err(|_| tonic::Status::unavailable("the library is not available"))?
+        {
+            Ok(()) => Ok(()),
+            Err(OpenError::Busy) => Err(tonic::Status::failed_precondition(
+                "the game is already running or being opened",
+            )),
+            Err(OpenError::NotFound) => Err(tonic::Status::not_found("library entry not found")),
+            Err(OpenError::Launch(LaunchError::Unsupported)) => Err(tonic::Status::unimplemented(
+                "this provider does not support that action",
+            )),
+            Err(OpenError::Launch(LaunchError::Incomplete)) => Err(
+                tonic::Status::failed_precondition("the game is missing data the provider needs"),
+            ),
+            Err(OpenError::Launch(LaunchError::RecipeNeedsAttention)) => {
+                Err(tonic::Status::failed_precondition(
+                    "the selected launch recipe needs attention; review it or use the detected default",
+                ))
+            }
+            Err(OpenError::Launch(LaunchError::NoHandler)) => Err(
+                tonic::Status::failed_precondition("the store application is not available"),
+            ),
+            Err(OpenError::Launch(LaunchError::Failed)) => {
+                Err(tonic::Status::unavailable("the link could not be opened"))
+            }
+        }
+    }
+
+    async fn set_display_name(
+        &self,
+        entry_key: String,
+        expected_revision: u64,
+        display_name: Option<String>,
+        guard: crate::plugin_host::library::CommitGuard,
+    ) -> Result<gamenode_core::library::DisplayWrite, tonic::Status> {
+        use gamenode_core::library::DisplayWrite;
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        let (done, written) = tokio::sync::oneshot::channel();
+        {
+            let (key, name) = (entry_key.clone(), display_name.clone());
+            // The storage worker runs jobs in order, so this write cannot overtake or be
+            // overtaken by other library writes; authorization is rechecked where it commits.
+            engine.shared.storage.submit(move || {
+                let result = guard().and_then(|()| {
+                    store
+                        .save_display_name(&key, expected_revision, name.as_deref())
+                        .map_err(|error| {
+                            tracing::warn!(%error, "could not store a display name");
+                            tonic::Status::unavailable("could not store the display name")
+                        })
+                });
+                let _ = done.send(result);
+            });
+        }
+        let written = written
+            .await
+            .map_err(|_| tonic::Status::unavailable("the library is not available"))??;
+        if let DisplayWrite::Applied { revision } = written {
+            engine.library_input(LibInput::DisplayNameStored {
+                key: entry_key,
+                display_name,
+                revision,
+            });
+        }
+        Ok(written)
+    }
+}

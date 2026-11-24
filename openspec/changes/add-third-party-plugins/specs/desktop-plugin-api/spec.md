@@ -1,0 +1,702 @@
+# Spec Delta
+
+## Purpose
+
+Expose a language-neutral, versioned and permission-scoped host API that independent plugins can implement without a mandatory SDK or internal Core dependency.
+
+## ADDED Requirements
+
+### Requirement: Host-issued user intent for standard launch and install
+The standard launch and install requests SHALL execute only with an explicit user intent held by the host. The plugin SHALL NOT be able to create or alter an intent. Intents SHALL be bound to the authenticated scope, expire and be single use. Missing intent SHALL require a cancellable job awaiting host confirmation. Remembered confirmation MAY replace the intent dialog only within its approved plugin/game scope and SHALL remain revocable.
+
+#### Scenario: Installation intent does not bypass review
+- **WHEN** a plugin presents a valid or remembered install intent
+- **THEN** Core still requires its separate installation preview, validations and explicit confirmation
+
+#### Scenario: Intent binding
+- **WHEN** Core issues an intent for standard launch or install
+- **THEN** it SHALL bind the intent to plugin identity and publisher, profile, game and installation, operation kind and, for launch, the detected-target revision
+
+#### Scenario: Request without intent
+- **WHEN** a plugin with game.launch requests a launch without a user intent id
+- **THEN** the request SHALL return a job that waits while the host asks the user; the user can approve or decline, the plugin can cancel, and nothing starts until the user approves
+
+#### Scenario: Reused or shifted intent
+- **WHEN** a plugin presents an intent that was already used, expired, or issued for another plugin, profile, game, operation or target revision
+- **THEN** the host refuses it without saying which condition failed and starts nothing
+
+#### Scenario: Another provider's game
+- **WHEN** a provider session or an extension session names a game that is neither its own entry nor its selected target
+- **THEN** the host denies the request even if the plugin can read the whole library; provider sessions SHALL name only their own entries and extension sessions only their user-selected target game
+
+#### Scenario: Remembered confirmation
+- **WHEN** the user allowed one plugin to launch one game and that game's detected target is unchanged
+- **THEN** the plugin's request for that game runs without a dialog, while another game, another operation or a changed target asks again; the user MAY revoke the remembered confirmation
+
+## MODIFIED Requirements
+
+### Requirement: Single SDK-independent wire contract
+Third-party clients SHALL be able to use the public protobuf contract and documented local transport directly. SDK clients and independent clients SHALL receive equivalent method availability, permission enforcement and results. No public service SHALL require a private SDK-only handshake.
+
+#### Scenario: Independent client connects
+- **WHEN** a compatible non-Rust client authenticates over the documented OS-local transport
+- **THEN** it can exchange provider commands/results and call authorized services without a Rust bridge or the GameNode SDK
+
+### Requirement: Existing provider operations remain available
+Authorized third-party providers SHALL have documented access to session opening, discovery, command/event exchange, context, account state, private secrets, constrained login, action declarations, catalog, counters and declarative settings. Each operation SHALL preserve existing validation and operation scoping.
+
+#### Scenario: Catalog through the event stream
+- **WHEN** a provider receives a catalog command and submits validated chunks plus completion
+- **THEN** the host reconciles only that provider's completed category and reports its outcome
+
+#### Scenario: Third-party login policy
+- **WHEN** an authorized plugin requests login
+- **THEN** the host enforces the approved HTTPS origins and cookie names and does not accept arbitrary privileged-page scripts from the plugin
+
+### Requirement: API and permission introspection
+Authenticated enabled plugins SHALL be able to query API versions, feature availability, limits, permission metadata and their own effective grants, and subscribe to permission changes. These control methods SHALL NOT require a user-granted library/data permission or reveal another plugin's private state.
+
+#### Scenario: No optional data grants
+- **WHEN** a plugin with no data grants requests its effective permissions
+- **THEN** it receives its own denied/unsupported/granted states and can explain disabled features
+
+### Requirement: Plugin-owned configuration lifecycle
+The public contract SHALL support user-initiated open/focus/close commands and correlated lifecycle results for a plugin-owned configuration window through optional ui.configure. Windows SHALL be scoped to the current plugin/session/profile, remain independent of the GameNode frontend and confer no additional data permissions.
+
+#### Scenario: Open and focus configuration
+- **WHEN** the user activates Configure twice for a plugin with an authorized external configuration mode
+- **THEN** the plugin opens one window and the second action focuses that window without duplicating it or blocking provider work
+
+#### Scenario: Window lifecycle loses scope
+- **WHEN** its profile changes or ui.configure is revoked
+- **THEN** the host requests closure and old window contexts cannot authorize new data operations
+
+#### Scenario: Configuration does not respond
+- **WHEN** the plugin does not acknowledge a configuration command within five seconds
+- **THEN** the host reports an actionable timeout and unrelated plugin/settings work continues
+
+### Requirement: Declarative configuration remains optional
+Plugins SHALL be able to declare external windows, declarative forms, both or neither. External configuration SHALL NOT require a JSON form contract or SDK. A declarative fallback SHALL be offered only when separately declared, supported and authorized; it SHALL preserve existing ui.settings behavior.
+
+#### Scenario: Independent client provides a custom UI
+- **WHEN** a direct gRPC client declares only external configuration
+- **THEN** it can configure its functionality without implementing a declarative settings form
+
+#### Scenario: Optional external UI is unavailable
+- **WHEN** external configuration is unsupported or denied but the plugin also declares an authorized declarative form
+- **THEN** the host offers that form without widening any grants
+
+
+### Requirement: Game and installation identity
+Library projections SHALL keep the optional matched GameNode game ID separate from the provider installation identity. `game_id` SHALL contain the GameNode ID when known and be empty otherwise. `installation_id` SHALL be an opaque, stable host-issued identifier for the provider installation, not a physical path. Multiple installations MAY refer to the same GameNode game.
+
+#### Scenario: Unmatched provider installation
+- **WHEN** a caller lists or gets an installation that has no GameNode match
+- **THEN** the host returns an empty `game_id` and a stable `installation_id` usable for permitted installation-scoped operations
+
+#### Scenario: Multiple installations of one game
+- **WHEN** two provider installations map to the same GameNode game
+- **THEN** each has a distinct `installation_id` and both report the same `game_id`
+
+#### Scenario: Match changes do not change installation identity
+- **WHEN** a provider installation is rescanned or its GameNode match changes
+- **THEN** its `installation_id` remains stable while `game_id` reflects the current match
+
+### Requirement: Scoped utility services
+The API SHALL provide namespaced storage get/put/delete, user-approved filesystem list/read/write/delete, constrained HTTPS fetch and attributed notifications. Services SHALL enforce documented quotas, root/origin scope, timeouts and data bounds. Filesystem roots SHALL be selected by the user and represented by opaque handles.
+
+#### Scenario: Filesystem escape
+- **WHEN** a requested relative path escapes its granted root through traversal, symlink or junction replacement
+- **THEN** the operation is refused before reading or changing the target
+
+#### Scenario: Declared folder suggestions grant nothing
+- **WHEN** a plugin declares default save or prefix folders in a file-access request
+- **THEN** the host shows them to the user only as folders declared by the plugin and not verified, checks only whether they exist, grants nothing until the user confirms a folder, records whether the chosen folder was one of them, and tells the plugin nothing about which exist or were taken
+
+#### Scenario: Declared folder suggestion cannot apply or is malformed
+- **WHEN** a suggestion uses a placeholder or path of another system, names a missing system folder or a private host folder, or is a relative path, contains `..`, uses an unknown placeholder, exceeds eight for its kind, or is for an installation
+- **THEN** a well-formed suggestion that cannot apply here is dropped without an error, and anything else is refused before the user is asked
+
+#### Scenario: Network redirect leaves granted origin
+- **WHEN** a request redirects to an unapproved origin or a private/local destination
+- **THEN** the host refuses the redirected request without forwarding credentials
+
+#### Scenario: Cover from an approved file handle
+- **WHEN** a plugin sets the cover of its own entry from a file handle
+- **THEN** the host requires `files.read` and a current approval of that same entry, reads the bytes itself under the same size bound, and decodes and stores its own re-encoded picture as for inline bytes
+
+#### Scenario: Cover reference that is not an approved handle
+- **WHEN** the reference is a path, a URL, a forged, expired or other-session handle, a revoked approval, another entry's folder, a directory or a file over the byte limit
+- **THEN** the host refuses it without changing any artwork or fetching anything
+
+#### Scenario: Notification text is untrusted
+- **WHEN** a plugin publishes a notification whose text contains markup, script, a link or control or disguising characters
+- **THEN** the host refuses control and disguising characters, and Core shows everything else as plain text attributed to the authenticated plugin, with no link, markup or action
+
+#### Scenario: Notification rate limit
+- **WHEN** a plugin publishes more notifications than its allowance in the window
+- **THEN** the host reports resource exhaustion with the time to wait, shows nothing more, and the call may be retried after the wait
+
+#### Scenario: Notification localization fallback
+- **WHEN** a notification carries translations and the user's language is not among them exactly
+- **THEN** Core shows the same language if it has one, otherwise the plugin's main text
+
+#### Scenario: Fetch from an origin the user did not approve
+- **WHEN** a plugin holding network.fetch requests a URL whose exact scheme, host and port are not an approved origin, or no origin is approved
+- **THEN** the host sends nothing, denies the request with an audited scope denial, and a revoked or narrowed approval also stops a fetch already running
+
+#### Scenario: Private or local destination
+- **WHEN** an approved origin's host name resolves to, or the URL names, a loopback, private, link-local or otherwise non-public address
+- **THEN** the host refuses before connecting, so no data from that address reaches the plugin and nothing is revealed about where the name resolved
+
+#### Scenario: Fetch bounds
+- **WHEN** a response exceeds the caller's byte budget (at most 8 MiB) or the fetch exceeds its deadline (at most 30 seconds, redirects and body included)
+- **THEN** the host reports resource exhaustion or deadline expiry without returning partial data
+
+#### Scenario: File access without a user-approved folder
+- **WHEN** a plugin holds a files grant but the user has not approved a folder for that plugin and installation, or the approval does not allow the operation
+- **THEN** no handle is issued or the operation is denied, and nothing is read, written or deleted
+
+#### Scenario: Sibling game and shared folder
+- **WHEN** a plugin approved for one game's folder tries to reach another game, or the folder is shared with other games
+- **THEN** only the approved folder is reachable, the user confirms the complete set of games sharing it, and the approval stops covering a changed set until it is approved again
+
+#### Scenario: Host persistence folders are never reachable
+- **WHEN** an approved parent folder contains GameNode's own data or plugin persistence folders
+- **THEN** they are not listed and nothing beneath them can be read, written or deleted, and such a folder cannot itself be approved
+
+#### Scenario: Link or junction replaced after approval
+- **WHEN** a folder inside the approved root is replaced by a symbolic link or junction after the plugin listed it
+- **THEN** the next operation is refused before reading or changing the target, and no path is revealed
+
+#### Scenario: Independent file mutation permissions
+- **WHEN** a plugin is approved to read and write but not to delete, or holds the write grant without the delete grant
+- **THEN** write succeeds and delete is denied
+
+#### Scenario: Storage quota exceeded
+- **WHEN** a plugin writes beyond its documented namespace quota
+- **THEN** the host reports resource exhaustion and preserves previously stored values
+
+#### Scenario: Durable storage write without storage.persist
+- **WHEN** a plugin without storage.persist puts a value with persistent durability
+- **THEN** the host denies it naming storage.persist, stores the value neither in memory nor on disk, and still accepts explicit session-only writes
+
+#### Scenario: Storage isolated by plugin and profile
+- **WHEN** different plugins, different publishers of one plugin id or different account profiles use the same storage key
+- **THEN** each reads, writes, deletes and is charged only in its own namespace, and no response exposes another namespace's keys, usage, revisions or a physical path
+
+#### Scenario: Session-only storage ends with the session
+- **WHEN** a plugin's last open session ends or the account profile changes
+- **THEN** its session-only values are gone while its persistent values remain available to the same plugin in the same profile
+
+#### Scenario: Obsolete storage revision
+- **WHEN** a plugin puts or deletes a key with a revision other than the key's current one
+- **THEN** the host reports the revision conflict with the current revision and changes nothing
+
+### Requirement: Host-owned execution and installation services
+The API SHALL expose game launch/install requests, backups list/create/restore, tools list/apply/remove and PC ports list/detail/install. These services SHALL reuse host-approved targets and domain workflows, require user intent for execution, preserve confirmations for filesystem changes, and explicitly report unsupported platforms.
+
+#### Scenario: Port install on Linux
+- **WHEN** a plugin requests a PC port install on a host where that operation is Windows-only
+- **THEN** it receives a feature-unavailable result and no job starts
+
+#### Scenario: Plugin supplies arbitrary installer
+- **WHEN** a plugin tries to replace a catalog install target with an arbitrary executable URL
+- **THEN** the host rejects the request before downloading or executing it
+
+### Requirement: Jobs and bounded asynchronous work
+Long-running requests SHALL return caller-owned job identifiers with get/watch/cancel and typed terminal outcomes. Mutation retries SHALL use idempotency keys. Work SHALL remain cancellable and bounded; blocking IO, hashing, decoding and computation SHALL execute away from the UI thread.
+
+#### Scenario: Retried install request
+- **WHEN** a client retries an accepted request with the same idempotency key
+- **THEN** the host returns the same operation rather than installing twice
+
+#### Scenario: Another plugin's job
+- **WHEN** a plugin requests another identity's job
+- **THEN** access is denied without exposing its private progress
+
+#### Scenario: Unknown, foreign or forgotten job
+- **WHEN** a plugin names a job id that is unknown, another plugin's, from an earlier profile or already forgotten
+- **THEN** every call answers with the same not-found result, so the id reveals nothing about jobs the caller does not own
+
+#### Scenario: Permission lost while a job runs
+- **WHEN** the plugin loses the permission of the operation that created a job, or its grants change, before the work commits
+- **THEN** get, watch and cancel are denied (an open watch ends with the denial) and the work commits no effect
+
+#### Scenario: Retry after the job was forgotten
+- **WHEN** a plugin retries with an idempotency key whose finished job is no longer kept
+- **THEN** the host refuses the retry instead of running the work a second time
+
+#### Scenario: Cancellation that the work cannot honor
+- **WHEN** a plugin cancels a job whose work cannot stop halfway
+- **THEN** the reply reports the state it is in and the job ends with what the work actually did, never with a cancellation that did not happen
+
+### Requirement: Explicit unavailable Core resources
+The public API SHALL NOT expose raw SQL, Core credentials, foreign plugin secrets, elevation, arbitrary shell commands, plugin administration or unrestricted frontend execution. Unknown RPCs SHALL fail as unimplemented; unsupported features SHALL NOT be represented as successful no-ops.
+
+#### Scenario: Arbitrary host command
+- **WHEN** a client attempts to invoke an internal Tauri command through the plugin API
+- **THEN** no generic dispatch route exists and the request fails
+
+### Requirement: Third-party version negotiation
+Third-party sessions SHALL negotiate the highest overlapping supported API minor within a compatible major, starting at API 1.6. Minors 1.1–1.5 are the official provider baseline and keep their single-minor handshake. Required unsupported features or no version overlap SHALL prevent provider work. Optional unsupported features SHALL produce explicit unavailable states permitting documented fallback.
+
+#### Scenario: Official single-minor client
+- **WHEN** an official provider opens a session with the single-minor handshake for any API minor from 1.1 through 1.5
+- **THEN** the host selects that minor with its existing grants and no third-party range feature is required or implied
+
+#### Scenario: Supported older client
+- **WHEN** an older third-party client offers a supported API minor without newer optional methods
+- **THEN** the host selects that minor and the client operates with only its negotiated features
+
+#### Scenario: Newer client with fallback
+- **WHEN** a newer client supports an older host minor and only optional features are missing
+- **THEN** the shared minor is selected and unavailable optional features remain disabled
+
+#### Scenario: Incompatible major
+- **WHEN** a package requires a major without a host compatibility adapter
+- **THEN** it remains installed but inactive with an actionable incompatibility reason
+
+### Requirement: Published compatibility window
+The host SHALL support third-party minors within the current major for at least twelve months after their successor release and retain at least the last two released minors. It SHALL publish release dates, support floor and deprecations. This retirement policy SHALL NOT remove existing official API 1.1–1.5 behavior.
+
+#### Scenario: Host upgrade retires a minor
+- **WHEN** an installed third-party package has no overlap with the published support window
+- **THEN** it is marked incompatible without deleting its data, weakening permission checks or preventing official providers from operating
+
+### Requirement: Detected URI and executable targets
+Provider discovery SHALL be able to submit typed URI or local executable targets for its own games. Executable targets SHALL include validated installation scope, arguments and working directory and require initial user approval. Registering a target SHALL NOT execute it. Existing official URI declarations SHALL retain their behavior.
+
+#### Scenario: Disc-installed game discovered
+- **WHEN** an authorized provider identifies a local game's executable and installation directory
+- **THEN** GameNode can validate and register that executable for Play after target approval without requiring a store URI
+
+### Requirement: Standard game launch permission
+The game.launch permission SHALL authorize launch through the game's current detected URI or executable with its stored parameters unchanged, regardless of detection source, within approved game scope. Calls SHALL bind to the expected target revision. The standard launch request SHALL carry no executable, URI, argument, working-directory or environment fields: parameter changes are possible only through game.custom_launch and an approved recipe.
+
+#### Scenario: Detected default target
+- **WHEN** a plugin with game.launch requests an approved game at its current target revision
+- **THEN** the host launches the detected URI or executable unchanged through its user-intent workflow
+
+#### Scenario: Attempted custom parameter under standard grant
+- **WHEN** a plugin with game.launch but without game.custom_launch requests a custom launch with arguments or environment values
+- **THEN** the host denies it explicitly, names the missing game.custom_launch permission and launches nothing
+
+#### Scenario: Fallback to the standard launch
+- **WHEN** a plugin whose custom launch was denied wants the game started anyway
+- **THEN** it must make its own standard launch request without parameters, and the host never turns the denied custom request into a standard launch by itself
+
+
+### Requirement: Custom game launch permission
+The independent game.custom_launch grant SHALL authorize plugin-owned per-game recipes and their approved execution, including alternate URI/executable, arguments, working directory, runtime wrappers and environment overrides. Recipes SHALL use typed target/resource handles and argument vectors rather than shell command strings. This grant SHALL NOT imply installation or normal-launch permission.
+
+#### Scenario: Runtime wrapper and environment
+- **WHEN** the user approves a recipe selecting an installed Proton runtime for an identified game executable with arguments and environment settings
+- **THEN** the host can execute that recipe with the approved runtime and values while preserving the game's identity
+
+#### Scenario: Environment is unsupported by target
+- **WHEN** a custom request requires environment changes through a URI handler that cannot guarantee them
+- **THEN** the host reports unsupported target semantics and does not silently launch without the requested changes
+
+### Requirement: Launch extensions across providers
+A plugin SHALL be able to operate as a launch extension without owning a game provider. User-approved target-game contexts SHALL permit standard/custom launching across official, third-party and manual sources. Such access SHALL NOT permit provider impersonation or mutation of another provider's metadata, credentials or discovery facts.
+
+#### Scenario: Extension customizes a Steam game
+- **WHEN** an approved extension proposes a custom launch recipe for a selected Steam game
+- **THEN** the host stores a plugin-owned launch overlay without modifying the official Steam plugin, launch manifest or account state
+
+#### Scenario: No full-library read grant
+- **WHEN** the user selects one game for a launch extension without library.read.all
+- **THEN** the extension receives only the approved target context and cannot enumerate other games
+
+### Requirement: Launch approval and revision validation
+Launch recipes SHALL bind approval to game/installation/profile, target and recipe revisions, executable/runtime resources and effective parameters. Unchanged approved recipes SHALL run through Play without a repeated confirmation. Plugin-initiated execution SHALL require a host-confirmed user intent. Paths, grants and approval SHALL be revalidated before spawn.
+
+#### Scenario: Repeated user launch
+- **WHEN** the user clicks Play with an unchanged approved selected recipe
+- **THEN** the host executes it without a second permission prompt and associates process tracking with the original game
+
+#### Scenario: Target or recipe changes
+- **WHEN** a selected runtime, executable, arguments, environment, working directory or base-target revision changes
+- **THEN** the affected recipe requires renewed approval before execution
+
+#### Scenario: Runtime disappears
+- **WHEN** the approved runtime or executable is missing or escapes its approved scope
+- **THEN** the host reports an actionable missing/invalid target and does not silently substitute another launch route
+
+#### Scenario: Plugin is revoked while game runs
+- **WHEN** the user revokes custom-launch permission after a game has started
+- **THEN** later recipe launches are denied and the running game is not killed solely by that revocation
+
+### Requirement: Operational data plane without mandatory Core consumers
+The host SHALL provide working publication, validation, authorized storage, query and inter-plugin subscription APIs for the defined data families. Collection, benchmark/SMART tools, hardware scans, performance capture and predictions SHALL remain plugin responsibilities. Core dashboards and online profile publication SHALL NOT be prerequisites for using these contracts.
+
+#### Scenario: Publish without a Core dashboard
+- **WHEN** a permitted plugin publishes a supported hardware, diagnostic or game-performance record
+- **THEN** the record is available to its authorized consumers even if Core has no presentation or prediction feature for it
+
+### Requirement: Multiple libraries and roots
+Libraries SHALL support create/update/remove, multiple approved roots, individual watch flags and list/get/watch. Existing monitored roots SHALL be preserved. Removing a library/root SHALL stop its monitoring without deleting game files, saves or history; overlapping/aliased roots SHALL not duplicate game observations.
+
+#### Scenario: Approving a plugin root also enables Core discovery
+- **WHEN** the user approves a new plugin/account library root after being informed of automatic executable discovery
+- **THEN** Core enables its existing platform-supported discovery for that root alongside plugin discovery; suggestions alone add no root and trigger no scan, and unsupported discovery is reported explicitly
+
+#### Scenario: Continuing monitoring is independent of CRUD grants
+- **WHEN** library CRUD grants are revoked after a root was explicitly approved and enabled
+- **THEN** public CRUD calls are independently denied while Core monitoring continues under the standing root approval for the active plugin/account, without requiring library.discovery
+
+#### Scenario: Approved monitoring resumes without CRUD access
+- **WHEN** the same plugin/account opens a new authenticated session with no library CRUD grants
+- **THEN** its approved enabled roots resume Core monitoring without a CRUD query, and an old session cannot acquire a new account epoch to resume another account's roots
+
+#### Scenario: Independent monitoring contributions
+- **WHEN** a plugin root is removed, disabled, its approval is revoked or it is fenced by an account/session change
+- **THEN** its monitoring contribution stops without deleting game files/history or disabling an overlapping existing global or independently enabled root
+
+#### Scenario: One volume is unavailable
+- **WHEN** one approved plugin root's volume is disconnected or replaced
+- **THEN** that root is unavailable and contributes no scan while healthy roots continue, and no empty/deleted reconciliation or replacement source directory is created
+
+#### Scenario: Several game folders
+- **WHEN** a plugin proposes a library with three user-approved directories
+- **THEN** each root can be monitored independently and an unavailable external root does not disable the others
+
+### Requirement: Save profile configuration
+The API SHALL support save-profile CRUD for approved games with scoped files/directories, include/exclude rules and save-context identity. Independent operation grants SHALL cover own records or published foreign records in authorized category/record scopes. Scope changes SHALL require host review, preserve history and invalidate obsolete jobs. Configuration SHALL NOT authorize file reads or restore.
+
+#### Scenario: Emulator save context
+- **WHEN** a plugin proposes save files for one emulated game and emulator user
+- **THEN** the user reviews the actual locations before activation and unrelated profiles/history remain unchanged
+
+#### Scenario: Separate emulator save directories
+- **WHEN** two plugins declare different approved save directories and naming rules for the same ROM
+- **THEN** both profiles remain associated with the same game and their runtime contexts without assuming either directory is beside the ROM
+
+#### Scenario: Folders outside the approvals
+- **WHEN** a plugin creates a profile naming a folder that was not approved for that plugin and game entry, or whose approval was revoked
+- **THEN** the host refuses it and keeps nothing, and a profile whose approval is later revoked keeps its rules but gives the folder no handle
+
+#### Scenario: Distinct runtimes for one game
+- **WHEN** a plugin creates two profiles for one game entry with different runtime ids and save folders
+- **THEN** both exist independently with their own revisions, and the same name for one entry is refused
+
+#### Scenario: Removing a profile
+- **WHEN** a plugin removes a profile
+- **THEN** only the configuration is deleted; no file in the folders and no backup archive is touched, and a profile created afterwards never reuses a revision
+
+#### Scenario: Another plugin's profile
+- **WHEN** a plugin without an explicit grant for a profile another plugin created asks for it, and again with a grant for one operation
+- **THEN** it is not found without the grant, and with it only that operation succeeds, naming the creator, with no folder handles and with the creator's folders unchangeable
+
+### Requirement: Runtime save descriptors preserve optional compatibility
+Save contracts SHALL support optional versioned descriptors for artifact kind, format/version, content binding, naming and runtime compatibility with attributed evidence. Unknown metadata SHALL remain unknown. Format declarations SHALL NOT authorize conversion or execution. Rich save browsing, platform parsers and converters SHALL remain future capabilities rather than required Core implementations in this delivery.
+
+#### Scenario: Different save artifact kinds
+- **WHEN** a plugin describes an in-game save and a save state for the same content
+- **THEN** their formats and runtime/version compatibility remain distinct; extension or byte size alone does not establish interchangeability
+
+#### Scenario: Future conversion workflow
+- **WHEN** a future negotiated plugin capability proposes converting a save for another runtime
+- **THEN** it requires approved input/output scopes, explicit review, backup of originals, result validation and preserved provenance; descriptive metadata alone cannot trigger it
+
+#### Scenario: Future per-runtime selection
+- **WHEN** a future supported selector associates a compatible discovered save with a game/runtime
+- **THEN** loading follows declared runtime capabilities and required import/naming steps, with no silent copy, rename, overwrite or assumption that every runtime supports arbitrary save selection
+
+### Requirement: Common scoped location inspection
+Installation, save and runtime locations SHALL expose size, access, modification dates, fingerprint/comparison and availability through approved resource handles. Metadata SHALL distinguish read-only attributes from effective read/write/create/delete access and unknown states. Inspection SHALL NOT change files or grant writes.
+
+#### Scenario: Directory read-only attribute is insufficient
+- **WHEN** the OS cannot establish effective write permission without modifying a resource
+- **THEN** the API returns unknown with its observation method rather than declaring write access from the attribute alone
+
+#### Scenario: Inspection without file permission
+- **WHEN** a plugin without files.read but with the inspection permission and a standing approval asks for a place's size or times
+- **THEN** it receives metadata only and still cannot list or read the files
+
+#### Scenario: Place that cannot be inspected
+- **WHEN** an approved folder is missing, moved or unreadable
+- **THEN** the result reports its availability with no totals and incomplete, never an empty folder, and nothing is created in its place
+
+#### Scenario: Overlapping folders of a profile
+- **WHEN** a save profile has a folder and another folder inside it
+- **THEN** a file reachable through both is counted once, and only files its naming rules select count
+
+### Requirement: Fresh bounded content fingerprints
+Fingerprint inspection SHALL support SHA-256 per file and a versioned deterministic tree digest. Fresh comparisons SHALL read content and distinguish changed/unchanged/indeterminate/incomparable, including file additions/deletions. Partial, unstable or unavailable reads SHALL NOT report a complete unchanged result. Large scans SHALL be cancellable background jobs.
+
+#### Scenario: Same metadata different bytes
+- **WHEN** a file changes while preserving its size and modification time
+- **THEN** fresh hashing detects the content difference rather than reusing metadata as proof of equality
+
+#### Scenario: Concurrent save write
+- **WHEN** a file changes during hashing or part of the set cannot be read
+- **THEN** the result identifies incomplete/unstable observations and does not certify an unchanged save set
+
+### Requirement: Storage characteristics and mount availability
+Location inspection SHALL separate availability, local/network, internal/external/removable, interface and media characteristics, with evidence and unknown states. Availability watches SHALL notify Core and authorized plugins. Disconnected volumes SHALL preserve registrations/history; a different device at the same mount point SHALL not inherit scope approval.
+
+#### Scenario: External USB HDD
+- **WHEN** a location is on an identified external USB hard disk
+- **THEN** the result can express external, USB and HDD simultaneously
+
+#### Scenario: Mount disappears
+- **WHEN** a monitored save or installation volume disconnects
+- **THEN** affected work pauses and records become unavailable rather than being reconciled as empty, deleted or uninstalled
+
+### Requirement: Plugin storage diagnostic publication
+Plugins SHALL be able to publish attributed benchmark and SMART reports with device context, tool/version, timestamps, units, test conditions and unavailable/error states. Core SHALL validate and relay these reports without running the diagnostic tools or certifying their findings. Publishing SHALL NOT authorize benchmark writes.
+
+#### Scenario: Third-party SMART collector
+- **WHEN** an authorized plugin submits health observations or an access-denied result
+- **THEN** the API retains source attribution and makes the approved report available without querying SMART itself
+
+### Requirement: Hardware observation publication
+The API SHALL receive versioned plugin-collected CPU/GPU/memory/OS/driver observations with computer context, source and unknown states. Standard records SHALL omit unique hardware identifiers. Hardware data SHALL be available only under explicit resource/field sharing policy and SHALL not imply a Core performance prediction.
+
+#### Scenario: Prediction by another plugin
+- **WHEN** the user authorizes a predictor to read selected hardware and performance fields
+- **THEN** that plugin can consume those fields while unrelated identifiers and other datasets remain withheld
+
+### Requirement: In-game presence publication
+Plugins SHALL be able to publish/clear bounded game-session status fields such as mode, map, character and level. Records SHALL retain source, sequence, time and expiry and become stale on timeout/disconnect. Receiving presence SHALL NOT automatically publish it to profiles/friends or treat it as authoritative process/backup state.
+
+#### Scenario: Ranked game details
+- **WHEN** an authorized producer reports ranked mode, character and level for a game session
+- **THEN** a separately authorized plugin can subscribe to the selected fields until their TTL expires
+
+### Requirement: Game performance observations and history
+The API SHALL accept bounded timestamped FPS, CPU and RAM batches with original game/session/computer identity, source, units, sampling windows and normalization. It SHALL preserve gaps and distinguish measured values from estimates. Historical query/aggregation SHALL require retained samples and current data-sharing authorization.
+
+#### Scenario: Performance history
+- **WHEN** the producer is granted persistence and publishes a measured gameplay series
+- **THEN** authorized consumers can query retained intervals with source and coverage information
+
+#### Scenario: Missing sample
+- **WHEN** a sample is dropped or arrives out of order
+- **THEN** the API records the gap/sequence condition without fabricating zero FPS
+
+### Requirement: Paired inter-plugin dataset access
+Common-data families SHALL expose projected get/list/watch. Requests SHALL list the common categories to include; an omitted or empty list SHALL exclude common records. Every listed category SHALL require a current user grant. Sensitive/custom datasets SHALL require separate sharing review. Secrets and administrative commands SHALL remain unavailable through common-data permissions.
+
+#### Scenario: Consumer queries another publisher
+- **WHEN** a plugin with the shared performance-history read permission explicitly requests common records from another publisher
+- **THEN** the host returns the authorized category projection over authenticated API transport without requiring pairwise approval or a public broadcast endpoint
+
+#### Scenario: Query defaults to private data
+- **WHEN** a plugin issues a query without selecting common records
+- **THEN** the host excludes other plugins' common records while leaving the caller's private data and normal query result available
+
+#### Scenario: Common data permission is absent
+- **WHEN** a plugin explicitly requests common records without the applicable user grant
+- **THEN** the host denies that common-data query and does not alter or disclose the caller's private data
+
+### Requirement: Host-assigned data provenance
+Shared records SHALL carry host-assigned producer identity, declared developer, origin, publisher fingerprint, installed version/package digest, schema, resource and observation/receipt times. A producer SHALL NOT forge another source. Derived records SHALL retain origin lineage and SHALL NOT expose fields outside the applicable category projection when republished.
+
+#### Scenario: Forged producer version
+- **WHEN** a plugin submits another producer name/version in provenance fields
+- **THEN** the host rejects or replaces the claim with authenticated provenance rather than attributing it to the other plugin
+
+### Requirement: Explicit persistence durability
+Durable publication, received-data copies and private writes SHALL require storage.persist independently of category read permissions. Calls SHALL specify session-only or persistent durability and receive the actual mode/expiry. A denied persistent request SHALL fail explicitly rather than silently losing durability.
+
+#### Scenario: Persist received performance samples
+- **WHEN** a consumer has data access but lacks storage.persist
+- **THEN** its persistent-copy request is denied and session-only consumption remains separately available
+
+#### Scenario: Revoke access after a copy was retained
+- **WHEN** the user revokes a category read permission after a consumer has durably retained an authorized copy
+- **THEN** future source queries are denied, the retained copy follows its separately authorized retention policy, and the UI explains that already delivered data cannot be recalled automatically
+
+### Requirement: API-only isolated persistence
+Plugins SHALL address managed persistence exclusively by their own logical identifiers through the API. No plugin-facing response, error, event or selector SHALL expose or accept physical persistence paths. Authentication SHALL determine namespace ownership; cleanup and policy calls SHALL never address another namespace, including through generic Files APIs.
+
+#### Scenario: Foreign entry id
+- **WHEN** a plugin supplies another namespace entry/cursor or a traversal-like selector to deletion
+- **THEN** the API refuses the request and changes no data outside the authenticated owner namespace
+
+### Requirement: Own persistence cleanup and retention
+storage.persist SHALL permit a plugin to configure automatic retention and request deletion/clear of its own managed data within user limits. Cleanup SHALL preserve protected records, report reclaimed bytes and coordinate with active jobs. Global cleanup and revealing physical storage locations SHALL be host user administration actions only.
+
+#### Scenario: Own cleanup policy
+- **WHEN** a permitted plugin requests pruning its unprotected performance samples older than its approved retention limit
+- **THEN** the host removes only eligible entries in that plugin namespace and reports the result without disclosing physical paths
+
+### Requirement: Shared domain catalog lookup
+A plugin SHALL be able to register an owned common-data domain resource and another plugin SHALL discover it through domain get/list/watch methods under a user-granted category read permission and its declared resource scope. Such lookup SHALL NOT require Data APIs or a second source-to-recipient agreement. Sensitive/custom projections SHALL retain explicit sharing review; read access SHALL not confer mutation or access to excluded private/secret fields.
+
+#### Scenario: A registers B reads
+- **WHEN** A registers a runtime and the user grants B the applicable runtime category read permission
+- **THEN** B finds the resource through Runtimes.List/Get/Watch with A provenance and cannot update it
+
+#### Scenario: Emulator discovers same-console ROM availability
+- **WHEN** an emulator plugin with the common content-catalog permission requests that category through Library.List/Get/Watch for its console
+- **THEN** it receives the authorized ROM/content identities and the runtimes that report them available, including other publishers, without receiving ROM bytes or filesystem paths
+
+### Requirement: Typed authority and operation fields
+Every RPC SHALL keep identity, provenance, permissions, scopes, handles, executable targets, arguments, paths, quotas, revisions, filters, outcomes and standard metric semantics in typed validated fields. A Struct or opaque payload SHALL NOT override these values, introduce a host operation or grant new authority.
+
+#### Scenario: Executable hidden in metadata
+- **WHEN** a runtime metadata extension contains an executable path or grant-like key
+- **THEN** Core does not use it as an executable target or permission and launches only through approved typed fields
+
+### Requirement: Versioned namespaced resource extensions
+Designated resources/reports SHALL support typed stable fields plus namespaced versioned Struct metadata. Extension envelopes SHALL identify schema and version and retain authenticated provenance. Core SHALL validate structure and bounds without requiring a Core-specific field for each plugin annotation or interpreting unknown metadata as behavior.
+
+#### Scenario: Custom runtime annotations
+- **WHEN** A registers a declared runtime extension understood by B but not semantically modeled by Core
+- **THEN** authorized B can read it through the regular runtime API without changing the GameNode protobuf schema
+
+### Requirement: Opaque content inside typed envelopes
+Files, images, HTTP bodies, private storage and secret contents SHALL use bounded byte payloads with typed context/metadata. Core SHALL NOT deserialize arbitrary blobs into commands or generic permissions. Generic custom datasets SHALL use a typed dataset/schema/resource envelope with a declared Struct payload.
+
+#### Scenario: Custom dataset is not runtime registration
+- **WHEN** a client publishes custom JSON describing a runtime through Data.Publish
+- **THEN** the data can be retained within its authorized custom dataset but cannot register a runtime or bypass Runtimes validation
+
+### Requirement: Bounded declared extension schemas
+Extension schemas SHALL be versioned declarative package assets with field classification and no executable hooks or external schema retrieval. The host SHALL enforce size/depth/key limits and schema shape. Unsupported optional metadata SHALL not invalidate usable base fields or acquire visibility by default.
+
+#### Scenario: Unknown optional namespace
+- **WHEN** a reader does not support an optional metadata namespace on an approved resource
+- **THEN** it can use the typed base while the unknown namespace remains unexecuted and subject to its own projection
+
+### Requirement: Revision-safe extension patches
+Resource updates SHALL require expected revisions and explicit field/namespace patches within creator scope or an explicit delegated domain-write grant. Unselected or unsupported extension namespaces SHALL be retained. Stale updates, unauthorized namespace changes and creator-provenance forgery SHALL fail without overwriting existing data.
+
+#### Scenario: Older writer preserves unfamiliar metadata
+- **WHEN** an authorized older client patches one typed field without selecting an extension namespace
+- **THEN** the host preserves that extension instead of deleting it through full-object replacement
+
+### Requirement: Endpoint field-policy coverage
+Every public RPC and stream operation SHALL document which fields are typed, opaque or extension-bearing and its catalog/private/sensitive access model. SDK and direct gRPC clients SHALL observe equivalent validation, unknown-extension behavior and compatibility. Existing official API contracts SHALL remain compatible.
+
+#### Scenario: New RPC without classification
+- **WHEN** a proposed method lacks an operation/schema/access classification
+- **THEN** contract conformance rejects its publication until that policy is specified
+
+### Requirement: Immutable host launch plans
+Customized execution SHALL resolve to a typed immutable host launch plan covering game/profile, source/version, effective executable/URI, runtime/mod components, argv, cwd, environment and current approval/resource revisions. Approval SHALL reference that exact plan. Dispatch SHALL revalidate it and refuse changed/replayed/expired plans rather than accept substituted execution fields.
+
+#### Scenario: Plan substitution
+- **WHEN** a plugin obtains approval for one plan and submits different execution parameters
+- **THEN** the host refuses dispatch under the old approval
+
+#### Scenario: Resource changes before dispatch
+- **WHEN** a reviewed executable/runtime/mod component or grant changes before execution
+- **THEN** the old approval is invalidated and the host requests a fresh review or reports an actionable error
+
+### Requirement: Uniform execution customization consent
+The same typed launch-plan approval contract SHALL cover runtime/emulator, mod-loader/layer and custom target/parameter changes mediated by GameNode. Native programs SHALL not be certified safe by approval. Launch approval SHALL not authorize mod installation, game-file mutation or otherwise forbidden API behavior.
+
+#### Scenario: Both client implementations
+- **WHEN** SDK and direct gRPC clients propose equivalent modded/runtime custom launches
+- **THEN** both use the same host plan, user intent and refusal semantics rather than their own confirmation UI
+
+### Requirement: Common runtime content-session contract
+The API SHALL accept negotiated typed runtime-session observations under default-deny game.sessions.report scoped to approved games and runtime instances. Events SHALL carry content, instance, session correlation, sequence, time and lifecycle state with explicit acceptance or refusal. Plugin adapters SHALL own runtime-specific detection; a plugin SHALL be allowed to support several runtimes. Descriptive presence SHALL NOT establish gameplay sessions.
+
+#### Scenario: Several emulator adapters in one plugin
+- **WHEN** an authorized plugin supports several emulators using different observation mechanisms
+- **THEN** each adapter reports through the same session contract without emulator-specific detection logic in Core
+
+#### Scenario: Unapproved game
+- **WHEN** a plugin reports gameplay for a game outside its approved reporting scope
+- **THEN** the host explicitly refuses the observation without changing accounting
+
+#### Scenario: Shared session observations
+- **WHEN** another plugin queries runtime-session observations through Data.Get/List/Watch
+- **THEN** only its explicitly consented sensitive-data projection is returned without process handles, credentials or launch tokens
+
+### Requirement: Consistent public pool authorization
+Domain APIs and Data projections SHALL enforce identical publication, operation and scope grants. Query selectors SHALL list categories/record ids, default to private/own records, and SHALL NOT grant access; selected-record reads need no category grant. Create/update/delete require separate grants. Shared mutations check revisions and preserve creator/actor provenance. Public-record deletion is distinct from `storage.persist` cleanup of the caller's private namespace.
+
+#### Scenario: Alternate route cannot widen a grant
+- **WHEN** a plugin authorized to update one public record submits a mutation through another API alias
+- **THEN** the same selected-record scope and revision checks apply, and other records remain protected
+
+#### Scenario: Selected read does not require category access
+- **WHEN** a plugin has read permission for one published record but lacks the category-wide read grant
+- **THEN** a query selecting that record returns only that record and does not expose other records in its category
+
+#### Scenario: Public deletion does not expand private cleanup
+- **WHEN** a plugin has delete permission for one published record and storage.persist for its own namespace
+- **THEN** it can delete that authorized record and clean its own persisted entries, but cannot delete another plugin's private data
+
+
+### Requirement: Library and presentation services
+The API SHALL provide paginated library list/get/watch, display-metadata updates, favorites list/set, matching search/assignment and artwork read/set. Writes SHALL be limited to caller-owned provider entries and validated through Core rules. Whole-library reads SHALL require a separate grant and omit credentials and raw private snapshots.
+
+#### Scenario: Read another provider
+- **WHEN** a plugin has library.read but lacks library.read.all and requests another provider's entries
+- **THEN** those records are not disclosed
+
+#### Scenario: Stale page cursor
+- **WHEN** a list cursor is stale or no longer matches its original query scope
+- **THEN** the host rejects the page request without returning entries and the caller must restart the list
+
+#### Scenario: Plugin-initiated resource call
+- **WHEN** a plugin calls a library service
+- **THEN** the call carries the host-issued resource context from its API 1.6 session, which is checked against the session, active profile and grants and confers no authority of its own
+
+#### Scenario: Watch after a grant change
+- **WHEN** a plugin's permissions change while it watches the library
+- **THEN** the host ends the watch with the denial instead of delivering further events
+
+#### Scenario: Watch position no longer retained
+- **WHEN** a plugin resumes a watch from a revision older than the retained history
+- **THEN** the host rejects it and the caller must list again
+
+#### Scenario: Metadata revision conflict
+- **WHEN** a plugin updates metadata using an obsolete revision
+- **THEN** the host reports a conflict without overwriting the newer value
+
+#### Scenario: Foreign-provider metadata mutation
+- **WHEN** a plugin updates the display metadata of an installation owned by another provider, even if it holds library.read.all
+- **THEN** the host reports the entry as not found and changes nothing
+
+#### Scenario: Idempotent retry
+- **WHEN** a plugin retries a metadata or favorite mutation with the same idempotency key and the same request
+- **THEN** the host returns the original committed outcome, and a different request under that key is refused
+
+#### Scenario: Favorite of an unmatched game
+- **WHEN** a plugin sets the favorite of a GameNode game that none of its own entries is currently matched to
+- **THEN** the host rejects it as not found and changes no favorite
+
+#### Scenario: Catalog unavailable during search
+- **WHEN** a plugin searches the GameNode catalog without a verified online session, or GameNode cannot answer
+- **THEN** the host reports the catalog as unavailable rather than returning an empty result, and the library and the user's match dialog are unchanged
+
+#### Scenario: Assigning a game nobody offered
+- **WHEN** a plugin assigns an own entry to a GameNode game the host does not know and no plugin search returned
+- **THEN** the host reports the game as not found and changes no match
+
+#### Scenario: Match revision conflict
+- **WHEN** a plugin assigns a match using an obsolete entry revision
+- **THEN** the host reports a conflict with the current revision and stores nothing
+
+#### Scenario: Foreign-provider match assignment
+- **WHEN** a plugin assigns the installation of another provider, even if it holds library.read.all
+- **THEN** the host reports the entry as not found and changes no match
+
+#### Scenario: The user's match choice is protected
+- **WHEN** a plugin assigns an entry whose match the user chose in the match dialog to a different game
+- **THEN** the host refuses the assignment and the user's choice stays, while a plugin's own earlier choice can still be replaced
+
+#### Scenario: Cover set for an own entry
+- **WHEN** a plugin sets a valid image as the cover of one of its own entries
+- **THEN** the host decodes, shrinks and re-encodes it on a worker, shows it as that entry's cover, leaves the matched game's cover and every other entry unchanged, and an empty image restores the game's cover
+
+#### Scenario: Unsafe image refused
+- **WHEN** a plugin sets an image that is not a static PNG, JPEG or WebP, whose declared type does not match its bytes, that is damaged, that exceeds the byte or pixel limits, or whose entry it does not own
+- **THEN** the host refuses it, decodes nothing for a foreign entry, stores nothing and leaves the library artwork unchanged
+
+#### Scenario: Cover revision conflict
+- **WHEN** a plugin sets a cover using an obsolete artwork revision
+- **THEN** the host reports a conflict with the current revision and stores nothing
+
+#### Scenario: Cover read stays on the device
+- **WHEN** a plugin reads the cover of one of its own entries
+- **THEN** the host returns the cover the entry shows within the plugin's byte budget, reports an over-budget image as exhausted instead of truncating it, and downloads nothing

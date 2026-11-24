@@ -7,18 +7,26 @@ Describe each game source (a store, a launcher or manual adds) as a provider man
 ## Requirements
 
 ### Requirement: Bundled provider manifests
-The application SHALL embed the TOML provider manifests from the repository's `providers/` directory at build time. It SHALL load a manifest only on the platforms it lists. It SHALL NOT read manifests from user-writable locations.
+The application SHALL embed trusted bundled TOML provider manifests at build time and load them only on declared platforms. Plugin-backed manifests SHALL identify the packaged plugin and its supported operations. Bundled identities SHALL NOT be loaded or overridden from user-writable locations. Separate third-party identities SHALL load only from validated, installed, enabled and compatible managed packages.
 
 #### Scenario: Steam manifest on a supported platform
-- **WHEN** the application starts on Windows or Linux
-- **THEN** the bundled Steam provider is available without any file outside the application binary
+- **WHEN** the packaged application starts on Windows or Linux
+- **THEN** the bundled Steam provider and its compatible external plugin are available without manual plugin installation
 
 #### Scenario: Manifest for another platform
 - **WHEN** a bundled manifest does not list the current platform
 - **THEN** that provider is not loaded and not shown as a filter
 
+#### Scenario: Declared plugin is missing
+- **WHEN** the Steam plugin executable is absent or incompatible
+- **THEN** the desktop reports its unavailability, preserves cached data and does not run an in-process Steam substitute
+
+#### Scenario: Third-party package registers a distinct provider
+- **WHEN** an enabled managed package contains a validated provider manifest with an unreserved unique identity
+- **THEN** the host registers that provider through the third-party registry without replacing bundled manifest data
+
 ### Requirement: Manifest validation isolates failures
-The application SHALL validate every manifest when it loads. Validation SHALL reject unknown fields, missing required fields, an unknown native scanner, an unknown catalog backend, an unknown playtime counter, a duplicate provider id, malformed placeholders, and invalid action declarations. Executable launch SHALL be restricted to the bundled manual provider; other providers SHALL retain declared URI actions. An invalid manifest SHALL be skipped and logged, and the other manifests SHALL still load.
+The application SHALL validate every manifest when it loads. Validation SHALL reject unknown fields, missing required fields, an unknown native scanner, an unknown catalog backend, an unknown playtime counter, a duplicate provider id, malformed placeholders, and invalid action declarations. Registered plugin operations SHALL be valid scanner, catalog and counter backends only within their approved descriptor. Executable launch SHALL be restricted to the bundled manual provider or an explicitly approved managed game target; unapproved providers SHALL retain declared URI actions. An invalid manifest SHALL be skipped and logged, and the other manifests SHALL still load.
 
 #### Scenario: One manifest is invalid
 - **WHEN** one bundled manifest fails validation
@@ -30,16 +38,24 @@ The application SHALL validate every manifest when it loads. Validation SHALL re
 - **THEN** that manifest is rejected and no scan runs for it
 
 #### Scenario: Unknown catalog backend
-- **WHEN** a manifest names a catalog backend the application does not have
-- **THEN** that manifest is rejected with a diagnostic naming the backend and no catalog sync runs for it
+- **WHEN** a manifest names a catalog backend that is neither available natively nor authorized through its registered plugin
+- **THEN** that manifest is rejected with a diagnostic naming the backend and other providers remain usable
 
 #### Scenario: Unknown playtime counter
 - **WHEN** a manifest names a playtime counter the application does not have
 - **THEN** that manifest is rejected with a diagnostic naming the counter
 
 #### Scenario: Undeclared executable action
-- **WHEN** a non-manual provider declares an executable action
+- **WHEN** a non-manual provider declares an executable action without an approved managed target
 - **THEN** it is rejected and no executable can be launched through that declaration
+
+#### Scenario: Valid plugin backend
+- **WHEN** a manifest selects a scanner, catalog or counter capability from its registered plugin descriptor
+- **THEN** the host accepts that operation without requiring a Steam-specific native backend
+
+#### Scenario: Plugin capability exceeds its descriptor
+- **WHEN** the manifest requests an operation or permission not approved for that plugin
+- **THEN** the host rejects it and other valid providers remain usable
 
 ### Requirement: Scanners return plain records
 Each scan SHALL produce records with a provider-local `id`, an optional `name`, an `install_dir`, and further named text fields. Native and generic scanners SHALL produce the same record shape, so the runtime treats them alike. A record without a usable `id` or `install_dir` SHALL be dropped and logged.
@@ -67,8 +83,8 @@ The runtime SHALL fill a manifest's `{placeholder}` values from the record's fie
 - **WHEN** a template refers to a field that the record does not have
 - **THEN** the action is unavailable for that game and nothing is opened
 
-### Requirement: Launch and install are restricted to declared URIs
-URI Play and Install SHALL open only a filled URI whose scheme is the scheme of the manifest's own template, passed as one argument without a shell. The bundled manual provider SHALL additionally permit Play through a user-approved executable inside its registered game folder, with a stored argument list and working directory. Manual entries SHALL have no Install action. Executable targets SHALL be revalidated before each launch.
+### Requirement: Approved URI and executable game launch
+URI Play and Install SHALL open only a filled URI whose scheme is the scheme of the manifest's own template, passed as one argument without a shell. The bundled manual provider and approved managed game targets SHALL additionally permit Play through a user-approved executable inside its registered game folder, with a stored argument list and working directory. Explicitly approved custom recipes SHALL also permit alternate targets and runtime wrappers in their separately approved resource scopes. Manual entries SHALL have no Install action. Executable targets and custom recipes SHALL be revalidated before each launch; custom overlays SHALL preserve original provider data and game identity.
 
 #### Scenario: Play a Steam game
 - **WHEN** the user plays a detected Steam game
@@ -121,7 +137,7 @@ The Steam scanner SHALL read every library folder that `libraryfolders.vdf` list
 - **THEN** they are not shown as games
 
 ### Requirement: Manifest playtime counter
-A manifest MAY declare `playtime = { counter = "<name>" }`, naming a store counter built into the application. With Store selected, a provider with a counter SHALL use that counter. With Internal selected, or without a supported counter, it SHALL use measured sessions. A counter that cannot read a game's total SHALL leave that game's total unchanged, not set it to zero.
+A manifest SHALL be allowed to declare a registered native or plugin store counter. With Store selected, a provider with a counter SHALL use that counter. With Internal selected, or without a supported counter, it SHALL use measured sessions. A counter that cannot read a game's total SHALL leave that game's total unchanged, not set it to zero.
 
 #### Scenario: Provider without a counter
 - **WHEN** a manifest has no `playtime` field
@@ -131,8 +147,12 @@ A manifest MAY declare `playtime = { counter = "<name>" }`, naming a store count
 - **WHEN** the counter's file is missing, unreadable or has no entry for a game
 - **THEN** no total is submitted for that game and the failure is logged without file contents
 
+#### Scenario: Plugin counter fails
+- **WHEN** a plugin counter cannot complete an authorized request
+- **THEN** prior totals remain and no fabricated zero or duplicate internal session is created
+
 ### Requirement: Steam playtime counter
-When the Steam manifest declares the `steam` counter, the application SHALL read each Steam account's per-game total and last-played time from that account's `localconfig.vdf` under every scanned Steam root. A game's total SHALL come from the Steam account that played it most recently. Fields SHALL follow `docs/steam-playtime-counter.md`: Playtime minutes converted to seconds and LastPlayed Unix seconds.
+The Steam plugin SHALL read each Steam account's per-game total and last-played time from that account's `localconfig.vdf` under every discovered Steam root when its counter is requested. A game's total SHALL come from the Steam account that played it most recently. Fields SHALL follow `docs/steam-playtime-counter.md`: Playtime minutes converted to seconds and LastPlayed Unix seconds. Core SHALL retain attribution and submission policy.
 
 #### Scenario: One Steam account
 - **WHEN** one Steam account on the PC has 754 minutes recorded for app `620`
@@ -158,10 +178,10 @@ Windows SHALL include a bundled manual provider whose scan reads approved local 
 - **THEN** the provider id, installation id and `manual` playtime source stay unchanged
 
 ### Requirement: Steam catalog capability
-A manifest MAY declare `catalog = { native = "<name>" }`. Only catalog backends built into the application are valid. A provider without a catalog has no account connection or owned-library import. Catalog records SHALL carry a provider-local id and a non-empty name and MAY be marked family-shared; the manifest's `exclude_ids` SHALL apply to them.
+A manifest SHALL be allowed to declare a registered native or plugin catalog backend. A provider without a catalog SHALL have no account connection or owned-library import. Catalog records SHALL carry a provider-local id and a non-empty name and SHALL support a family-shared category; the manifest's `exclude_ids` SHALL apply to them. Steam SHALL use its plugin catalog on Linux and Windows.
 
 #### Scenario: Steam manifest declares a catalog
-- **WHEN** the bundled Steam manifest declares the Steam catalog backend
+- **WHEN** the bundled Steam manifest declares the Steam plugin catalog backend
 - **THEN** Steam can list owned and family-shared games in addition to installed games
 
 #### Scenario: Empty catalog record
@@ -277,3 +297,147 @@ A catalog sync SHALL be requested for every scan of a provider with a catalog an
 #### Scenario: Concurrent request
 - **WHEN** another catalog sync is requested while one is running
 - **THEN** no second request starts and the running result is used
+
+### Requirement: Steam integration is provided through the plugin contract
+On Linux and Windows, all Steam-specific discovery, authentication, session, account, HTTP, catalog and counter behavior SHALL be delegated to the Steam plugin. Provider-owned action declarations SHALL supply Play and Install. Core/Engine SHALL retain generic library policy and GameNode operations through the public plugin boundary.
+
+#### Scenario: Native and Flatpak or Windows registry discovery
+- **WHEN** Steam discovery is requested on a supported platform
+- **THEN** the plugin finds the existing native, Flatpak or registry-defined roots and returns the same installed identities and paths under the existing Steam scan requirements
+
+#### Scenario: Owned and family catalog
+- **WHEN** the connected Steam account refreshes its library
+- **THEN** the plugin supplies all owned and family games with the existing filtering, retry and separate-error behavior
+
+#### Scenario: Store actions
+- **WHEN** Play or Install is requested for installed or catalog-only Steam entries
+- **THEN** the host validates the plugin-owned declaration and opens the same Steam URI without writing game files
+
+#### Scenario: Plugin process is temporarily unavailable
+- **WHEN** cached Steam entries and previously validated action declarations exist during a plugin failure
+- **THEN** existing cached Play/Install actions remain usable through generic host execution where their inputs remain valid
+
+### Requirement: Steam migration preserves mainline behavior and data
+The plugin migration SHALL preserve the working mainline Steam account, catalog, library and applicable playtime behavior on Linux and Windows. Existing profiles SHALL retain identities, credentials, matches, favorites, covers and history. Generic GameNode and other-provider behavior SHALL remain compatible with the integrated mainline baseline.
+
+#### Scenario: Upgrade and restart
+- **WHEN** an existing signed-in Steam profile is upgraded and restarted with a still-valid credential
+- **THEN** the account reconnects without another login and its cached entries, metadata and preferences remain available
+
+#### Scenario: Cancelled or unsuccessful login
+- **WHEN** a login is cancelled, closed, times out or fails
+- **THEN** the existing account's prior state and the current mainline recovery behavior are preserved
+
+#### Scenario: Session expires or Steam is unreachable
+- **WHEN** validation rejects the session or Steam temporarily cannot be reached
+- **THEN** the existing expired/unreachable states, credential handling, cached-library banners and actions are preserved
+
+#### Scenario: Sign-out or account replacement
+- **WHEN** a sign-out succeeds or a verified different Steam identity replaces the account
+- **THEN** old owned/family facts are cleared under existing rules while installed games, saved matches, covers and history remain
+
+#### Scenario: Library updates during browsing
+- **WHEN** plugin results change installed, owned or family facts
+- **THEN** the library preserves filters, search, sort, surviving selection, ownership indicators, deduplication and current snapshot performance behavior
+
+#### Scenario: Windows Store and Internal tracking
+- **WHEN** Windows observes Steam gameplay under either playtime preference
+- **THEN** Core preserves process tracking, account ownership, counter triggers, pending totals, deduplication and local measured-session behavior
+
+#### Scenario: Linux tracking availability
+- **WHEN** the migrated application runs on Linux
+- **THEN** it preserves the mainline platform availability of process tracking without inventing Linux gameplay sessions
+
+### Requirement: Steam plugin integration preserves PC ports behavior
+The application SHALL retain mainline PC ports catalog, overlay, guided setup, installation, progress, cancellation, recovery and DRM-free registration behavior on Windows. Steam migration SHALL preserve port identities, provenance, launch arguments, environment and gameplay tracking. PC ports SHALL remain independent of Steam account and plugin availability, with its existing platform scope.
+
+#### Scenario: Existing port is launched after upgrade
+- **WHEN** a schema-8 profile containing an installed port opens in the integrated application
+- **THEN** its registration, provenance, executable roles, arguments and environment remain available for normal DRM-free launch and tracking
+
+#### Scenario: Steam is signed out or unavailable
+- **WHEN** Steam has no connected account or its plugin cannot run
+- **THEN** PC ports browsing, installation, cancellation and existing installed games retain their mainline behavior
+
+#### Scenario: Registration is removed and added again
+- **WHEN** the user removes a port registration and later adds the same executable
+- **THEN** its files and provenance survive removal and the existing installation is relinked under mainline rules
+
+#### Scenario: Application runs on Linux
+- **WHEN** the integrated application runs on Linux
+- **THEN** PC ports keeps its existing Windows-only installation availability and Steam plugin integration does not expose unsupported Linux installation controls
+
+### Requirement: Reserved official identities
+Third-party registration SHALL reject reserved official plugin/provider identities and duplicate installed provider ids. Publisher-controlled metadata SHALL NOT establish official status or select a bundled credential alias. Invalid packages SHALL fail independently without changing official registration.
+
+#### Scenario: Package claims Steam identity
+- **WHEN** a third-party package declares Steam's provider/plugin identity or an official reserved namespace
+- **THEN** it is rejected before execution and Steam's descriptor, grants and credentials remain unchanged
+
+### Requirement: Approved third-party backend registration
+Only enabled compatible third-party packages SHALL register runtime backends. Their discovery/catalog/counter/action declarations SHALL be validated against negotiated capabilities and existing record/action contracts. Disabling SHALL preserve saved facts and history while making new provider work and actions unavailable.
+
+#### Scenario: Disabled third-party source
+- **WHEN** a previously scanned provider is disabled
+- **THEN** its historical data remains intact, no new provider scan starts and its unavailable actions are explained to the user
+
+### Requirement: Official plugin compatibility baseline
+Adding third-party support SHALL preserve existing official plugin implementations, manifests, permissions, credential mappings and package layouts. Third-party failures, permission decisions and compatibility policies SHALL NOT change official provider operation.
+
+#### Scenario: No third-party packages
+- **WHEN** the host starts with an empty external registry
+- **THEN** Steam and the platform's other official providers operate with their existing behavior and grants
+
+### Requirement: Managed local targets and launch overlays
+Third-party provider discoveries SHALL support approved local executable targets as well as URI targets. Independent extensions SHALL contribute user-approved per-game custom launch overlays for any provider without replacing provider identity or facts. An executable target SHALL NOT become executable solely because it appeared in an unreviewed scan.
+
+#### Scenario: Register a disc-installed game
+- **WHEN** a provider discovers an executable for a local installation and the user approves its validated target
+- **THEN** Play can start that target with its stored parameters without a store launcher
+
+#### Scenario: Custom route for an official provider
+- **WHEN** an extension's approved recipe is selected for an official provider game
+- **THEN** Play uses that overlay while the original provider's detected target and plugin implementation remain intact
+
+### Requirement: Individual content identities for shared runtimes
+An approved emulator/interpreter/engine runtime SHALL be reusable by multiple individually identified game contents. Game entries SHALL retain distinct logical/installation identities, saves and history and reference structured runtime launch recipes. Runtime path/PID alone SHALL NOT identify every hosted game as one game.
+
+#### Scenario: One engine several games
+- **WHEN** a provider discovers several content items executed by the same runtime
+- **THEN** each content appears as a distinct game with its own launch arguments and history
+
+#### Scenario: Runtime updated
+- **WHEN** the shared runtime version/path changes
+- **THEN** game identities remain distinct and affected launch approvals are revalidated without merging their entries
+
+### Requirement: One game with selectable runtime bindings
+Runtime-hosted content SHALL reference its GameNode game identity independently of runtime and discovering plugin. Several approved runtimes SHALL be selectable for the same game/content without duplicating the game or resetting history. Content resources SHALL retain separate file/variant identities. Removing a runtime binding SHALL NOT delete games, ROMs, saves or history.
+
+#### Scenario: One ROM with two emulators
+- **WHEN** authorized ZSNES and bsnes discoveries identify the same registered ROM and GameNode game
+- **THEN** the library retains one game with two selectable runtime bindings and preserves its playtime and saves
+
+#### Scenario: Migrate from DeSmuME to melonDS
+- **WHEN** the user authorizes reading the existing game/content references and selects a newly registered melonDS runtime
+- **THEN** only the approved runtime binding changes, the original game identity/history remain and saves are not silently converted or overwritten
+
+### Requirement: Runtime plugin discovery is separately authorized
+Runtime plugins SHALL be able to request library.discovery for approved content roots, including negotiated runtime-content contexts without provider impersonation. Core SHALL reconcile observations into game/content identities rather than using runtime ownership as game identity. Discovery SHALL NOT imply runtime mutation, launch, file writes or broader library reads.
+
+#### Scenario: Discovery by a runtime extension
+- **WHEN** an authorized emulator extension submits scoped content observations without owning a store provider
+- **THEN** Core reconciles those observations and candidate runtime bindings without granting a foreign provider context or executing the content
+
+### Requirement: Runtime metadata preserves typed launch contracts
+Runtime/content records SHALL permit optional versioned descriptive plugin metadata while keeping validated executable/content references and launch parameters in typed fields. Reading metadata SHALL not authorize execution. Unknown descriptive extensions SHALL not merge identities or alter approved launch semantics.
+
+#### Scenario: Recommendation becomes a launch proposal
+- **WHEN** a plugin reads preferred runtime information in an extension
+- **THEN** it must submit a typed custom-launch recipe for approval before that recommendation affects execution
+
+### Requirement: Launch overlays share one review boundary
+Approved runtime and mod-related overlays SHALL preserve original game/provider identity and use the common host launch-plan review. Unchanged official default launching SHALL keep its baseline behavior. Known/declared components SHALL not be presented as an exhaustive inventory of everything the native program can execute.
+
+#### Scenario: Overlay without official plugin changes
+- **WHEN** a mod-loader/runtime customization is selected for an official provider game
+- **THEN** the host reviews the overlay plan while leaving that official provider implementation and original detected launch target intact

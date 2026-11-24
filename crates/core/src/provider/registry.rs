@@ -368,10 +368,16 @@ fn validate(
         if !active {
             return Ok(&inactive_backend);
         }
-        plugins
+        let mut registered = plugins
             .iter()
-            .find(|p| p.plugin_id == id && p.provider_id == manifest.id)
-            .ok_or_else(|| "provider plugin is not registered for this provider".into())
+            .filter(|p| p.plugin_id == id && p.provider_id == manifest.id);
+        let backend = registered
+            .next()
+            .ok_or_else(|| "provider plugin is not registered for this provider".to_owned())?;
+        if registered.next().is_some() {
+            return Err("provider plugin registration is ambiguous".into());
+        }
+        Ok(backend)
     };
     let scanner: ScanFn = match &manifest.scan.plugin {
         Some(id) => {

@@ -30,7 +30,7 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gamenode_core::ports::Extractor;
 use gamenode_core::tools::ToolError;
@@ -44,7 +44,13 @@ use crate::download::{
 /// Bytes of combined stdout and stderr kept for the failure details (design D8).
 pub const MAX_CAPTURED_OUTPUT_BYTES: usize = 64 * 1024;
 
-/// How often a running tool checks for cancellation.
+/// How long one extraction run may take before its process tree is stopped (design D8).
+///
+/// Six hours leaves room for a 30 GB base package on a slow disk while still freeing the single
+/// install worker from a tool that hung. Cancellation stays immediate.
+pub const DEFAULT_EXTRACTION_TIMEOUT: Duration = Duration::from_secs(6 * 60 * 60);
+
+/// How often a running tool checks for cancellation and its timeout.
 const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 /// The longest the runner waits for the output pipes to close after the tool exited.
@@ -213,6 +219,8 @@ pub enum ExtractorError {
     Exit { code: i32 },
     #[error("the extraction tool was terminated before it finished")]
     Terminated,
+    #[error("the extraction tool did not finish within {seconds} seconds")]
+    TimedOut { seconds: u64 },
     #[error(
         "the package is an encrypted retail package; GameNode ships no keys and cannot extract it"
     )]
@@ -401,11 +409,24 @@ impl ExtractorRunner {
 pub fn run_extractor(
     request: ExtractorRunRequest<'_>,
 ) -> Result<ExtractorRunOutcome, ExtractorFailure> {
-    run_extractor_inner(&request)
+    run_extractor_with_timeout(request, DEFAULT_EXTRACTION_TIMEOUT)
+}
+
+/// Runs a prepared tool once with an explicit timeout.
+///
+/// [`run_extractor`] uses [`DEFAULT_EXTRACTION_TIMEOUT`]; this entry point exists so a caller (and
+/// the tests) can bound a run more tightly. A timeout kills the whole process tree and reports
+/// [`ExtractorError::TimedOut`], exactly like a cancellation reports [`ExtractorError::Cancelled`].
+pub fn run_extractor_with_timeout(
+    request: ExtractorRunRequest<'_>,
+    timeout: Duration,
+) -> Result<ExtractorRunOutcome, ExtractorFailure> {
+    run_extractor_inner(&request, timeout)
 }
 
 fn run_extractor_inner(
     request: &ExtractorRunRequest<'_>,
+    timeout: Duration,
 ) -> Result<ExtractorRunOutcome, ExtractorFailure> {
     let package =
         canonical_file(request.package, "package").map_err(ExtractorFailure::from_error)?;
@@ -475,6 +496,7 @@ fn run_extractor_inner(
         &arguments,
         &working,
         request.cancel,
+        timeout,
     ) {
         Ok(raw) => raw,
         Err((error, output)) => {
@@ -493,6 +515,16 @@ fn run_extractor_inner(
     if raw.cancelled {
         return Err(ExtractorFailure {
             error: ExtractorError::Cancelled,
+            output: raw.output,
+            created_paths,
+        });
+    }
+
+    if raw.timed_out {
+        return Err(ExtractorFailure {
+            error: ExtractorError::TimedOut {
+                seconds: timeout.as_secs(),
+            },
             output: raw.output,
             created_paths,
         });
@@ -769,6 +801,7 @@ fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
 struct RawRun {
     status: ExitStatus,
     cancelled: bool,
+    timed_out: bool,
     output: String,
 }
 
@@ -897,6 +930,7 @@ fn spawn_and_wait(
     arguments: &[OsString],
     working_directory: &Path,
     cancel: &CancelFlag,
+    timeout: Duration,
 ) -> Result<RawRun, (ExtractorError, String)> {
     let mut command = Command::new(executable);
     command
@@ -914,10 +948,16 @@ fn spawn_and_wait(
     let capture = Arc::new(OutputCapture::new());
     let (readers, readers_done) = read_pipes(&mut child, &capture);
 
+    let started = Instant::now();
     let mut cancelled = false;
+    let mut timed_out = false;
     let status = loop {
-        if cancel.is_cancelled() {
+        if !cancelled && cancel.is_cancelled() {
             cancelled = true;
+            tree.kill();
+        }
+        if !cancelled && !timed_out && started.elapsed() >= timeout {
+            timed_out = true;
             tree.kill();
         }
         match child.try_wait() {
@@ -939,6 +979,7 @@ fn spawn_and_wait(
     Ok(RawRun {
         status,
         cancelled,
+        timed_out,
         output: capture.text(),
     })
 }
@@ -1760,6 +1801,20 @@ exit 3"#;
         assert!(!output.exists());
     }
 
+    #[test]
+    fn encryption_errors_from_the_pinned_tool_are_recognised() {
+        for output in [
+            "failed to open or parse PKG file: cannot decrypt EKPFS",
+            "Error: no key for index 0",
+            "error: this is an encrypted retail package (EKPFS)",
+        ] {
+            assert!(looks_like_encrypted_package(output), "{output}");
+        }
+        assert!(!looks_like_encrypted_package(
+            "PFS extraction complete (42 files)."
+        ));
+    }
+
     #[cfg(unix)]
     #[test]
     fn an_encrypted_package_gets_a_clear_error() {
@@ -1878,6 +1933,58 @@ while :; do sleep 0.05; done"#;
         std::thread::sleep(Duration::from_millis(400));
         let later = fs::metadata(&progress).unwrap().len();
         assert_eq!(later, after_cancel, "the stub's child kept running");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_timeout_stops_a_hung_tool_and_its_children() {
+        let temp = tempfile::tempdir().unwrap();
+        let script = r#"(
+  while :; do
+    echo tick >> "$2/progress.txt"
+    sleep 0.05
+  done
+) &
+while :; do sleep 0.05; done"#;
+        let package = temp.path().join("base.pkg");
+        fs::write(&package, b"base").unwrap();
+        let staging = temp.path().join("staging");
+        fs::create_dir_all(&staging).unwrap();
+        let output = temp.path().join("out");
+
+        let definition = extractor(shell_args(script));
+        let started = Instant::now();
+        let failure = run_extractor_with_timeout(
+            ExtractorRunRequest {
+                extractor: &definition,
+                tool: &shell_tool(),
+                package: &package,
+                update: None,
+                output: &output,
+                working_directory: &staging,
+                cancel: &CancelFlag::new(),
+                validate_output: &accept_all(),
+            },
+            Duration::from_millis(500),
+        )
+        .expect_err("timed out");
+
+        assert!(matches!(
+            failure.error,
+            ExtractorError::TimedOut { seconds: 0 }
+        ));
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the timeout did not stop the stub"
+        );
+        assert!(failure.reason().contains("did not finish within"));
+
+        // The background child of the stub must be dead after the timeout killed the tree.
+        let progress = output.join("progress.txt");
+        let after_timeout = fs::metadata(&progress).unwrap().len();
+        std::thread::sleep(Duration::from_millis(400));
+        let later = fs::metadata(&progress).unwrap().len();
+        assert_eq!(later, after_timeout, "the stub's child kept running");
     }
 
     #[cfg(unix)]

@@ -88,6 +88,7 @@ fn a_game_marked_as_not_on_gamenode_cannot_be_added_but_its_choice_can_change() 
             entry_key: "steam:70".to_owned(),
             game_id: None,
             chosen_at: 1,
+            source: Default::default(),
         },
     );
     select(&mut machine, &["steam:70"]);
@@ -146,6 +147,7 @@ fn adding_a_multi_selection_needs_at_least_one_matched_game() {
             entry_key: "steam:70".to_owned(),
             game_id: None,
             chosen_at: 1,
+            source: Default::default(),
         },
     );
     // 70 is "no game"; add an unmatched one by removing 240's automatic match.

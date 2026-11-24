@@ -47,5 +47,5 @@
 ## 8. Integration
 
 - [x] 8.1 Run `cargo test --workspace --locked`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo fmt --all -- --check`, `pnpm --dir ui test --run` and `python3 scripts/check-plugin-boundaries.py`; verify all pass.
-- [ ] 8.2 On a Windows build with a real Steam account, confirm import, the post-exit update after unlocking an achievement, offline display with cached icons, sign-out clearing, and a responsive UI during import; record the result in `docs/windows-verification.md`.
-- [ ] 8.3 Inspect network traffic or logs during 8.2 and verify no achievement data is sent to GameNode.
+- [ ] 8.2 **Native Windows acceptance.** On a Windows build with a real Steam account, confirm import, the post-exit update after unlocking an achievement, offline display with cached icons, sign-out clearing, and a responsive UI during import; record the result in `docs/windows-verification.md`.
+- [ ] 8.3 **Native Windows acceptance.** Inspect network traffic or logs during 8.2 and verify no achievement data is sent to GameNode; record the result in `docs/windows-verification.md`.

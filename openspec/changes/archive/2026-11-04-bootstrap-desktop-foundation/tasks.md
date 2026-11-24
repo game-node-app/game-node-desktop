@@ -132,3 +132,17 @@ longer requires Windows PowerShell interoperability or `wslpath` for packaging.
 Current task notes and `docs/linux-verification.md` record the remaining
 material acceptance work; the required package command is in
 `docs/windows-verification.md`.
+
+## Reconciliação documental do histórico — 2026-11-09
+
+As cinco tarefas abertas abaixo conservam seu texto e estado originais. Evidência histórica pertence ao binário/ambiente registrado; código ou testes existentes não substituem execução manual. Esta reconciliação não executou novos testes.
+
+| Tarefa original | Constatação e evidência | Destino e condição restante |
+| --- | --- | --- |
+| 5.5 | Há [planejamento de geometria e testes](../../../../crates/core/src/geometry.rs) e restauração no [host Tauri](../../../../crates/app/src/main.rs). Os registros [Linux](../../../../docs/linux-verification.md) e [Windows](../../../../docs/windows-verification.md) mantêm limitações de validação ao vivo. | Permanece aberta aqui para resize/move/maximize/restart, telas indisponíveis e limitações Wayland. Integração Steam 8.3/9.1 cobre regressões de lifecycle, mas não comprova toda esta matriz de geometria. |
+| 7.2 | [Instalação](../../../../packaging/windows/install.ps1), [desinstalação](../../../../packaging/windows/uninstall.ps1) e [documentação Windows](../../../../packaging/windows/README.md) existem. O registro Windows contém resultados de instalação e callback para builds históricos. | Aceitação do pacote atual tem sobreposição com [integração Steam](../../integrate-steam-plugin-into-main/tasks.md) 9.1–9.2. A matriz completa de instalação, reinstalação, quoting e preservação de dados continua pendente nesta tarefa até evidência correspondente. |
+| 7.4 | A tarefa 7.1 da [migração Tauri/React](../2026-11-07-migrate-slint-to-tauri-v2-react/tasks.md) registra o empacotamento sucessor. Existem [script Linux](../../../../scripts/package-linux.sh), [script Windows](../../../../scripts/package-windows-wsl.sh) e notices. | Integração Steam 6.2/7.3/9.1 acompanha partes do pacote integrado; instalação usando somente os arquivos distribuídos e dependências documentadas permanece pendente onde não houver resultado explícito. |
+| 8.1 | O [registro Windows](../../../../docs/windows-verification.md) contém login relatado pelo usuário e resultados posteriores de restauração/UI para versões antigas, com limites expressos. A migração removeu a seleção Skia/software. | Conservar esses resultados como parciais. Requisitos de renderizador foram substituídos pela migração, não aprovados retroativamente. Integração Steam 9.1–9.3 cobre parte da aceitação atual; geometria, locales, conta GameNode e demais critérios sem cobertura permanecem aqui. |
+| 8.2 | O [registro Linux](../../../../docs/linux-verification.md) distingue WSLg/X11, limitações de keyring/Wayland e login posterior relatado no Arch/KDE sem identidade exata do pacote. | Sobreposição parcial com integração Steam 8.1–8.4. Permanecem aqui os critérios não demonstrados para X11/Wayland, ambos os backends de credenciais, geometria e locales; a escolha de renderizador antiga tem sucessor na migração. |
+
+Destino técnico do shell: tarefas 1.3, 4.1–4.3 e 7.1 da migração Tauri/React. As pendências sem sucessora completa continuam nas tarefas originais deste arquivo; nenhuma foi encerrada por esta nota.

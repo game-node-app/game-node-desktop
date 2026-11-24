@@ -1,0 +1,13 @@
+# Third Party Plugin Custom Launch Runtimes
+
+## Why
+
+Custom launch recipes, runtime bindings and plugin-reported game sessions affect executable selection, attribution and playtime. Isolating this work after the provider/catalog MVP gives launch behavior its own consent, revision and compatibility boundary.
+
+## What Changes
+
+Adds custom executable/URI recipes and overlays, immutable reviewed launch plans, runtime resources/content identity and runtime-session accounting. It adds Linux execution for reviewed custom plans, including direct executables and Proton-style wrappers, without changing the detected official launch default. It also supervises launched process trees so explicit stop can terminate and reap descendants and shared-resource use leases remain held for the full process lifetime. Provider-free extension process supervision and account-bound activation, launch-specific UI and Rust SDK client coverage are included. The extension's runtime-unavailable inventory state remains owned by the provider/catalog MVP's task 10.2.
+
+## Out of Scope
+
+Does not modify official provider implementations, launch defaults, credentials or accounting policy, and does not claim that custom processes are sandboxed or safe. MVP providers cannot customize launch or register runtimes.

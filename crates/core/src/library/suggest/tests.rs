@@ -34,6 +34,31 @@ fn normalization_strips_separators_and_punctuation_and_collapses_spaces() {
 }
 
 #[test]
+fn the_search_query_prefers_a_record_title_and_drops_release_tags() {
+    let mut entry = stored("dolphin-emu", "GPIE01", "Pikmin (USA) (Rev 1)", true);
+    assert_eq!(search_query(&entry), "Pikmin");
+
+    entry.fields.insert("title".to_owned(), "Pikmin".to_owned());
+    assert_eq!(search_query(&entry), "Pikmin");
+
+    let plain = stored("steam", "570", "Dota 2", true);
+    assert_eq!(search_query(&plain), "Dota 2");
+
+    let tagged = stored("steam", "1", "Sonic Adventure [b]", true);
+    assert_eq!(search_query(&tagged), "Sonic Adventure");
+
+    // A name that is only a release tag is kept rather than emptied.
+    let mut only_tag = stored("steam", "2", "(USA)", true);
+    assert_eq!(search_query(&only_tag), "(USA)");
+
+    // A record title wins over a file name that carries tags.
+    only_tag
+        .fields
+        .insert("title".to_owned(), "Pikmin".to_owned());
+    assert_eq!(search_query(&only_tag), "Pikmin");
+}
+
+#[test]
 fn exact_underscore_separated_and_partial_titles_score_as_designed() {
     assert!(close(title_score("Hollow Knight", "Hollow Knight"), 1.0));
     assert!(close(title_score("hollow_knight", "Hollow Knight"), 1.0));
@@ -455,6 +480,7 @@ fn a_no_game_entry_gets_no_suggestions() {
             entry_key: "steam:123".to_owned(),
             game_id: None,
             chosen_at: 1,
+            source: crate::library::ChoiceSource::User,
         }],
         ..LibraryCache::default()
     };

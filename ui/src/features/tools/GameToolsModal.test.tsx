@@ -382,6 +382,25 @@ describe('GameToolsModal', () => {
     expect(uninstallSpy).toHaveBeenCalled();
   });
 
+  it.each([false, true])('displays the publisher and limits the operation requested by a plugin (remove=%s)', (remove) => {
+    const pluginRequest = {
+      pluginId: 'org.example.tools',
+      publisherFingerprint: 'verified-publisher',
+      remove,
+    };
+    renderWithProviders(<GameToolsModal modal={installedModal({ pluginRequest })} />);
+
+    expect(screen.getByRole('region', { name: pluginRequest.pluginId })).toHaveTextContent(pluginRequest.publisherFingerprint);
+    expect(screen.queryByTestId('tool-install-button')).not.toBeInTheDocument();
+    if (remove) {
+      expect(screen.queryByTestId('tool-update-button')).not.toBeInTheDocument();
+      expect(screen.getByTestId('tool-uninstall-button')).toBeEnabled();
+    } else {
+      expect(screen.getByTestId('tool-update-button')).toBeEnabled();
+      expect(screen.queryByTestId('tool-uninstall-button')).not.toBeInTheDocument();
+    }
+  });
+
   it('shows Update available when the installed version is behind the latest release', () => {
     renderWithProviders(
       <GameToolsModal

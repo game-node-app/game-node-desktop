@@ -699,6 +699,8 @@ struct Harness {
     uri: Arc<FakeUri>,
     covers: tempfile::TempDir,
     achievements: Arc<dyn gamenode_core::achievements::AchievementStore>,
+    /// Achievement calls seen by this harness's fixture provider runtime.
+    achievement_probe: Arc<provider_runtime::AchievementProbe>,
 }
 
 fn harness(api: Arc<FakeApi>, creds: Arc<FakeCreds>) -> Harness {
@@ -744,6 +746,7 @@ fn harness_with_providers(
     let processes = Arc::new(gamenode_core::tracker::scripted::ScriptedProcesses::default());
     let achievements = test_achievement_store();
     let ports = Ports {
+        discovery: None,
         achievements: achievements.clone(),
         backups: None,
         local_games: None,
@@ -803,17 +806,21 @@ fn harness_with_providers(
     });
     let publishes = Arc::new(AtomicUsize::new(0));
     let publish_count = publishes.clone();
+    let runtime = Arc::new(provider_runtime::Runtime::new(&ports));
+    let achievement_probe = runtime.achievement_probe();
     let engine = Engine::new(
         ports,
         tokio::runtime::Handle::current(),
         Settings::default(),
         LibraryMachine::new(providers, Default::default()),
         nonce,
+        Arc::new(crate::plugin_host::resource_leases::ResourceLeases::default()),
         move |s| {
             publish_count.fetch_add(1, Ordering::SeqCst);
             let _ = tx.send(s);
         },
     );
+    engine.set_provider_runtime(runtime);
     Harness {
         processes,
         engine,
@@ -828,6 +835,7 @@ fn harness_with_providers(
         uri,
         covers,
         achievements,
+        achievement_probe,
     }
 }
 
@@ -1802,4 +1810,38 @@ async fn corrupt_artwork_is_replaced_and_failures_can_be_retried() {
         Ok(Some(bytes.clone()))
     );
     assert_eq!(std::fs::read(dir.path().join("7.jpg")).unwrap(), bytes);
+}
+
+#[test]
+fn runtime_launch_summary_shows_the_runtime_and_content_argument() {
+    use gamenode_core::library::{
+        ApprovedFileReference, CustomLaunchRecipe, RuntimeArgumentTemplate, RuntimeResource,
+    };
+
+    let runtime = RuntimeResource {
+        id: "runtime-1".into(),
+        name: "Dolphin".into(),
+        version: "2609".into(),
+        executable: ApprovedFileReference::default(),
+        platform: "linux".into(),
+        supported_formats: vec!["gamecube-rom".into()],
+        launch_arguments: vec![
+            RuntimeArgumentTemplate::Literal("-b".into()),
+            RuntimeArgumentTemplate::Literal("-e".into()),
+            RuntimeArgumentTemplate::ContentPath,
+        ],
+        revision: 1,
+        observed_at: 0,
+        provenance: Default::default(),
+        extensions: Default::default(),
+    };
+    let recipe = CustomLaunchRecipe {
+        runtime_handle: "runtime-1".into(),
+        ..CustomLaunchRecipe::default()
+    };
+
+    assert_eq!(
+        super::runtime_launch_summary(Some(&runtime), &recipe, "Pikmin (USA) (Rev 1).rvz"),
+        "Dolphin 2609 — -b -e Pikmin (USA) (Rev 1).rvz"
+    );
 }

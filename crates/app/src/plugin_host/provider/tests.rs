@@ -1,15 +1,133 @@
 use super::*;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use gamenode_plugin_sdk::{Error, HostClient, Launch, Session as ClientSession};
+use gamenode_plugin_protocol::prost::Message;
+use gamenode_plugin_sdk::{Error, HostClient, Launch, Session as ClientSession, SessionOptions};
 
 #[path = "permissions_tests.rs"]
 mod permissions_tests;
+#[path = "profile_tests.rs"]
+mod profile_tests;
 
 #[derive(Default)]
 struct Services {
     reads: AtomicUsize,
     publications: AtomicUsize,
+    status: Mutex<Option<models::AccountStatus>>,
+}
+
+#[tokio::test]
+async fn configuration_modes_separate_declarations_from_active_authorization() {
+    let harness = Harness::third_party_config("account").await;
+    let available = harness.api.configuration_modes("fixture").unwrap();
+    assert!(available.external_declared && available.external_authorized);
+    assert!(available.declarative_declared && available.declarative_authorized);
+
+    harness
+        .api
+        .revoke_session_permission("fixture", cap::SETTINGS)
+        .await;
+    let revoked = harness.api.configuration_modes("fixture").unwrap();
+    assert!(revoked.declarative_declared);
+    assert!(!revoked.declarative_authorized);
+    assert!(revoked.external_authorized);
+}
+
+#[derive(Default)]
+struct RuntimeSessionFixture {
+    reports: AtomicUsize,
+    disconnects: AtomicUsize,
+    delay_next_authorization: AtomicBool,
+    authorization_started: tokio::sync::Notify,
+    continue_authorization: tokio::sync::Notify,
+}
+
+#[tonic::async_trait]
+impl super::super::runtime::RuntimeSessionHandler for RuntimeSessionFixture {
+    async fn authorize_context(
+        &self,
+        _plugin_id: String,
+        _publisher_fingerprint: String,
+        _owner_key: String,
+        _profile_epoch: u64,
+        request: RuntimeSessionContextRequest,
+    ) -> Result<super::super::runtime::RuntimeContextRevision, Status> {
+        if self.delay_next_authorization.swap(false, Ordering::Relaxed) {
+            self.authorization_started.notify_one();
+            self.continue_authorization.notified().await;
+        }
+        if request.game_id == "85" {
+            return Err(Status::permission_denied("user declined runtime context"));
+        }
+        Ok(super::super::runtime::RuntimeContextRevision {
+            library_revision: 1,
+            binding_revision: 1,
+        })
+    }
+
+    async fn report(
+        &self,
+        _plugin_id: String,
+        _owner_key: String,
+        report: RuntimeSessionReport,
+        _context_authorized: bool,
+        _context_revision: Option<super::super::runtime::RuntimeContextRevision>,
+        _received_at: std::time::Instant,
+    ) -> RuntimeSessionResult {
+        self.reports.fetch_add(1, Ordering::Relaxed);
+        RuntimeSessionResult {
+            correlation_id: report.correlation_id,
+            outcome: RuntimeSessionOutcome::Accepted as i32,
+            host_session_id: "host-session-fixture".into(),
+            accepted_sequence: report.sequence,
+            accepted_at: report.observed_at,
+            ..Default::default()
+        }
+    }
+
+    async fn disconnected(&self, _plugin_id: String) {
+        self.disconnects.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[test]
+fn runtime_context_requires_a_matching_fresh_active_report() {
+    let now = std::time::Instant::now();
+    let active = super::RuntimeInstanceEvidence {
+        last_received_at: now - Duration::from_secs(29),
+        runtime_id: "runtime:snes".into(),
+        active: true,
+    };
+    assert!(super::runtime_instance_has_fresh_active_report(
+        Some(&active),
+        "runtime:snes",
+        now
+    ));
+    assert!(!super::runtime_instance_has_fresh_active_report(
+        Some(&active),
+        "runtime:other",
+        now
+    ));
+
+    let expired = super::RuntimeInstanceEvidence {
+        last_received_at: now - Duration::from_secs(31),
+        ..active.clone()
+    };
+    assert!(!super::runtime_instance_has_fresh_active_report(
+        Some(&expired),
+        "runtime:snes",
+        now
+    ));
+
+    let stopped = super::RuntimeInstanceEvidence {
+        active: false,
+        ..active
+    };
+    assert!(!super::runtime_instance_has_fresh_active_report(
+        Some(&stopped),
+        "runtime:snes",
+        now
+    ));
 }
 
 #[tonic::async_trait]
@@ -34,8 +152,9 @@ impl HostServices for Services {
     async fn actions(&self, _: Lease, _: ActionDeclaration) -> Result<ActionReply, Status> {
         Err(Status::unimplemented("fixture"))
     }
-    fn publish_status(&self, _: models::AccountStatus) {
+    fn publish_status(&self, status: models::AccountStatus) {
         self.publications.fetch_add(1, Ordering::Relaxed);
+        *lock(&self.status) = Some(status);
     }
 }
 
@@ -67,12 +186,47 @@ impl Harness {
     }
 
     async fn build(extra: &[&'static str], shared_catalog: bool) -> Self {
+        Self::build_with(extra, shared_catalog, RegistrationOrigin::Official, None).await
+    }
+
+    /// A harness for a third-party provider running inside the profile of `account`.
+    async fn third_party(account: &str) -> Self {
+        Self::build_with(
+            &[],
+            false,
+            RegistrationOrigin::ThirdParty {
+                publisher_fingerprint: "ab".repeat(32),
+            },
+            Some(account),
+        )
+        .await
+    }
+
+    async fn third_party_config(account: &str) -> Self {
+        Self::build_with(
+            &[cap::CONFIGURE, cap::LIBRARY_READ],
+            false,
+            RegistrationOrigin::ThirdParty {
+                publisher_fingerprint: "ab".repeat(32),
+            },
+            Some(account),
+        )
+        .await
+    }
+
+    async fn build_with(
+        extra: &[&'static str],
+        shared_catalog: bool,
+        origin: RegistrationOrigin,
+        account: Option<&str>,
+    ) -> Self {
         let temp = tempfile::tempdir().unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let endpoint = temp.path().join("plugins.sock");
         let root = super::super::PluginApi::default();
         let api = root.providers.clone();
+        api.profiles().update(account, true);
         let services = Arc::new(Services::default());
         let mut capabilities = vec![
             cap::CONTEXT,
@@ -85,10 +239,15 @@ impl Harness {
         ];
         capabilities.extend_from_slice(extra);
         api.register(Registration {
+            declared_developer: "Fixture developer".into(),
+            package_digest: Vec::new(),
             provider_id: "fixture".into(),
             plugin_id: "fixture.plugin".into(),
+            kind: RegistrationKind::Provider,
+            origin,
             capabilities: capabilities.iter().map(|s| (*s).into()).collect(),
             shared_catalog,
+            playtime: Default::default(),
             services: services.clone(),
         })
         .unwrap();
@@ -107,19 +266,39 @@ impl Harness {
             root,
         )
         .unwrap();
-        let client = ClientSession::open(
-            Launch {
-                endpoint,
-                credential,
-                operation_id: "launch".into(),
-            },
-            "fixture.plugin",
-            "fixture",
-            "1.0",
-            &capabilities,
-        )
-        .await
-        .unwrap();
+        let plugin_launch = Launch {
+            endpoint,
+            credential,
+            operation_id: "launch".into(),
+        };
+        let client = if capabilities.contains(&cap::CONFIGURE) {
+            ClientSession::open_with_options(
+                plugin_launch,
+                "fixture.plugin",
+                "fixture",
+                "1.0",
+                &capabilities,
+                SessionOptions {
+                    min_api_major: 1,
+                    min_api_minor: gamenode_plugin_protocol::API_MINOR,
+                    max_api_major: 1,
+                    max_api_minor: gamenode_plugin_protocol::API_MINOR,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+        } else {
+            ClientSession::open(
+                plugin_launch,
+                "fixture.plugin",
+                "fixture",
+                "1.0",
+                &capabilities,
+            )
+            .await
+            .unwrap()
+        };
         launch.ready.await.unwrap();
         Self {
             api,
@@ -151,6 +330,11 @@ impl Harness {
     }
 
     async fn next(&mut self, expected: ProviderOperation) -> HostClient {
+        let command = self.next_command(expected).await;
+        self.client.host.for_command(&command).unwrap()
+    }
+
+    async fn next_command(&mut self, expected: ProviderOperation) -> ProviderCommand {
         loop {
             let command =
                 tokio::time::timeout(Duration::from_secs(2), self.client.commands.message())
@@ -162,7 +346,7 @@ impl Harness {
                 continue;
             }
             assert_eq!(command.operation, expected as i32);
-            return self.client.host.for_command(&command).unwrap();
+            return command;
         }
     }
 }
@@ -173,6 +357,295 @@ fn completed() -> OperationResult {
         observed_at: 100,
         ..Default::default()
     }
+}
+
+fn configuration_result(command: &ProviderCommand) -> OperationResult {
+    OperationResult {
+        disposition: OperationDisposition::Completed as i32,
+        configuration: Some(ConfigurationResult {
+            session_id: command.context.as_ref().unwrap().session_id.clone(),
+            profile_id: super::super::profile::profile_id_for_account("account"),
+            window_id: command.target_operation_id.clone(),
+            accepted: true,
+            failure: String::new(),
+        }),
+        ..Default::default()
+    }
+}
+
+async fn open_configuration_window(h: &mut Harness) -> (String, HostClient) {
+    let api = h.api.clone();
+    let opening = tokio::spawn(async move {
+        api.configure("fixture", ProviderOperation::ConfigurationOpen)
+            .await
+    });
+    let command = h.next_command(ProviderOperation::ConfigurationOpen).await;
+    let window_id = command.target_operation_id.clone();
+    let host = h.client.host.for_command(&command).unwrap();
+    host.finish(configuration_result(&command)).await.unwrap();
+    opening.await.unwrap().unwrap();
+    (window_id, host)
+}
+
+#[tokio::test]
+async fn revoking_configure_requests_close_and_removes_its_grant() {
+    let mut h = Harness::third_party_config("account").await;
+    let (window_id, _) = open_configuration_window(&mut h).await;
+
+    let api = h.api.clone();
+    let revoking = tokio::spawn(async move {
+        api.revoke_session_permission("fixture", cap::CONFIGURE)
+            .await;
+    });
+    let close = h.next_command(ProviderOperation::ConfigurationClose).await;
+    assert_eq!(close.target_operation_id, window_id);
+    h.client
+        .host
+        .for_command(&close)
+        .unwrap()
+        .finish(configuration_result(&close))
+        .await
+        .unwrap();
+    revoking.await.unwrap();
+
+    let permissions = h.client.host.get_permissions().await.unwrap();
+    assert!(
+        !permissions
+            .grants
+            .iter()
+            .any(|grant| grant.permission_id == cap::CONFIGURE && grant.state == "granted")
+    );
+    assert_eq!(
+        h.api
+            .configure("fixture", ProviderOperation::ConfigurationOpen)
+            .await
+            .unwrap_err()
+            .code(),
+        tonic::Code::PermissionDenied
+    );
+}
+
+#[tokio::test]
+async fn switching_verified_accounts_closes_the_old_window_and_fences_its_context() {
+    let mut h = Harness::third_party_config("account").await;
+    let (window_id, old_host) = open_configuration_window(&mut h).await;
+    let old_resources = old_host.resources().unwrap();
+    assert!(old_resources.library_snapshot("").await.is_ok());
+
+    h.api.profiles().update(Some("next-account"), true);
+    assert_eq!(
+        old_resources.library_snapshot("").await.unwrap_err().code(),
+        tonic::Code::FailedPrecondition
+    );
+    let api = h.api.clone();
+    let fencing = tokio::spawn(async move { api.fence_third_party_sessions().await });
+    let close = h.next_command(ProviderOperation::ConfigurationClose).await;
+    assert_eq!(close.target_operation_id, window_id);
+    h.client
+        .host
+        .for_command(&close)
+        .unwrap()
+        .finish(configuration_result(&close))
+        .await
+        .unwrap();
+    fencing.await.unwrap();
+
+    assert!(matches!(
+        old_host.get_permissions().await,
+        Err(gamenode_plugin_sdk::DetailedError::Unauthenticated)
+    ));
+}
+
+#[tokio::test]
+async fn signing_out_closes_the_window_before_ending_the_plugin_session() {
+    let mut h = Harness::third_party_config("account").await;
+    let (window_id, _) = open_configuration_window(&mut h).await;
+
+    h.api.profiles().update(None, false);
+    let api = h.api.clone();
+    let fencing = tokio::spawn(async move { api.fence_third_party_sessions().await });
+    let close = h.next_command(ProviderOperation::ConfigurationClose).await;
+    assert_eq!(close.target_operation_id, window_id);
+    h.client
+        .host
+        .for_command(&close)
+        .unwrap()
+        .finish(configuration_result(&close))
+        .await
+        .unwrap();
+    fencing.await.unwrap();
+    assert!(!h.api.connected("fixture"));
+}
+
+async fn assert_managed_stop_closes_window(stop_plugin: bool) {
+    let mut h = Harness::third_party_config("account").await;
+    let (window_id, old_host) = open_configuration_window(&mut h).await;
+    let processes = crate::plugin_host::process::ProviderProcesses::new(
+        h.api.clone(),
+        h._temp.path().join("unused-plugin-endpoint"),
+        vec![],
+    )
+    .unwrap();
+    let stop = tokio::spawn(async move {
+        if stop_plugin {
+            processes.stop_plugin("fixture.plugin").await;
+        } else {
+            processes.stop_provider("fixture").await;
+        }
+    });
+
+    let close = h.next_command(ProviderOperation::ConfigurationClose).await;
+    assert_eq!(close.target_operation_id, window_id);
+    h.client
+        .host
+        .for_command(&close)
+        .unwrap()
+        .finish(configuration_result(&close))
+        .await
+        .unwrap();
+    stop.await.unwrap();
+
+    h.api.disconnect("fixture").await;
+    assert!(matches!(
+        old_host.get_permissions().await,
+        Err(gamenode_plugin_sdk::DetailedError::Unauthenticated)
+    ));
+}
+
+#[tokio::test]
+async fn disabling_or_removing_through_provider_stop_closes_configuration_first() {
+    // Disable and removal use stop_provider; the persisted lifecycle then disconnects the
+    // session, so a stale plugin-side configuration context cannot keep using its grants.
+    assert_managed_stop_closes_window(false).await;
+}
+
+#[tokio::test]
+async fn update_through_plugin_stop_closes_configuration_first() {
+    // Staged update uses stop_plugin, which routes each registered provider through the same
+    // close-before-stop path before replacing the process configuration.
+    assert_managed_stop_closes_window(true).await;
+}
+
+#[tokio::test]
+async fn configure_reuses_one_host_handle_for_open_focus_and_close() {
+    let mut h = Harness::third_party_config("account").await;
+
+    let api = h.api.clone();
+    let opening = tokio::spawn(async move {
+        api.configure("fixture", ProviderOperation::ConfigurationOpen)
+            .await
+    });
+    let open_command = h.next_command(ProviderOperation::ConfigurationOpen).await;
+    let handle = open_command.target_operation_id.clone();
+    assert!(!handle.is_empty());
+    h.client
+        .host
+        .for_command(&open_command)
+        .unwrap()
+        .finish(configuration_result(&open_command))
+        .await
+        .unwrap();
+    opening.await.unwrap().unwrap();
+
+    let api = h.api.clone();
+    let focusing = tokio::spawn(async move {
+        api.configure("fixture", ProviderOperation::ConfigurationOpen)
+            .await
+    });
+    let focus_command = h.next_command(ProviderOperation::ConfigurationFocus).await;
+    assert_eq!(focus_command.target_operation_id, handle);
+    h.client
+        .host
+        .for_command(&focus_command)
+        .unwrap()
+        .finish(configuration_result(&focus_command))
+        .await
+        .unwrap();
+    focusing.await.unwrap().unwrap();
+
+    let api = h.api.clone();
+    let closing = tokio::spawn(async move {
+        api.configure("fixture", ProviderOperation::ConfigurationClose)
+            .await
+    });
+    let close_command = h.next_command(ProviderOperation::ConfigurationClose).await;
+    assert_eq!(close_command.target_operation_id, handle);
+    h.client
+        .host
+        .for_command(&close_command)
+        .unwrap()
+        .finish(configuration_result(&close_command))
+        .await
+        .unwrap();
+    closing.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn rejected_focus_clears_stale_handle_for_the_next_configure_open() {
+    let mut h = Harness::third_party_config("account").await;
+    let (old_handle, _) = open_configuration_window(&mut h).await;
+
+    let api = h.api.clone();
+    let focusing = tokio::spawn(async move {
+        api.configure("fixture", ProviderOperation::ConfigurationFocus)
+            .await
+    });
+    let focus_command = h.next_command(ProviderOperation::ConfigurationFocus).await;
+    h.client
+        .host
+        .for_command(&focus_command)
+        .unwrap()
+        .finish(OperationResult {
+            disposition: OperationDisposition::Failed as i32,
+            configuration: Some(ConfigurationResult {
+                session_id: focus_command.context.as_ref().unwrap().session_id.clone(),
+                profile_id: super::super::profile::profile_id_for_account("account"),
+                window_id: old_handle.clone(),
+                accepted: false,
+                failure: "window-closed".into(),
+            }),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    focusing.await.unwrap().unwrap();
+
+    let api = h.api.clone();
+    let opening = tokio::spawn(async move {
+        api.configure("fixture", ProviderOperation::ConfigurationOpen)
+            .await
+    });
+    let open_command = h.next_command(ProviderOperation::ConfigurationOpen).await;
+    assert_ne!(open_command.target_operation_id, old_handle);
+    h.client
+        .host
+        .for_command(&open_command)
+        .unwrap()
+        .finish(configuration_result(&open_command))
+        .await
+        .unwrap();
+    opening.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn configuration_ack_timeout_does_not_block_provider_operations() {
+    let mut h = Harness::third_party_config("account").await;
+    tokio::time::pause();
+    let api = h.api.clone();
+    let opening = tokio::spawn(async move {
+        api.configure("fixture", ProviderOperation::ConfigurationOpen)
+            .await
+    });
+    let _open_command = h.next_command(ProviderOperation::ConfigurationOpen).await;
+
+    let discovery = h.execute(ProviderOperation::Discover);
+    let discovery_host = h.next(ProviderOperation::Discover).await;
+    discovery_host.finish(completed()).await.unwrap();
+    discovery.await.unwrap().unwrap();
+
+    tokio::time::advance(Duration::from_secs(5)).await;
+    let error = opening.await.unwrap().unwrap_err();
+    assert_eq!(error.code(), tonic::Code::DeadlineExceeded);
 }
 
 #[tokio::test]
@@ -195,14 +668,18 @@ async fn repeated_sign_in_does_not_invalidate_the_pending_attempt() {
 }
 
 #[tokio::test]
-async fn unsupported_operation_is_rejected_before_dispatch() {
+async fn ungranted_operation_is_denied_before_dispatch() {
     let h = Harness::new().await;
     let error = h
         .api
         .execute("fixture", ProviderOperation::ReadCounter)
         .await
         .unwrap_err();
-    assert_eq!(error.code(), tonic::Code::Unimplemented);
+    // Grant enforcement runs first: an operation outside the grant is denied, with details.
+    assert_eq!(error.code(), tonic::Code::PermissionDenied);
+    let detail = DenialDetail::decode(error.details()).unwrap();
+    assert_eq!(detail.reason, DenialReason::NotGranted as i32);
+    assert_eq!(detail.permission_id, cap::COUNTER);
     assert_eq!(h.services.reads.load(Ordering::Relaxed), 0);
 }
 
@@ -368,8 +845,48 @@ async fn mismatched_provider_result_is_rejected_without_publishing_state() {
         ..Default::default()
     });
     client.finish(result).await.unwrap();
-    assert!(operation.await.unwrap().is_err());
+    let error = operation.await.unwrap().unwrap_err();
+    assert_eq!(error.code(), tonic::Code::PermissionDenied);
+    let denial = DenialDetail::decode(error.details()).unwrap();
+    assert_eq!(denial.reason, DenialReason::ScopeDenied as i32);
+    assert_eq!(denial.permission_id, cap::DISCOVERY);
     assert_eq!(h.services.publications.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn rejected_submission_preserves_previous_successful_account_facts() {
+    let mut h = Harness::new().await;
+    let first = h.execute(ProviderOperation::Check);
+    let client = h.next(ProviderOperation::Check).await;
+    let mut accepted = completed();
+    accepted.status = Some(AccountStatus {
+        state: AccountConnection::Connected as i32,
+        account_id: Some("account-previous".into()),
+        storage: SecretStorage::PrivateFile as i32,
+        ..Default::default()
+    });
+    client.finish(accepted).await.unwrap();
+    first.await.unwrap().unwrap();
+
+    let second = h.execute(ProviderOperation::Check);
+    let client = h.next(ProviderOperation::Check).await;
+    let mut rejected = completed();
+    rejected.discovery = Some(DiscoveryResult {
+        provider_id: "foreign-provider".into(),
+        records: vec![],
+        ..Default::default()
+    });
+    client.finish(rejected).await.unwrap();
+    let error = second.await.unwrap().unwrap_err();
+    assert_eq!(error.code(), tonic::Code::PermissionDenied);
+    let denial = DenialDetail::decode(error.details()).unwrap();
+    assert_eq!(denial.reason, DenialReason::NotGranted as i32);
+    assert_eq!(denial.permission_id, cap::DISCOVERY);
+
+    let status = lock(&h.services.status).clone().unwrap();
+    assert_eq!(status.state, models::AccountState::Connected);
+    assert_eq!(status.account_id.as_deref(), Some("account-previous"));
+    assert_eq!(h.services.publications.load(Ordering::Relaxed), 1);
 }
 
 #[tokio::test]
@@ -698,4 +1215,444 @@ async fn achievement_text_with_raw_control_characters_is_still_rejected_by_the_h
         tonic::Code::InvalidArgument,
         "the host keeps its control-character rejection as defense"
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn provider_free_extension_gets_only_its_host_selected_launch_context() {
+    use gamenode_plugin_protocol::proto::TargetGameContext;
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let endpoint = temp.path().join("extension.sock");
+    let root = super::super::PluginApi::default();
+    let api = root.providers.clone();
+    api.profiles().update(Some("account-a"), true);
+    let plugin_id = "org.example.launch-helper";
+    let internal_id = super::extension_registration_id(plugin_id);
+    api.register(Registration {
+        declared_developer: "Fixture developer".into(),
+        package_digest: Vec::new(),
+        provider_id: internal_id.clone(),
+        plugin_id: plugin_id.into(),
+        kind: RegistrationKind::Extension,
+        origin: RegistrationOrigin::ThirdParty {
+            publisher_fingerprint: "ef".repeat(32),
+        },
+        capabilities: vec![
+            cap::CONTEXT.into(),
+            cap::GAME_CUSTOM_LAUNCH.into(),
+            cap::GAME_SESSIONS_REPORT.into(),
+        ],
+        shared_catalog: false,
+        playtime: super::super::package::PlaytimeCapabilities {
+            identifies_gameplay: true,
+            identifies_pauses: true,
+            without_pause_detection: Default::default(),
+        },
+        services: Arc::new(Services::default()),
+    })
+    .unwrap();
+    let runtime_sessions = Arc::new(RuntimeSessionFixture::default());
+    api.set_runtime_session_handler(runtime_sessions.clone());
+
+    let target = TargetGameContext {
+        game_id: "42".into(),
+        installation_id: "steam:123".into(),
+        profile_id: "account-a".into(),
+        revision: "target-rev-1".into(),
+    };
+    let launch = api
+        .begin_extension_launch(&internal_id, api.profiles().epoch(), target.clone())
+        .unwrap();
+    let credential: Vec<u8> = (0..launch.credential.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&launch.credential[index..index + 2], 16).unwrap())
+        .collect();
+    let server =
+        super::super::PluginApiServer::start(&tokio::runtime::Handle::current(), &endpoint, root)
+            .unwrap();
+    let mismatched = gamenode_plugin_sdk::Session::open_extension(
+        gamenode_plugin_sdk::Launch {
+            endpoint: endpoint.clone(),
+            credential: credential.clone(),
+            operation_id: "extension-launch-forged-target".into(),
+        },
+        plugin_id,
+        "1.0.0",
+        TargetGameContext {
+            game_id: "43".into(),
+            ..target.clone()
+        },
+        &[cap::GAME_CUSTOM_LAUNCH],
+    )
+    .await;
+    assert!(
+        mismatched.is_err(),
+        "the plugin cannot replace Core's target"
+    );
+    let mut session = gamenode_plugin_sdk::Session::open_extension(
+        gamenode_plugin_sdk::Launch {
+            endpoint: endpoint.clone(),
+            credential,
+            operation_id: "extension-launch".into(),
+        },
+        plugin_id,
+        "1.0.0",
+        target,
+        &[cap::GAME_CUSTOM_LAUNCH, cap::GAME_SESSIONS_REPORT],
+    )
+    .await
+    .unwrap();
+    launch.ready.await.unwrap();
+    assert!(session.host.context().provider_id.is_empty());
+    let resource_context = session.host.resource_context().unwrap().clone();
+    assert!(resource_context.provider_id.is_empty());
+    assert_eq!(resource_context.target_game.as_ref().unwrap().game_id, "42");
+
+    let report = RuntimeSessionReport {
+        correlation_id: "runtime-report-1".into(),
+        game_id: "42".into(),
+        installation_id: "steam:123".into(),
+        content_id: "rom:zelda".into(),
+        runtime_id: "runtime:snes".into(),
+        runtime_instance_id: "instance:one".into(),
+        reporter_session_id: resource_context.session_id.clone(),
+        sequence: 1,
+        observed_at: 100,
+        transition: RuntimeSessionTransition::Started as i32,
+        source_observation_id: "observation:one".into(),
+        runtime_context_id: String::new(),
+    };
+    session
+        .host
+        .report_runtime_session(report.clone())
+        .await
+        .unwrap();
+    let accepted = tokio::time::timeout(Duration::from_secs(2), session.commands.message())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        accepted.operation,
+        ProviderOperation::RuntimeSessionResult as i32
+    );
+    assert_eq!(accepted.target_operation_id, "runtime-report-1");
+    let result = accepted.runtime_session_result.unwrap();
+    assert_eq!(result.correlation_id, "runtime-report-1");
+    assert_eq!(result.outcome, RuntimeSessionOutcome::Accepted as i32);
+    assert_eq!(result.accepted_sequence, 1);
+    assert_eq!(runtime_sessions.reports.load(Ordering::Relaxed), 1);
+
+    let mut unapproved_b = report.clone();
+    unapproved_b.game_id = "84".into();
+    unapproved_b.installation_id = "steam:456".into();
+    unapproved_b.correlation_id = "runtime-report-unapproved".into();
+    assert!(matches!(
+        session.host.report_runtime_session(unapproved_b).await,
+        Err(gamenode_plugin_sdk::Error::Protocol)
+    ));
+    assert_eq!(runtime_sessions.reports.load(Ordering::Relaxed), 1);
+
+    runtime_sessions
+        .delay_next_authorization
+        .store(true, Ordering::Relaxed);
+    session
+        .host
+        .request_runtime_session_context(RuntimeSessionContextRequest {
+            correlation_id: "context-stale".into(),
+            game_id: "84".into(),
+            installation_id: "steam:456".into(),
+            runtime_id: "runtime:snes".into(),
+            runtime_instance_id: "instance:one".into(),
+            content_id: "rom:metroid".into(),
+        })
+        .await
+        .unwrap();
+    runtime_sessions.authorization_started.notified().await;
+    {
+        let mut state = api.state.lock().unwrap();
+        state
+            .sessions
+            .get_mut(&resource_context.session_id)
+            .unwrap()
+            .runtime_instances
+            .get_mut("instance:one")
+            .unwrap()
+            .last_received_at = std::time::Instant::now() - Duration::from_secs(31);
+    }
+    runtime_sessions.continue_authorization.notify_one();
+    let stale_context = tokio::time::timeout(Duration::from_secs(2), session.commands.message())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap()
+        .runtime_session_context_result
+        .unwrap();
+    assert_eq!(
+        stale_context.outcome,
+        RuntimeSessionOutcome::RejectedStale as i32
+    );
+    assert!(stale_context.runtime_context_id.is_empty());
+    {
+        let mut state = api.state.lock().unwrap();
+        state
+            .sessions
+            .get_mut(&resource_context.session_id)
+            .unwrap()
+            .runtime_instances
+            .get_mut("instance:one")
+            .unwrap()
+            .last_received_at = std::time::Instant::now();
+    }
+
+    session
+        .host
+        .request_runtime_session_context(RuntimeSessionContextRequest {
+            correlation_id: "context-b".into(),
+            game_id: "84".into(),
+            installation_id: "steam:456".into(),
+            runtime_id: "runtime:snes".into(),
+            runtime_instance_id: "instance:one".into(),
+            content_id: "rom:metroid".into(),
+        })
+        .await
+        .unwrap();
+    let context_approval = tokio::time::timeout(Duration::from_secs(2), session.commands.message())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        context_approval.operation,
+        ProviderOperation::RuntimeSessionContextResult as i32
+    );
+    let context_token = context_approval
+        .runtime_session_context_result
+        .unwrap()
+        .runtime_context_id;
+    assert!(!context_token.is_empty());
+
+    let mut report_b = report.clone();
+    report_b.correlation_id = "runtime-report-b".into();
+    report_b.game_id = "84".into();
+    report_b.installation_id = "steam:456".into();
+    report_b.content_id = "rom:metroid".into();
+    report_b.runtime_context_id = context_token.clone();
+    report_b.sequence = 2;
+    report_b.observed_at = 110;
+    report_b.transition = RuntimeSessionTransition::ContentChanged as i32;
+    report_b.source_observation_id = "observation:b".into();
+    session
+        .host
+        .report_runtime_session(report_b.clone())
+        .await
+        .unwrap();
+    let accepted_b = tokio::time::timeout(Duration::from_secs(2), session.commands.message())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        accepted_b.runtime_session_result.unwrap().outcome,
+        RuntimeSessionOutcome::Accepted as i32
+    );
+    assert_eq!(runtime_sessions.reports.load(Ordering::Relaxed), 2);
+
+    let mut forged_b = report_b;
+    forged_b.correlation_id = "runtime-report-forged".into();
+    forged_b.game_id = "85".into();
+    forged_b.sequence = 3;
+    forged_b.source_observation_id = "observation:forged".into();
+    session.host.report_runtime_session(forged_b).await.unwrap();
+    let rejected_b = tokio::time::timeout(Duration::from_secs(2), session.commands.message())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        rejected_b.runtime_session_result.unwrap().outcome,
+        RuntimeSessionOutcome::RejectedUnauthorized as i32
+    );
+    assert_eq!(runtime_sessions.reports.load(Ordering::Relaxed), 2);
+
+    session
+        .host
+        .request_runtime_session_context(RuntimeSessionContextRequest {
+            correlation_id: "context-denied".into(),
+            game_id: "85".into(),
+            installation_id: "steam:789".into(),
+            runtime_id: "runtime:snes".into(),
+            runtime_instance_id: "instance:one".into(),
+            content_id: "rom:castlevania".into(),
+        })
+        .await
+        .unwrap();
+    let denied_context = tokio::time::timeout(Duration::from_secs(2), session.commands.message())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap()
+        .runtime_session_context_result
+        .unwrap();
+    assert_eq!(
+        denied_context.outcome,
+        RuntimeSessionOutcome::RejectedUnauthorized as i32
+    );
+    assert!(denied_context.runtime_context_id.is_empty());
+
+    // A process/session restart discards the old host-issued target token. The new process must
+    // report its selected game under a new runtime instance and obtain a fresh approval for B.
+    drop(session);
+    api.disconnect(&internal_id).await;
+    let restarted_launch = api
+        .begin_extension_launch(
+            &internal_id,
+            api.profiles().epoch(),
+            resource_context.target_game.as_ref().unwrap().clone(),
+        )
+        .unwrap();
+    let restarted_credential: Vec<u8> = (0..restarted_launch.credential.len())
+        .step_by(2)
+        .map(|index| {
+            u8::from_str_radix(&restarted_launch.credential[index..index + 2], 16).unwrap()
+        })
+        .collect();
+    let mut restarted = gamenode_plugin_sdk::Session::open_extension(
+        gamenode_plugin_sdk::Launch {
+            endpoint: endpoint.clone(),
+            credential: restarted_credential,
+            operation_id: "extension-launch-restarted".into(),
+        },
+        plugin_id,
+        "1.0.0",
+        resource_context.target_game.as_ref().unwrap().clone(),
+        &[cap::GAME_CUSTOM_LAUNCH, cap::GAME_SESSIONS_REPORT],
+    )
+    .await
+    .unwrap();
+    restarted_launch.ready.await.unwrap();
+    let restarted_context = restarted.host.resource_context().unwrap();
+    let mut restarted_report = report.clone();
+    restarted_report.correlation_id = "runtime-report-restarted".into();
+    restarted_report.reporter_session_id = restarted_context.session_id.clone();
+    restarted_report.runtime_instance_id = "instance:two".into();
+    restarted_report.sequence = 1;
+    restarted_report.observed_at = 120;
+    restarted_report.source_observation_id = "observation:restarted".into();
+    restarted
+        .host
+        .report_runtime_session(restarted_report.clone())
+        .await
+        .unwrap();
+    let restarted_started =
+        tokio::time::timeout(Duration::from_secs(2), restarted.commands.message())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    assert_eq!(
+        restarted_started.runtime_session_result.unwrap().outcome,
+        RuntimeSessionOutcome::Accepted as i32
+    );
+
+    let mut old_token_report = restarted_report.clone();
+    old_token_report.correlation_id = "runtime-report-old-token".into();
+    old_token_report.game_id = "84".into();
+    old_token_report.installation_id = "steam:456".into();
+    old_token_report.content_id = "rom:metroid".into();
+    old_token_report.runtime_instance_id = "instance:two".into();
+    old_token_report.runtime_context_id = context_token.clone();
+    old_token_report.sequence = 2;
+    old_token_report.observed_at = 130;
+    old_token_report.transition = RuntimeSessionTransition::ContentChanged as i32;
+    old_token_report.source_observation_id = "observation:old-token".into();
+    restarted
+        .host
+        .report_runtime_session(old_token_report)
+        .await
+        .unwrap();
+    let old_token_result =
+        tokio::time::timeout(Duration::from_secs(2), restarted.commands.message())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    assert_eq!(
+        old_token_result.runtime_session_result.unwrap().outcome,
+        RuntimeSessionOutcome::RejectedUnauthorized as i32
+    );
+    assert_eq!(runtime_sessions.reports.load(Ordering::Relaxed), 3);
+
+    restarted
+        .host
+        .request_runtime_session_context(RuntimeSessionContextRequest {
+            correlation_id: "context-b-after-restart".into(),
+            game_id: "84".into(),
+            installation_id: "steam:456".into(),
+            runtime_id: "runtime:snes".into(),
+            runtime_instance_id: "instance:two".into(),
+            content_id: "rom:metroid".into(),
+        })
+        .await
+        .unwrap();
+    let fresh_context = tokio::time::timeout(Duration::from_secs(2), restarted.commands.message())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap()
+        .runtime_session_context_result
+        .unwrap();
+    assert_eq!(
+        fresh_context.outcome,
+        RuntimeSessionOutcome::Accepted as i32
+    );
+    assert!(!fresh_context.runtime_context_id.is_empty());
+    assert_ne!(fresh_context.runtime_context_id, context_token);
+
+    let mut fresh_report = restarted_report;
+    fresh_report.correlation_id = "runtime-report-b-after-restart".into();
+    fresh_report.game_id = "84".into();
+    fresh_report.installation_id = "steam:456".into();
+    fresh_report.content_id = "rom:metroid".into();
+    fresh_report.runtime_context_id = fresh_context.runtime_context_id;
+    fresh_report.sequence = 2;
+    fresh_report.observed_at = 140;
+    fresh_report.transition = RuntimeSessionTransition::ContentChanged as i32;
+    fresh_report.source_observation_id = "observation:b-after-restart".into();
+    restarted
+        .host
+        .report_runtime_session(fresh_report)
+        .await
+        .unwrap();
+    let fresh_result = tokio::time::timeout(Duration::from_secs(2), restarted.commands.message())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        fresh_result.runtime_session_result.unwrap().outcome,
+        RuntimeSessionOutcome::Accepted as i32
+    );
+    assert_eq!(runtime_sessions.reports.load(Ordering::Relaxed), 4);
+
+    api.replace_session_grants(&restarted_context.session_id, BTreeSet::new())
+        .await
+        .unwrap();
+    assert!(!api.connected(&internal_id));
+    assert!(
+        api.authorize_resource_session(Some(restarted_context))
+            .is_err()
+    );
+    assert_eq!(runtime_sessions.reports.load(Ordering::Relaxed), 4);
+
+    drop(restarted);
+    api.disconnect(&internal_id).await;
+    assert!(matches!(
+        api.begin_launch(&internal_id),
+        Err(error) if error.code() == tonic::Code::PermissionDenied
+    ));
+    drop(server);
 }

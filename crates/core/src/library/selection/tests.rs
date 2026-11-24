@@ -235,6 +235,21 @@ fn grouped_grid_navigation_starts_each_group_on_a_new_line_and_clamps_columns() 
 #[test]
 fn grouped_navigation_skips_collapsed_groups_through_the_machine() {
     let mut machine = library_of(4);
+    let manifest = |id: &str| {
+        format!(
+            "id = \"{id}\"\nname = \"{}\"\nplatforms = [\"windows\", \"linux\"]\nsource = \"{id}\"\nscan = {{ native = \"manual\" }}\n",
+            id.to_uppercase()
+        )
+    };
+    let (gog, shop) = (manifest("gog"), manifest("shop"));
+    let loaded = crate::provider::registry::tests::load(
+        &[("gog.toml", &gog), ("shop.toml", &shop)],
+        crate::provider::Platform::Linux,
+    );
+    assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+    for provider in loaded.providers {
+        machine.put_provider(provider);
+    }
     for (provider, title) in [("gog", "GOG Game"), ("shop", "Shop Game")] {
         machine.entries.insert(
             format!("{provider}:1"),
@@ -245,6 +260,7 @@ fn grouped_navigation_skips_collapsed_groups_through_the_machine() {
                 name: Some(title.to_owned()),
                 install_dir: format!("/{provider}"),
                 fields: Default::default(),
+                target: None,
                 installed: true,
                 owned: false,
                 shared: false,

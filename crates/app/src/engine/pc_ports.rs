@@ -75,6 +75,14 @@ pub enum PortsEvent {
 /// tests inject a fake to check the planning and wiring without touching a disk or the network.
 pub trait InstallRunner: Send + Sync {
     fn enqueue(&self, request: InstallJobRequest) -> Result<(), JobError>;
+    fn enqueue_checked(
+        &self,
+        _request: InstallJobRequest,
+        _check: gamenode_platform::ports::job_runner::InstallAuthority,
+    ) -> Result<(), JobError> {
+        Err(JobError::Closed)
+    }
+
     fn cancel(&self, job_id: &str) -> bool;
     fn complete_with_executable(&self, job_id: &str, executable: &str) -> Result<(), JobError>;
     fn awaiting_jobs(&self) -> Result<Vec<PortJobRow>, JobError>;
@@ -86,6 +94,14 @@ pub trait InstallRunner: Send + Sync {
 }
 
 impl InstallRunner for JobRunner {
+    fn enqueue_checked(
+        &self,
+        request: InstallJobRequest,
+        check: gamenode_platform::ports::job_runner::InstallAuthority,
+    ) -> Result<(), JobError> {
+        JobRunner::enqueue_checked(self, request, check)
+    }
+
     fn enqueue(&self, request: InstallJobRequest) -> Result<(), JobError> {
         JobRunner::enqueue(self, request)
     }
@@ -266,6 +282,8 @@ impl From<LocalError> for PortsError {
 #[derive(Clone, Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PortInstallRequest {
+    #[serde(default)]
+    pub plugin_request_id: Option<String>,
     pub catalog_id: String,
     /// Parent folder chosen by the user; the host creates a subfolder inside it.
     pub parent_folder: String,
@@ -769,21 +787,47 @@ impl PortsService {
         if !self.is_supported() {
             return Err(PortsError::Unsupported);
         }
-        let runner = lock(&self.inner).runner.clone();
-        let Some(runner) = runner else {
-            return Err(PortsError::Unavailable(
-                "the install worker is not available".into(),
-            ));
-        };
+        self.install_inner(request, None)
+    }
+
+    pub(super) fn install_checked(
+        &self,
+        request: &PortInstallRequest,
+        check: crate::plugin_host::jobs::Fence,
+    ) -> Result<Option<String>, PortsError> {
+        self.install_inner(request, Some(check))
+    }
+
+    fn install_inner(
+        &self,
+        request: &PortInstallRequest,
+        check: Option<crate::plugin_host::jobs::Fence>,
+    ) -> Result<Option<String>, PortsError> {
+        if let Some(check) = &check {
+            check()
+                .map_err(|_| PortsError::Unavailable("port request no longer authorized".into()))?;
+        }
+        let runner = lock(&self.inner)
+            .runner
+            .clone()
+            .ok_or_else(|| PortsError::Unavailable("install worker unavailable".into()))?;
         self.wait_ready();
         let prepared = self.prepare_install(request)?;
+        if let Some(check) = &check {
+            check()
+                .map_err(|_| PortsError::Unavailable("port request no longer authorized".into()))?;
+        }
         {
             // Clearing the cache and queueing an install exclude each other, so a clear cannot
             // start between this job's active check and its cache use.
             let _gate = lock(&self.cache_gate);
-            runner
-                .enqueue(prepared.clone())
-                .map_err(|error| PortsError::Unavailable(error.to_string()))?;
+            match check {
+                Some(check) => {
+                    runner.enqueue_checked(prepared.clone(), Arc::new(move || check().is_ok()))
+                }
+                None => runner.enqueue(prepared.clone()),
+            }
+            .map_err(|error| PortsError::Unavailable(error.to_string()))?;
         }
         // Remembering the folder is a convenience; a failed write must not report the queued
         // install as failed.
@@ -802,6 +846,10 @@ impl PortsService {
             "queued a PC port install"
         );
         Ok(Some(prepared.job_id))
+    }
+
+    pub(super) fn plugin_job(&self, id: &str) -> Result<Option<PortJobRow>, PortsError> {
+        Ok(self.config.store.job(id)?)
     }
 
     /// The executable follow-up for a job whose recipe had no launchable file. Blocking.
@@ -1151,7 +1199,7 @@ impl PortsService {
         }
     }
 
-    fn build_view(&self) -> Result<PortsView, PortsError> {
+    pub(super) fn build_view(&self) -> Result<PortsView, PortsError> {
         let (catalog, facts, active) = {
             let inner = lock(&self.inner);
             (
@@ -1615,7 +1663,7 @@ impl PortProgressPublisher {
 // ---------------------------------------------------------------------------------------------
 
 impl Engine {
-    fn ports_service(&self) -> Option<Arc<PortsService>> {
+    pub(super) fn ports_service(&self) -> Option<Arc<PortsService>> {
         self.shared.ports.pc_ports.clone()
     }
 
@@ -1736,9 +1784,21 @@ impl Engine {
         let Some(service) = self.ports_service() else {
             return Err(PortsError::Unsupported);
         };
-        tokio::task::spawn_blocking(move || service.install(&request))
-            .await
-            .map_err(|_| PortsError::NotReady)?
+        let check = self.plugin_port_install_check(&request)?;
+        let engine = self.clone();
+        let request_id = request.plugin_request_id.clone();
+        tokio::task::spawn_blocking(move || {
+            let result = match check {
+                Some(check) => service.install_checked(&request, check),
+                None => service.install(&request),
+            };
+            if let Some(id) = request_id {
+                engine.plugin_port_enqueued(&id, &result);
+            }
+            result
+        })
+        .await
+        .map_err(|_| PortsError::NotReady)?
     }
 
     /// The executable follow-up of a completed install. The native dialog runs on a worker.

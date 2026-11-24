@@ -438,7 +438,11 @@ struct QueuedJob {
     cancel: Arc<AtomicBool>,
 }
 
+pub type InstallAuthority = Arc<dyn Fn() -> bool + Send + Sync>;
+
+#[derive(Default)]
 struct Shared {
+    authorities: Mutex<HashMap<String, InstallAuthority>>,
     queue: Mutex<VecDeque<QueuedJob>>,
     /// Every queued or running job. Removed once the job is terminal.
     cancels: Mutex<HashMap<String, Arc<AtomicBool>>>,
@@ -473,9 +477,33 @@ pub struct JobRunner {
 }
 
 impl JobRunner {
+    pub fn enqueue_checked(
+        &self,
+        request: InstallJobRequest,
+        check: InstallAuthority,
+    ) -> Result<(), JobError> {
+        if !check() {
+            return Err(JobError::Closed);
+        }
+        let id = request.job_id.clone();
+        {
+            let mut authorities = lock(&self.shared.authorities);
+            if authorities.contains_key(&id) {
+                return Err(JobError::DuplicateJob { job_id: id });
+            }
+            authorities.insert(id.clone(), check);
+        }
+        let result = self.enqueue(request);
+        if result.is_err() {
+            lock(&self.shared.authorities).remove(&id);
+        }
+        result
+    }
+
     /// Creates the single install worker thread. The callback runs on that thread.
     pub fn start(config: JobRunnerConfig) -> Self {
         let shared = Arc::new(Shared {
+            authorities: Mutex::new(HashMap::new()),
             queue: Mutex::new(VecDeque::new()),
             cancels: Mutex::new(HashMap::new()),
             awaiting: Mutex::new(HashSet::new()),
@@ -756,6 +784,9 @@ fn execute(config: &JobRunnerConfig, shared: &Shared, job: QueuedJob) {
     let job_id = context.job.id.clone();
     *lock(&shared.active) = None;
     lock(&shared.cancels).remove(&job_id);
+    if !awaiting {
+        lock(&shared.authorities).remove(&job_id);
+    }
     if awaiting {
         if cancel.load(Ordering::SeqCst) {
             // A cancel that arrived as the job entered the waiting phase still removes its files.
@@ -834,6 +865,7 @@ impl<'a> JobContext<'a> {
     /// Saves a new phase and reports it. Illegal transitions are prevented by the core state
     /// machine, so one is a runner bug, not a user-facing failure.
     fn set_phase(&mut self, phase: PortJobPhase) -> Result<(), InstallError> {
+        self.check_cancelled()?;
         self.job.phase = self
             .job
             .phase
@@ -841,6 +873,11 @@ impl<'a> JobContext<'a> {
             .map_err(|error| InstallError::Internal(error.to_string()))?;
         self.job.updated_at = self.now();
         self.config.store.save_job(&self.job)?;
+        // Register the wait before the phase event, so a user pick that follows the event cannot
+        // race the worker's own bookkeeping.
+        if self.job.phase == PortJobPhase::AwaitingExecutable {
+            lock(&self.shared.awaiting).insert(self.job.id.clone());
+        }
         self.emit_phase();
         Ok(())
     }
@@ -856,7 +893,7 @@ impl<'a> JobContext<'a> {
         // The row was stored by `enqueue`; report the queued phase from the worker so the app's
         // callback only ever runs on one thread.
         self.emit_phase();
-        if self.shared.quitting.load(Ordering::SeqCst) || self.cancel.load(Ordering::SeqCst) {
+        if self.shared.quitting.load(Ordering::SeqCst) || self.check_cancelled().is_err() {
             self.finish_cancelled();
             return;
         }
@@ -1354,7 +1391,7 @@ impl<'a> JobContext<'a> {
         if self.shared.quitting.load(Ordering::SeqCst) {
             return;
         }
-        if self.cancel.load(Ordering::SeqCst) {
+        if self.check_cancelled().is_err() {
             self.finish_cancelled();
             return;
         }
@@ -1365,7 +1402,7 @@ impl<'a> JobContext<'a> {
                 return;
             }
         };
-        if self.cancel.load(Ordering::SeqCst) {
+        if self.check_cancelled().is_err() {
             self.finish_cancelled();
             return;
         }
@@ -1461,7 +1498,8 @@ impl<'a> JobContext<'a> {
     }
 
     fn check_cancelled(&self) -> Result<(), InstallError> {
-        if self.cancel.load(Ordering::SeqCst) {
+        let authority = lock(&self.shared.authorities).get(&self.job.id).cloned();
+        if self.cancel.load(Ordering::SeqCst) || authority.is_some_and(|check| !check()) {
             Err(InstallError::Cancelled)
         } else {
             Ok(())
@@ -1469,6 +1507,10 @@ impl<'a> JobContext<'a> {
     }
 
     fn finish_completed(&mut self, registration: Registration, installation: PortInstallation) {
+        if self.check_cancelled().is_err() {
+            self.finish_cancelled();
+            return;
+        }
         let now = self.now();
         let mut completed = self.job.clone();
         let phase = match completed.phase.transition(PortJobPhase::Completed) {
@@ -1615,6 +1657,7 @@ fn cleanup_job(store: &dyn PortStore, job: &PortJobRow) -> Option<String> {
 
 /// Ends a job that waits for an executable pick: removes its files and marks it `Cancelled`.
 fn cancel_awaiting(config: &JobRunnerConfig, shared: &Shared, job_id: &str) {
+    lock(&shared.authorities).remove(job_id);
     let job = match config.store.job(job_id) {
         Ok(Some(job)) => job,
         Ok(None) => {
@@ -1731,6 +1774,9 @@ fn complete_awaiting(
     let awaiting = context.job.phase == PortJobPhase::AwaitingExecutable;
     *lock(&shared.active) = None;
     lock(&shared.cancels).remove(&job_id);
+    if !awaiting {
+        lock(&shared.authorities).remove(&job_id);
+    }
     if awaiting {
         lock(&shared.awaiting).insert(job_id);
     }

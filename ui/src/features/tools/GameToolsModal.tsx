@@ -237,7 +237,7 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
       testId="game-tools-modal"
       footerNote={footerNote}
       footerLeading={
-        isInstalled ? (
+        isInstalled && (!modal.pluginRequest || modal.pluginRequest.remove) ? (
           <Button
             size="sm"
             variant="danger"
@@ -262,7 +262,7 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
             {t('tools.cancel')}
           </Button>
 
-          {isInstalled ? (
+          {!modal.pluginRequest?.remove && isInstalled ? (
             <Button
               size="sm"
               variant="primary"
@@ -277,7 +277,7 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
                 ? t('tools.updating')
                 : t('tools.updateTool', { tool: catalogItem.name })}
             </Button>
-          ) : (
+          ) : !modal.pluginRequest?.remove ? (
             <Button
               size="sm"
               variant="primary"
@@ -292,10 +292,19 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
                 ? t('tools.installing')
                 : t('tools.installTool', { tool: catalogItem.name })}
             </Button>
-          )}
+          ) : null}
         </>
       }
     >
+      {modal.pluginRequest ? (
+        <Callout tone="neutral" title={modal.pluginRequest.pluginId}>
+          <p className="break-all text-xs">{modal.pluginRequest.publisherFingerprint}</p>
+          <p>{t(
+            modal.pluginRequest.remove ? 'tools.pluginRemoveRequest' : 'tools.pluginApplyRequest',
+            { plugin: modal.pluginRequest.pluginId },
+          )}</p>
+        </Callout>
+      ) : null}
       <div data-testid="tool-catalog-card">
         <InsetCard
           icon={IconBolt}

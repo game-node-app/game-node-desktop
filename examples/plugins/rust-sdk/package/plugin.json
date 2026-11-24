@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "id": "org.example.gamenode.rust-mvp",
+  "kind": "provider",
+  "provider_id": "example-rust",
+  "name": "GameNode Rust SDK Example",
+  "version": "0.1.0",
+  "api": { "min": "1.6.0", "max": "1.6.0" },
+  "permissions": [
+    { "id": "provider.context.read", "required": true, "scope": "own-provider", "reason": "Read the host-issued provider context." },
+    { "id": "library.discovery", "required": false, "scope": "own-provider", "reason": "Report fictional installed-game fixtures." },
+    { "id": "library.catalog", "required": false, "scope": "own-provider", "reason": "Report fictional catalog fixtures." },
+    { "id": "playtime.counter", "required": false, "scope": "own-provider", "reason": "Report a fictional playtime counter." }
+  ],
+  "targets": [
+    { "os": "linux", "arch": "x86_64", "abi": "gnu", "entrypoint": "bin/linux-x64/plugin" }
+  ],
+  "publisher": {
+    "key_id": "example-rust-publisher",
+    "public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+  },
+  "license": {
+    "expression": "MIT",
+    "files": ["licenses/LICENSE"],
+    "notices": ["licenses/THIRD-PARTY-NOTICES.txt"]
+  }
+}

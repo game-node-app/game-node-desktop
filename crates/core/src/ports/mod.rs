@@ -149,6 +149,9 @@ pub enum UriError {
     NoHandler,
     #[error("the link could not be opened")]
     Failed,
+    /// The operating-system URI handler cannot apply the requested execution customization.
+    #[error("URI handlers cannot apply this launch customization")]
+    Unsupported,
 }
 
 /// Hands one provider-declared URI (`steam://rungameid/620`) to the OS handler for its scheme.
@@ -158,6 +161,22 @@ pub enum UriError {
 /// may block until the OS has accepted the URI; run them on a blocking worker.
 pub trait UriOpener: Send + Sync {
     fn open(&self, uri: &Url) -> Result<(), UriError>;
+
+    /// Opens a custom URI only when the handler can honor every supplied execution field.
+    /// Existing handlers support only the URI itself; they must not silently ignore argv, cwd or
+    /// environment changes.
+    fn open_custom(
+        &self,
+        uri: &Url,
+        arguments: &[String],
+        working_directory: &str,
+        environment: &crate::drm_free::LaunchEnvironmentDelta,
+    ) -> Result<(), UriError> {
+        if !arguments.is_empty() || !working_directory.is_empty() || !environment.is_empty() {
+            return Err(UriError::Unsupported);
+        }
+        self.open(uri)
+    }
 }
 
 /// Read-only file access for provider scanners.

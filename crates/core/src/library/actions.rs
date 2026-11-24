@@ -20,6 +20,10 @@ pub enum Reason {
     NothingSelected,
     /// The action works on one game at a time.
     MultipleSelected,
+    /// The detected executable has not been approved by the user.
+    TargetNeedsApproval,
+    /// The detected target is missing or failed host validation; repair is available in details.
+    TargetUnavailable,
     /// The provider declares no launch rule.
     NoLaunchRule,
     NoInstallRule,
@@ -129,6 +133,14 @@ impl LibraryMachine {
         let record = entry.record();
         let play = if self.running.contains_key(key) {
             Availability::Disabled(Reason::Running)
+        } else if let Some(target) = entry.target.as_ref() {
+            if !target.available {
+                Availability::Disabled(Reason::TargetUnavailable)
+            } else if !target.approved {
+                Availability::Disabled(Reason::TargetNeedsApproval)
+            } else {
+                Availability::Available
+            }
         } else {
             rule(
                 provider.is_some_and(|p| p.has_launch()),

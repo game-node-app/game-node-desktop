@@ -291,7 +291,7 @@ impl Engine {
                         return;
                     }
                     StepOutcome::Rejected => {
-                        engine.check_rejected(true);
+                        engine.check_rejected(true).await;
                         return;
                     }
                 }

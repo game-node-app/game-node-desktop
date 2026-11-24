@@ -197,7 +197,7 @@ Rules for every group:
   reach each state.
 - [x] 9.3 Run `cargo test --locked -p gamenode-core -p gamenode-platform -p gamenode-app`, the plugin crate
   tests, `pnpm --dir ui test --run` and `openspec validate redesign-desktop-settings --strict`; all pass.
-- [ ] 9.4 Native Windows acceptance with `scripts/install-windows-wsl.sh`: autostart off removes the `Run` value
+- [ ] 9.4 **Native Windows acceptance.** Remaining native Windows acceptance with `scripts/install-windows-wsl.sh`: autostart off removes the `Run` value
   and on rewrites it (with and without `--background`); Windows Startup-apps disable still wins; close with
   the tray preference off quits and ends a running session; language switch relabels the tray menu; record
   results in the change.

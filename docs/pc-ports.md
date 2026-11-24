@@ -281,8 +281,8 @@ can run. GameNode only checks that the folder has `eboot.bin` and `sce_sys/param
 ### The pinned PS4 PKG extractor (task 1.2)
 
 The overlay pins [`paulomanrique/ps4-pkg-extractor`](https://github.com/paulomanrique/ps4-pkg-extractor).
-It is a small command-line tool with an open licence that runs on Windows and fails with a
-clear message for an encrypted retail package.
+It is a small command-line tool with an open licence that runs on Windows, and GameNode
+maps its decryption failures to a clear encrypted-package message.
 
 | Finding | Value |
 | --- | --- |
@@ -294,11 +294,41 @@ clear message for an encrypted retail package.
 | Executable inside the tool folder | `pkgextract.exe`, at the archive root |
 | Argument template | `["{package}", "-o", "{out}", "--overwrite"]` |
 
+The public metadata was checked against the GitHub release on 2026-11-21: the release
+`v0.0.1` (published 2026-03-06) publishes
+`pkgextract-x86_64-pc-windows-msvc.zip` with the API digest
+`sha256:0c736ee02779fb5cf4403a91da23f94fdaa72debf995be0c400ac9c36acee63a`, which matches
+the overlay pin. The README documents the `pkgextract.exe` binary and the
+`pkgextract <file.pkg>` usage; the source shows `-o/--output` and `-f/--overwrite`, so the
+long `--overwrite` in the template is accepted. The Unlicense text is in the repository.
+
+### Extractor evaluation
+
+Public command-line extractors were compared for a Windows build, a clear licence, CLI
+use, output layout and update handling. Only the selected tool is pinned; the others are
+recorded so a future overlay update can revisit the choice.
+
+| Candidate | Licence | Windows CLI | Output and update handling | Decision |
+| --- | --- | --- | --- | --- |
+| `paulomanrique/ps4-pkg-extractor` `v0.0.1` | Unlicense | `.zip` with `pkgextract.exe` | Writes the game tree directly under `-o <folder>`; one package per run and no merge, so GameNode merges the update (D8) | **Pinned** |
+| `Antti/orbis` `v0.6.0` | Apache-2.0 | `.zip` with the `orbis` CLI | `extract` writes the game tree; `install update.pkg --base ... --merge` merges in place but needs a prior extraction and keeps a `.orbis-install` sidecar, so it is a stateful two-command flow that does not fit the single-run `{package}`/`{update}`/`{out}` template | Not pinned; candidate for a future overlay update |
+| `mathisto/pkgextract` | LGPL-3.0 | Single-file `PkgTool.exe` | Writes game files under `<output>\uroot`, so the recipe would need a fixed subfolder | Not pinned |
+| `murums04/ps4-pkg-extractor-ui` | GPL-3.0 | No; desktop GUI | Queues games and updates into title folders, but is not scriptable | Not pinned |
+
+`paulomanrique/ps4-pkg-extractor` was chosen because its output lands at the slot's
+output root, its single-package CLI maps directly to `{package}` and `{out}`, and its
+Unlicense has no redistribution conditions for the pinned helper. Its dependency on
+`orbis-pkg-util` (MIT OR Apache-2.0) skips package entries whose key it lacks and reports
+decryption failures from the package or PFS layer. The runner maps output that names an
+encrypted package, a decryption failure or a missing key to the encrypted-package failure
+below; if the tool fails without naming encryption, the output folder fails the slot's
+markers and the job reports the missing markers instead.
+
 The tool's usage is `pkgextract <package.pkg> -o <folder>`. It takes **one package per
 run** and has no update or merge option. It also refuses an output folder that already
 exists unless `--overwrite` is passed; the runner pre-creates an empty output folder, so
-the template must keep that flag. Those facts were checked against a base and update
-package from a dump the developer owns on Windows:
+the template must keep that flag. The maintainer's Windows check, recorded here when the
+pin was authored, used a base and update package from a dump the developer owns:
 
 - the base package produced 28,830 files (31.5 GB);
 - the update package produced a partial tree of 442 files: 423 replace files in the base
@@ -436,8 +466,10 @@ process group elsewhere) so cancelling or quitting kills its process tree. Its w
 directory is the staging folder. Its arguments come only from the overlay template:
 `{package}`, `{update}` and `{out}` are replaced with canonicalized paths, each as its own
 argument, and no other braces are allowed. Combined stdout and stderr keep the last
-64 KiB for the failure details. If the output looks like an encrypted retail package, the
-job fails with a message that GameNode ships no keys.
+64 KiB for the failure details. A single run is stopped after six hours by default, so a
+hung tool cannot hold the install worker; the timeout and cancellation are polled every
+25 ms and either one kills the whole process tree. If the output looks like an encrypted
+retail package, the job fails with a message that GameNode ships no keys.
 
 A tool that takes one package per run is run twice when the slot has an update. The base
 extracts straight into the slot's output folder. The update extracts into

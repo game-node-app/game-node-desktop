@@ -38,6 +38,30 @@ fn play_opens_the_launch_uri_and_install_the_install_uri() {
 }
 
 #[test]
+fn uri_handlers_reject_execution_fields_they_cannot_apply() {
+    let opener = FakeOpener::default();
+    let uri = Url::parse("steam://rungameid/620").unwrap();
+    let environment = crate::drm_free::LaunchEnvironmentDelta {
+        set: [("CUSTOM_VALUE".into(), "value".into())].into(),
+        unset: Default::default(),
+    };
+
+    assert_eq!(
+        opener.open_custom(&uri, &["--custom".into()], "", &Default::default()),
+        Err(UriError::Unsupported)
+    );
+    assert_eq!(
+        opener.open_custom(&uri, &[], "C:\\Games", &Default::default()),
+        Err(UriError::Unsupported)
+    );
+    assert_eq!(
+        opener.open_custom(&uri, &[], "", &environment),
+        Err(UriError::Unsupported)
+    );
+    assert!(opener.opened.lock().unwrap().is_empty());
+}
+
+#[test]
 fn ids_are_encoded_so_they_cannot_change_the_uri() {
     let opener = FakeOpener::default();
     let hostile = record("620/../x?y=1#z", "Hostile", "/g");

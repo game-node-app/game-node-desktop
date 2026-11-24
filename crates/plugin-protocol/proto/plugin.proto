@@ -1,9 +1,15 @@
 syntax = "proto3";
 package gamenode.plugin.v1;
 
+import "google/protobuf/struct.proto";
+
 service PluginHost {
   rpc OpenSession (OpenSessionRequest) returns (OpenSessionReply);
   rpc SubmitDiscovery (SubmitDiscoveryRequest) returns (SubmitDiscoveryReply);
+  // Authenticated control-plane methods; they never require data permissions.
+  rpc DescribeApi (DescribeApiRequest) returns (DescribeApiReply);
+  rpc GetPermissions (GetPermissionsRequest) returns (GetPermissionsReply);
+  rpc WatchPermissionChanges (WatchPermissionChangesRequest) returns (stream PermissionChange);
 }
 
 message OpenSessionRequest {
@@ -13,6 +19,14 @@ message OpenSessionRequest {
   uint32 api_minor = 4;
   bytes session_credential = 5;
   repeated string requested_capabilities = 6;
+  // API 1.6+: range and feature fields. Empty range preserves API 1.1–1.5 behavior.
+  uint32 min_api_major = 7;
+  uint32 min_api_minor = 8;
+  uint32 max_api_major = 9;
+  uint32 max_api_minor = 10;
+  repeated FeatureRequest features = 11;
+  SessionKind session_kind = 12;
+  optional TargetGameContext target_game = 13;
 }
 
 message OpenSessionReply {
@@ -20,6 +34,143 @@ message OpenSessionReply {
   repeated string granted_capabilities = 2;
   uint32 api_major = 3;
   uint32 api_minor = 4;
+  repeated FeatureStatus features = 5;
+  SupportWindow support_window = 6;
+  // API 1.6+: the host-issued context for plugin-initiated resource calls
+  // (ResourceHost). It is bound to this session, its kind and target game and
+  // the active profile; it carries no authority beyond the session's grants.
+  // Absent for sessions that negotiated an earlier minor.
+  ServiceContext resource_context = 7;
+}
+
+enum SessionKind {
+  SESSION_KIND_UNSPECIFIED = 0;
+  SESSION_KIND_PROVIDER = 1;
+  SESSION_KIND_EXTENSION = 2;
+}
+
+message TargetGameContext {
+  string game_id = 1;
+  string installation_id = 2;
+  string profile_id = 3;
+  string revision = 4;
+}
+
+message FeatureRequest {
+  string id = 1;
+  bool required = 2;
+}
+
+enum FeatureAvailability {
+  FEATURE_AVAILABILITY_UNSPECIFIED = 0;
+  FEATURE_AVAILABILITY_SUPPORTED = 1;
+  FEATURE_AVAILABILITY_UNSUPPORTED = 2;
+  FEATURE_AVAILABILITY_DENIED = 3;
+}
+
+message FeatureStatus {
+  string id = 1;
+  FeatureAvailability availability = 2;
+  uint32 introduced_minor = 3;
+}
+
+message SupportWindow {
+  uint32 minimum_api_minor = 1;
+  uint32 maximum_api_minor = 2;
+  optional int64 support_ends_at = 3;
+  string policy = 4;
+}
+
+message ApiFeature {
+  string id = 1;
+  uint32 introduced_minor = 2;
+  repeated string permissions = 3;
+  bool optional = 4;
+  string availability = 5;
+}
+
+message ApiMethod {
+  string service = 1;
+  string method = 2;
+  uint32 introduced_minor = 3;
+  repeated string permissions = 4;
+  string ownership = 5;
+  uint32 max_page_size = 6;
+  uint64 quota_bytes = 7;
+  bool idempotent = 8;
+}
+
+message DescribeApiRequest {
+  string session_id = 1;
+  bytes session_credential = 2;
+}
+message DescribeApiReply {
+  uint32 api_major = 1;
+  uint32 api_minor = 2;
+  SupportWindow support_window = 3;
+  repeated ApiFeature features = 4;
+  repeated ApiMethod methods = 5;
+}
+
+message GetPermissionsRequest {
+  string session_id = 1;
+  bytes session_credential = 2;
+}
+message PermissionGrant {
+  string permission_id = 1;
+  string state = 2;
+  string scope = 3;
+  string reason = 4;
+  uint64 revision = 5;
+}
+message GetPermissionsReply {
+  uint64 revision = 1;
+  repeated PermissionGrant grants = 2;
+}
+message WatchPermissionChangesRequest {
+  string session_id = 1;
+  bytes session_credential = 2;
+  uint64 after_revision = 3;
+}
+message PermissionChange {
+  uint64 revision = 1;
+  repeated PermissionGrant grants = 2;
+  bool revoked = 3;
+}
+
+enum DenialReason {
+  DENIAL_REASON_UNSPECIFIED = 0;
+  DENIAL_REASON_NOT_GRANTED = 1;
+  DENIAL_REASON_REVOKED = 2;
+  DENIAL_REASON_SCOPE_DENIED = 3;
+  DENIAL_REASON_REQUIRED_PERMISSION_MISSING = 4;
+}
+message DenialDetail {
+  DenialReason reason = 1;
+  string permission_id = 2;
+  uint64 grant_revision = 3;
+}
+
+// A launch target a provider detected for one of its own games (API 1.6). It is additive to
+// `DeclareActions`: the legacy URI-only declaration keeps its bytes and semantics, and a
+// detected target is only registered, never started, by submitting it. An executable target is
+// relative to the record's install folder and needs the user's approval before Play can run it.
+message DetectedExecutable {
+  // Path relative to the record's install folder. Absolute paths, `..` and control characters
+  // are rejected by the host.
+  string path = 1;
+  // Literal arguments, in launch order. Never a shell string.
+  repeated string arguments = 2;
+  // Folder relative to the install folder; empty means the install folder itself.
+  string working_directory = 3;
+}
+
+message DetectedTarget {
+  oneof target {
+    // A URI the provider's own client handles.
+    string uri = 1;
+    DetectedExecutable executable = 2;
+  }
 }
 
 message DiscoveryRecord {
@@ -27,6 +178,8 @@ message DiscoveryRecord {
   string name = 2;
   string install_dir = 3;
   map<string, string> fields = 4;
+  // Optional typed target. Registration alone never starts a process.
+  DetectedTarget target = 5;
 }
 
 message DiscoveryResult {
@@ -70,6 +223,729 @@ service ProviderHost {
   rpc DeclareActions (ActionRequest) returns (ActionReply);
 }
 
+// API 1.6 resource surface. Every request is scoped to a host-issued session
+// and operation; implementations must recheck grants/revisions at commit.
+service ResourceHost {
+  rpc LibraryList (LibraryListRequest) returns (LibraryListReply);
+  rpc LibraryGet (LibraryGetRequest) returns (LibraryGetReply);
+  rpc LibraryWatch (LibraryWatchRequest) returns (stream LibraryEvent);
+  rpc MetadataUpdate (MetadataUpdateRequest) returns (MutationReply);
+  rpc FavoritesList (FavoritesListRequest) returns (FavoritesListReply);
+  rpc FavoritesSet (FavoritesSetRequest) returns (MutationReply);
+  rpc MatchingSearch (MatchingSearchRequest) returns (MatchingSearchReply);
+  rpc MatchingAssign (MatchingAssignRequest) returns (MutationReply);
+  rpc ArtworkRead (ArtworkReadRequest) returns (ArtworkReadReply);
+  rpc ArtworkSet (ArtworkSetRequest) returns (MutationReply);
+  rpc GamesRequestLaunch (GameLaunchRequest) returns (GameLaunchReply);
+  rpc GamesProposeCustomLaunch (CustomLaunchRequest) returns (CustomLaunchReply);
+  rpc GamesRequestCustomLaunch (CustomLaunchRequest) returns (CustomLaunchReply);
+  rpc GamesRemoveCustomLaunch (CustomLaunchRemoveRequest) returns (MutationReply);
+  rpc GamesRequestInstall (GameInstallRequest) returns (JobReply);
+  rpc StorageGet (StorageGetRequest) returns (StorageGetReply);
+  rpc StoragePut (StoragePutRequest) returns (StorageMutationReply);
+  rpc StorageDelete (StorageDeleteRequest) returns (MutationReply);
+  rpc FilesRequestAccess (FilesRequestAccessRequest) returns (FileAccessReply);
+  rpc FilesList (FilesListRequest) returns (FilesListReply);
+  rpc FilesRead (FilesReadRequest) returns (FileReadReply);
+  rpc FilesWrite (FilesWriteRequest) returns (MutationReply);
+  rpc FilesDelete (FilesDeleteRequest) returns (MutationReply);
+  rpc NetworkFetch (NetworkFetchRequest) returns (NetworkFetchReply);
+  rpc NotificationsPublish (NotificationPublishRequest) returns (MutationReply);
+  rpc BackupsList (BackupsListRequest) returns (BackupsListReply);
+  rpc BackupsRequestCreate (BackupCreateRequest) returns (JobReply);
+  rpc BackupsRequestRestore (BackupRestoreRequest) returns (JobReply);
+  rpc LibrariesList (DomainListRequest) returns (LibrariesListReply);
+  rpc LibrariesGet (DomainGetRequest) returns (LibraryRecordReply);
+  rpc LibrariesWatch (DomainWatchRequest) returns (stream LibraryRecordEvent);
+  rpc LibrariesCreate (LibraryCreateRequest) returns (LibraryMutationReply);
+  rpc LibrariesUpdate (LibraryUpdateRequest) returns (LibraryMutationReply);
+  rpc LibrariesRemove (DomainRemoveRequest) returns (MutationReply);
+  rpc LibrariesAddRoot (LibraryRootAddRequest) returns (LibraryMutationReply);
+  rpc LibrariesUpdateRoot (LibraryRootUpdateRequest) returns (LibraryMutationReply);
+  rpc LibrariesRemoveRoot (LibraryRootRemoveRequest) returns (MutationReply);
+  rpc RuntimesList (DomainListRequest) returns (RuntimesListReply);
+  rpc RuntimesGet (DomainGetRequest) returns (RuntimeRecordReply);
+  rpc RuntimesWatch (DomainWatchRequest) returns (stream RuntimeRecordEvent);
+  rpc RuntimesRequestAccess (RuntimeRequestAccessRequest) returns (RuntimeMutationReply);
+  rpc RuntimesRegister (RuntimeRegisterRequest) returns (RuntimeMutationReply);
+  rpc RuntimesUpdate (RuntimeUpdateRequest) returns (RuntimeMutationReply);
+  rpc RuntimesRemove (DomainRemoveRequest) returns (MutationReply);
+  rpc GamesRegisterContent (ContentRegistrationRequest) returns (MutationReply);
+  rpc StorageDiagnosticsPublishBenchmark (BenchmarkReportRequest) returns (ReportMutationReply);
+  rpc StorageDiagnosticsPublishSmart (SmartReportRequest) returns (ReportMutationReply);
+  rpc ComputerPublishHardware (HardwareReportRequest) returns (ReportMutationReply);
+  rpc GamePresencePublish (PresencePublishRequest) returns (ReportMutationReply);
+  rpc GamePresenceClear (PresenceClearRequest) returns (MutationReply);
+  rpc GamePerformancePublishSamples (PerformanceSamplesRequest) returns (ReportMutationReply);
+  rpc GamePerformanceEndSeries (PerformanceEndSeriesRequest) returns (MutationReply);
+  rpc DataPublish (DataPublishRequest) returns (DataMutationReply);
+  rpc DataGet (DataGetRequest) returns (DataGetReply);
+  rpc DataList (DataListRequest) returns (DataListReply);
+  rpc DataWatch (DataWatchRequest) returns (stream DataEvent);
+  rpc PersistenceGetUsage (PersistenceUsageRequest) returns (PersistenceUsageReply);
+  rpc PersistenceListEntries (PersistenceListRequest) returns (PersistenceListReply);
+  rpc PersistenceDeleteEntries (PersistenceDeleteRequest) returns (MutationReply);
+  rpc PersistenceClear (PersistenceClearRequest) returns (MutationReply);
+  rpc PersistenceSetRetentionPolicy (RetentionPolicyRequest) returns (MutationReply);
+  rpc ToolsList (ToolsListRequest) returns (ToolsListReply);
+  rpc ToolsRequestApply (ToolApplyRequest) returns (JobReply);
+  rpc ToolsRequestRemove (ToolRemoveRequest) returns (JobReply);
+  rpc PortsList (PortsListRequest) returns (PortsListReply);
+  rpc PortsDetail (PortDetailRequest) returns (PortDetailReply);
+  rpc PortsRequestInstall (PortInstallRequest) returns (JobReply);
+  rpc JobsGet (JobGetRequest) returns (JobReply);
+  rpc JobsWatch (JobWatchRequest) returns (stream JobEvent);
+  rpc JobsCancel (JobCancelRequest) returns (JobReply);
+}
+
+service Saves {
+  rpc ListProfiles (SaveProfileListRequest) returns (SaveProfileListReply);
+  rpc GetProfile (SaveProfileGetRequest) returns (SaveProfileReply);
+  rpc CreateProfile (SaveProfileCreateRequest) returns (SaveProfileMutationReply);
+  rpc UpdateProfile (SaveProfileUpdateRequest) returns (SaveProfileMutationReply);
+  rpc RemoveProfile (SaveProfileRemoveRequest) returns (SaveProfileMutationReply);
+}
+
+service Locations {
+  rpc Inspect (LocationInspectRequest) returns (LocationInspectReply);
+  rpc GetSize (LocationSizeRequest) returns (LocationSizeReply);
+  rpc GetAccess (LocationAccessRequest) returns (LocationAccessReply);
+  rpc GetLastModified (LocationLastModifiedRequest) returns (LocationLastModifiedReply);
+  rpc GetFingerprint (LocationFingerprintRequest) returns (LocationFingerprintReply);
+  rpc Compare (LocationCompareRequest) returns (LocationCompareReply);
+  rpc WatchAvailability (LocationAvailabilityWatchRequest) returns (stream LocationAvailabilityEvent);
+}
+
+service StorageDiagnostics {
+  rpc List (DiagnosticListRequest) returns (DiagnosticListReply);
+  rpc Get (DiagnosticGetRequest) returns (DiagnosticGetReply);
+  rpc Watch (DiagnosticWatchRequest) returns (stream DiagnosticEvent);
+}
+
+service Computer {
+  rpc List (ComputerListRequest) returns (ComputerListReply);
+  rpc Get (ComputerGetRequest) returns (ComputerGetReply);
+  rpc Watch (ComputerWatchRequest) returns (stream ComputerEvent);
+}
+
+service GamePresence {
+  rpc List (PresenceListRequest) returns (PresenceListReply);
+  rpc Get (PresenceGetRequest) returns (PresenceGetReply);
+  rpc Watch (PresenceWatchRequest) returns (stream PresenceEvent);
+}
+
+service GamePerformance {
+  rpc List (PerformanceListRequest) returns (PerformanceListReply);
+  rpc Get (PerformanceGetRequest) returns (PerformanceGetReply);
+  rpc Watch (PerformanceWatchRequest) returns (stream PerformanceEvent);
+  rpc QuerySeries (PerformanceQuerySeriesRequest) returns (PerformanceQuerySeriesReply);
+  rpc Aggregate (PerformanceAggregateRequest) returns (PerformanceAggregateReply);
+}
+
+// Typed operation messages for the API 1.6 services. Common identity,
+// revision, pagination and idempotency values remain explicit protobuf fields.
+message CustomLaunchRemoveRequest { MutationContext mutation = 1; string game_id = 2; string recipe_id = 3; }
+message GameInstallRequest { ServiceContext context = 1; string game_id = 2; string installation_id = 3; string user_intent_id = 4; string idempotency_key = 5; }
+message StorageGetRequest { ServiceContext context = 1; string key = 2; }
+message StoragePutRequest { MutationContext mutation = 1; string key = 2; bytes value = 3; StorageDurability durability = 4; uint64 ttl_seconds = 5; }
+message StorageDeleteRequest { MutationContext mutation = 1; string key = 2; }
+enum StorageDurability { STORAGE_DURABILITY_UNSPECIFIED = 0; STORAGE_DURABILITY_SESSION_ONLY = 1; STORAGE_DURABILITY_PERSISTENT = 2; }
+// A key lives in exactly one durability at a time. `durability` is the one the value has now and
+// `expires_at` its Unix-seconds expiry (0 when it never expires); both are unset when
+// `found` is false. In a put reply, `usage_bytes` and `quota_bytes` describe the namespace of
+// the durability that was written, and `revision` is the key's new revision (the current one on a
+// conflict). A key's revision is 0 while it does not exist, and is the `expected_revision` of
+// the next put or delete.
+message StorageGetReply { bytes value = 1; uint64 revision = 2; bool found = 3; StorageDurability durability = 4; int64 expires_at = 5; }
+message StorageMutationReply { uint64 revision = 1; uint64 usage_bytes = 2; uint64 quota_bytes = 3; MutationOutcome outcome = 4; StorageDurability durability = 5; int64 expires_at = 6; }
+// Where a plugin thinks the folder for `kind` ("save" or "prefix") usually is. The plugin names no
+// path of its own authority: `location` is a suggestion the user may take or ignore, shown as
+// declared by the plugin and not verified, and a declaration alone grants nothing. `location` is
+// either an absolute path or starts with one of the placeholders `{home}`, `{documents}`,
+// `{appdata}` and `{localappdata}` (Windows) or `{xdg_data}` and `{xdg_config}` (Linux), which
+// the host expands, optionally followed by `/`-separated plain names (no `..`). Order is priority:
+// within one `kind`, earlier is preferred. A suggestion that cannot apply on this system (a
+// placeholder or a drive path of another system, or a system folder that does not exist) is
+// dropped without an error, so one list can serve every platform; an unknown placeholder, a
+// relative path, `..`, an overlong or malformed text, an unknown or `installation` kind, or
+// more than 8 suggestions for one kind is INVALID_ARGUMENT. `description` is one line of plain
+// text (at most 120 bytes) shown with the suggestion. Nothing is ever said back about which
+// suggestions exist, were shown or were chosen.
+message DeclaredLocation { string kind = 1; string location = 2; string description = 3; }
+message FilesRequestAccessRequest { MutationContext mutation = 1; string game_id = 2; string installation_id = 3; repeated string requested_operations = 4; repeated string resource_kinds = 5; repeated DeclaredLocation declared_locations = 6; }
+message FileHandle { string handle = 1; string display_name = 2; string resource_kind = 3; bool writable = 4; }
+message FileAccessReply { repeated FileHandle handles = 1; }
+message FilesListRequest { ServiceContext context = 1; string directory_handle = 2; string cursor = 3; uint32 page_size = 4; }
+message FilesListReply { repeated FileEntry entries = 1; string next_cursor = 2; }
+message FileEntry { string handle = 1; string name = 2; bool directory = 3; uint64 size_bytes = 4; int64 modified_at = 5; }
+message FilesReadRequest { ServiceContext context = 1; string file_handle = 2; uint64 offset = 3; uint64 max_bytes = 4; }
+message FileReadReply { bytes contents = 1; uint64 next_offset = 2; bool eof = 3; }
+// File access is limited to a folder the user approved for this plugin and one installation of a
+// game (FilesRequestAccess). Handles are opaque and bound to the session that received them.
+// With `name` empty, `file_handle` is an existing file and `contents` go at `offset` (which may not
+// pass the end of the file); with `truncate` the file ends where the write does. With `name` set,
+// `file_handle` is a directory handle and the file `name` (one plain component) is created, or
+// overwritten, inside it. The reply's `resource_id` is the handle of the written file.
+message FilesWriteRequest { MutationContext mutation = 1; string file_handle = 2; uint64 offset = 3; bytes contents = 4; bool truncate = 5; string name = 6; }
+message FilesDeleteRequest { MutationContext mutation = 1; string file_handle = 2; }
+message NetworkFetchRequest { ServiceContext context = 1; string url = 2; string method = 3; map<string,string> headers = 4; bytes body = 5; uint64 max_response_bytes = 6; uint32 timeout_ms = 7; }
+message NetworkFetchReply { uint32 status_code = 1; map<string,string> headers = 2; bytes body = 3; string final_origin = 4; }
+// Plain text only, shown by Core as coming from the plugin. `title` and `body` are in `locale` (a
+// language tag such as "en" or "pt-BR", or empty when unspecified); `translations` are optional
+// versions in other locales, each with a distinct non-empty `locale`. Core shows the one that
+// matches the user's language, then the same language without a region, then `title`/`body`.
+// `severity` is empty or one of "info", "success", "warning", "error". Core renders every text as
+// plain text: nothing in it is markup, a link or an action. `expected_revision` must be 0.
+message NotificationTranslation { string locale = 1; string title = 2; string body = 3; }
+message NotificationPublishRequest { MutationContext mutation = 1; string title = 2; string body = 3; string locale = 4; string severity = 5; repeated NotificationTranslation translations = 6; }
+message BackupsListRequest { PageRequest page = 1; string game_id = 2; string profile_id = 3; }
+message BackupCreateRequest { MutationContext mutation = 1; string game_id = 2; string profile_id = 3; string reason = 4; }
+message BackupRestoreRequest { MutationContext mutation = 1; string backup_id = 2; string game_id = 3; string profile_id = 4; string user_intent_id = 5; }
+message BackupsListReply { repeated BackupRecord backups = 1; string next_cursor = 2; }
+message BackupRecord { string backup_id = 1; string game_id = 2; int64 created_at = 3; uint64 size_bytes = 4; string state = 5; }
+message JobReply { string job_id = 1; JobState state = 2; string result_code = 3; string message = 4; uint64 revision = 5; }
+enum JobState { JOB_STATE_UNSPECIFIED = 0; JOB_STATE_QUEUED = 1; JOB_STATE_RUNNING = 2; JOB_STATE_SUCCEEDED = 3; JOB_STATE_FAILED = 4; JOB_STATE_CANCELLED = 5; }
+message DomainListRequest { PageRequest page = 1; string kind = 2; string owner_filter = 3; }
+message DomainGetRequest { ServiceContext context = 1; string resource_id = 2; uint64 expected_revision = 3; CommonDataSelector shared_records = 4; }
+message DomainWatchRequest { ServiceContext context = 1; uint64 after_revision = 2; string resource_id = 3; CommonDataSelector shared_records = 4; }
+message DomainRemoveRequest { MutationContext mutation = 1; string resource_id = 2; }
+message LibraryCreateRequest { MutationContext mutation = 1; string name = 2; string description = 3; }
+message LibraryUpdateRequest { MutationContext mutation = 1; string library_id = 2; string name = 3; string description = 4; repeated string field_mask = 5; }
+message LibraryRootAddRequest { MutationContext mutation = 1; string library_id = 2; string approved_root_handle = 3; string display_name = 4; repeated DeclaredLocation declared_locations = 5; }
+message LibraryRootUpdateRequest { MutationContext mutation = 1; string library_id = 2; string root_id = 3; string approved_root_handle = 4; string display_name = 5; repeated DeclaredLocation declared_locations = 6; repeated string field_mask = 7; bool watching = 8; }
+message LibraryRootRemoveRequest { MutationContext mutation = 1; string library_id = 2; string root_id = 3; }
+message LibraryRecord { string id = 1; string name = 2; string creator_plugin_id = 3; repeated string root_ids = 4; uint64 revision = 5; string description = 6; repeated LibraryRootRecord roots = 7; }
+message LibraryRootRecord { string id = 1; string display_name = 2; bool watching = 3; InspectionAvailability availability = 4; reserved 5; string approved_root_handle = 6; string discovery_state = 7; }
+message LibrariesListReply { repeated LibraryRecord libraries = 1; string next_cursor = 2; uint64 revision = 3; }
+message LibraryRecordReply { LibraryRecord library = 1; uint64 revision = 2; }
+message LibraryRecordEvent { uint64 revision = 1; string event_type = 2; LibraryRecord library = 3; }
+message LibraryMutationReply { string resource_id = 1; uint64 revision = 2; MutationOutcome outcome = 3; }
+message RuntimeRegisterRequest { MutationContext mutation = 1; RuntimeRecord runtime = 2; }
+// Asks the host to let the user choose, validate and approve one exact executable as a runtime.
+// `runtime.executable_handle` must be empty: the plugin supplies a spec and text hints only, never
+// a path or a handle. The host shows its picker, validates the chosen program, creates the owned
+// runtime and answers with an ordinary runtime record whose executable handle stays empty. A
+// valid existing owned runtime for the same name/platform/formats is returned without a prompt.
+// Declining the picker creates nothing. The request is idempotent for its key.
+message RuntimeAccessHints {
+  repeated string executable_names = 1;
+  repeated string desktop_ids = 2;
+}
+message RuntimeRequestAccessRequest {
+  MutationContext mutation = 1;
+  RuntimeRecord runtime = 2;
+  RuntimeAccessHints hints = 3;
+}
+message RuntimeUpdateRequest {
+  MutationContext mutation = 1;
+  RuntimeRecord runtime = 2;
+  repeated string field_mask = 3;
+  ExtensionPatch extension_patch = 4;
+}
+message RuntimeMutationReply { RuntimeRecord runtime = 1; MutationOutcome outcome = 2; }
+message RuntimeRecordReply { RuntimeRecord runtime = 1; uint64 revision = 2; }
+message RuntimeRecordEvent { uint64 revision = 1; string event_type = 2; RuntimeRecord runtime = 3; }
+message RuntimesListReply { repeated RuntimeRecord runtimes = 1; string next_cursor = 2; uint64 revision = 3; }
+message ContentRegistrationRequest { MutationContext mutation = 1; string game_id = 2; string installation_id = 3; string content_handle = 4; string content_kind = 5; string runtime_id = 6; repeated string supported_platforms = 7; string content_id = 8; }
+message ReportMutationReply {
+  string report_id = 1;
+  uint64 revision = 2;
+  MutationOutcome outcome = 3;
+  // Used by bounded batch publishers to report accepted/dropped samples and retry guidance.
+  uint32 accepted_samples = 4;
+  uint32 dropped_samples = 5;
+  uint32 retry_after_ms = 6;
+  int64 retained_from = 7;
+  int64 retained_to = 8;
+}
+enum DiagnosticValueState { DIAGNOSTIC_VALUE_STATE_UNSPECIFIED = 0; DIAGNOSTIC_VALUE_STATE_AVAILABLE = 1; DIAGNOSTIC_VALUE_STATE_UNAVAILABLE = 2; DIAGNOSTIC_VALUE_STATE_UNSUPPORTED = 3; DIAGNOSTIC_VALUE_STATE_ACCESS_DENIED = 4; DIAGNOSTIC_VALUE_STATE_ERROR = 5; }
+message BenchmarkReportRequest { MutationContext mutation = 1; string volume_handle = 2; string tool_name = 3; string tool_version = 4; map<string,double> measurements = 5; string units = 6; int64 observed_at = 7; map<string,string> measurement_units = 8; map<string,DiagnosticValueState> measurement_states = 9; google.protobuf.Struct conditions = 10; }
+message SmartReportRequest { MutationContext mutation = 1; string volume_handle = 2; string device_model = 3; string firmware = 4; map<string,string> attributes = 5; int64 observed_at = 6; map<string,string> attribute_units = 7; map<string,DiagnosticValueState> attribute_states = 8; google.protobuf.Struct conditions = 9; }
+message HardwareReportRequest { MutationContext mutation = 1; string computer_id = 2; string schema_id = 3; uint32 schema_version = 4; google.protobuf.Struct observations = 5; int64 observed_at = 6; }
+message PresencePublishRequest { MutationContext mutation = 1; string game_id = 2; string session_id = 3; google.protobuf.Struct details = 4; uint64 ttl_seconds = 5; }
+message PresenceClearRequest { MutationContext mutation = 1; string game_id = 2; string session_id = 3; }
+enum PerformanceFpsMethod { PERFORMANCE_FPS_METHOD_UNSPECIFIED = 0; PERFORMANCE_FPS_METHOD_INSTANTANEOUS = 1; PERFORMANCE_FPS_METHOD_FRAME_COUNT_WINDOW = 2; PERFORMANCE_FPS_METHOD_FRAME_TIME_DERIVED = 3; }
+enum PerformanceFpsStatistic { PERFORMANCE_FPS_STATISTIC_UNSPECIFIED = 0; PERFORMANCE_FPS_STATISTIC_INSTANTANEOUS = 1; PERFORMANCE_FPS_STATISTIC_AVERAGE = 2; PERFORMANCE_FPS_STATISTIC_MINIMUM = 3; PERFORMANCE_FPS_STATISTIC_MAXIMUM = 4; PERFORMANCE_FPS_STATISTIC_PERCENTILE = 5; }
+enum PerformanceMeasurementQuality { PERFORMANCE_MEASUREMENT_QUALITY_UNSPECIFIED = 0; PERFORMANCE_MEASUREMENT_QUALITY_MEASURED = 1; PERFORMANCE_MEASUREMENT_QUALITY_ESTIMATED = 2; }
+enum PerformanceCpuScope { PERFORMANCE_CPU_SCOPE_UNSPECIFIED = 0; PERFORMANCE_CPU_SCOPE_PROCESS = 1; PERFORMANCE_CPU_SCOPE_SYSTEM = 2; }
+enum PerformanceCpuNormalization { PERFORMANCE_CPU_NORMALIZATION_UNSPECIFIED = 0; PERFORMANCE_CPU_NORMALIZATION_WHOLE_MACHINE_PERCENT = 1; PERFORMANCE_CPU_NORMALIZATION_PER_CORE_PERCENT = 2; }
+enum PerformanceMemoryKind { PERFORMANCE_MEMORY_KIND_UNSPECIFIED = 0; PERFORMANCE_MEMORY_KIND_WORKING_SET_BYTES = 1; PERFORMANCE_MEMORY_KIND_RESIDENT_BYTES = 2; }
+message PerformanceSample {
+  // Unix milliseconds, preserving the cadence allowed by sample_interval_ms (down to 100 ms).
+  int64 observed_at = 1;
+  // Always frames/second; fps_method/fps_statistic describe the collection window and statistic.
+  double frames_per_second = 2;
+  // Percent; scope and normalization are declared once for the series.
+  double cpu_percent = 3;
+  // Bytes of working set or resident memory as declared by the series.
+  uint64 memory_bytes = 4;
+  // Positive and increasing within one series. Gaps remain visible as dropped samples.
+  uint64 sequence = 5;
+  uint32 sampling_window_ms = 6;
+  PerformanceFpsMethod fps_method = 7;
+  PerformanceFpsStatistic fps_statistic = 8;
+  optional double fps_percentile = 9;
+  optional double frames_per_second_min = 10;
+  optional double frames_per_second_max = 11;
+  PerformanceMeasurementQuality quality = 12;
+}
+message PerformanceSamplesRequest {
+  MutationContext mutation = 1;
+  string series_id = 2;
+  string game_id = 3;
+  string computer_id = 4;
+  repeated PerformanceSample samples = 5;
+  string runtime_id = 6;
+  string runtime_recipe_revision = 7;
+  string source = 8;
+  string tool_name = 9;
+  string tool_version = 10;
+  uint32 sample_interval_ms = 11;
+  PerformanceCpuScope cpu_scope = 12;
+  PerformanceCpuNormalization cpu_normalization = 13;
+  PerformanceMemoryKind memory_kind = 14;
+  string memory_source = 15;
+  string fps_unit = 16;
+  string cpu_unit = 17;
+  string memory_unit = 18;
+}
+message PerformanceEndSeriesRequest { MutationContext mutation = 1; string series_id = 2; int64 ended_at = 3; uint64 expected_last_sequence = 4; }
+message DataPublishRequest { MutationContext mutation = 1; string dataset_id = 2; string schema_id = 3; uint32 schema_version = 4; google.protobuf.Struct value = 5; StorageDurability durability = 6; uint64 ttl_seconds = 7; bytes opaque_payload = 8; string resource_id = 9; int64 observed_at = 10; uint64 sequence = 11; string source_observation_id = 12; }
+// `durability` reports the mode the host actually used; a reply never names a mode the record
+// does not have, and a durable mode is never a session-only downgrade. `expires_at` is the
+// record's Unix-seconds expiry (0 when it does not expire).
+message DataMutationReply { string record_id = 1; uint64 revision = 2; int64 expires_at = 3; MutationOutcome outcome = 4; StorageDurability durability = 5; }
+message DataGetRequest { ServiceContext context = 1; string dataset_id = 2; string record_id = 3; CommonDataSelector common_data_categories = 4; }
+message DataListRequest { PageRequest page = 1; string dataset_id = 2; string filter = 3; CommonDataSelector common_data_categories = 4; }
+message DataWatchRequest { ServiceContext context = 1; string dataset_id = 2; uint64 after_revision = 3; CommonDataSelector common_data_categories = 4; }
+// `durability` is additive: older readers ignore it and read the rest of the record unchanged,
+// while a newer reader reports the mode the record actually has. Session-retained records keep
+// the value session-only.
+message DataRecord { string record_id = 1; string dataset_id = 2; string publisher_id = 3; uint64 revision = 4; google.protobuf.Struct value = 5; string schema_id = 6; uint32 schema_version = 7; bytes opaque_payload = 8; DataProvenance provenance = 9; string resource_id = 10; int64 observed_at = 11; int64 received_at = 12; int64 expires_at = 13; uint64 sequence = 14; string source_observation_id = 15; StorageDurability durability = 16; }
+// Host-assigned provenance for published data and common domain projections.
+message DataProvenance { string producer_plugin_id = 1; string declared_developer = 2; string origin = 3; string publisher_fingerprint = 4; string package_version = 5; bytes package_digest = 6; string resource_id = 7; int64 observed_at = 8; int64 received_at = 9; repeated string source_record_ids = 10; }
+message DataGetReply { DataRecord record = 1; }
+message DataListReply { repeated DataRecord records = 1; string next_cursor = 2; uint64 revision = 3; }
+message DataEvent { uint64 revision = 1; string event_type = 2; DataRecord record = 3; }
+message PersistenceUsageRequest { ServiceContext context = 1; }
+// `categories` and `physical_bytes_namespace_wide` are additive accounting detail. Only the
+// `private` category counts against `quota_bytes`; `physical_bytes` is the SQLite page allocation
+// of the whole namespace database, whose metadata and free pages are shared across categories.
+message PersistenceCategoryUsage { string category = 1; uint64 records = 2; uint64 logical_bytes = 3; uint64 protected_records = 4; }
+message PersistenceUsageReply { uint64 logical_bytes = 1; uint64 physical_bytes = 2; uint64 quota_bytes = 3; repeated PersistenceCategoryUsage categories = 4; bool physical_bytes_namespace_wide = 5; }
+message PersistenceListRequest { PageRequest page = 1; string category = 2; }
+message PersistenceListReply { repeated PersistenceEntry entries = 1; string next_cursor = 2; }
+message PersistenceEntry { string entry_id = 1; string category = 2; string logical_key = 3; uint64 size_bytes = 4; int64 last_used_at = 5; bool user_protected = 6; }
+message PersistenceDeleteRequest { MutationContext mutation = 1; repeated string entry_ids = 2; }
+message PersistenceClearRequest { MutationContext mutation = 1; string category = 2; }
+message RetentionPolicyRequest { MutationContext mutation = 1; string category = 2; uint64 max_age_seconds = 3; uint64 max_bytes = 4; }
+message PersistenceMutationReply { uint64 reclaimed_bytes = 1; uint64 revision = 2; MutationOutcome outcome = 3; }
+message ToolsListRequest { PageRequest page = 1; string game_id = 2; string platform = 3; }
+message ToolApplyRequest { MutationContext mutation = 1; string tool_id = 2; string game_id = 3; string user_intent_id = 4; }
+message ToolRemoveRequest { MutationContext mutation = 1; string tool_id = 2; string game_id = 3; string user_intent_id = 4; }
+message ToolsListReply { repeated ToolRecord tools = 1; string next_cursor = 2; }
+message ToolRecord { string tool_id = 1; string name = 2; string version = 3; string availability = 4; }
+message PortsListRequest { PageRequest page = 1; string platform = 2; string query = 3; }
+message PortDetailRequest { ServiceContext context = 1; string port_id = 2; }
+message PortInstallRequest { MutationContext mutation = 1; string port_id = 2; string game_id = 3; repeated string supplied_file_handles = 4; string user_intent_id = 5; }
+message PortsListReply { repeated PortRecord ports = 1; string next_cursor = 2; }
+message PortDetailReply { PortRecord port = 1; }
+message PortRecord { string port_id = 1; string name = 2; string platform = 3; string availability = 4; }
+message JobGetRequest { ServiceContext context = 1; string job_id = 2; }
+message JobWatchRequest { ServiceContext context = 1; string job_id = 2; uint64 after_sequence = 3; }
+message JobCancelRequest { MutationContext mutation = 1; string job_id = 2; }
+message JobEvent { string job_id = 1; uint64 sequence = 2; JobState state = 3; uint32 progress_percent = 4; string result_code = 5; string message = 6; }
+
+// Shared mutation envelope. operation_id is host-issued; idempotency_key is
+// client supplied and scoped to the authenticated plugin and operation.
+message MutationContext {
+  ServiceContext context = 1;
+  string operation_id = 2;
+  string idempotency_key = 3;
+  uint64 expected_revision = 4;
+}
+
+message PageRequest {
+  ServiceContext context = 1;
+  string cursor = 2;
+  uint32 page_size = 3;
+  CommonDataSelector common_data_categories = 4;
+}
+message LibraryListRequest { PageRequest page = 1; string provider_id = 2; string search = 3; }
+message LibraryGetRequest { ServiceContext context = 1; string game_id = 2; string installation_id = 3; CommonDataSelector common_data_categories = 4; }
+message LibraryWatchRequest { ServiceContext context = 1; uint64 after_revision = 2; string provider_id = 3; CommonDataSelector common_data_categories = 4; }
+message MetadataUpdateRequest { MutationContext mutation = 1; string game_id = 2; string installation_id = 3; map<string, string> display_fields = 4; }
+message FavoritesListRequest { PageRequest page = 1; string profile_id = 2; }
+message FavoritesSetRequest { MutationContext mutation = 1; string profile_id = 2; string game_id = 3; bool favorite = 4; }
+// Catalog search by title. `platform` and `cursor` are reserved and must be empty: the catalog
+// has no platform filter and a search is one bounded page (`page_size` defaults to 20, at most
+// 50), so `MatchingSearchReply.next_cursor` is always empty.
+message MatchingSearchRequest { ServiceContext context = 1; string query = 2; string platform = 3; uint32 page_size = 4; string cursor = 5; }
+// Assigns one of the caller's own entries to a GameNode game. The entry is named by its
+// `installation_id`; `provider_id` and `provider_game_id` are reserved and must be empty.
+// `mutation.expected_revision` is the entry's `LibraryEntry.revision`. The reply's `resource_id`
+// is the installation id and `revision` the entry's revision after the call.
+message MatchingAssignRequest { MutationContext mutation = 1; string provider_id = 2; string provider_game_id = 3; string gamenode_game_id = 4; string installation_id = 5; }
+// Reads the cover an own entry shows: the plugin's override, else the matched game's cover when it
+// is already on the device (nothing is downloaded). `installation_id` is required; `game_id`, if
+// set, must be the entry's current match. `artwork_kind` is "cover" or empty. `max_bytes` is the
+// caller's budget: 0 means the 5 MiB maximum, larger values are capped to it, and an image over
+// the budget is RESOURCE_EXHAUSTED rather than truncated.
+message ArtworkReadRequest { ServiceContext context = 1; string game_id = 2; string installation_id = 3; string artwork_kind = 4; uint64 max_bytes = 5; }
+// Sets the cover of one of the caller's own entries, or restores the game's cover when
+// `encoded_image` is empty (then `media_type` must be empty too). The image is a static PNG, JPEG
+// or WebP of at most 4 MiB and 4096 x 4096 pixels whose bytes match `media_type`; the host decodes,
+// shrinks to fit 600 x 900 and re-encodes it, and stores its own output as that entry's cover. The
+// matched game's cover and other entries are never changed. `mutation.expected_revision` is the
+// entry's `LibraryEntry.artwork_revision`. The reply's `resource_id` is the installation id and
+// `revision` the artwork revision after the call.
+// The image comes either inline (`encoded_image`) or from a file the plugin may read
+// (`file_handle`, a regular-file handle from the Files service, with `media_type` set as for
+// inline bytes); giving both is INVALID_ARGUMENT. A handle needs `files.read` besides
+// `artwork.write`, must come from an approval of this same installation, and its bytes are read by
+// the host under the same 4 MiB bound and then decoded like inline ones. A path or a URL is never
+// accepted: the handle is the only reference.
+message ArtworkSetRequest { MutationContext mutation = 1; string game_id = 2; string installation_id = 3; string artwork_kind = 4; bytes encoded_image = 5; string media_type = 6; string file_handle = 7; }
+message LibraryListReply { repeated LibraryEntry entries = 1; string next_cursor = 2; uint64 revision = 3; }
+message LibraryGetReply { LibraryEntry entry = 1; uint64 revision = 2; }
+message FavoritesListReply { repeated FavoriteEntry entries = 1; string next_cursor = 2; uint64 revision = 3; }
+message MatchingSearchReply { repeated MatchCandidate candidates = 1; string next_cursor = 2; }
+// `revision` is the entry's artwork revision: 0 while the cover is the game's own.
+message ArtworkReadReply { bytes encoded_image = 1; string media_type = 2; uint64 byte_length = 3; uint64 revision = 4; }
+message MutationReply { string resource_id = 1; uint64 revision = 2; MutationOutcome outcome = 3; }
+enum MutationOutcome { MUTATION_OUTCOME_UNSPECIFIED = 0; MUTATION_OUTCOME_APPLIED = 1; MUTATION_OUTCOME_ALREADY_APPLIED = 2; MUTATION_OUTCOME_REVISION_CONFLICT = 3; MUTATION_OUTCOME_BACKPRESSURE = 4; }
+// `name` is the detected name (or the matched game's name when the provider reported none);
+// `display_name` is the presentation override the owning provider wrote with MetadataUpdate and is
+// empty when none is set. `metadata_revision` is the revision of that override for this
+// installation (0 until first written); it is the expected_revision of the next MetadataUpdate.
+// `artwork_revision` is the same for the cover override ArtworkSet writes: 0 until first written,
+// and the expected_revision of the next ArtworkSet.
+message LibraryEntry { string game_id = 1; string installation_id = 2; string provider_id = 3; string name = 4; string version = 5; string install_state = 6; uint64 revision = 7; string display_name = 8; uint64 metadata_revision = 9; uint64 artwork_revision = 10; repeated RuntimeAvailability runtime_availability = 11; }
+// Safe content/runtime availability projection; it never includes a path, handle or payload.
+message RuntimeAvailability { string content_id = 1; string content_kind = 2; string runtime_id = 3; string runtime_name = 4; string platform = 5; string publisher_id = 6; uint64 revision = 7; }
+message FavoriteEntry { string game_id = 1; bool favorite = 2; uint64 revision = 3; }
+// A catalog game a search found. `platform` and `confidence` are reserved: the catalog carries
+// neither, so both are empty. `release_year` is 0 when unknown.
+message MatchCandidate { string game_id = 1; string title = 2; string platform = 3; string confidence = 4; int32 release_year = 5; }
+message LibraryEvent { uint64 revision = 1; string event_type = 2; LibraryEntry entry = 3; }
+
+message ResourceRequest {
+  ServiceContext context = 1;
+  string resource_id = 2;
+  string operation_id = 3;
+  string idempotency_key = 4;
+  uint64 expected_revision = 5;
+  string cursor = 6;
+  uint32 page_size = 7;
+  uint64 max_bytes = 8;
+  string durability = 9;
+  bytes payload = 10;
+  // Deprecated API 1.6 draft fields. Kept at their original wire numbers so
+  // clients compiled against the draft remain wire-decodable; hosts MUST NOT
+  // use these untyped fields to authorize or include shared records.
+  bool include_common = 11 [deprecated = true];
+  repeated string selected_categories = 12 [deprecated = true];
+  // Omitted or empty means private/owner-visible records only. Each requested
+  // category is independently checked against the caller's current grant.
+  CommonDataSelector common_data_categories = 13;
+}
+
+// Explicit, per-query selector for published projections. Category grants and
+// selected-record grants are independently checked by the host; this selector
+// never grants authority or triggers automatic reads. Sensitive/custom fields
+// still require their separate sharing review, and secrets are excluded.
+message CommonDataSelector {
+  repeated CommonDataCategory categories = 1;
+  // Explicit ids are independently checked against selected-record grants;
+  // they do not require or imply a category-wide grant.
+  repeated string selected_record_ids = 2;
+}
+
+enum CommonDataCategory {
+  COMMON_DATA_CATEGORY_UNSPECIFIED = 0;
+  COMMON_DATA_CATEGORY_GAME_PATHS = 1;
+  COMMON_DATA_CATEGORY_GAME_PERFORMANCE_HISTORY = 2;
+  COMMON_DATA_CATEGORY_RUNTIME_CATALOG = 3;
+  COMMON_DATA_CATEGORY_CONTENT_AVAILABILITY = 4;
+  COMMON_DATA_CATEGORY_LIBRARY_ROOTS = 5;
+  COMMON_DATA_CATEGORY_SAVE_PROFILES = 6;
+}
+
+message SaveProfileListRequest {
+  ServiceContext context = 1;
+  string game_id = 2;
+  string installation_id = 3;
+  string cursor = 4;
+  uint32 page_size = 5;
+  CommonDataSelector shared_records = 6;
+}
+message SaveProfileGetRequest { ServiceContext context = 1; string game_id = 2; string profile_id = 3; CommonDataSelector shared_records = 4; }
+message SaveProfileCreateRequest { MutationContext mutation = 1; SaveProfile profile = 2; }
+message SaveProfileUpdateRequest { MutationContext mutation = 1; string profile_id = 2; SaveProfilePatch patch = 3; }
+message SaveProfileRemoveRequest { MutationContext mutation = 1; string game_id = 2; string profile_id = 3; }
+message SaveProfilePatch { repeated string field_mask = 1; SaveProfile profile = 2; }
+message SaveProfile {
+  string profile_id = 1;
+  string game_id = 2;
+  string installation_id = 3;
+  string name = 4;
+  repeated SaveDirectory directories = 5;
+  string runtime_id = 6;
+  string format_id = 7;
+  uint32 format_version = 8;
+  google.protobuf.Struct descriptive_metadata = 9;
+  string creator_plugin_id = 10;
+  uint64 revision = 11;
+  // Host-resolved shared emulator resources this profile uses. The caller proposes the alias and
+  // an approved folder handle; the host binds the backing identity, affected games and consent.
+  repeated SharedResourceDeclaration shared_resources = 12;
+}
+message SaveDirectory { string approved_resource_handle = 1; string display_name = 2; repeated string naming_patterns = 3; }
+// The host accepts a declaration only as a proposal. Consent is granted through host settings,
+// never by a plugin RPC, and the host revalidates the exact scope before every use.
+message SharedResourceDeclaration {
+  // Plugin-chosen alias, 1 to 128 bytes. All profiles that share one backing resource must use
+  // the same alias.
+  string resource_id = 1;
+  // Opaque host-issued handle for the approved backing folder. Empty in a reply when the caller
+  // no longer has a standing approval or is reading another plugin's profile.
+  string approved_resource_handle = 2;
+  string display_name = 3;
+  // Host-computed; absent from create/update requests.
+  SharedResourceConsent consent = 4;
+}
+enum SharedResourceConsent {
+  SHARED_RESOURCE_CONSENT_UNSPECIFIED = 0;
+  SHARED_RESOURCE_CONSENT_PENDING = 1;
+  SHARED_RESOURCE_CONSENT_CURRENT = 2;
+  SHARED_RESOURCE_CONSENT_STALE = 3;
+}
+message SaveProfileListReply { repeated SaveProfile profiles = 1; string next_cursor = 2; uint64 revision = 3; }
+message SaveProfileReply { SaveProfile profile = 1; uint64 revision = 2; }
+message SaveProfileMutationReply { string profile_id = 1; uint64 revision = 2; MutationOutcome outcome = 3; }
+
+enum InspectionAvailability { INSPECTION_AVAILABILITY_UNSPECIFIED = 0; INSPECTION_AVAILABILITY_AVAILABLE = 1; INSPECTION_AVAILABILITY_UNMOUNTED = 2; INSPECTION_AVAILABILITY_DISCONNECTED = 3; INSPECTION_AVAILABILITY_INACCESSIBLE = 4; INSPECTION_AVAILABILITY_MISSING = 5; INSPECTION_AVAILABILITY_UNKNOWN = 6; }
+message LocationInspectRequest { ServiceContext context = 1; string approved_resource_handle = 2; repeated string requested_dimensions = 3; uint32 max_entries = 4; }
+message LocationInspectReply { LocationDescription location = 1; repeated LocationObservation observations = 2; repeated LocationDescription locations = 3; }
+message LocationSizeRequest { ServiceContext context = 1; string approved_resource_handle = 2; uint32 max_entries = 3; }
+message LocationSizeReply { uint64 logical_bytes = 1; uint64 file_count = 2; uint64 directory_count = 3; bool complete = 4; InspectionAvailability availability = 5; }
+message LocationAccessRequest { ServiceContext context = 1; string approved_resource_handle = 2; repeated string entry_handles = 3; }
+message LocationAccessReply { repeated LocationAccessEntry entries = 1; InspectionAvailability availability = 2; }
+message LocationLastModifiedRequest { ServiceContext context = 1; string approved_resource_handle = 2; uint32 max_entries = 3; }
+message LocationLastModifiedReply { repeated LocationTimestamp entries = 1; optional int64 aggregate_latest_at = 2; InspectionAvailability availability = 3; }
+message LocationFingerprintRequest { ServiceContext context = 1; string approved_resource_handle = 2; string algorithm = 3; bool require_fresh = 4; uint32 max_entries = 5; string idempotency_key = 6; }
+// `digest` is present only when `complete`. `observed_start_at` and `observed_end_at` are Unix
+// seconds; the observation is best effort, not an atomic snapshot of the files.
+message LocationFingerprintReply { string snapshot_id = 1; string algorithm = 2; bytes digest = 3; uint64 revision = 4; bool complete = 5; string consistency = 6; string job_id = 7; InspectionAvailability availability = 8; int64 observed_start_at = 9; int64 observed_end_at = 10; }
+message LocationCompareRequest { ServiceContext context = 1; string before_snapshot_id = 2; string after_snapshot_id = 3; uint64 expected_revision = 4; uint32 page_size = 5; string cursor = 6; }
+message LocationCompareReply { repeated LocationChange changes = 1; string next_cursor = 2; string status = 3; uint64 revision = 4; }
+message LocationAvailabilityWatchRequest { ServiceContext context = 1; string approved_resource_handle = 2; uint64 after_sequence = 3; }
+message LocationAvailabilityEvent { uint64 sequence = 1; string resource_id = 2; InspectionAvailability availability = 3; string volume_identity_token = 4; int64 observed_at = 5; }
+message LocationDescription { string resource_id = 1; InspectionAvailability availability = 2; string volume_identity_token = 3; string mount_point = 4; string network_state = 5; string media_type = 6; uint64 capacity_bytes = 7; uint64 free_bytes = 8; int64 observed_at = 9; string attachment = 10; string interface_type = 11; string evidence = 12; }
+message LocationObservation { string entry_handle = 1; string kind = 2; uint64 logical_bytes = 3; InspectionAvailability availability = 4; }
+message LocationAccessEntry { string entry_handle = 1; string read_only_state = 2; string effective_access = 3; InspectionAvailability availability = 4; }
+message LocationTimestamp { string entry_handle = 1; int64 modified_at = 2; string precision = 3; }
+// `relative_path` is the entry's path below the compared place (for a save profile, `d<n>/` for
+// its n-th folder comes first); `entry_handle` is empty for an entry that no longer exists.
+message LocationChange { string entry_handle = 1; string change_kind = 2; uint64 previous_size_bytes = 3; uint64 current_size_bytes = 4; string relative_path = 5; }
+
+message DiagnosticListRequest { PageRequest page = 1; string owner_plugin_id = 2; string volume_identity_token = 3; string projection_id = 4; }
+message DiagnosticGetRequest { ServiceContext context = 1; string report_id = 2; string projection_id = 3; }
+message DiagnosticWatchRequest { ServiceContext context = 1; string owner_plugin_id = 2; string volume_identity_token = 3; string projection_id = 4; uint64 after_revision = 5; }
+message DiagnosticReport { string report_id = 1; string report_kind = 2; string owner_plugin_id = 3; string volume_identity_token = 4; string schema_id = 5; uint32 schema_version = 6; google.protobuf.Struct typed_measurements = 7; google.protobuf.Struct approved_extension = 8; int64 observed_at = 9; uint64 revision = 10; }
+message DiagnosticListReply { repeated DiagnosticReport reports = 1; string next_cursor = 2; uint64 revision = 3; }
+message DiagnosticGetReply { DiagnosticReport report = 1; }
+message DiagnosticEvent { uint64 revision = 1; string event_type = 2; DiagnosticReport report = 3; }
+
+message ComputerListRequest { PageRequest page = 1; string computer_context_id = 2; string projection_id = 3; }
+message ComputerGetRequest { ServiceContext context = 1; string computer_record_id = 2; string projection_id = 3; }
+message ComputerWatchRequest { ServiceContext context = 1; string computer_context_id = 2; string projection_id = 3; uint64 after_revision = 4; }
+message ComputerReport { string record_id = 1; string computer_context_id = 2; string owner_plugin_id = 3; string schema_id = 4; uint32 schema_version = 5; google.protobuf.Struct typed_observations = 6; google.protobuf.Struct approved_extension = 7; int64 observed_at = 8; uint64 revision = 9; }
+message ComputerListReply { repeated ComputerReport reports = 1; string next_cursor = 2; uint64 revision = 3; }
+message ComputerGetReply { ComputerReport report = 1; }
+message ComputerEvent { uint64 revision = 1; string event_type = 2; ComputerReport report = 3; }
+
+message PresenceListRequest { PageRequest page = 1; string game_id = 2; string session_id = 3; string projection_id = 4; }
+message PresenceGetRequest { ServiceContext context = 1; string presence_id = 2; string projection_id = 3; }
+message PresenceWatchRequest { ServiceContext context = 1; string game_id = 2; string session_id = 3; string projection_id = 4; uint64 after_sequence = 5; }
+message PresenceRecord { string presence_id = 1; string game_id = 2; string session_id = 3; string owner_plugin_id = 4; uint64 sequence = 5; int64 observed_at = 6; int64 expires_at = 7; google.protobuf.Struct approved_details = 8; uint64 revision = 9; }
+message PresenceListReply { repeated PresenceRecord records = 1; string next_cursor = 2; uint64 revision = 3; }
+message PresenceGetReply { PresenceRecord record = 1; }
+message PresenceEvent { uint64 sequence = 1; string event_type = 2; PresenceRecord record = 3; }
+
+message PerformanceListRequest { PageRequest page = 1; string game_id = 2; string computer_context_id = 3; string projection_id = 4; }
+message PerformanceGetRequest { ServiceContext context = 1; string series_id = 2; string projection_id = 3; CommonDataSelector common_data_categories = 4; }
+message PerformanceWatchRequest { ServiceContext context = 1; string game_id = 2; string computer_context_id = 3; string projection_id = 4; uint64 after_sequence = 5; CommonDataSelector common_data_categories = 6; }
+message PerformanceQuerySeriesRequest { ServiceContext context = 1; string series_id = 2; int64 from_time = 3; int64 to_time = 4; uint32 resolution_ms = 5; PageRequest page = 6; CommonDataSelector common_data_categories = 7; }
+message PerformanceAggregateRequest { ServiceContext context = 1; string series_id = 2; int64 from_time = 3; int64 to_time = 4; string metric = 5; string aggregation = 6; CommonDataSelector common_data_categories = 7; }
+message PerformanceSeries {
+  // Stable host-owned owner token. record_id identifies the current broker revision for
+  // selected-record sharing; replacement creates a new record_id.
+  string series_id = 1;
+  string game_id = 2;
+  string installation_id = 3;
+  string computer_context_id = 4;
+  string session_id = 5;
+  string owner_plugin_id = 6;
+  repeated PerformanceSample samples = 7;
+  uint64 revision = 8;
+  string runtime_id = 9;
+  string runtime_recipe_revision = 10;
+  string source = 11;
+  string tool_name = 12;
+  string tool_version = 13;
+  uint32 sample_interval_ms = 14;
+  PerformanceCpuScope cpu_scope = 15;
+  PerformanceCpuNormalization cpu_normalization = 16;
+  PerformanceMemoryKind memory_kind = 17;
+  string memory_source = 18;
+  int64 started_at = 19;
+  int64 ended_at = 20;
+  uint64 dropped_samples = 21;
+  string coverage = 22;
+  string provenance = 23;
+  string fps_unit = 24;
+  string cpu_unit = 25;
+  string memory_unit = 26;
+  string record_id = 27;
+}
+message PerformanceListReply { repeated PerformanceSeries series = 1; string next_cursor = 2; uint64 revision = 3; }
+message PerformanceGetReply { PerformanceSeries series = 1; }
+message PerformanceEvent { uint64 sequence = 1; string event_type = 2; PerformanceSeries series = 3; }
+message PerformanceQuerySeriesReply { repeated PerformanceSample samples = 1; string next_cursor = 2; string coverage = 3; uint64 dropped_samples = 4; }
+message PerformanceAggregateReply { string metric = 1; string aggregation = 2; double value = 3; string unit = 4; uint64 sample_count = 5; string coverage = 6; string provenance = 7; }
+message ResourceReply {
+  string resource_id = 1;
+  uint64 revision = 2;
+  string next_cursor = 3;
+  uint64 usage_bytes = 4;
+  uint64 quota_bytes = 5;
+  string job_id = 6;
+  string outcome = 7;
+  bytes payload = 8;
+}
+message ResourceEvent {
+  uint64 revision = 1;
+  string resource_id = 2;
+  string event_type = 3;
+  bytes payload = 4;
+}
+message GameLaunchRequest {
+  ServiceContext context = 1;
+  string game_id = 2;
+  string installation_id = 3;
+  uint64 expected_revision = 4;
+  string user_intent_id = 5;
+  string idempotency_key = 6;
+}
+message GameLaunchReply { string job_id = 1; JobState state = 2; string refusal_code = 3; string message = 4; }
+// A declared launch-time mod layer. The host cannot inspect mod files, so `id`, `name` and
+// `version` are plugin-provided data shown in the reviewed plan; `revision` and the ordered
+// argv/environment contributions are host-validated. Execution requests may reference only the
+// recipe revision, never replace or add layers.
+message CustomLaunchModLayer {
+  string id = 1;
+  string name = 2;
+  string version = 3;
+  uint64 revision = 4;
+  repeated string argv = 5;
+  map<string, string> environment_set = 6;
+  repeated string environment_unset = 7;
+}
+message CustomLaunchRequest {
+  ServiceContext context = 1;
+  string game_id = 2;
+  string installation_id = 3;
+  uint64 expected_revision = 4;
+  string user_intent_id = 5;
+  string idempotency_key = 6;
+  string executable_handle = 7;
+  repeated string argv = 8;
+  string working_directory_handle = 9;
+  map<string, string> environment_set = 10;
+  repeated string environment_unset = 11;
+  string runtime_handle = 12;
+  string recipe_id = 13;
+  uint64 recipe_revision = 14;
+  string uri = 15;
+  string content_id = 16;
+  // Proposal-only declared layers, applied after `argv`/`environment_*` in order. Empty on
+  // execution requests; the host resolves them from the stored reviewed recipe.
+  repeated CustomLaunchModLayer mod_layers = 17;
+}
+message CustomLaunchReply { string recipe_id = 1; uint64 recipe_revision = 2; string job_id = 3; JobState state = 4; string refusal_code = 5; string message = 6; }
+
+// Extensible application metadata. Typed identity, ownership, grants, revisions
+// and execution fields stay outside Struct and are never inferred from it.
+message ExtensionPayload {
+  string schema_id = 1;
+  uint32 schema_version = 2;
+  bytes schema_digest = 3;
+  google.protobuf.Struct data = 4;
+}
+
+enum ExtensionFieldClassification {
+  EXTENSION_FIELD_CLASSIFICATION_UNSPECIFIED = 0;
+  EXTENSION_FIELD_CLASSIFICATION_PUBLIC = 1;
+  EXTENSION_FIELD_CLASSIFICATION_SENSITIVE = 2;
+  EXTENSION_FIELD_CLASSIFICATION_PRIVATE = 3;
+}
+
+message ExtensionSchemaField {
+  string path = 1;
+  ExtensionFieldClassification classification = 2;
+}
+
+// Declarative package asset; schema_json is bounded data, never executable code.
+message ExtensionSchemaDescriptor {
+  string namespace = 1;
+  string schema_id = 2;
+  uint32 schema_version = 3;
+  bytes schema_digest = 4;
+  bytes schema_json = 5;
+  repeated ExtensionSchemaField fields = 6;
+  bool optional = 7;
+}
+
+message ExtensionNamespacePatch {
+  string namespace = 1;
+  oneof operation {
+    ExtensionPayload set = 2;
+    bool remove = 3;
+  }
+}
+
+message ExtensionPatch {
+  uint64 expected_revision = 1;
+  repeated string typed_field_mask = 2;
+  repeated ExtensionNamespacePatch namespaces = 3;
+}
+
+// Example hybrid resource: exact revisions/timestamps remain typed integers.
+message RuntimeArgumentTemplate {
+  oneof value {
+    string literal = 1;
+    ContentPathArgument content_path = 2;
+  }
+}
+
+// Inserts the path of the selected, approved content item as one argv element.
+message ContentPathArgument {}
+
+message RuntimeRecord {
+  string id = 1;
+  string name = 2;
+  string version = 3;
+  string executable_handle = 4;
+  repeated string supported_formats = 5;
+  map<string, ExtensionPayload> extensions = 6;
+  uint64 revision = 7;
+  int64 observed_at = 8;
+  string platform = 9;
+  repeated RuntimeArgumentTemplate argument_template = 10;
+  DataProvenance provenance = 11;
+}
+
 // Epochs and operation ids are issued by the host; clients cannot widen them.
 message ServiceContext {
   string session_id = 1;
@@ -78,6 +954,8 @@ message ServiceContext {
   string operation_id = 4;
   uint64 account_epoch = 5;
   uint64 profile_epoch = 6;
+  SessionKind session_kind = 7;
+  optional TargetGameContext target_game = 8;
 }
 
 enum ProviderOperation {
@@ -98,6 +976,12 @@ enum ProviderOperation {
   PROVIDER_OPERATION_SETTINGS_SUBMIT = 14;
   PROVIDER_OPERATION_SETTINGS_CANCEL = 15;
   PROVIDER_OPERATION_READ_ACHIEVEMENTS = 16;
+  // API 1.6+ (third-party).
+  PROVIDER_OPERATION_CONFIGURATION_OPEN = 17;
+  PROVIDER_OPERATION_CONFIGURATION_FOCUS = 18;
+  PROVIDER_OPERATION_CONFIGURATION_CLOSE = 19;
+  PROVIDER_OPERATION_RUNTIME_SESSION_RESULT = 20;
+  PROVIDER_OPERATION_RUNTIME_SESSION_CONTEXT_RESULT = 21;
 }
 
 message ProviderCommand {
@@ -106,6 +990,9 @@ message ProviderCommand {
   string target_operation_id = 3;
   optional SettingsRequest settings = 4;
   optional AchievementsRequest achievements = 5;
+  // API 1.6+ (third-party).
+  optional RuntimeSessionResult runtime_session_result = 6;
+  optional RuntimeSessionContextResult runtime_session_context_result = 7;
 }
 
 message ProviderContext {
@@ -334,6 +1221,8 @@ message OperationResult {
   optional bool focused = 11;
   optional SettingsReply settings = 12;
   repeated AchievementOutcome achievements = 13;
+  // API 1.6+ (third-party).
+  optional ConfigurationResult configuration = 14;
 }
 
 // One bounded batch of provider game ids whose achievements are requested.
@@ -368,6 +1257,14 @@ message AchievementOutcome {
     bool none = 3;
     CatalogFailure failed = 4;
   }
+}
+
+message ConfigurationResult {
+  string session_id = 1;
+  string profile_id = 2;
+  string window_id = 3;
+  bool accepted = 4;
+  string failure = 5;
 }
 
 // Optional ui.settings, negotiated independently at API 1.3. This closed schema
@@ -500,5 +1397,79 @@ message ProviderEvent {
     AccountStatus account_status = 3;
     CatalogChunk catalog_chunk = 4;
     OperationResult result = 5;
+    RuntimeSessionReport runtime_session = 6;
+    RuntimeSessionContextRequest runtime_session_context = 7;
   }
+}
+
+// A request for a host-authorized game context for an already-running runtime instance.
+// These identifiers are proposals; the host resolves current library and runtime bindings and
+// asks the user before issuing any reporting authority.
+message RuntimeSessionContextRequest {
+  string correlation_id = 1;
+  string game_id = 2;
+  string installation_id = 3;
+  string runtime_id = 4;
+  string runtime_instance_id = 5;
+  string content_id = 6;
+}
+
+message RuntimeSessionContextResult {
+  string correlation_id = 1;
+  RuntimeSessionOutcome outcome = 2;
+  // An opaque host-minted context token, present only on an approved request.
+  string runtime_context_id = 3;
+  string reason = 4;
+  DenialDetail denial = 5;
+}
+
+message RuntimeSessionReport {
+  string correlation_id = 1;
+  string game_id = 2;
+  string installation_id = 3;
+  string content_id = 4;
+  string runtime_id = 5;
+  string runtime_instance_id = 6;
+  string reporter_session_id = 7;
+  uint64 sequence = 8;
+  // Unix time in seconds. The host accepts reports up to 30 seconds stale or 5 seconds ahead;
+  // session expiry is calculated from host monotonic receipt time.
+  int64 observed_at = 9;
+  RuntimeSessionTransition transition = 10;
+  string source_observation_id = 11;
+  // Empty only for the extension's initial host-selected context. Other contexts require
+  // the opaque id returned by RuntimeSessionContextResult.
+  string runtime_context_id = 12;
+}
+
+enum RuntimeSessionTransition {
+  RUNTIME_SESSION_TRANSITION_UNSPECIFIED = 0;
+  RUNTIME_SESSION_TRANSITION_IDENTIFIED = 1;
+  RUNTIME_SESSION_TRANSITION_STARTED = 2;
+  RUNTIME_SESSION_TRANSITION_PAUSED = 3;
+  RUNTIME_SESSION_TRANSITION_RESUMED = 4;
+  RUNTIME_SESSION_TRANSITION_CONTENT_CHANGED = 5;
+  RUNTIME_SESSION_TRANSITION_ENDED = 6;
+  RUNTIME_SESSION_TRANSITION_IDENTIFICATION_LOST = 7;
+}
+
+enum RuntimeSessionOutcome {
+  RUNTIME_SESSION_OUTCOME_UNSPECIFIED = 0;
+  RUNTIME_SESSION_OUTCOME_ACCEPTED = 1;
+  RUNTIME_SESSION_OUTCOME_DUPLICATE = 2;
+  RUNTIME_SESSION_OUTCOME_REJECTED_INVALID = 3;
+  RUNTIME_SESSION_OUTCOME_REJECTED_UNAUTHORIZED = 4;
+  RUNTIME_SESSION_OUTCOME_REJECTED_STALE = 5;
+  RUNTIME_SESSION_OUTCOME_REJECTED_CONFLICT = 6;
+  RUNTIME_SESSION_OUTCOME_REJECTED_UNAVAILABLE = 7;
+}
+
+message RuntimeSessionResult {
+  string correlation_id = 1;
+  RuntimeSessionOutcome outcome = 2;
+  string host_session_id = 3;
+  uint64 accepted_sequence = 4;
+  int64 accepted_at = 5;
+  string reason = 6;
+  DenialDetail denial = 7;
 }

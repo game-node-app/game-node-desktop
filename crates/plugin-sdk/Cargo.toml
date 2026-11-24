@@ -1,18 +1,20 @@
 [package]
 name = "gamenode-plugin-sdk"
 description = "Public client SDK for GameNode provider plugins"
+documentation = "https://docs.rs/gamenode-plugin-sdk"
+repository = "https://github.com/game-node-app/game-node-desktop"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
+license = "MIT"
 authors.workspace = true
-publish.workspace = true
+publish = ["crates-io"]
 
 [lints]
 workspace = true
 
 [dependencies]
-gamenode-plugin-protocol = { path = "../plugin-protocol" }
+gamenode-plugin-protocol = { version = "=0.1.0", path = "../plugin-protocol" }
 async-trait.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
@@ -22,5 +24,6 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 tower = "0.5"
 
 [dev-dependencies]
+serde_json.workspace = true
 tempfile.workspace = true
 tokio-stream = { version = "0.1", features = ["net"] }

@@ -174,6 +174,35 @@ fn counter_games_emit_running_and_one_read_without_sessions() {
         .is_empty()
     );
 }
+
+#[test]
+fn a_child_outside_the_installation_keeps_wrapper_game_attribution() {
+    let mut tracker = setup(false);
+    let wrapper = process(1, 100, "/games/one/wrapper");
+    let mut child = process(2, 105, "/opt/runtime/game");
+    child.parent = Some(crate::ports::ProcessIdentity {
+        pid: wrapper.pid,
+        created_at: wrapper.created_at,
+    });
+    let opened = listed(&mut tracker, 110, vec![wrapper, child.clone()]);
+    assert!(
+        opened
+            .iter()
+            .any(|effect| matches!(effect, Effect::OpenSession(row) if row.entry_key == "steam:1"))
+    );
+
+    assert!(listed(&mut tracker, 120, vec![child]).is_empty());
+    assert_eq!(tracker.running(), BTreeSet::from(["steam:1".into()]));
+
+    let mut reused_pid_child = process(3, 130, "/opt/unrelated/game");
+    reused_pid_child.parent = Some(crate::ports::ProcessIdentity {
+        pid: 1,
+        created_at: UNIX_EPOCH + Duration::from_secs(200),
+    });
+    listed(&mut tracker, 140, vec![reused_pid_child]);
+    assert!(tracker.running().is_empty());
+}
+
 #[test]
 fn a_game_already_running_at_the_first_read_keeps_its_process_start() {
     let mut tracker = setup(false);

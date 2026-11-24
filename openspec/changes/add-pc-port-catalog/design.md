@@ -170,6 +170,7 @@ The extractor named in the overlay is downloaded with the same cached, SHA-256-v
 - `CREATE_NO_WINDOW`
 - a Windows job object, so cancelling or quitting kills its process tree
 - the working directory set to the staging folder
+- a per-run timeout, six hours by default, so a hung tool cannot hold the single install worker forever
 
 The argument list comes only from the overlay's template. Each placeholder is replaced by a canonicalized path that the user chose or that GameNode created, and is passed as a separate argument.
 
@@ -182,7 +183,7 @@ It then overlays the update tree onto the base: every update file replaces or jo
 
 Validation runs once, on the merged folder, exactly like a supplied folder (D7); the intermediate trees are not validated because the update tree alone may not carry the slot's markers. A template that contains `{update}` keeps the single-run behaviour, for a tool that merges the update itself. `check_choice` still builds the digests a later copy re-verifies.
 
-The tool's stdout and stderr are kept, capped at 64 KiB, for the failure details view. Only packages the user's own dump tools produce, which are unencrypted or fake-signed, can work. GameNode ships no keys, and if the tool reports an encrypted retail package, the job fails with a message that says so.
+The tool's stdout and stderr are kept, capped at 64 KiB, for the failure details view. Cancellation and the timeout are polled every 25 ms; either one kills the tool's process tree before the runner reports the failure and its created paths. Only packages the user's own dump tools produce, which are unencrypted or fake-signed, can work. GameNode ships no keys, and if the tool reports an encrypted retail package, the job fails with a message that says so.
 
 A slot whose `from_package.needs_update` is set requires the update package: the pure install plan refuses a base-only choice with a typed plan error, and the UI names the missing update. The plan's free-space estimate counts twice the base and update package sizes as the extracted size, because the packages are read from the player's disk and their extracted tree is written into staging on the target volume.
 
@@ -225,5 +226,5 @@ The release archive nests everything under `BloodbornePC\`, so the overlay copie
 
 ## Open Questions
 
-- Which PS4 PKG extractor to pin: task 1.2 pinned `paulomanrique/ps4-pkg-extractor` `v0.0.1`. It has a CLI, runs on Windows, uses the Unlicense and takes one package per run, so GameNode merges the update itself (D8). The choice changes only overlay data.
+- Which PS4 PKG extractor to pin: task 1.2 pinned `paulomanrique/ps4-pkg-extractor` `v0.0.1`. It has a CLI, runs on Windows, uses the Unlicense and takes one package per run, so GameNode merges the update itself (D8). The choice changes only overlay data. Public CLI alternatives were evaluated at the same time: `Antti/orbis` (Apache-2.0, Rust CLI, Windows build) has an update flow, but it is a stateful `extract` then `install --base ... --merge` sequence that keeps a `.orbis-install` sidecar, which does not fit the single-run `{package}`/`{update}`/`{out}` template; `mathisto/pkgextract` (LGPL-3.0, single-file Windows `.exe`) writes game files under `uroot`, so the recipe would need a fixed subfolder; `murums04/ps4-pkg-extractor-ui` is a GUI. `paulomanrique/ps4-pkg-extractor` writes the game tree at the output root and keeps the runner and merge simple, so it remains the pin. A future overlay update can move to another tool without an application release.
 - The exact pt-BR wording for "PC ports" is to be confirmed in copy review. The working label is "Ports para PC".

@@ -24,6 +24,7 @@ import { I18nProvider } from '../../../i18n';
 import { resetUiStore } from '../../../store/uiStore';
 import { ToastContainer } from '../../settings/ToastContainer';
 import { PortFailureDetails, PortSetupHost, openPortSetup } from './index';
+import { PluginPortSetupHost } from './PluginPortSetupHost';
 import { portSetupStore, resetPortSetup } from './setupStore';
 
 // ---------------------------------------------------------------------------------------
@@ -176,6 +177,7 @@ function renderHost(snapshot: Snapshot, locale = 'en') {
       <QueryClientProvider client={queryClient}>
         <I18nProvider initialLocale={locale}>
           <OpenTrigger catalogId={snapshot.ports.entries[0]?.catalogId ?? 'qcat_test'} />
+          <PluginPortSetupHost />
           <PortSetupHost />
           <ToastContainer />
         </I18nProvider>
@@ -199,6 +201,39 @@ describe('Port guided setup', () => {
     resetUiStore();
     resetPortSetup();
     vi.restoreAllMocks();
+  });
+
+  it.each(['en', 'pt-BR'])('reviews a host-issued plugin request and associates approved candidates in %s', async (locale) => {
+    const slot = makeSlot({ id: 'game', label: 'Game source', kind: 'folder', required: true });
+    const entry = makeEntry({ requirements: [slot] });
+    const snapshot = makeSnapshot([entry], [], 'D:/Ports');
+    snapshot.ports.pluginRequest = { id: 'host-review', catalogId: entry.catalogId, pluginId: '<fixture.plugin>', publisherFingerprint: 'publisher-fingerprint', sources: [{ path: 'D:/Approved/source', directory: true }] };
+    vi.spyOn(commands, 'portsDetail').mockResolvedValue(makeDetail(entry));
+    const install = vi.spyOn(commands, 'portsInstall').mockResolvedValue('native-job');
+    const dismiss = vi.spyOn(commands, 'portsDismissPluginSetup').mockResolvedValue(undefined);
+    renderHost(snapshot, locale);
+    await waitFor(() => expect(screen.getByText(/<fixture.plugin>/)).toBeInTheDocument());
+    expect(screen.getByText('publisher-fingerprint')).toBeInTheDocument();
+    expect(screen.getByTestId('port-setup-start')).toBeDisabled();
+    expect(install).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'D:/Approved/source' }));
+    await waitFor(() => expect(screen.getByTestId('port-setup-start')).toBeEnabled());
+    clickTestId('port-setup-start');
+    await waitFor(() => expect(install).toHaveBeenCalledWith(expect.objectContaining({ pluginRequestId: 'host-review', catalogId: entry.catalogId, supplied: [{ slotId: 'game', path: 'D:/Approved/source' }] })));
+    await waitFor(() => expect(dismiss).toHaveBeenCalledWith('host-review'));
+  });
+
+  it('preserves an open manual setup when a plugin request arrives', async () => {
+    const entry = makeEntry();
+    const snapshot = makeSnapshot([entry]);
+    snapshot.ports.pluginRequest = { id: 'host-review', catalogId: entry.catalogId, pluginId: 'fixture.plugin', publisherFingerprint: 'publisher', sources: [] };
+    const dismiss = vi.spyOn(commands, 'portsDismissPluginSetup').mockResolvedValue(undefined);
+    act(() => openPortSetup(entry.catalogId));
+    renderHost(snapshot);
+    await waitFor(() => expect(dismiss).toHaveBeenCalledWith('host-review'));
+    expect(portSetupStore.state.open).toBe(true);
+    expect(portSetupStore.state.pluginRequestId).toBeNull();
+    expect(screen.queryByText(/fixture.plugin/)).not.toBeInTheDocument();
   });
 
   it('blocks Start on a required slot, lets an optional slot be skipped, and sends the request', async () => {

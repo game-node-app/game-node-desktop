@@ -260,21 +260,28 @@ pub fn cover_file_name(game_id: u64) -> String {
 
 /// Writes a game's cover atomically and returns its file name.
 pub fn write_cover(dir: &Path, game_id: u64, bytes: &[u8]) -> io::Result<String> {
-    fs::create_dir_all(dir)?;
     let name = cover_file_name(game_id);
+    write_named(dir, &name, bytes)?;
+    Ok(name)
+}
+
+/// Writes `bytes` to `dir/name` atomically: a reader never sees half an image and a failed write
+/// leaves the previous file alone. `name` must be a plain file name.
+pub fn write_named(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<()> {
+    fs::create_dir_all(dir)?;
     let temp = dir.join(format!(".{name}.{}.part", std::process::id()));
 
     let written = (|| {
         let mut file = File::create(&temp)?;
         file.write_all(bytes)?;
         drop(file);
-        fs::rename(&temp, dir.join(&name))
+        fs::rename(&temp, dir.join(name))
     })();
     if written.is_err() {
         // Best effort: a leftover `.part` file is harmless but should not pile up.
         let _ = fs::remove_file(&temp);
     }
-    written.map(|()| name)
+    written
 }
 
 #[cfg(test)]

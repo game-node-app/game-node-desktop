@@ -1,6 +1,7 @@
 //! Adversarial authorization cases exercise public RPC/event handlers. Adapter
 //! entry counters ensure rejection happens before host I/O or publication.
 use super::*;
+use gamenode_plugin_protocol::prost::Message;
 use provider_host_server::ProviderHost;
 
 struct CountingServices {
@@ -62,10 +63,15 @@ impl Harness {
         });
         for (provider, plugin) in [("fixture", "fixture.plugin"), ("other", "other.plugin")] {
             api.register(Registration {
+                declared_developer: "Fixture developer".into(),
+                package_digest: Vec::new(),
                 provider_id: provider.into(),
                 plugin_id: plugin.into(),
+                kind: super::RegistrationKind::Provider,
+                origin: RegistrationOrigin::Official,
                 capabilities: grants.iter().map(|v| (*v).into()).collect(),
                 shared_catalog: false,
+                playtime: Default::default(),
                 services: guarded.clone(),
             })
             .unwrap();
@@ -106,6 +112,226 @@ impl Harness {
             entered,
         )
     }
+}
+
+#[tokio::test]
+async fn control_plane_requires_the_session_credential_and_streams_grant_revisions() {
+    let (h, _) = Harness::with_grants(&[cap::CONTEXT, cap::DISCOVERY]).await;
+    let context = h.client.host.context().clone();
+    let api = super::super::super::PluginApi {
+        providers: h.api.clone(),
+        shared_policies: Default::default(),
+        data_broker: Default::default(),
+        shared_pool: Default::default(),
+        library: Default::default(),
+        storage: Default::default(),
+        files: Default::default(),
+        network: Default::default(),
+        notifications: Default::default(),
+        jobs: Default::default(),
+        leases: Default::default(),
+        processes: None,
+        intents: Default::default(),
+        saves: Default::default(),
+        fingerprints: Default::default(),
+    };
+
+    // The control plane is authenticated independently of data permissions,
+    // but never accepts an unknown session or another credential.
+    let denied = super::super::super::plugin_host_server::PluginHost::describe_api(
+        &api,
+        Request::new(DescribeApiRequest {
+            session_id: context.session_id.clone(),
+            session_credential: vec![0; 32],
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(denied.code(), tonic::Code::Unauthenticated);
+    let unknown = super::super::super::plugin_host_server::PluginHost::get_permissions(
+        &api,
+        Request::new(GetPermissionsRequest {
+            session_id: "another-session".into(),
+            session_credential: context.session_credential.clone(),
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(unknown.code(), tonic::Code::Unauthenticated);
+
+    let metadata = h.client.host.describe_api().await.unwrap();
+    assert_eq!((metadata.api_major, metadata.api_minor), (1, 6));
+    let permissions = h.client.host.get_permissions().await.unwrap();
+    assert_eq!(permissions.revision, 1);
+    assert!(
+        permissions
+            .grants
+            .iter()
+            .any(|grant| { grant.permission_id == cap::DISCOVERY && grant.state == "granted" })
+    );
+    assert!(
+        permissions
+            .grants
+            .iter()
+            .any(|grant| { grant.permission_id == cap::SECRET_READ && grant.state == "denied" })
+    );
+
+    let mut changes = h
+        .client
+        .host
+        .watch_permission_changes(permissions.revision)
+        .await
+        .unwrap();
+    let next_revision = h
+        .api
+        .replace_session_grants(&context.session_id, [cap::CONTEXT.to_owned()].into())
+        .await
+        .unwrap();
+    assert_eq!(next_revision, 2);
+    let change = tokio::time::timeout(Duration::from_secs(1), changes.message())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(change.revision, 2);
+    assert!(change.revoked);
+    assert!(
+        change
+            .grants
+            .iter()
+            .any(|grant| { grant.permission_id == cap::DISCOVERY && grant.state == "denied" })
+    );
+}
+
+#[tokio::test]
+async fn queued_storage_is_fenced_when_revocation_wins_commit_lock() {
+    let (h, _) = Harness::with_grants(&[cap::CONTEXT]).await;
+    let context = h.client.host.context().clone();
+    let provider = lock(&h.api.state).providers.get("fixture").unwrap().clone();
+    let (operation_result, _) = oneshot::channel();
+    lock(&h.api.state).operations.insert(
+        (context.session_id.clone(), context.operation_id.clone()),
+        Operation {
+            context: context.clone(),
+            kind: ProviderOperation::Initialize,
+            permissions: [cap::CONTEXT].into(),
+            catalog: CatalogTransfer::default(),
+            result: operation_result,
+            identity_revision: 0,
+            secret_written: false,
+            secret_deleted: false,
+            identity_accepted: false,
+            settings: None,
+            configuration: None,
+            configuration_cleanup: false,
+            requested_achievements: Default::default(),
+        },
+    );
+    let held = provider.commits.clone().lock_owned().await;
+
+    let revoke_api = h.api.clone();
+    let session_id = context.session_id.clone();
+    let (revoke_started, revoke_ready) = tokio::sync::oneshot::channel();
+    let mut revoke = tokio::spawn(async move {
+        revoke_started.send(()).unwrap();
+        revoke_api
+            .replace_session_grants(&session_id, BTreeSet::new())
+            .await
+    });
+    revoke_ready.await.unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(10), &mut revoke)
+            .await
+            .is_err()
+    );
+
+    let (storage_started, storage_ready) = tokio::sync::oneshot::channel();
+    let committed = Arc::new(AtomicUsize::new(0));
+    let committed_by_work = committed.clone();
+    let lease = Lease {
+        api: h.api.clone(),
+        context,
+        permission: cap::CONTEXT,
+    };
+    let storage = tokio::spawn(async move {
+        storage_started.send(()).unwrap();
+        lease
+            .storage(move || {
+                committed_by_work.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+            .await
+    });
+    storage_ready.await.unwrap();
+    tokio::task::yield_now().await;
+    drop(held);
+
+    assert_eq!(revoke.await.unwrap().unwrap(), 2);
+    let status = storage.await.unwrap().unwrap_err();
+    assert!(matches!(
+        status.code(),
+        tonic::Code::PermissionDenied | tonic::Code::FailedPrecondition
+    ));
+    assert_eq!(committed.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn revocation_cancels_pending_operations_with_revisioned_denial() {
+    let (h, _) = Harness::with_grants(&[cap::CONTEXT, cap::DISCOVERY]).await;
+    let context = h.client.host.context().clone();
+    let api = h.api.clone();
+    let pending =
+        tokio::spawn(async move { api.execute("fixture", ProviderOperation::Discover).await });
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if lock(&h.api.state)
+                .operations
+                .iter()
+                .any(|((session_id, _), operation)| {
+                    session_id == &context.session_id
+                        && operation.kind == ProviderOperation::Discover
+                })
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+
+    h.api
+        .replace_session_grants(&context.session_id, [cap::CONTEXT.to_owned()].into())
+        .await
+        .unwrap();
+    let status = pending.await.unwrap().unwrap_err();
+    assert_eq!(status.code(), tonic::Code::PermissionDenied);
+    let detail = DenialDetail::decode(status.details()).unwrap();
+    assert_eq!(detail.reason, DenialReason::Revoked as i32);
+    assert_eq!(detail.permission_id, cap::DISCOVERY);
+    assert_eq!(detail.grant_revision, 2);
+}
+
+#[tokio::test]
+async fn control_plane_denials_include_decodable_permission_details() {
+    use gamenode_plugin_protocol::prost::Message;
+    let (h, _) = Harness::with_grants(&[cap::CONTEXT]).await;
+    let context = h.client.host.context().clone();
+    let status = ProviderHost::account(
+        &h.api,
+        Request::new(AccountRequest {
+            context: Some(context),
+            action: Some(account_request::Action::Read(true)),
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(status.code(), tonic::Code::PermissionDenied);
+    let detail = DenialDetail::decode(status.details()).unwrap();
+    assert_eq!(detail.reason, DenialReason::NotGranted as i32);
+    assert_eq!(detail.permission_id, cap::ACCOUNT_READ);
+    assert_eq!(detail.grant_revision, 1);
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -334,10 +560,12 @@ async fn every_missing_host_grant_is_rejected_before_adapter_or_domain_effects()
             .copied()
             .filter(|v| *v != case.capability())
             .collect();
-        // Settings-only descriptors can legitimately omit context. Include its
-        // independent feature solely to permit negotiating that negative case.
+        // Provider sessions need context to negotiate. For the negative context
+        // case, revoke it after opening the session so the RPC itself exercises
+        // the missing-grant check rather than failing during ClientSession::open.
         if matches!(case, Access::Context) {
             grants.push(cap::SETTINGS);
+            grants.push(cap::CONTEXT);
         }
         let (mut h, entered) = Harness::with_grants(&grants).await;
         if case.required_to_dispatch() {
@@ -358,7 +586,10 @@ async fn every_missing_host_grant_is_rejected_before_adapter_or_domain_effects()
                     .await
                     .unwrap_err()
             };
-            assert_eq!(error.code(), tonic::Code::Unimplemented, "{case:?}");
+            assert_eq!(error.code(), tonic::Code::PermissionDenied, "{case:?}");
+            let detail = DenialDetail::decode(error.details()).unwrap();
+            assert_eq!(detail.reason, DenialReason::NotGranted as i32, "{case:?}");
+            assert_eq!(detail.permission_id, case.capability(), "{case:?}");
             assert!(
                 tokio::time::timeout(Duration::from_millis(10), h.client.commands.message())
                     .await
@@ -373,6 +604,12 @@ async fn every_missing_host_grant_is_rejected_before_adapter_or_domain_effects()
             };
             let pending = h.execute(operation);
             let context = h.next(operation).await.context().clone();
+            if matches!(case, Access::Context) {
+                h.api
+                    .replace_session_grants(&context.session_id, [cap::SETTINGS.to_owned()].into())
+                    .await
+                    .unwrap();
+            }
             assert_eq!(
                 case.attempt(&h.api, context).await.unwrap_err().code(),
                 tonic::Code::PermissionDenied,
@@ -404,6 +641,12 @@ async fn every_service_rejects_cross_provider_credentials_and_obsolete_sessions(
             tonic::Code::PermissionDenied,
             "{case:?}: provider"
         );
+        let audit = h.api.authorization_audit();
+        let denial = audit.last().expect("authorization denial is audited");
+        assert_eq!(denial.plugin_id, "fixture.plugin");
+        assert_eq!(denial.provider_id, "fixture");
+        assert_eq!(denial.reason, DenialReason::ScopeDenied);
+        assert!(!format!("{denial:?}").contains("session_credential"));
         let other = h.api.begin_launch("other").unwrap();
         let mut cross_plugin = context.clone();
         cross_plugin.session_credential = (0..other.credential.len())
@@ -437,6 +680,35 @@ async fn every_service_rejects_cross_provider_credentials_and_obsolete_sessions(
         );
         untouched(&h, &entered, case);
         h.api.disconnect("other").await;
+    }
+}
+
+#[test]
+fn authorization_audit_is_bounded_and_contains_no_request_payload_fields() {
+    let api = ProviderApi::default();
+    for sequence in 0..=AUTHORIZATION_AUDIT_LIMIT {
+        api.record_authorization_denial(AuthorizationAuditEvent {
+            plugin_id: format!("fixture.plugin.{sequence}"),
+            provider_id: "fixture-provider".into(),
+            permission_id: "secrets.read".into(),
+            reason: DenialReason::NotGranted,
+            grant_revision: sequence as u64,
+        });
+    }
+
+    let events = api.authorization_audit();
+    assert_eq!(events.len(), AUTHORIZATION_AUDIT_LIMIT);
+    assert_eq!(events.first().unwrap().plugin_id, "fixture.plugin.1");
+    assert_eq!(events.last().unwrap().plugin_id, "fixture.plugin.256");
+
+    let rendered = format!("{events:?}");
+    for sensitive in [
+        "session_credential",
+        "cookie-value",
+        "secret-value",
+        "raw-request",
+    ] {
+        assert!(!rendered.contains(sensitive));
     }
 }
 

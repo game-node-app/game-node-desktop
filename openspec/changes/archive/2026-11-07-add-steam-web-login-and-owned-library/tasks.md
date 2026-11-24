@@ -66,3 +66,16 @@
 
 - Archive the change after implementation and the project's review requirements are satisfied.
 - Verify the archived specs render the new `desktop-store-accounts` capability and the modified requirements correctly.
+
+## Reconciliação documental do histórico — 2026-11-09
+
+As quatro tarefas manuais 7.3–7.6 permanecem abertas. O [registro de aceitação](../../../../docs/steam-acceptance.md) as descreve como não executadas ou parcialmente verificadas; esta reconciliação não altera esses resultados. Testes/mock e resultados de uma revisão antiga não comprovam aceitação integral do plugin no candidato atual.
+
+| Tarefa original | Evidência e acompanhamento sucessor | Destino e condição restante |
+| --- | --- | --- |
+| 7.3 | O registro de aceitação exige Windows, Guard, credenciais, import/restart/sign-out e Play/Install reais. | Correspondência com [integração Steam](../../integrate-steam-plugin-into-main/tasks.md) 9.2 e critérios de UI/library aplicáveis. A tarefa histórica permanece aberta até resultados explícitos cobrirem seu conjunto completo. |
+| 7.4 | Fallback privado, offline e recuperação têm fixtures; login WebKitGTK e keyring reais continuam distintos dessa evidência. | Correspondência com integração Steam 8.1–8.2, preservando a distinção Secret Service/fallback e seus resultados por candidato. |
+| 7.5 | Fixtures cobrem grupo/no-group e owned-wins; sair de uma Steam Family real e observar revogação não foi estabelecido no registro. | Integração Steam 8.2/9.2 cobre owned/Family de forma geral; a transição real de saída/revogação continua com este ID até ser explicitamente verificada. |
+| 7.6 | Mock de biblioteca grande e testes de cache-first não comprovam primeiro sync de conta real, prioridade installed-first nem restart durante esse fluxo. | Integração Steam 8.3 cobre responsividade geral; a medição real de 300+ jogos e a matriz específica continuam nesta tarefa histórica, sem sucessora ativa completa. |
+
+A [integração Steam](../../../../docs/steam-plugin-integration.md) é o registro do candidato sucessor para os testes que realmente repetir. As referências acima são correspondências de escopo, não transferência formal nem conclusão. Nenhum checkbox foi alterado.

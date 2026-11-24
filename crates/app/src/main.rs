@@ -121,6 +121,12 @@ fn set_webview_visible(window: &tauri::WebviewWindow, visible: bool) {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(target_os = "linux")]
+    if let Some(result) =
+        gamenode_app::plugin_host::launch_supervisor::run_linux_helper_if_requested()
+    {
+        return result;
+    }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -140,6 +146,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let paths = DataPaths::resolve().ok_or("Could not locate your application data directory")?;
     paths.ensure_data_dir()?;
+    let plugin_updates = gamenode_app::plugin_host::updates::PluginUpdateService::open(&paths)?;
     let logging = gamenode_app::logging::init(&paths);
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
@@ -150,6 +157,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "GameNode Desktop starting"
     );
     let store = Arc::new(SqliteSettingsStore::open(&paths.database_file())?);
+    plugin_updates.set_bundle_store(store.bundle_store());
     let initial_settings = store.load()?;
     // The lifecycle preferences decide the login value before any window exists.
     #[cfg(windows)]
@@ -161,11 +169,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let platform = gamenode_core::provider::Platform::current()
         .ok_or("GameNode Desktop supports Windows and Linux only")?;
-    let providers = gamenode_app::providers::load_bundled_with_plugins(
-        platform,
-        &gamenode_app::plugin_host::backends(platform),
-    )
-    .providers;
+    // Official manifests keep their exact order and behavior; an installed third-party provider
+    // package that passed the reviewed import is appended here, before the library exists. The
+    // registry, trust and package inspection run on blocking workers inside the composition.
+    let providers = runtime
+        .block_on(gamenode_app::plugin_host::startup::load_library_providers(
+            platform, &paths,
+        ))
+        .providers;
     let library_store = Arc::new(store.library_store());
     let layout = library_store.load_layout().unwrap_or_else(|error| {
         tracing::warn!(%error, "could not read the saved library layout; using the default");
@@ -194,8 +205,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?);
     let processes: Arc<dyn gamenode_core::ports::Processes> =
         Arc::new(gamenode_platform::processes::HostProcesses::new());
+    // One coordinator instance is shared by supervised runtime launches and backup/restore jobs.
+    let custom_launch_leases =
+        Arc::new(gamenode_app::plugin_host::resource_leases::ResourceLeases::default());
 
-    let plugin_api = gamenode_app::plugin_host::PluginApi::default();
+    let plugin_api = gamenode_app::plugin_host::PluginApi {
+        shared_policies: Arc::new(
+            gamenode_app::plugin_host::sharing_policy::SharedSharingPolicies::open(
+                paths.plugin_data_dir().join("shared-data-policies"),
+            )?,
+        ),
+        storage: Arc::new(gamenode_app::plugin_host::storage::PluginStorage::new(
+            paths.plugin_data_dir(),
+        )),
+        shared_pool: Arc::new(
+            gamenode_app::plugin_host::shared_pool::DurableSharedPool::new(paths.data_dir()),
+        ),
+        // Nothing under the application data folder is reachable through file handles. The
+        // folder-approval dialog is connected with the settings UI (`FileAccess::set_approver`).
+        files: Arc::new(gamenode_app::plugin_host::files::FileAccess::new(
+            gamenode_platform::plugin_files::Reserved::new(&[paths.data_dir().to_path_buf()]),
+        )),
+        leases: custom_launch_leases.clone(),
+        processes: Some(processes.clone()),
+        ..Default::default()
+    };
+    plugin_api
+        .set_state_layout(gamenode_app::plugin_host::profile::PluginStateLayout::managed(&paths));
     #[cfg(target_os = "linux")]
     let plugin_api_server = match gamenode_app::plugin_host::PluginApiServer::start(
         runtime.handle(),
@@ -240,6 +276,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let provider_runtime = match runtime.block_on(
         gamenode_app::plugin_host::runtime::HostedProviders::bundled(
             plugin_api.providers.clone(),
+            plugin_api.intents.clone(),
             plugin_endpoint,
             paths.clone(),
             library_store.clone(),
@@ -252,6 +289,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             None
         }
     };
+    if let Some(provider_runtime) = provider_runtime.as_ref() {
+        provider_runtime
+            .lifecycle()
+            .set_private_storage(plugin_api.storage.clone());
+        plugin_updates.set_lifecycle(provider_runtime.lifecycle());
+    }
 
     let app_handle_slot = Arc::new(std::sync::Mutex::new(None::<AppHandle>));
     let slot_clone = app_handle_slot.clone();
@@ -262,6 +305,101 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let _ = app.emit("engine:snapshot", &snapshot);
         }
     });
+
+    // A plugin's notification leaves on its own event and is shown by the window as plain text.
+    // It is an event, not state: with no window listening it is dropped.
+    struct NoticeSink(Arc<std::sync::Mutex<Option<AppHandle>>>);
+    impl gamenode_app::plugin_host::notifications::NotificationSink for NoticeSink {
+        fn deliver(&self, notice: gamenode_app::plugin_host::notifications::PluginNotice) {
+            if let Some(app) = self.0.lock().unwrap().as_ref() {
+                use tauri::Emitter;
+                let _ = app.emit(gamenode_app::plugin_host::notifications::EVENT, &notice);
+            }
+        }
+    }
+    plugin_api
+        .notifications
+        .set_sink(Arc::new(NoticeSink(app_handle_slot.clone())));
+
+    // Folder approvals are collected by the host, correlated through one-use ids, and answered
+    // by the shared React window. No plugin-suggested path is trusted until the user selects it
+    // and the host validates/canonicalizes it in the resource handler.
+    let root_approval_slot = app_handle_slot.clone();
+    let root_approvals = Arc::new(gamenode_app::plugin_host::files::RootApprovalBridge::new(
+        Arc::new(move |signal| {
+            use gamenode_app::plugin_host::files::{
+                ROOT_CLOSED_EVENT, ROOT_CONFIRM_EVENT, ROOT_SELECT_EVENT, RootApprovalSignal,
+            };
+            use tauri::Emitter;
+            let guard = root_approval_slot.lock().unwrap();
+            let Some(app) = guard.as_ref() else {
+                return false;
+            };
+            match signal {
+                RootApprovalSignal::Select(prompt) => app.emit(ROOT_SELECT_EVENT, &prompt).is_ok(),
+                RootApprovalSignal::Confirm(prompt) => {
+                    app.emit(ROOT_CONFIRM_EVENT, &prompt).is_ok()
+                }
+                RootApprovalSignal::Closed(id) => app.emit(ROOT_CLOSED_EVENT, id).is_ok(),
+            }
+        }),
+    ));
+    plugin_api.files.set_approver(root_approvals.clone());
+
+    // Runtime executable approvals use the same one-use prompt pattern. The plugin sends hints;
+    // the host shows its installed-program candidates and the user approves exactly one program.
+    let runtime_approval_slot = app_handle_slot.clone();
+    let runtime_approvals = Arc::new(
+        gamenode_app::plugin_host::runtime_access::RuntimeApprovalBridge::new(Arc::new(
+            move |signal| {
+                use gamenode_app::plugin_host::runtime_access::{
+                    RUNTIME_CLOSED_EVENT, RUNTIME_SELECT_EVENT, RuntimeApprovalSignal,
+                };
+                use tauri::Emitter;
+                let guard = runtime_approval_slot.lock().unwrap();
+                let Some(app) = guard.as_ref() else {
+                    return false;
+                };
+                match signal {
+                    RuntimeApprovalSignal::Select(prompt) => {
+                        app.emit(RUNTIME_SELECT_EVENT, &prompt).is_ok()
+                    }
+                    RuntimeApprovalSignal::Closed(id) => app.emit(RUNTIME_CLOSED_EVENT, id).is_ok(),
+                }
+            },
+        )),
+    );
+    plugin_api
+        .files
+        .set_runtime_approver(runtime_approvals.clone());
+
+    // A plugin's request to launch or install a game is confirmed in the window: the bridge shows
+    // it with an event and takes the answer from a command. With no window listening, a request
+    // that needs the user fails instead of waiting.
+    let confirmation_slot = app_handle_slot.clone();
+    let confirmations = Arc::new(
+        gamenode_app::plugin_host::confirmations::ConfirmationBridge::new(Arc::new(
+            move |signal| {
+                use gamenode_app::plugin_host::confirmations::{CLOSED_EVENT, EVENT, Signal};
+                use tauri::Emitter;
+                let guard = confirmation_slot.lock().unwrap();
+                let Some(app) = guard.as_ref() else {
+                    return false;
+                };
+                match signal {
+                    Signal::Open(confirmation) => app.emit(EVENT, confirmation.as_ref()).is_ok(),
+                    Signal::Closed(id) => app.emit(CLOSED_EVENT, &id).is_ok(),
+                }
+            },
+        )),
+    );
+    plugin_api.intents.set_prompter(confirmations.clone());
+    let plugin_approvals = Arc::new(
+        gamenode_app::plugin_host::confirmations::PluginApprovals::new(
+            plugin_api.storage.clone(),
+            plugin_api.providers.profiles(),
+        ),
+    );
 
     // PC ports progress leaves on its own event; the engine coalesces ticks before they get here.
     let progress_app_slot = app_handle_slot.clone();
@@ -305,14 +443,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let achievement_store = store.achievement_store();
     let engine = Engine::new(
         Ports {
+            discovery: None,
             achievements: Arc::new(achievement_store),
             backups: Some(Arc::new(gamenode_platform::backups::Ludusavi::bundled(
                 paths.data_dir(),
             )?)),
             local_games: Some(local_game_store),
-            installations: Some(Arc::new(
-                gamenode_platform::installations::WindowsInstallations,
-            )),
+            installations: Some(Arc::new({
+                #[cfg(target_os = "windows")]
+                {
+                    gamenode_platform::installations::WindowsInstallations
+                }
+                #[cfg(target_os = "linux")]
+                {
+                    gamenode_platform::installations::LinuxInstallations
+                }
+            })),
             tools: Some(Arc::new(store.tool_store())),
             tool_catalog: Some(Arc::new(
                 gamenode_platform::tools::catalog::GitHubToolCatalog::new(paths.tools_cache_dir())?,
@@ -327,7 +473,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             processes,
             playtime: Arc::new(store.playtime_store()),
             playtime_api: client.clone(),
-            settings: store,
+            settings: store.clone(),
             credentials,
             api: client.clone(),
             browser: Arc::new(SystemBrowser),
@@ -346,6 +492,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         initial_settings,
         library,
         Box::new(random::nonce),
+        custom_launch_leases.clone(),
         move |snapshot| {
             pub_clone.publish(snapshot);
         },
@@ -353,8 +500,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(provider_runtime) = provider_runtime.clone() {
         engine.set_provider_runtime(provider_runtime);
     }
+    // HostedProviders owns the single profile lifecycle observer: it fences sessions, reaps old
+    // process trees, then restores only the new account's enabled plugins.
+    engine.set_plugin_profiles(plugin_api.providers.profiles());
+    plugin_updates.set_profiles(plugin_api.providers.profiles());
+    // Plugins read the library through a host-owned projection the engine keeps current.
+    engine.set_library_feed(plugin_api.library.clone());
+    let folder_approvals = Arc::new(
+        gamenode_app::plugin_host::file_approvals::PluginFolderApprovals::new(
+            plugin_api.storage.clone(),
+            plugin_api.providers.profiles(),
+            plugin_api.files.clone(),
+            plugin_api.library.clone(),
+            root_approvals.clone(),
+        ),
+    );
+    let shared_resources = Arc::new(
+        gamenode_app::plugin_host::shared_resources::PluginSharedResources::new(
+            plugin_api.storage.clone(),
+            plugin_api.providers.profiles(),
+            plugin_api.files.clone(),
+            plugin_api.library.clone(),
+        ),
+    );
+    let runtime_approval_settings = Arc::new(
+        gamenode_app::plugin_host::runtime_approvals::PluginRuntimeApprovals::new(
+            plugin_api.storage.clone(),
+            plugin_api.providers.profiles(),
+        ),
+    );
+    if let Some(server) = plugin_api_server.as_ref() {
+        engine.set_selected_launch_api(server.resource_api());
+    }
 
     let mut builder = tauri::Builder::default();
+    builder = builder.plugin(tauri_plugin_dialog::init());
     builder = gamenode_app::protocol::register_asset_protocol(
         builder,
         paths.covers_dir(),
@@ -362,6 +542,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     builder = builder.manage(engine.clone());
+    builder = builder.manage(store.clone());
+    builder = builder.manage(plugin_api.providers.clone());
+    builder = builder.manage(plugin_api.shared_policies.clone());
+    builder = builder.manage(plugin_api.data_broker.clone());
+    if let Some(provider_runtime) = provider_runtime.as_ref() {
+        builder = builder.manage(provider_runtime.lifecycle());
+    }
+    builder = builder.manage(confirmations);
+    builder = builder.manage(root_approvals);
+    builder = builder.manage(runtime_approvals);
+    builder = builder.manage(folder_approvals);
+    builder = builder.manage(runtime_approval_settings);
+    builder = builder.manage(shared_resources);
+    builder = builder.manage(plugin_approvals);
+    builder = builder.manage(plugin_updates.clone());
     builder = builder.manage(logging.location().clone());
     // Serves `gamenode-asset://localhost/port-art/<catalogId>/<capsule|hero>`; without this state
     // every port artwork request is answered 404.
@@ -371,6 +566,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )),
         paths.data_dir(),
     )?);
+    let periodic_updates = plugin_updates.clone();
+    let background_runtime = runtime.handle().clone();
+    builder = builder.setup(move |app| {
+        let app = app.handle().clone();
+        let updates = periodic_updates.clone();
+        background_runtime.spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(24 * 60 * 60));
+            loop {
+                interval.tick().await;
+                if !updates.preferences().periodic_checks {
+                    continue;
+                }
+                match updates.check_updates().await {
+                    Ok(available) if !available.is_empty() => {
+                        use tauri::Emitter;
+                        if let Err(error) = app.emit("plugin:update-available", &available) {
+                            tracing::warn!(%error, "could not notify the UI about plugin updates");
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(error) => tracing::debug!(%error, "periodic plugin update check failed"),
+                }
+            }
+        });
+        Ok(())
+    });
     builder = builder.invoke_handler(tauri::generate_handler![
         commands::get_snapshot,
         commands::get_app_info,
@@ -386,7 +607,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         commands::library_input,
         commands::activate_entry,
         commands::open_entry,
+        commands::review_detected_target,
+        commands::launch_recipe_choices,
+        commands::select_launch_recipe,
+        commands::use_detected_default,
+        commands::repair_detected_target,
         commands::launch_selected,
+        commands::start_extension_action,
+        commands::available_plugin_extensions,
         commands::dismiss_launch,
         commands::rescan_library,
         commands::open_gamenode_page,
@@ -441,12 +669,83 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         commands::open_tool_source,
         commands::clear_tool_cache,
         commands::plugin_inventory,
+        commands::plugin_import_review,
+        commands::plugin_import_confirm_publisher,
+        commands::plugin_import_install,
+        commands::plugin_import_license_text,
+        commands::plugin_bundle_import_review,
+        commands::plugin_bundle_import_confirm_publisher,
+        commands::plugin_bundle_import_install,
+        commands::plugin_bundle_permissions_replace,
+        commands::plugin_bundle_update_check,
+        commands::plugin_bundle_update_available,
+        commands::plugin_bundle_update_review,
+        commands::plugin_bundle_update_approve,
+        commands::plugin_bundle_update_decline,
+        commands::plugin_bundle_rollback_available,
+        commands::plugin_bundle_rollback_review,
+        commands::plugin_bundle_rollback_approve,
+        commands::plugin_permission_snapshot,
+        commands::plugin_permissions_replace,
+        commands::plugin_shared_data_snapshot,
+        commands::plugin_shared_data_replace,
+        commands::plugin_durable_usage,
+        commands::plugin_durable_delete,
+        commands::plugin_durable_reuse,
+        commands::plugin_private_reuse,
+        commands::plugin_storage_cleanup_review,
+        commands::plugin_storage_cleanup_apply,
+        commands::plugin_storage_locations,
+        gamenode_app::plugin_host::migration::plugin_publisher_migration_preview,
+        gamenode_app::plugin_host::migration::plugin_publisher_migration_apply,
+        gamenode_app::plugin_host::migration::plugin_publisher_migration_cancel,
+        gamenode_app::plugin_host::migration::plugin_publisher_migration_rollback,
+        commands::plugin_enable,
+        commands::plugin_disable,
+        commands::plugin_remove,
+        commands::plugin_bundle_uninstall,
+        commands::plugin_configuration_state,
+        commands::plugin_configuration_modes,
+        commands::plugin_configuration_open,
+        commands::plugin_settings_describe,
+        commands::plugin_settings_submit,
+        commands::plugin_settings_cancel,
+        commands::plugin_playtime_inventory,
+        commands::plugin_playtime_set_accounting,
+        commands::plugin_update_preferences,
+        commands::plugin_update_available,
+        commands::plugin_update_set_periodic_checks,
+        commands::plugin_update_check,
+        commands::plugin_update_review,
+        commands::plugin_rollback_available,
+        commands::plugin_rollback_review,
+        commands::plugin_update_retrust_publisher,
+        commands::plugin_rollback_approve,
+        commands::plugin_update_approve,
+        commands::plugin_update_decline,
+        commands::plugin_confirmation_answer,
+        commands::plugin_folder_selection_answer,
+        commands::plugin_folder_approval_answer,
+        commands::plugin_runtime_selection_answer,
+        commands::plugin_folder_approvals,
+        commands::plugin_folder_revoke,
+        commands::plugin_folder_change,
+        commands::plugin_library_root_set_watching,
+        commands::plugin_runtime_approvals,
+        commands::plugin_runtime_revoke,
+        commands::plugin_shared_resource_reviews,
+        commands::plugin_shared_resource_accept,
+        commands::plugin_shared_resource_revoke,
+        commands::plugin_remembered_confirmations,
+        commands::plugin_revoke_confirmation,
         commands::provider_sign_in,
         commands::provider_focus_sign_in,
         commands::provider_cancel_sign_in,
         commands::provider_sign_out,
         commands::provider_check,
         commands::plugin_stop,
+        commands::custom_launch_ids,
+        commands::custom_launch_stop,
         commands::plugin_start,
         commands::achievement_list,
         commands::open_achievements_page,
@@ -459,6 +758,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         commands::ports_pick_parent,
         commands::ports_pick_supplied,
         commands::ports_install,
+        commands::ports_dismiss_plugin_setup,
         commands::ports_cancel,
         commands::ports_mark_seen,
         commands::ports_set_preferences,
@@ -564,7 +864,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         eng_for_setup.start();
         if let ipc::Message::AuthCallback { url } = incoming {
-            eng_for_setup.dispatch(Input::CallbackReceived(url));
+            let engine = eng_for_setup.clone();
+            tauri::async_runtime::spawn(async move {
+                engine.dispatch_on_worker(Input::CallbackReceived(url)).await;
+            });
         }
 
         // Single-instance IPC listener
@@ -573,7 +876,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         tauri::async_runtime::spawn(async move {
             while let Some(msg) = owner_messages.recv().await {
                 if let ipc::Message::AuthCallback { url } = msg {
-                    eng_for_ipc.dispatch(Input::CallbackReceived(url));
+                    eng_for_ipc.dispatch_on_worker(Input::CallbackReceived(url)).await;
                 }
                 let _ = win_for_ipc.unminimize();
                 let _ = win_for_ipc.show();
@@ -593,7 +896,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut interval = tokio::time::interval(Duration::from_secs(1));
             loop {
                 interval.tick().await;
-                eng_for_ticker.dispatch(Input::Tick);
+                eng_for_ticker.dispatch_on_worker(Input::Tick).await;
                 eng_for_ticker.maintenance();
 
                 let title = eng_for_ticker.running_title().unwrap_or_default();

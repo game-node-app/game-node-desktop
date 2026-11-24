@@ -95,6 +95,7 @@ mod tests {
             entry_key: "steam:620".to_owned(),
             game_id,
             chosen_at: 0,
+            source: Default::default(),
         }
     }
 

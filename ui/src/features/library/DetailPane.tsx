@@ -22,6 +22,7 @@ import { MatchSection } from './detail/MatchSection';
 import { AchievementsSection } from './detail/AchievementsSection';
 import { MultiSelectionPane } from './detail/MultiSelectionPane';
 import { OnThisPcSection } from './detail/OnThisPcSection';
+import { LaunchRecipeSelector } from './detail/LaunchRecipeSelector';
 import {
   entryRegistrationId,
   isDrmFreeKey,
@@ -40,6 +41,8 @@ export const DetailPane: React.FC = () => {
   const { data: launch } = useSnapshot((s) => s.launch);
   const { data: storeAccounts } = useSnapshot((s) => s.storeAccounts);
   const [achievementsOpen, setAchievementsOpen] = React.useState(false);
+  const [targetActionBusy, setTargetActionBusy] = React.useState(false);
+  const [targetActionFailed, setTargetActionFailed] = React.useState(false);
   const detailDragWidth = useUiStore((s) => s.detailDragWidth);
   const { t } = useI18n();
 
@@ -128,6 +131,8 @@ export const DetailPane: React.FC = () => {
           return t('Library::The store application is not installed or cannot be opened.');
         case 'unsupported':
           return t('Library::This store does not support that action.');
+        case 'recipeNeedsAttention':
+          return t('Library::The selected launch recipe needs attention. Review it, choose another recipe, or use the detected default.');
         case 'failed':
         default:
           return t('Library::The link could not be opened.');
@@ -185,6 +190,37 @@ export const DetailPane: React.FC = () => {
   const providerAccount = storeAccounts.find(
     (account) => account.provider === detail?.row.provider,
   );
+  const detectedTarget = detail?.detectedTarget ?? null;
+  const detectedTargetText = detectedTarget
+    ? 'executable' in detectedTarget.spec
+      ? `${detectedTarget.spec.executable.root}\\${detectedTarget.spec.executable.path}`
+      : detectedTarget.spec.uri
+    : '';
+  const reviewDetectedTarget = async () => {
+    if (!detail || !detectedTarget) return;
+    setTargetActionBusy(true);
+    setTargetActionFailed(false);
+    try {
+      await commands.reviewDetectedTarget(detail.row.key, detectedTarget.revision);
+    } catch {
+      setTargetActionFailed(true);
+    } finally {
+      setTargetActionBusy(false);
+    }
+  };
+  const repairDetectedTarget = async () => {
+    if (!detail || !detectedTarget) return;
+    setTargetActionBusy(true);
+    setTargetActionFailed(false);
+    try {
+      await commands.repairDetectedTarget(detail.row.key, detectedTarget.revision);
+    } catch {
+      setTargetActionFailed(true);
+    } finally {
+      setTargetActionBusy(false);
+    }
+  };
+
   const nowSeconds = Math.floor(Date.now() / 1000);
 
   return (
@@ -269,6 +305,33 @@ export const DetailPane: React.FC = () => {
                   )}
                 </div>
               )}
+
+              {detectedTarget && (
+                <section data-testid="detected-target-review" className="flex flex-col gap-compact rounded-sm border border-border-subtle bg-raised p-sm">
+                  <div className="text-xs font-semibold text-text-default">{t('Library::Detected launch target')}</div>
+                  <div className="break-all text-xs text-text-dimmed">{detectedTargetText}</div>
+                  <div className="text-xs text-text-dimmed">
+                    {!detectedTarget.available
+                      ? t('Library::This target is missing or changed. Locate its executable to repair it.')
+                      : detectedTarget.approved
+                        ? t('Library::Approved. GameNode checks the executable again before launch.')
+                        : t('Library::Review this target before GameNode can start it.')}
+                  </div>
+                  {targetActionFailed && <div role="alert" className="text-xs text-danger">{t('Library::The target could not be saved or validated.')}</div>}
+                  {!detectedTarget.approved && detectedTarget.available && (
+                    <button type="button" data-testid="approve-detected-target" disabled={targetActionBusy} onClick={() => void reviewDetectedTarget()} className="self-start rounded-xs border border-border-subtle bg-transparent px-2.5 py-1 text-xs font-medium text-text-default transition-colors hover:bg-surface disabled:opacity-45">
+                      {targetActionBusy ? t('Library::Checking target…') : t('Library::Approve detected target')}
+                    </button>
+                  )}
+                  {!detectedTarget.available && 'executable' in detectedTarget.spec && (
+                    <button type="button" data-testid="repair-detected-target" disabled={targetActionBusy} onClick={() => void repairDetectedTarget()} className="self-start rounded-xs border border-border-subtle bg-transparent px-2.5 py-1 text-xs font-medium text-text-default transition-colors hover:bg-surface disabled:opacity-45">
+                      {targetActionBusy ? t('Library::Checking target…') : t('Library::Locate executable')}
+                    </button>
+                  )}
+                </section>
+              )}
+
+              {detail && gameId !== null && <LaunchRecipeSelector entryKey={detail.row.key} />}
 
               <DetailPills
                 detail={detail}

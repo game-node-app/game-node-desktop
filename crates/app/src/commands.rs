@@ -1,4 +1,6 @@
+use std::collections::BTreeSet;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::engine::Engine;
 use gamenode_core::{AppPreferencePatch, Locale, Snapshot, WindowGeometry};
@@ -302,7 +304,7 @@ pub async fn dispatch_auth(
     engine: tauri::State<'_, Engine>,
     input: gamenode_core::Input,
 ) -> Result<(), String> {
-    engine.dispatch(input);
+    engine.dispatch_on_worker(input).await;
     Ok(())
 }
 
@@ -418,6 +420,75 @@ pub async fn open_entry(
     Ok(())
 }
 
+/// Approves the currently displayed detected target after worker-side host validation.
+#[tauri::command]
+pub async fn review_detected_target(
+    engine: tauri::State<'_, Engine>,
+    entry_key: String,
+    expected_revision: u64,
+) -> Result<(), String> {
+    engine
+        .review_detected_target(entry_key, expected_revision)
+        .await
+}
+
+/// Lists the active profile's custom recipes for the selected matched game.
+#[tauri::command]
+pub async fn launch_recipe_choices(
+    engine: tauri::State<'_, Engine>,
+    entry_key: String,
+) -> Result<crate::engine::LaunchRecipeChoices, String> {
+    engine.launch_recipe_choices(entry_key).await
+}
+
+/// Makes one authenticated plugin recipe the explicit launch choice for this library entry.
+#[tauri::command]
+pub async fn select_launch_recipe(
+    engine: tauri::State<'_, Engine>,
+    entry_key: String,
+    plugin_id: String,
+    publisher_fingerprint: String,
+    recipe_id: String,
+    recipe_revision: u64,
+    expected_target_revision: u64,
+) -> Result<(), String> {
+    engine
+        .select_launch_recipe(
+            entry_key,
+            plugin_id,
+            publisher_fingerprint,
+            recipe_id,
+            recipe_revision,
+            expected_target_revision,
+        )
+        .await
+}
+
+/// Explicitly returns this library entry to its detected default launch target.
+#[tauri::command]
+pub async fn use_detected_default(
+    engine: tauri::State<'_, Engine>,
+    entry_key: String,
+    expected_target_revision: u64,
+) -> Result<(), String> {
+    engine
+        .use_detected_default(entry_key, expected_target_revision)
+        .await
+}
+
+/// Opens a native picker to repair a missing detected executable. Selecting a file is explicit
+/// approval for the replacement target; validation and persistence run on a worker.
+#[tauri::command]
+pub async fn repair_detected_target(
+    engine: tauri::State<'_, Engine>,
+    entry_key: String,
+    expected_revision: u64,
+) -> Result<(), String> {
+    engine
+        .repair_detected_target(entry_key, expected_revision)
+        .await
+}
+
 #[tauri::command]
 pub async fn launch_selected(
     engine: tauri::State<'_, Engine>,
@@ -431,6 +502,40 @@ pub async fn launch_selected(
         engine.open_entry(key, kind);
     }
     Ok(())
+}
+
+#[tauri::command]
+pub async fn start_extension_action(
+    engine: tauri::State<'_, Engine>,
+    entry_key: String,
+    plugin_id: String,
+    operation: String,
+) -> Result<(), String> {
+    let operation = match operation.as_str() {
+        "play" => crate::plugin_host::intents::Operation::Launch,
+        "install" => crate::plugin_host::intents::Operation::Install,
+        _ => return Err("unsupported extension action".to_owned()),
+    };
+    engine
+        .start_extension_action(&entry_key, &plugin_id, operation)
+        .await
+        .map_err(|status| status.message().to_owned())
+}
+
+#[tauri::command]
+pub async fn available_plugin_extensions(
+    engine: tauri::State<'_, Engine>,
+    operation: String,
+) -> Result<Vec<crate::plugin_host::PluginInfo>, String> {
+    let operation = match operation.as_str() {
+        "play" => crate::plugin_host::intents::Operation::Launch,
+        "install" => crate::plugin_host::intents::Operation::Install,
+        _ => return Err("unsupported extension action".to_owned()),
+    };
+    engine
+        .available_extensions(operation)
+        .await
+        .map_err(|status| status.message().to_owned())
 }
 
 #[tauri::command]
@@ -489,16 +594,1398 @@ pub async fn remove_entry(
 #[tauri::command]
 pub async fn plugin_inventory(
     engine: tauri::State<'_, Engine>,
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
 ) -> Result<Vec<crate::plugin_host::PluginInfo>, String> {
     let engine = engine.inner().clone();
-    tokio::task::spawn_blocking(move || {
-        crate::plugin_host::inventory(|id| {
+    let (mut inventory, runtime_inventory) = tokio::task::spawn_blocking(move || {
+        let bundled = crate::plugin_host::inventory(|id| {
             let (_, connected) = engine.provider_health(id);
             (engine.provider_availability(id), connected)
-        })
+        });
+        (bundled, engine.managed_plugin_inventory())
     })
     .await
-    .map_err(|_| "plugin inventory worker failed".to_owned())
+    .map_err(|_| "plugin inventory worker failed".to_owned())?;
+    let mut managed = updates.managed_inventory().await?;
+    for plugin in &mut managed {
+        if let Some(runtime) = runtime_inventory
+            .iter()
+            .find(|runtime| runtime.plugin_id == plugin.plugin_id)
+        {
+            plugin.status.clone_from(&runtime.status);
+            plugin.session.clone_from(&runtime.session);
+            if runtime.enabled.is_some() {
+                plugin.enabled = runtime.enabled;
+            }
+            if runtime.runtime_available.is_some() {
+                plugin.runtime_available = runtime.runtime_available;
+            }
+        }
+    }
+    inventory.extend(managed);
+    inventory.sort_by(|left, right| left.plugin_id.cmp(&right.plugin_id));
+    Ok(inventory)
+}
+
+#[tauri::command]
+pub async fn plugin_import_review(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    archive_path: String,
+) -> Result<crate::plugin_host::updates::PluginImportReview, String> {
+    updates.import_review(archive_path.into()).await
+}
+
+#[tauri::command]
+pub async fn plugin_import_confirm_publisher(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    token: String,
+    confirmed_fingerprint: String,
+) -> Result<crate::plugin_host::updates::PluginImportReview, String> {
+    updates
+        .import_confirm_publisher(&token, &confirmed_fingerprint)
+        .await
+}
+
+#[tauri::command]
+pub async fn plugin_import_install(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    engine: tauri::State<'_, Engine>,
+    token: String,
+    native_code_consent: bool,
+    denied_permission_ids: Vec<String>,
+) -> Result<crate::plugin_host::updates::PluginImportInstallOutcome, String> {
+    let outcome = updates
+        .import_install(&token, native_code_consent, &denied_permission_ids)
+        .await?;
+    register_installed_library_provider(&updates, &engine, &outcome.plugin_id).await;
+    Ok(outcome)
+}
+
+/// Makes a just-accepted provider package part of the running library without a restart.
+/// Registry and package reads stay on blocking workers; only the provider-list update and the
+/// scan request touch engine state.
+async fn register_installed_library_provider(
+    updates: &crate::plugin_host::updates::PluginUpdateService,
+    engine: &Engine,
+    plugin_id: &str,
+) {
+    match updates.library_provider(plugin_id).await {
+        Ok(Some(provider)) => engine.add_library_provider(provider),
+        Ok(None) => {}
+        Err(error) => {
+            tracing::warn!(%error, %plugin_id, "could not add an imported provider to the library");
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn plugin_import_license_text(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    token: String,
+    file: String,
+) -> Result<String, String> {
+    updates.import_license_text(&token, &file).await
+}
+
+#[tauri::command]
+pub async fn plugin_bundle_import_review(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    archive_path: String,
+) -> Result<crate::plugin_host::updates::BundleImportReview, String> {
+    updates.bundle_import_review(archive_path.into()).await
+}
+
+#[tauri::command]
+pub async fn plugin_bundle_import_confirm_publisher(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    token: String,
+    confirmed_fingerprint: String,
+) -> Result<crate::plugin_host::updates::BundleImportReview, String> {
+    updates
+        .bundle_import_confirm_publisher(&token, &confirmed_fingerprint)
+        .await
+}
+
+#[tauri::command]
+pub async fn plugin_bundle_import_install(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    engine: tauri::State<'_, Engine>,
+    token: String,
+    native_code_consent: bool,
+    component_denied_permissions: Vec<
+        crate::plugin_host::updates::BundleComponentDeniedPermissions,
+    >,
+) -> Result<crate::plugin_host::updates::BundleImportInstallOutcome, String> {
+    let outcome = updates
+        .bundle_import_install(&token, native_code_consent, &component_denied_permissions)
+        .await?;
+    for component in &outcome.components {
+        if component.kind == "provider" && component.active {
+            register_installed_library_provider(&updates, &engine, &component.plugin_id).await;
+        }
+    }
+    Ok(outcome)
+}
+
+#[tauri::command]
+pub async fn plugin_bundle_permissions_replace(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    submissions: Vec<crate::plugin_host::updates::BundleComponentPermissionSubmission>,
+) -> Result<crate::plugin_host::updates::BundlePermissionResult, String> {
+    updates.apply_bundle_permissions(submissions).await
+}
+
+#[tauri::command]
+pub async fn plugin_bundle_update_check(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+) -> Result<Vec<crate::plugin_host::updates::AvailableBundleUpdate>, String> {
+    updates.check_bundle_updates().await
+}
+
+#[tauri::command]
+pub async fn plugin_bundle_update_available(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+) -> Result<Vec<crate::plugin_host::updates::AvailableBundleUpdate>, String> {
+    Ok(updates.bundle_update_available())
+}
+
+#[tauri::command]
+pub async fn plugin_bundle_update_review(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    bundle_id: String,
+    version: String,
+) -> Result<crate::plugin_host::updates::BundleUpdateReview, String> {
+    updates.review_bundle_update(&bundle_id, &version).await
+}
+
+#[tauri::command]
+pub async fn plugin_bundle_update_approve(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    engine: tauri::State<'_, Engine>,
+    bundle_id: String,
+    version: String,
+) -> Result<crate::plugin_host::bundles::BundleUpdateOutcome, String> {
+    let outcome = updates.approve_bundle_update(&bundle_id, &version).await?;
+    // The activated component may expose different records; refresh them in the same session.
+    engine.rescan();
+    Ok(outcome)
+}
+
+#[tauri::command]
+pub async fn plugin_bundle_update_decline(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    bundle_id: String,
+) -> Result<(), String> {
+    updates.decline_bundle_update(&bundle_id).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn plugin_bundle_rollback_available(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+) -> Result<Vec<crate::plugin_host::updates::AvailableBundleRollback>, String> {
+    updates.available_bundle_rollbacks().await
+}
+
+#[tauri::command]
+pub async fn plugin_bundle_rollback_review(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    bundle_id: String,
+    version: String,
+) -> Result<crate::plugin_host::updates::BundleUpdateReview, String> {
+    updates.review_bundle_rollback(&bundle_id, &version).await
+}
+
+#[tauri::command]
+pub async fn plugin_bundle_rollback_approve(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    engine: tauri::State<'_, Engine>,
+    bundle_id: String,
+    version: String,
+    confirmed: bool,
+) -> Result<crate::plugin_host::bundles::BundleRollbackOutcome, String> {
+    let outcome = updates
+        .approve_bundle_rollback(&bundle_id, &version, confirmed)
+        .await?;
+    engine.rescan();
+    Ok(outcome)
+}
+
+#[tauri::command]
+pub async fn plugin_permission_snapshot(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    plugin_id: String,
+    expected_account_id: String,
+) -> Result<crate::plugin_host::runtime::PluginPermissionSnapshot, String> {
+    let snapshot = updates
+        .permission_snapshot(plugin_id)
+        .await
+        .map_err(|error| error.message().to_owned())?;
+    if snapshot.profile_id
+        != crate::plugin_host::profile::profile_id_for_account(&expected_account_id)
+    {
+        return Err("plugin profile changed while reading permissions".into());
+    }
+    Ok(snapshot)
+}
+
+#[tauri::command]
+pub async fn plugin_permissions_replace(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    plugin_id: String,
+    expected_profile_id: String,
+    expected_publisher_fingerprint: String,
+    expected_revision: u64,
+    decisions: Vec<crate::plugin_host::grants::PermissionDecision>,
+) -> Result<crate::plugin_host::runtime::PluginPermissionSnapshot, String> {
+    updates
+        .replace_permissions(
+            plugin_id,
+            expected_profile_id,
+            expected_publisher_fingerprint,
+            expected_revision,
+            decisions,
+        )
+        .await
+        .map_err(|error| error.message().to_owned())
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedDataCatalogRecord {
+    pub source_plugin_id: String,
+    pub source_publisher_fingerprint: String,
+    pub dataset_id: String,
+    pub class: String,
+    pub category: Option<String>,
+    pub record_id: String,
+    pub fields: Vec<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedDataSourcePolicy {
+    pub source_plugin_id: String,
+    pub source_publisher_fingerprint: String,
+    pub dataset_id: String,
+    pub class: String,
+    pub fields: Vec<String>,
+    pub history: bool,
+    pub live: bool,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginSharedDataSnapshot {
+    pub plugin_id: String,
+    pub publisher_fingerprint: String,
+    pub profile_id: String,
+    pub policy_revision: u64,
+    pub common_categories: Vec<String>,
+    pub selected_record_ids: Vec<String>,
+    pub catalog: Vec<SharedDataCatalogRecord>,
+    pub source_policies: Vec<SharedDataSourcePolicy>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SharedDataSourcePolicyDecision {
+    pub source_plugin_id: String,
+    pub source_publisher_fingerprint: String,
+    pub dataset_id: String,
+    pub class: String,
+    pub fields: BTreeSet<String>,
+    pub history: bool,
+    pub live: bool,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PluginSharedDataPolicyUpdate {
+    pub profile_id: String,
+    pub expected_publisher_fingerprint: String,
+    pub expected_revision: u64,
+    pub common_categories: Vec<String>,
+    pub selected_record_ids: Vec<String>,
+    pub source_policies: Vec<SharedDataSourcePolicyDecision>,
+}
+
+fn common_data_category_name(
+    category: gamenode_plugin_protocol::proto::CommonDataCategory,
+) -> String {
+    use gamenode_plugin_protocol::proto::CommonDataCategory as C;
+    match category {
+        C::GamePaths => "gamePaths",
+        C::GamePerformanceHistory => "gamePerformanceHistory",
+        C::RuntimeCatalog => "runtimeCatalog",
+        C::ContentAvailability => "contentAvailability",
+        C::LibraryRoots => "libraryRoots",
+        C::SaveProfiles => "saveProfiles",
+        C::Unspecified => "unspecified",
+    }
+    .to_owned()
+}
+
+fn common_data_category(
+    value: &str,
+) -> Result<gamenode_plugin_protocol::proto::CommonDataCategory, String> {
+    use gamenode_plugin_protocol::proto::CommonDataCategory as C;
+    match value {
+        "gamePaths" => Ok(C::GamePaths),
+        "gamePerformanceHistory" => Ok(C::GamePerformanceHistory),
+        "runtimeCatalog" => Ok(C::RuntimeCatalog),
+        "contentAvailability" => Ok(C::ContentAvailability),
+        "libraryRoots" => Ok(C::LibraryRoots),
+        "saveProfiles" => Ok(C::SaveProfiles),
+        _ => Err("unknown shared-data category".into()),
+    }
+}
+
+fn sharing_class_name(class: crate::plugin_host::sharing_policy::SharingClass) -> String {
+    match class {
+        crate::plugin_host::sharing_policy::SharingClass::Common => "common",
+        crate::plugin_host::sharing_policy::SharingClass::Sensitive => "sensitive",
+        crate::plugin_host::sharing_policy::SharingClass::Custom => "custom",
+    }
+    .to_owned()
+}
+
+fn sharing_class(value: &str) -> Result<crate::plugin_host::sharing_policy::SharingClass, String> {
+    use crate::plugin_host::sharing_policy::SharingClass as C;
+    match value {
+        "sensitive" => Ok(C::Sensitive),
+        "custom" => Ok(C::Custom),
+        _ => Err("only sensitive and custom datasets use source-recipient review".into()),
+    }
+}
+
+fn unix_timestamp() -> Result<i64, String> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "system clock is before Unix epoch".to_owned())?
+        .as_secs()
+        .try_into()
+        .map_err(|_| "system time is outside supported range".to_owned())
+}
+
+#[tauri::command]
+pub async fn plugin_shared_data_snapshot(
+    lifecycle: tauri::State<'_, Arc<crate::plugin_host::runtime::ThirdPartyPluginLifecycle>>,
+    policies: tauri::State<'_, Arc<crate::plugin_host::sharing_policy::SharedSharingPolicies>>,
+    broker: tauri::State<'_, Arc<crate::plugin_host::shared_data::DataBroker>>,
+    plugin_id: String,
+    expected_profile_id: String,
+) -> Result<PluginSharedDataSnapshot, String> {
+    let identity = lifecycle
+        .sharing_identity(plugin_id, &expected_profile_id)
+        .await
+        .map_err(|status| status.message().to_owned())?;
+    let policy_snapshot = read_shared_data_policy(policies.inner().clone(), &identity).await?;
+    let catalog = shared_data_catalog(broker.inner().clone(), &identity.profile_id).await?;
+    Ok(plugin_shared_data_snapshot_for(
+        identity,
+        policy_snapshot,
+        catalog,
+    ))
+}
+
+async fn read_shared_data_policy(
+    policies: Arc<crate::plugin_host::sharing_policy::SharedSharingPolicies>,
+    identity: &crate::plugin_host::grants::PluginIdentity,
+) -> Result<crate::plugin_host::sharing_policy::RecipientSharingSnapshot, String> {
+    let identity = identity.clone();
+    tokio::task::spawn_blocking(move || policies.recipient_snapshot(&identity))
+        .await
+        .map_err(|_| "shared-data permission worker failed".to_owned())?
+        .map_err(|error| error.to_string())
+}
+
+async fn shared_data_catalog(
+    broker: Arc<crate::plugin_host::shared_data::DataBroker>,
+    profile_id: &str,
+) -> Result<Vec<crate::plugin_host::shared_data::SharedDataCatalogRecord>, String> {
+    let now = unix_timestamp()?;
+    let profile_id = profile_id.to_owned();
+    tokio::task::spawn_blocking(move || {
+        broker
+            .sharing_catalog(now)
+            .into_iter()
+            .filter(|record| record.owner.profile_id == profile_id)
+            .collect()
+    })
+    .await
+    .map_err(|_| "shared-data catalog worker failed".to_owned())
+}
+
+fn plugin_shared_data_snapshot_for(
+    identity: crate::plugin_host::grants::PluginIdentity,
+    policy_snapshot: crate::plugin_host::sharing_policy::RecipientSharingSnapshot,
+    catalog: Vec<crate::plugin_host::shared_data::SharedDataCatalogRecord>,
+) -> PluginSharedDataSnapshot {
+    let catalog = catalog
+        .into_iter()
+        .map(|record| SharedDataCatalogRecord {
+            source_plugin_id: record.owner.plugin_id,
+            source_publisher_fingerprint: record.owner.publisher_fingerprint,
+            dataset_id: record.dataset_id,
+            class: sharing_class_name(record.class),
+            category: record.category.map(common_data_category_name),
+            record_id: record.record_id,
+            fields: record.fields.into_iter().collect(),
+        })
+        .collect();
+    let source_policies = policy_snapshot
+        .source_recipient_policies
+        .into_iter()
+        .map(|policy| SharedDataSourcePolicy {
+            source_plugin_id: policy.source().plugin_id.clone(),
+            source_publisher_fingerprint: policy.source().publisher_fingerprint.clone(),
+            dataset_id: policy.dataset_id().to_owned(),
+            class: sharing_class_name(policy.class()),
+            fields: policy.fields().iter().cloned().collect(),
+            history: policy.allows_history(),
+            live: policy.allows_live(),
+        })
+        .collect();
+    PluginSharedDataSnapshot {
+        plugin_id: identity.plugin_id,
+        publisher_fingerprint: identity.publisher_fingerprint,
+        profile_id: identity.profile_id,
+        policy_revision: policy_snapshot.revision,
+        common_categories: policy_snapshot
+            .categories
+            .into_iter()
+            .map(common_data_category_name)
+            .collect(),
+        selected_record_ids: policy_snapshot.selected_record_ids.into_iter().collect(),
+        catalog,
+        source_policies,
+    }
+}
+
+/// Logical durable-pool usage of one producer. Contains no physical path.
+#[derive(Clone, Debug, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginDurableUsage {
+    pub plugin_id: String,
+    pub profile_id: String,
+    pub record_count: u64,
+    pub logical_bytes: u64,
+    pub max_bytes: u64,
+    pub max_age_seconds: Option<u64>,
+    pub oldest_updated_at: Option<i64>,
+}
+
+/// The outcome of deleting one producer's retained durable records. The plugin stays installed.
+#[derive(Clone, Debug, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginDurableDeletion {
+    pub plugin_id: String,
+    pub profile_id: String,
+    pub removed_records: u64,
+    pub reclaimed_bytes: u64,
+    pub usage: PluginDurableUsage,
+}
+
+fn plugin_durable_usage_for(
+    plugin_id: &str,
+    profile_id: &str,
+    usage: Option<gamenode_platform::plugin_shared_data::OwnerUsage>,
+) -> PluginDurableUsage {
+    let usage = usage.unwrap_or(gamenode_platform::plugin_shared_data::OwnerUsage {
+        records: 0,
+        logical_bytes: 0,
+        max_bytes: gamenode_platform::plugin_shared_data::MAX_OWNER_LOGICAL_BYTES,
+        max_age_seconds: None,
+        oldest_updated_at: None,
+        archived_records: 0,
+        archived_logical_bytes: 0,
+        protected_records: 0,
+        physical_bytes_estimate: 0,
+    });
+    PluginDurableUsage {
+        plugin_id: plugin_id.to_owned(),
+        profile_id: profile_id.to_owned(),
+        record_count: usage.records,
+        logical_bytes: usage.logical_bytes,
+        max_bytes: usage.max_bytes,
+        max_age_seconds: usage.max_age_seconds,
+        oldest_updated_at: usage.oldest_updated_at,
+    }
+}
+
+/// Reads the durable-pool usage of one producer on the blocking storage worker. Never creates
+/// the pool file.
+#[tauri::command]
+pub async fn plugin_durable_usage(
+    lifecycle: tauri::State<'_, Arc<crate::plugin_host::runtime::ThirdPartyPluginLifecycle>>,
+    pool: tauri::State<'_, Arc<crate::plugin_host::shared_pool::DurableSharedPool>>,
+    plugin_id: String,
+    expected_profile_id: String,
+) -> Result<PluginDurableUsage, String> {
+    let owner = lifecycle
+        .durable_owner(plugin_id.clone(), &expected_profile_id)
+        .await
+        .map_err(|status| status.message().to_owned())?;
+    let now = unix_timestamp()?;
+    let usage = pool
+        .usage(owner, now)
+        .await
+        .map_err(|status| status.message().to_owned())?;
+    Ok(plugin_durable_usage_for(
+        &plugin_id,
+        &expected_profile_id,
+        usage,
+    ))
+}
+
+/// Rejects a host deletion that the user did not confirm in the settings surface.
+fn durable_delete_confirmation(confirmed: bool) -> Result<(), String> {
+    if confirmed {
+        Ok(())
+    } else {
+        Err("deleting retained shared data requires confirmation".into())
+    }
+}
+
+/// Deletes only this producer's retained durable records and reports the bytes actually
+/// reclaimed. It never uninstalls the plugin and never touches another owner or private storage.
+#[tauri::command]
+pub async fn plugin_durable_delete(
+    lifecycle: tauri::State<'_, Arc<crate::plugin_host::runtime::ThirdPartyPluginLifecycle>>,
+    pool: tauri::State<'_, Arc<crate::plugin_host::shared_pool::DurableSharedPool>>,
+    plugin_id: String,
+    expected_profile_id: String,
+    confirmed: bool,
+) -> Result<PluginDurableDeletion, String> {
+    durable_delete_confirmation(confirmed)?;
+    let owner = lifecycle
+        .durable_owner(plugin_id.clone(), &expected_profile_id)
+        .await
+        .map_err(|status| status.message().to_owned())?;
+    let now = unix_timestamp()?;
+    let outcome = pool
+        .delete_owner(owner, now)
+        .await
+        .map_err(|status| status.message().to_owned())?;
+    let usage = pool
+        .usage(owner, now)
+        .await
+        .map_err(|status| status.message().to_owned())?;
+    Ok(PluginDurableDeletion {
+        plugin_id: plugin_id.clone(),
+        profile_id: expected_profile_id.clone(),
+        removed_records: outcome.map_or(0, |outcome| outcome.removed_records),
+        reclaimed_bytes: outcome.map_or(0, |outcome| outcome.reclaimed_bytes),
+        usage: plugin_durable_usage_for(&plugin_id, &expected_profile_id, usage),
+    })
+}
+
+#[tauri::command]
+pub async fn plugin_shared_data_replace(
+    lifecycle: tauri::State<'_, Arc<crate::plugin_host::runtime::ThirdPartyPluginLifecycle>>,
+    policies: tauri::State<'_, Arc<crate::plugin_host::sharing_policy::SharedSharingPolicies>>,
+    broker: tauri::State<'_, Arc<crate::plugin_host::shared_data::DataBroker>>,
+    plugin_id: String,
+    update: PluginSharedDataPolicyUpdate,
+) -> Result<PluginSharedDataSnapshot, String> {
+    let observation = lifecycle
+        .observe_sharing_identity(plugin_id, &update.profile_id)
+        .await
+        .map_err(|status| status.message().to_owned())?;
+    let identity = &observation.identity;
+    if identity.publisher_fingerprint != update.expected_publisher_fingerprint {
+        return Err("plugin publisher changed; reload and review shared-data permissions".into());
+    }
+    let expected_revision = update.expected_revision;
+    let existing = read_shared_data_policy(policies.inner().clone(), identity).await?;
+    if existing.revision != expected_revision {
+        return Err("shared-data permissions changed; reload and try again".into());
+    }
+    let catalog = shared_data_catalog(broker.inner().clone(), &identity.profile_id).await?;
+    let categories = update
+        .common_categories
+        .iter()
+        .map(|category| common_data_category(category))
+        .collect::<Result<Vec<_>, _>>()?;
+    let grant = crate::plugin_host::sharing_policy::ActivationReadGrant::new(
+        categories,
+        update.selected_record_ids.clone(),
+    )
+    .map_err(|error| error.to_string())?;
+    let available_common_records = catalog
+        .iter()
+        .filter(|record| record.class == crate::plugin_host::sharing_policy::SharingClass::Common)
+        .map(|record| record.record_id.as_str())
+        .collect::<BTreeSet<_>>();
+    if update.selected_record_ids.iter().any(|record_id| {
+        !available_common_records.contains(record_id.as_str())
+            && !existing.selected_record_ids.contains(record_id)
+    }) {
+        return Err("selected record is not present in the host sharing catalog".into());
+    }
+    let mut source_policies = Vec::new();
+    let mut required_sources = Vec::new();
+    for decision in update.source_policies {
+        let class = sharing_class(&decision.class)?;
+        let source = crate::plugin_host::grants::PluginIdentity {
+            plugin_id: decision.source_plugin_id,
+            publisher_fingerprint: decision.source_publisher_fingerprint,
+            profile_id: identity.profile_id.clone(),
+        };
+        let existing_policy = existing.source_recipient_policies.iter().find(|policy| {
+            policy.source() == &source
+                && policy.dataset_id() == decision.dataset_id
+                && policy.class() == class
+        });
+        if decision.fields.is_empty() {
+            if decision.history || decision.live {
+                return Err("history or live delivery requires at least one approved field".into());
+            }
+            continue;
+        }
+        let available_fields = catalog
+            .iter()
+            .filter(|record| {
+                record.owner == source
+                    && record.dataset_id == decision.dataset_id
+                    && record.class == class
+            })
+            .flat_map(|record| record.fields.iter().cloned())
+            .collect::<BTreeSet<_>>();
+        let within_previous_grant = existing_policy.is_some_and(|previous| {
+            decision.fields.is_subset(previous.fields())
+                && (!decision.history || previous.allows_history())
+                && (!decision.live || previous.allows_live())
+        });
+        let source_is_current = !available_fields.is_empty()
+            && lifecycle
+                .sharing_identity(source.plugin_id.clone(), &identity.profile_id)
+                .await
+                .is_ok_and(|current| current == source);
+        if source_is_current {
+            if !decision.fields.is_subset(&available_fields) {
+                return Err("sharing policy names fields not published by this dataset".into());
+            }
+            if !within_previous_grant && !required_sources.contains(&source) {
+                required_sources.push(source.clone());
+            }
+        } else if !within_previous_grant {
+            return Err(if available_fields.is_empty() {
+                "new sharing grants require a current verified source"
+            } else {
+                "source identity is no longer verified; reload and review shared-data permissions"
+            }
+            .into());
+        }
+        source_policies.push(
+            crate::plugin_host::sharing_policy::SourceRecipientPolicy::new(
+                source,
+                identity.clone(),
+                class,
+                decision.dataset_id,
+                decision.fields,
+                decision.history,
+                decision.live,
+            )
+            .map_err(|error| error.to_string())?,
+        );
+    }
+    let identity = identity.clone();
+    let saved = lifecycle
+        .replace_sharing_policy(
+            observation,
+            policies.inner().clone(),
+            expected_revision,
+            grant,
+            source_policies,
+            required_sources,
+        )
+        .await
+        .map_err(|status| status.message().to_owned())?;
+    Ok(plugin_shared_data_snapshot_for(identity, saved, catalog))
+}
+
+#[tauri::command]
+pub async fn plugin_enable(
+    lifecycle: tauri::State<'_, Arc<crate::plugin_host::runtime::ThirdPartyPluginLifecycle>>,
+    engine: tauri::State<'_, Engine>,
+    plugin_id: String,
+) -> Result<(), String> {
+    lifecycle
+        .enable(plugin_id)
+        .await
+        .map_err(|error| error.message().to_owned())?;
+    // Enabling starts the supervised provider; scan it now so its games appear without the user
+    // having to press refresh and without a restart.
+    engine.rescan();
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn plugin_disable(
+    lifecycle: tauri::State<'_, Arc<crate::plugin_host::runtime::ThirdPartyPluginLifecycle>>,
+    engine: tauri::State<'_, Engine>,
+    plugin_id: String,
+) -> Result<(), String> {
+    lifecycle
+        .disable(plugin_id)
+        .await
+        .map_err(|error| error.message().to_owned())?;
+    // The cached entries stay; publish the new provider availability so the store and warnings
+    // reflect the stop immediately.
+    engine.publish_current();
+    Ok(())
+}
+
+/// Uninstalls one plugin after applying the user's durable shared-data choice. Omitting
+/// `deleteData` keeps the rows, which is the default uninstall choice.
+#[tauri::command]
+pub async fn plugin_remove(
+    lifecycle: tauri::State<'_, Arc<crate::plugin_host::runtime::ThirdPartyPluginLifecycle>>,
+    engine: tauri::State<'_, Engine>,
+    plugin_id: String,
+    delete_data: Option<bool>,
+) -> Result<crate::plugin_host::runtime::DurableRetentionOutcome, String> {
+    use crate::plugin_host::runtime::DataRetention;
+    let retention = if delete_data.unwrap_or(false) {
+        DataRetention::Delete
+    } else {
+        DataRetention::Keep
+    };
+    let outcome = lifecycle
+        .remove_with_retention(plugin_id.clone(), retention)
+        .await
+        .map_err(|error| error.message().to_owned())?;
+    // The store disappears from the running library now; its cached rows stay for a reinstall.
+    engine.remove_library_provider(&plugin_id);
+    Ok(outcome)
+}
+
+/// Reuses a reinstall's archived durable records after a separate host review. The user must
+/// confirm the reuse; a consumer or new package cannot call this on another producer's data.
+#[tauri::command]
+pub async fn plugin_durable_reuse(
+    lifecycle: tauri::State<'_, Arc<crate::plugin_host::runtime::ThirdPartyPluginLifecycle>>,
+    plugin_id: String,
+    expected_profile_id: String,
+    confirmed: bool,
+) -> Result<crate::plugin_host::runtime::DurableRetentionOutcome, String> {
+    lifecycle
+        .reuse_archived_durable_data(plugin_id, &expected_profile_id, confirmed)
+        .await
+        .map_err(|error| error.message().to_owned())
+}
+
+/// Restores a reinstall's archived private persistence entries after a separate host review. The
+/// user must confirm; an unconfirmed call changes nothing. Another profile or plugin is untouched.
+#[tauri::command]
+pub async fn plugin_private_reuse(
+    lifecycle: tauri::State<'_, Arc<crate::plugin_host::runtime::ThirdPartyPluginLifecycle>>,
+    plugin_id: String,
+    expected_profile_id: String,
+    confirmed: bool,
+) -> Result<crate::plugin_host::retention::PrivateReuseOutcome, String> {
+    lifecycle
+        .reuse_archived_private_data(plugin_id, &expected_profile_id, confirmed)
+        .await
+        .map_err(|error| error.message().to_owned())
+}
+
+/// Enumerates host-wide storage cleanup candidates for the active profile. This is host
+/// administration: it is a Tauri command only, never a plugin RPC.
+#[tauri::command]
+pub async fn plugin_storage_cleanup_review(
+    lifecycle: tauri::State<'_, Arc<crate::plugin_host::runtime::ThirdPartyPluginLifecycle>>,
+) -> Result<crate::plugin_host::cleanup::StorageCleanupReview, String> {
+    lifecycle
+        .storage_cleanup_review()
+        .await
+        .map_err(|error| error.message().to_owned())
+}
+
+/// Host-only physical accounting of the active profile's plugin data. This is host
+/// administration: it is a Tauri command only, never a plugin RPC, and no plugin reply ever
+/// carries a physical path.
+#[tauri::command]
+pub async fn plugin_storage_locations(
+    lifecycle: tauri::State<'_, Arc<crate::plugin_host::runtime::ThirdPartyPluginLifecycle>>,
+) -> Result<crate::plugin_host::cleanup::PluginStorageAccounting, String> {
+    lifecycle
+        .storage_locations()
+        .await
+        .map_err(|error| error.message().to_owned())
+}
+
+/// Applies one confirmed, single-use cleanup review. Only the selected owner candidates are
+/// pruned; an unconfirmed or stale call changes nothing and needs a new review.
+#[tauri::command]
+pub async fn plugin_storage_cleanup_apply(
+    lifecycle: tauri::State<'_, Arc<crate::plugin_host::runtime::ThirdPartyPluginLifecycle>>,
+    token: String,
+    candidate_ids: Vec<String>,
+    confirmed: bool,
+) -> Result<crate::plugin_host::cleanup::StorageCleanupReport, String> {
+    lifecycle
+        .storage_cleanup_apply(token, candidate_ids, confirmed)
+        .await
+        .map_err(|error| error.message().to_owned())
+}
+
+/// Uninstalls one bundle as one action: every component stops, its package and mapping are
+/// removed, and one retention choice applies to private data for the signed-in account. A partial
+/// failure is returned with the remaining components instead of a generic error.
+#[tauri::command]
+pub async fn plugin_bundle_uninstall(
+    lifecycle: tauri::State<'_, Arc<crate::plugin_host::runtime::ThirdPartyPluginLifecycle>>,
+    settings: tauri::State<'_, Arc<gamenode_platform::db::SqliteSettingsStore>>,
+    engine: tauri::State<'_, Engine>,
+    bundle_id: String,
+    delete_data: bool,
+) -> Result<crate::plugin_host::bundles::BundleUninstallOutcome, String> {
+    let outcome = lifecycle
+        .remove_bundle(bundle_id, settings.bundle_store(), delete_data)
+        .await
+        .map_err(|error| error.to_string())?;
+    // Every provider component leaves the running library now; its cached rows stay for a
+    // later reinstall. Extensions are a no-op for the library.
+    for component in &outcome.removed {
+        engine.remove_library_provider(&component.plugin_id);
+    }
+    Ok(outcome)
+}
+
+#[tauri::command]
+pub async fn plugin_configuration_state(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    plugin_id: String,
+) -> Result<crate::plugin_host::runtime::PluginConfigurationState, String> {
+    updates
+        .configuration_state(plugin_id)
+        .await
+        .map_err(|error| error.message().to_owned())
+}
+
+static NEXT_SETTINGS_FORM: AtomicU64 = AtomicU64::new(1);
+
+#[tauri::command]
+pub async fn plugin_configuration_modes(
+    providers: tauri::State<'_, crate::plugin_host::provider::ProviderApi>,
+    provider_id: String,
+) -> Result<crate::plugin_host::provider::ConfigurationModes, String> {
+    providers
+        .configuration_modes(&provider_id)
+        .map_err(|status| status.message().to_owned())
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginConfigurationStatus {
+    pub status: &'static str,
+    pub window_id: Option<String>,
+    pub message: Option<String>,
+}
+
+#[tauri::command]
+pub async fn plugin_configuration_open(
+    providers: tauri::State<'_, crate::plugin_host::provider::ProviderApi>,
+    provider_id: String,
+    focus: bool,
+) -> Result<PluginConfigurationStatus, String> {
+    use gamenode_plugin_protocol::proto::ProviderOperation;
+    let operation = if focus {
+        ProviderOperation::ConfigurationFocus
+    } else {
+        ProviderOperation::ConfigurationOpen
+    };
+    Ok(match providers.configure(&provider_id, operation).await {
+        Ok(completion) => match completion.result.configuration {
+            Some(result) if result.accepted => PluginConfigurationStatus {
+                status: if focus { "focused" } else { "open" },
+                window_id: Some(result.window_id),
+                message: None,
+            },
+            Some(result) => PluginConfigurationStatus {
+                status: "failed",
+                window_id: None,
+                message: Some(result.failure),
+            },
+            None => PluginConfigurationStatus {
+                status: "failed",
+                window_id: None,
+                message: Some("plugin returned no configuration result".into()),
+            },
+        },
+        Err(status) => {
+            let code = status.code();
+            PluginConfigurationStatus {
+                status: match code {
+                    tonic::Code::DeadlineExceeded => "timedOut",
+                    tonic::Code::PermissionDenied => "denied",
+                    tonic::Code::Unavailable | tonic::Code::FailedPrecondition => "unavailable",
+                    _ => "failed",
+                },
+                window_id: None,
+                message: Some(status.message().to_owned()),
+            }
+        }
+    })
+}
+
+#[tauri::command]
+pub async fn plugin_settings_describe(
+    providers: tauri::State<'_, crate::plugin_host::provider::ProviderApi>,
+    provider_id: String,
+) -> Result<gamenode_plugin_protocol::settings::Reply, String> {
+    use gamenode_plugin_protocol::settings::{Action, Request};
+    let handle = format!(
+        "settings-form-{}",
+        NEXT_SETTINGS_FORM.fetch_add(1, Ordering::Relaxed)
+    );
+    let context = providers
+        .settings_scope(&provider_id, handle)
+        .map_err(|status| status.message().to_owned())?;
+    complete_plugin_settings(
+        &providers,
+        Request {
+            context,
+            action: Action::DescribeRead,
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn plugin_settings_submit(
+    providers: tauri::State<'_, crate::plugin_host::provider::ProviderApi>,
+    context: gamenode_plugin_protocol::settings::Context,
+    schema_revision: String,
+    configuration_revision: String,
+    values: gamenode_plugin_protocol::settings::Values,
+) -> Result<gamenode_plugin_protocol::settings::Reply, String> {
+    use gamenode_plugin_protocol::settings::{Action, Request};
+    complete_plugin_settings(
+        &providers,
+        Request {
+            context,
+            action: Action::Submit {
+                schema_revision,
+                configuration_revision,
+                values,
+            },
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn plugin_settings_cancel(
+    providers: tauri::State<'_, crate::plugin_host::provider::ProviderApi>,
+    context: gamenode_plugin_protocol::settings::Context,
+) -> Result<gamenode_plugin_protocol::settings::Reply, String> {
+    use gamenode_plugin_protocol::settings::{Action, Request};
+    complete_plugin_settings(
+        &providers,
+        Request {
+            context,
+            action: Action::Cancel,
+        },
+    )
+    .await
+}
+
+async fn complete_plugin_settings(
+    providers: &crate::plugin_host::provider::ProviderApi,
+    request: gamenode_plugin_protocol::settings::Request,
+) -> Result<gamenode_plugin_protocol::settings::Reply, String> {
+    request
+        .validate()
+        .map_err(|_| "invalid plugin settings request".to_owned())?;
+    let completion = providers
+        .execute_settings(request.clone())
+        .await
+        .map_err(|status| status.message().to_owned())?;
+    let reply: gamenode_plugin_protocol::settings::Reply = completion
+        .result
+        .settings
+        .ok_or_else(|| "plugin returned no settings response".to_owned())?
+        .try_into()
+        .map_err(|_| "plugin returned an invalid settings response".to_owned())?;
+    reply
+        .validate_for(&request)
+        .map_err(|_| "plugin settings response did not match the request".to_owned())?;
+    Ok(reply)
+}
+
+#[tauri::command]
+pub async fn plugin_playtime_inventory(
+    engine: tauri::State<'_, Engine>,
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+) -> Result<Vec<crate::plugin_host::updates::PluginPlaytimeInfo>, String> {
+    let engine = engine.inner().clone();
+    let mut plugins = updates.playtime_inventory().await?;
+    for plugin in &mut plugins {
+        plugin.accounting_enabled = engine
+            .plugin_playtime_accounting_enabled(plugin.plugin_id.clone())
+            .await?;
+    }
+    Ok(plugins)
+}
+
+#[tauri::command]
+pub async fn plugin_playtime_set_accounting(
+    engine: tauri::State<'_, Engine>,
+    plugin_id: String,
+    enabled: bool,
+) -> Result<(), String> {
+    engine
+        .inner()
+        .set_plugin_playtime_accounting(plugin_id, enabled)
+        .await
+}
+
+#[tauri::command]
+pub async fn plugin_update_preferences(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+) -> Result<crate::plugin_host::updates::PluginUpdatePreferences, String> {
+    Ok(updates.preferences())
+}
+
+#[tauri::command]
+pub async fn plugin_update_available(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+) -> Result<Vec<crate::plugin_host::updates::AvailablePluginUpdate>, String> {
+    Ok(updates.available_updates())
+}
+
+#[tauri::command]
+pub async fn plugin_update_set_periodic_checks(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    enabled: bool,
+) -> Result<crate::plugin_host::updates::PluginUpdatePreferences, String> {
+    // Persisting this preference performs filesystem I/O. Keep it off Tauri's async command
+    // executor so a slow disk cannot block IPC handling or the UI runtime.
+    let updates = updates.inner().clone();
+    tokio::task::spawn_blocking(move || updates.set_periodic_checks(enabled))
+        .await
+        .map_err(|_| "plugin update preferences worker failed".to_owned())?
+}
+
+#[tauri::command]
+pub async fn plugin_update_check(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+) -> Result<Vec<crate::plugin_host::updates::AvailablePluginUpdate>, String> {
+    updates.check_updates().await
+}
+
+async fn add_extension_readiness_targets(
+    engine: &Engine,
+    mut review: crate::plugin_host::updates::UpdateReview,
+) -> Result<crate::plugin_host::updates::UpdateReview, String> {
+    if let Some(targets) = &mut review.extension_targets {
+        let engine = engine.clone();
+        *targets = tokio::task::spawn_blocking(move || engine.extension_readiness_choices())
+            .await
+            .map_err(|_| "extension target lookup worker failed".to_owned())?;
+    }
+    Ok(review)
+}
+
+#[tauri::command]
+pub async fn plugin_update_review(
+    engine: tauri::State<'_, Engine>,
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    plugin_id: String,
+    version: String,
+) -> Result<crate::plugin_host::updates::UpdateReview, String> {
+    let review = updates.review(&plugin_id, &version).await?;
+    add_extension_readiness_targets(&engine, review).await
+}
+
+#[tauri::command]
+pub async fn plugin_rollback_available(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+) -> Result<Vec<crate::plugin_host::updates::AvailablePluginRollback>, String> {
+    updates.available_rollbacks().await
+}
+
+#[tauri::command]
+pub async fn plugin_rollback_review(
+    engine: tauri::State<'_, Engine>,
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    plugin_id: String,
+    version: String,
+) -> Result<crate::plugin_host::updates::UpdateReview, String> {
+    let review = updates.review_rollback(&plugin_id, &version).await?;
+    add_extension_readiness_targets(&engine, review).await
+}
+
+#[tauri::command]
+pub async fn plugin_update_retrust_publisher(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    plugin_id: String,
+    version: String,
+    fingerprint: String,
+) -> Result<(), String> {
+    updates
+        .confirm_publisher_retrust(&plugin_id, &version, &fingerprint)
+        .await
+}
+
+/// Resolving a readiness target takes the engine lock, so it runs on a blocking worker.
+async fn resolve_extension_target(
+    engine: Engine,
+    selection: Option<crate::engine::ExtensionReadinessSelection>,
+) -> Result<Option<crate::plugin_host::process::ExtensionTarget>, String> {
+    let Some(selection) = selection else {
+        return Ok(None);
+    };
+    tokio::task::spawn_blocking(move || engine.resolve_extension_readiness(selection))
+        .await
+        .map_err(|_| "extension target worker failed".to_owned())?
+        .map(Some)
+        .map_err(|error| error.message().to_owned())
+}
+
+#[tauri::command]
+pub async fn plugin_rollback_approve(
+    engine: tauri::State<'_, Engine>,
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    plugin_id: String,
+    version: String,
+    confirmed: bool,
+    target: Option<crate::engine::ExtensionReadinessSelection>,
+) -> Result<String, String> {
+    if !confirmed {
+        return Err("rollback requires explicit user confirmation".into());
+    }
+    let target = resolve_extension_target(engine.inner().clone(), target).await?;
+    updates
+        .approve_rollback(&plugin_id, &version, confirmed, target)
+        .await
+}
+
+#[tauri::command]
+pub async fn plugin_update_approve(
+    engine: tauri::State<'_, Engine>,
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    plugin_id: String,
+    version: String,
+    target: Option<crate::engine::ExtensionReadinessSelection>,
+) -> Result<String, String> {
+    let target = resolve_extension_target(engine.inner().clone(), target).await?;
+    updates.approve(&plugin_id, &version, target).await
+}
+
+#[tauri::command]
+pub async fn plugin_update_decline(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    plugin_id: String,
+) -> Result<(), String> {
+    updates.decline(&plugin_id).await;
+    Ok(())
+}
+
+/// Delivers the user's answer to a plugin's confirmation. A late, repeated or unknown answer is
+/// ignored: only a confirmation that is still waiting takes one.
+#[tauri::command]
+pub async fn plugin_confirmation_answer(
+    bridge: tauri::State<'_, Arc<crate::plugin_host::confirmations::ConfirmationBridge>>,
+    id: String,
+    approved: bool,
+    remember: bool,
+) -> Result<(), String> {
+    bridge.answer(&id, approved, remember);
+    Ok(())
+}
+
+/// Answers a pending folder-selection prompt. Empty paths and declines cancel the approval.
+#[tauri::command]
+pub async fn plugin_folder_selection_answer(
+    bridge: tauri::State<'_, Arc<crate::plugin_host::files::RootApprovalBridge>>,
+    id: String,
+    selected_root: Option<String>,
+) -> Result<(), String> {
+    if selected_root
+        .as_ref()
+        .is_some_and(|path| path.is_empty() || path.len() > 32 * 1024 || path.contains('\0'))
+    {
+        return Err("invalid folder selection".into());
+    }
+    bridge.answer_selection(&id, selected_root);
+    Ok(())
+}
+
+/// Answers a pending folder-scope confirmation. A late or repeated response is ignored.
+#[tauri::command]
+pub async fn plugin_folder_approval_answer(
+    bridge: tauri::State<'_, Arc<crate::plugin_host::files::RootApprovalBridge>>,
+    id: String,
+    approved: bool,
+) -> Result<(), String> {
+    bridge.answer_confirmation(&id, approved);
+    Ok(())
+}
+
+/// Answers a pending runtime picker. A null, empty or malformed selection declines it.
+#[tauri::command]
+pub async fn plugin_runtime_selection_answer(
+    bridge: tauri::State<'_, Arc<crate::plugin_host::runtime_access::RuntimeApprovalBridge>>,
+    id: String,
+    selected_executable: Option<String>,
+) -> Result<(), String> {
+    if selected_executable
+        .as_ref()
+        .is_some_and(|path| path.is_empty() || path.len() > 32 * 1024 || path.contains('\0'))
+    {
+        return Err("invalid runtime selection".into());
+    }
+    bridge.answer(&id, selected_executable);
+    Ok(())
+}
+
+/// Lists file and logical-library root approvals in one plugin's active account profile.
+#[tauri::command]
+pub async fn plugin_folder_approvals(
+    approvals: tauri::State<'_, Arc<crate::plugin_host::file_approvals::PluginFolderApprovals>>,
+    plugin_id: String,
+    publisher_fingerprint: String,
+) -> Result<Vec<crate::plugin_host::file_approvals::PluginFolderApproval>, String> {
+    approvals.list(&plugin_id, &publisher_fingerprint).await
+}
+
+/// Revokes a folder approval or a standing logical-library root approval.
+#[tauri::command]
+pub async fn plugin_folder_revoke(
+    approvals: tauri::State<'_, Arc<crate::plugin_host::file_approvals::PluginFolderApprovals>>,
+    plugin_id: String,
+    publisher_fingerprint: String,
+    id: String,
+) -> Result<bool, String> {
+    approvals
+        .revoke(&plugin_id, &publisher_fingerprint, &id)
+        .await
+}
+
+/// Opens the folder chooser and replaces an existing file approval with the newly confirmed root.
+#[tauri::command]
+pub async fn plugin_folder_change(
+    approvals: tauri::State<'_, Arc<crate::plugin_host::file_approvals::PluginFolderApprovals>>,
+    plugin_id: String,
+    publisher_fingerprint: String,
+    id: String,
+) -> Result<(), String> {
+    approvals
+        .change_root(&plugin_id, &publisher_fingerprint, &id)
+        .await
+}
+
+/// Turns Core discovery on or off for a standing logical-library root.
+#[tauri::command]
+pub async fn plugin_library_root_set_watching(
+    approvals: tauri::State<'_, Arc<crate::plugin_host::file_approvals::PluginFolderApprovals>>,
+    plugin_id: String,
+    publisher_fingerprint: String,
+    id: String,
+    watching: bool,
+) -> Result<bool, String> {
+    approvals
+        .set_watching(&plugin_id, &publisher_fingerprint, &id, watching)
+        .await
+}
+
+/// Lists active runtime program approvals in one plugin's active account profile.
+#[tauri::command]
+pub async fn plugin_runtime_approvals(
+    approvals: tauri::State<'_, Arc<crate::plugin_host::runtime_approvals::PluginRuntimeApprovals>>,
+    plugin_id: String,
+    publisher_fingerprint: String,
+) -> Result<Vec<crate::plugin_host::runtime_approvals::PluginRuntimeApproval>, String> {
+    approvals.list(&plugin_id, &publisher_fingerprint).await
+}
+
+/// Revokes one runtime program approval, so the next Play asks for a fresh program.
+#[tauri::command]
+pub async fn plugin_runtime_revoke(
+    approvals: tauri::State<'_, Arc<crate::plugin_host::runtime_approvals::PluginRuntimeApprovals>>,
+    plugin_id: String,
+    publisher_fingerprint: String,
+    runtime_id: String,
+) -> Result<bool, String> {
+    approvals
+        .revoke(&plugin_id, &publisher_fingerprint, &runtime_id)
+        .await
+}
+
+/// Lists declared shared emulator resources and the host-resolved affected games for review.
+#[tauri::command]
+pub async fn plugin_shared_resource_reviews(
+    resources: tauri::State<'_, Arc<crate::plugin_host::shared_resources::PluginSharedResources>>,
+    plugin_id: String,
+    publisher_fingerprint: String,
+) -> Result<Vec<crate::plugin_host::shared_resources::PluginSharedResourceReview>, String> {
+    resources.list(&plugin_id, &publisher_fingerprint).await
+}
+
+/// Accepts the exact current declaration and affected-game scope of one shared resource.
+#[tauri::command]
+pub async fn plugin_shared_resource_accept(
+    resources: tauri::State<'_, Arc<crate::plugin_host::shared_resources::PluginSharedResources>>,
+    plugin_id: String,
+    publisher_fingerprint: String,
+    profile_id: String,
+    resource_id: String,
+) -> Result<(), String> {
+    resources
+        .accept(
+            &plugin_id,
+            &publisher_fingerprint,
+            &profile_id,
+            &resource_id,
+        )
+        .await
+}
+
+/// Forgets a shared-resource consent; the next use asks for a fresh review.
+#[tauri::command]
+pub async fn plugin_shared_resource_revoke(
+    resources: tauri::State<'_, Arc<crate::plugin_host::shared_resources::PluginSharedResources>>,
+    plugin_id: String,
+    publisher_fingerprint: String,
+    profile_id: String,
+    resource_id: String,
+) -> Result<bool, String> {
+    resources
+        .revoke(
+            &plugin_id,
+            &publisher_fingerprint,
+            &profile_id,
+            &resource_id,
+        )
+        .await
+}
+
+/// What the user allowed one plugin to start without asking, in the active profile.
+#[tauri::command]
+pub async fn plugin_remembered_confirmations(
+    approvals: tauri::State<'_, Arc<crate::plugin_host::confirmations::PluginApprovals>>,
+    plugin_id: String,
+    publisher_fingerprint: String,
+) -> Result<Vec<crate::plugin_host::confirmations::RememberedConfirmation>, String> {
+    approvals.list(&plugin_id, &publisher_fingerprint).await
+}
+
+/// Forgets one remembered confirmation, so the next request asks the user again.
+#[tauri::command]
+pub async fn plugin_revoke_confirmation(
+    approvals: tauri::State<'_, Arc<crate::plugin_host::confirmations::PluginApprovals>>,
+    plugin_id: String,
+    publisher_fingerprint: String,
+    id: String,
+) -> Result<bool, String> {
+    approvals
+        .revoke(&plugin_id, &publisher_fingerprint, &id)
+        .await
 }
 
 /// Whether `provider_id` names a provider the host loaded with an account and catalog.
@@ -614,6 +2101,44 @@ pub async fn plugin_stop(
     provider_id: String,
 ) -> Result<(), String> {
     engine.plugin_stop(&provider_id).await
+}
+
+/// Lists supervised custom launches for host-controlled termination.
+#[tauri::command]
+pub async fn custom_launch_ids(
+    engine: tauri::State<'_, Engine>,
+    entry_key: Option<String>,
+) -> Result<Vec<u64>, String> {
+    #[cfg(any(target_os = "linux", windows))]
+    {
+        match entry_key {
+            Some(key) => engine.supervised_custom_launch_ids_for_entry(key).await,
+            None => engine.supervised_custom_launch_ids().await,
+        }
+        .map_err(|error| error.message().to_owned())
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    {
+        let _ = (engine, entry_key);
+        Ok(Vec::new())
+    }
+}
+
+/// Explicitly stops a supervised custom launch and confirms that its tree is fenced.
+#[tauri::command]
+pub async fn custom_launch_stop(engine: tauri::State<'_, Engine>, id: u64) -> Result<(), String> {
+    #[cfg(any(target_os = "linux", windows))]
+    {
+        engine
+            .stop_supervised_custom_launch(id)
+            .await
+            .map_err(|error| error.message().to_owned())
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    {
+        let _ = (engine, id);
+        Err("custom launch termination is unavailable".into())
+    }
 }
 
 /// Starts a stopped plugin with a fresh session and restores its account (Settings › Plugins ›
@@ -1315,6 +2840,15 @@ pub async fn ports_install(
 
 /// Cancels a queued, running or executable-awaiting job.
 #[tauri::command]
+pub async fn ports_dismiss_plugin_setup(
+    engine: tauri::State<'_, Engine>,
+    request_id: String,
+) -> Result<(), String> {
+    engine.dismiss_plugin_port(request_id);
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn ports_cancel(
     engine: tauri::State<'_, Engine>,
     job_id: String,
@@ -1561,11 +3095,22 @@ mod tests {
             plugin_id: "org.gamenode.plugin.steam-discovery".to_owned(),
             name: "Steam".to_owned(),
             version: "1.2.3".to_owned(),
+            plugin_kind: "provider".to_owned(),
+            enabled: None,
+            runtime_available: None,
+            publisher_fingerprint: None,
+            compatibility_details: None,
             source: "official".to_owned(),
             status: "installed".to_owned(),
             capabilities: vec!["library.discovery".to_owned()],
             session: "active".to_owned(),
             native_access: vec!["files".to_owned()],
+            bundle_id: None,
+            bundle_name: None,
+            bundle_version: None,
+            bundle_component_kind: None,
+            bundle_publisher_fingerprint: None,
+            bundle_components: None,
         }];
         let stores = vec![SystemStore {
             name: "Steam".to_owned(),
@@ -1673,5 +3218,68 @@ mod tests {
             .unwrap();
         }
         assert_eq!(*called.lock().unwrap(), ["steam", "epic"]);
+    }
+
+    #[test]
+    fn durable_deletion_requires_explicit_confirmation() {
+        assert!(durable_delete_confirmation(true).is_ok());
+        assert_eq!(
+            durable_delete_confirmation(false).unwrap_err(),
+            "deleting retained shared data requires confirmation"
+        );
+    }
+
+    #[test]
+    fn durable_usage_and_deletion_disclose_no_physical_path() {
+        let usage = PluginDurableUsage {
+            plugin_id: "org.example.producer".into(),
+            profile_id: "profile-a".into(),
+            record_count: 3,
+            logical_bytes: 4096,
+            max_bytes: 65_536,
+            max_age_seconds: Some(86_400),
+            oldest_updated_at: Some(1_700_000_000),
+        };
+        let json = serde_json::to_value(&usage).unwrap();
+        let object = json.as_object().unwrap();
+        assert_eq!(
+            object
+                .keys()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>(),
+            [
+                "logicalBytes",
+                "maxAgeSeconds",
+                "maxBytes",
+                "oldestUpdatedAt",
+                "pluginId",
+                "profileId",
+                "recordCount",
+            ]
+            .map(str::to_owned)
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
+        );
+        let text = json.to_string();
+        for forbidden in ["path", "sqlite", "/home", "\\\\"] {
+            assert!(!text.to_ascii_lowercase().contains(forbidden), "{text}");
+        }
+
+        let deleted = serde_json::to_value(&PluginDurableDeletion {
+            plugin_id: "org.example.producer".into(),
+            profile_id: "profile-a".into(),
+            removed_records: 3,
+            reclaimed_bytes: 4096,
+            usage: PluginDurableUsage {
+                record_count: 0,
+                logical_bytes: 0,
+                ..usage
+            },
+        })
+        .unwrap();
+        assert_eq!(deleted["removedRecords"], 3);
+        assert_eq!(deleted["reclaimedBytes"], 4096);
+        assert_eq!(deleted["usage"]["recordCount"], 0);
+        assert!(!deleted.to_string().to_ascii_lowercase().contains("path"));
     }
 }

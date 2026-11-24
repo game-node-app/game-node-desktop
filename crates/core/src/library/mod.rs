@@ -10,8 +10,10 @@ mod batch;
 mod catalog;
 pub mod cover;
 mod cover_queue;
+pub mod custom_launch;
 pub mod favorites;
 pub mod launch;
+pub mod launch_plan;
 pub mod layout;
 mod lookup;
 pub mod machine;
@@ -19,10 +21,13 @@ pub mod match_dialog;
 pub mod matching;
 pub mod membership;
 pub mod organization;
+pub mod plugin_match;
 pub mod query;
+pub mod runtime;
 pub mod selection;
 pub mod store;
 pub mod suggest;
+pub mod target;
 pub mod view;
 pub use actions::{Actions, Availability, Reason, Why};
 pub use add_dialog::{
@@ -34,8 +39,16 @@ pub use add_run::{
 };
 pub use batch::{CollectionRunView, StatusRunView, UndoAddView, UndoState};
 pub use catalog::{CatalogResult, CatalogStatus, CatalogView};
+pub use custom_launch::{
+    CustomLaunchModLayer, CustomLaunchMutation, CustomLaunchRecipe, LaunchRecipeSelection,
+    LaunchRecipeSelectionWrite,
+};
 pub use launch::{
     LaunchError, LaunchKind, LaunchState, LaunchStateView, LaunchStatus, open_action,
+};
+pub use launch_plan::{
+    LAUNCH_PLAN_VERSION, LaunchPlan, LaunchPlanComponent, LaunchPlanError, LaunchPlanResource,
+    LaunchPlanTarget,
 };
 pub use layout::{
     AddedFilter, AvailabilityFilter, CoverSize, DAY_SECONDS, FIRST_RELEASE_DECADE,
@@ -45,7 +58,8 @@ pub use layout::{
 };
 pub use machine::{Access, Effect, Input, LibraryMachine, ScanOutcome};
 pub use match_dialog::{
-    CandidateOption, MatchDialogView, MatchOption, MatchReason, SearchFailure, SearchResultItem,
+    CandidateOption, MatchDialogView, MatchOption, MatchPlatformFilter, MatchReason, SearchFailure,
+    SearchResultItem,
 };
 pub use matching::{MatchSource, MatchStatus};
 pub use membership::{EntryStatus, GameStatus, Membership, StandingView};
@@ -53,19 +67,26 @@ pub use organization::{
     HiddenNotice, SavedView, SavedViewNotice, SavedViewPayload, ViewError, ViewWriteError,
     ViewWriteOperation, ViewWriteState, ViewWriteView,
 };
+pub use plugin_match::{MAX_OFFERED_GAMES, PluginMatch};
 pub use query::{
     AddedCounts, AvailabilityCounts, CollectionCount, FilterCounts, GameNodeStatusCounts,
     LastPlayedCounts, MatchStateCounts, PlayedCounts, PlaytimeCounts, ProviderCount, ReleaseCount,
     Row, RowGameNode, RowGroup, SavedViewCount, ScopeCounts, StoreCount, TitleSource,
     TitleSourceKind,
 };
+pub use runtime::{
+    ApprovedFileReference, RuntimeArgumentTemplate, RuntimeAvailabilityEntry,
+    RuntimeContentBinding, RuntimeExtension, RuntimeMutation, RuntimeProvenance, RuntimeResource,
+};
 pub use selection::{Direction, SelectMode, Selection};
 pub use store::{
-    AccountLibrary, AutoMatch, CatalogError, CatalogRecord, CatalogUpdate, ChosenMatch,
-    FavoriteRecord, GameRecord, LastAccount, LibraryCache, LibraryStore, ProviderScanState,
-    StoreAccount, StoredEntry, entry_key,
+    AccountLibrary, ArtworkOverride, ArtworkWrite, AutoMatch, CatalogError, CatalogRecord,
+    CatalogUpdate, ChoiceSource, ChosenMatch, DisplayOverride, DisplayWrite, FavoriteRecord,
+    GameRecord, LastAccount, LibraryCache, LibraryStore, ProviderScanState, StoreAccount,
+    StoredEntry, TargetApproval, entry_key,
 };
 pub use suggest::{SuggestionTone, SuggestionView};
+pub use target::{DetectedTarget, DetectedTargetView, TargetSpec};
 pub use view::{
     DetailView, EmptyState, LibraryView, PaletteEntry, ScanProgress, ScanProgressState,
 };

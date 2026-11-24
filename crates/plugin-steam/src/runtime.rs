@@ -166,6 +166,7 @@ impl ProviderPlugin for SteamPlugin {
                                     name: r.name.unwrap_or_default(),
                                     install_dir: r.install_dir,
                                     fields: r.fields.into_iter().collect(),
+                                    target: None,
                                 })
                                 .collect(),
                             install_root: scan.install_root,

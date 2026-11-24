@@ -344,8 +344,48 @@ export interface DetailView {
   membership: Membership;
   achievementBackend: boolean;
   achievements: AchievementSummary | null;
+  detectedTarget?: DetectedTargetView | null;
   /** Best-first suggestions for an unmatched or ambiguous entry. */
   suggestions: SuggestionView[];
+}
+
+export type DetectedTargetSpec =
+  | { uri: string }
+  | { executable: { root: string; path: string; arguments: string[]; workingDirectory: string } };
+
+export interface DetectedTargetView {
+  spec: DetectedTargetSpec;
+  revision: number;
+  approved: boolean;
+  available: boolean;
+
+}
+
+export interface LaunchRecipeOption {
+  pluginId: string;
+  publisherFingerprint: string;
+  recipeId: string;
+  recipeRevision: number;
+  /** Runtime/version and launch arguments; empty when the host cannot summarize it. */
+  summary?: string;
+}
+
+export interface LaunchRecipeSelection {
+  entryKey: string;
+  ownerKey: string;
+  pluginId: string;
+  publisherFingerprint: string;
+  recipeId: string;
+  recipeRevision: number;
+  baseTargetRevision: number;
+  approvedPlanFingerprint: string;
+}
+
+export interface LaunchRecipeChoices {
+  targetRevision: number;
+  detectedDefaultAvailable: boolean;
+  selected: LaunchRecipeSelection | null;
+  recipes: LaunchRecipeOption[];
 }
 
 export type EmptyState =
@@ -813,6 +853,8 @@ export type Reason =
   | 'noMatchedGames'
   | 'checkingMembership'
   | 'membershipUnavailable'
+  | 'targetNeedsApproval'
+  | 'targetUnavailable'
   | { alreadyInLibrary: EntryStatus | null };
 
 export type Availability = 'available' | { disabled: Reason };
@@ -851,6 +893,18 @@ export type SearchFailure =
   | 'rejected'
   | 'failed';
 
+/** The platform narrowing the match dialog derives from the entry's record. */
+export interface MatchPlatformFilter {
+  /** The entry's declared platform, normalized to lowercase (for example `gamecube`). */
+  platform: string;
+  /** The platform's display name (for example `GameCube`). */
+  label: string;
+  /** The catalog abbreviations an option may report for this platform. */
+  aliases: string[];
+  /** Whether options outside the platform are hidden. On by default when the platform is known. */
+  enabled: boolean;
+}
+
 export interface MatchDialogView {
   entryKey: string;
   detectedName: string;
@@ -861,6 +915,10 @@ export interface MatchDialogView {
   results: MatchOption[];
   selected: MatchOption | null;
   noResults: boolean;
+  /** The platform narrowing derived from the entry, when it declares one. */
+  platformFilter: MatchPlatformFilter | null;
+  /** How many options the active platform filter hides. */
+  filteredOut: number;
   error?: SearchFailure | null;
   searchBlocked?: Reason | null;
   current: MatchStatus;
@@ -1081,7 +1139,12 @@ export interface LibraryView {
 
 export type LaunchKind = 'play' | 'install';
 
-export type LaunchError = 'noHandler' | 'unsupported' | 'incomplete' | 'failed';
+export type LaunchError =
+  | 'noHandler'
+  | 'unsupported'
+  | 'incomplete'
+  | 'recipeNeedsAttention'
+  | 'failed';
 
 export type LaunchState = 'opening' | { failed: LaunchError };
 
@@ -1393,6 +1456,7 @@ export type ToolOperationStatus =
   | { failed: { message: string; code?: ToolOperationErrorCode | null } };
 
 export interface ToolModalView {
+  pluginRequest?: { pluginId: string; publisherFingerprint: string; remove: boolean } | null;
   entryKey: string;
   title: string;
   installDir: string;
@@ -1486,17 +1550,590 @@ export interface StoreAccountView {
   canRemoveCredential: boolean;
 }
 
+export interface PluginUpdatePreferences {
+  periodicChecks: boolean;
+}
+
+export type PlaytimeAccountingMode = 'disabled' | 'application_open';
+
+export interface PlaytimeCapabilities {
+  identifiesGameplay: boolean;
+  identifiesPauses: boolean;
+  withoutPauseDetection: PlaytimeAccountingMode;
+}
+
+export interface PluginPlaytimeInfo {
+  pluginId: string;
+  name: string;
+  version: string;
+  playtime: PlaytimeCapabilities;
+  accountingEnabled: boolean;
+}
+
+export interface AvailablePluginUpdate {
+  pluginId: string;
+  name: string;
+  installedVersion: string;
+  versions: string[];
+}
+
+export interface AvailablePluginRollback {
+  pluginId: string;
+  name: string;
+  activeVersion: string;
+  versions: string[];
+}
+
+export type PluginCompatibilityState = 'compatible' | 'incompatible' | 'indeterminate';
+
+export type PluginCompatibilityReason =
+  | 'operatingSystemMismatch' | 'architectureMismatch' | 'abiMismatch'
+  | 'unknownOperatingSystem' | 'unknownArchitecture' | 'unknownAbi'
+  | 'emulationRejected' | 'emulationUnknown'
+  | 'windowsProductMismatch' | 'windowsVersionTooOld' | 'windowsVersionTooNew'
+  | 'windowsBuildTooOld' | 'windowsBuildTooNew'
+  | 'windowsProductUnknown' | 'windowsVersionUnknown' | 'windowsBuildUnknown'
+  | 'linuxLibcMismatch' | 'linuxLibcVersionTooOld' | 'linuxLibcUnknown'
+  | 'linuxDistributionMismatch' | 'linuxDistributionVersionMismatch' | 'linuxDistributionUnknown'
+  | 'noAdditionalRequirements' | 'requirementsMalformed' | 'requirementsSatisfied';
+
+/** One signed target. The nested manifest declarations keep their manifest (snake_case) names. */
+export interface PluginTargetDeclaration {
+  os: string;
+  arch: string;
+  abi: string;
+  entrypoint: string;
+  requires?: {
+    windows?: {
+      product?: 'client' | 'server' | null;
+      min_version?: string | null;
+      max_version?: string | null;
+      min_build?: number | null;
+      max_build?: number | null;
+    } | null;
+    linux?: {
+      libc?: { family: 'glibc' | 'musl'; min_version: string } | null;
+      distributions?: Array<{ id: string; versions: string[] }> | null;
+    } | null;
+  } | null;
+  /** Author-tested environments: informational only, never part of the verdict. */
+  tested_on: Array<{
+    product?: string | null;
+    release?: string | null;
+    distribution?: string | null;
+    version?: string | null;
+  }>;
+}
+
+export interface PluginTargetAssessment {
+  target: PluginTargetDeclaration;
+  verdict: {
+    state: PluginCompatibilityState;
+    reasons: PluginCompatibilityReason[];
+    unknownFacts: string[];
+  };
+}
+
+/** Effective execution facts and the per-target verdicts the host derived for a signed package. */
+export interface PluginCompatibilityDetails {
+  state: PluginCompatibilityState;
+  ambiguous: boolean;
+  os?: string | null;
+  release?: string | null;
+  product?: 'client' | 'server' | 'unknown' | null;
+  build?: number | null;
+  architecture?: string | null;
+  abi?: string | null;
+  libc?: { family: 'gnu' | 'musl'; version?: string | null } | { family: 'unknown' } | null;
+  emulation: 'native' | 'emulated' | 'unknown';
+  targets: PluginTargetAssessment[];
+}
+
+export interface ExtensionReadinessSelection {
+  installationId: string;
+  revision: string;
+  profileEpoch: string;
+}
+
+export interface PluginUpdateReview {
+  pluginId: string;
+  installedVersion: string;
+  candidateVersion: string;
+  addedPermissions: string[];
+  removedPermissions: string[];
+  changedPermissions: string[];
+  permissionChanges: Array<{
+    id: string;
+    installedScope: string;
+    candidateScope: string;
+    installedRequired: boolean;
+    candidateRequired: boolean;
+  }>;
+  addedNativeAccess: string[];
+  removedNativeAccess: string[];
+  apiChanged: boolean;
+  installedApi: string;
+  candidateApi: string;
+  licenseChanged: boolean;
+  installedLicense: string;
+  candidateLicense: string;
+  installedLicenseFiles: string[];
+  candidateLicenseFiles: string[];
+  installedLicenseNotices: string[];
+  candidateLicenseNotices: string[];
+  installedPlaytime: PlaytimeCapabilities;
+  candidatePlaytime: PlaytimeCapabilities;
+  playtimeChanged: boolean;
+  publisherChanged: boolean;
+  installedPublisherKeyId: string;
+  candidatePublisherKeyId: string;
+  publisherFingerprint: string;
+  changedDataSchemas: string[];
+  preservesPriorData: boolean;
+  isDowngrade: boolean;
+  requiresManualApproval: boolean;
+  compatibilityDetails?: PluginCompatibilityDetails;
+  extensionTargets?: Array<{
+    name: string;
+    providerId: string;
+    selection: ExtensionReadinessSelection;
+  }>;
+}
+
+export interface PluginBundleComponent {
+  pluginId: string;
+  pluginKind: 'provider' | 'extension';
+  name: string;
+  version: string;
+  status: 'installed' | 'missing' | 'unavailable' | 'failed' | 'incompatible';
+  session: 'active' | 'stopped';
+  enabled?: boolean;
+  runtimeAvailable?: boolean;
+  publisherFingerprint?: string;
+  compatibilityDetails?: PluginCompatibilityDetails;
+  nativeAccess: string[];
+}
+
 export interface PluginInfo {
   providerId: string;
   pluginId: string;
+  pluginKind: 'provider' | 'extension' | 'bundle';
   name: string;
-  /** Version from the trusted descriptor, or the build package version. */
-  version: string;
   source: 'official' | 'community';
   status: 'installed' | 'missing' | 'unavailable' | 'failed' | 'incompatible';
   capabilities: string[];
   session: 'active' | 'stopped';
   nativeAccess: string[];
+  /** Version from the trusted descriptor or verified package manifest. */
+  version?: string;
+  enabled?: boolean;
+  runtimeAvailable?: boolean;
+  /** The pinned publisher of a third-party plugin; absent for the bundled ones. */
+  publisherFingerprint?: string;
+  compatibilityDetails?: PluginCompatibilityDetails;
+  /** The installed bundle this entry represents; absent for standalone packages. */
+  bundleId?: string;
+  bundleName?: string;
+  bundleVersion?: string;
+  bundleComponentKind?: 'provider' | 'extension';
+  bundlePublisherFingerprint?: string;
+  /** Every component of an aggregated bundle entry, each with its own status. */
+  bundleComponents?: PluginBundleComponent[];
+}
+
+/** One permission requested by a verified package manifest. */
+export interface PluginImportPermissionReview {
+  id: string;
+  required: boolean;
+  scope: string;
+  reason: string;
+  /**
+   * What stops working when the user denies this optional permission. Required permissions
+   * cannot be denied, so they never carry an impact.
+   */
+  impactIfDisabled?: string;
+}
+
+export interface PluginImportReview {
+  token: string;
+  pluginId: string;
+  providerId?: string;
+  name: string;
+  version: string;
+  publisherKeyId: string;
+  publisherFingerprint: string;
+  pinnedFingerprint?: string;
+  trust: 'trusted' | 'untrusted' | 'changed';
+  license: string;
+  licenseFiles: string[];
+  licenseNotices: string[];
+  permissionIds: string[];
+  requestedPermissions: PluginImportPermissionReview[];
+  /** Emulator or runtime platforms declared by the signed bundle manifest. */
+  supportedPlatforms?: string[];
+  nativeAccess: string[];
+  playtime: PlaytimeCapabilities;
+  compatibility: 'compatible' | 'incompatible' | 'unknown';
+  compatibilityReason?: string;
+  compatibilityDetails?: PluginCompatibilityDetails;
+}
+
+/** The identity shown once for a whole bundle review. */
+export interface PluginBundleIdentity {
+  id: string;
+  name: string;
+  version: string;
+  publisherKeyId: string;
+  publisherFingerprint: string;
+}
+
+export type PluginBundleComponentAvailability =
+  | { status: 'available' }
+  | { status: 'unavailable'; reason: 'noCompatibleTarget' | 'ambiguousTarget' };
+
+/** One component inside a bundle review; the embedded review is the package review. */
+export interface PluginBundleComponentReview {
+  kind: 'provider' | 'extension';
+  availability: PluginBundleComponentAvailability;
+  review: Omit<PluginImportReview, 'token'>;
+}
+
+export interface PluginBundleLicenseComponent {
+  pluginId: string;
+  expression: string;
+  files: string[];
+  notices: string[];
+}
+
+/** The bundle-wide license view shown in the single review header. */
+export interface PluginBundleLicenseSummary {
+  expressions: string[];
+  components: PluginBundleLicenseComponent[];
+}
+
+export interface PluginBundleImportReview {
+  token: string;
+  bundle: PluginBundleIdentity;
+  trust: 'trusted' | 'untrusted' | 'changed';
+  pinnedFingerprint?: string;
+  license: PluginBundleLicenseSummary;
+  components: PluginBundleComponentReview[];
+}
+
+/** One component's permission decisions submitted from a grouped bundle review. */
+export interface BundleComponentPermissionSubmission {
+  pluginId: string;
+  expectedProfileId: string;
+  expectedPublisherFingerprint: string;
+  expectedRevision: number;
+  decisions: PluginPermissionDecision[];
+}
+
+export interface BundleComponentPermissionOutcome {
+  pluginId: string;
+  snapshot?: PluginPermissionSnapshot;
+  error?: string;
+}
+
+export interface BundlePermissionResult {
+  components: BundleComponentPermissionOutcome[];
+}
+
+/** The result of one bundle uninstall; partial failures are named, not collapsed. */
+export interface BundleUninstallOutcome {
+  bundleId: string;
+  removed: Array<{ pluginId: string; version: string; stopped: boolean }>;
+  failures: Array<{ pluginId: string; version: string; error: string }>;
+  dataRetention: 'kept' | 'deleted';
+}
+
+export interface BundleImportInstallOutcome {
+  bundleId: string;
+  components: Array<{
+    pluginId: string;
+    kind: 'provider' | 'extension';
+    version: string;
+    active: boolean;
+    /** True when the host enabled this component for the active profile right after install. */
+    activated: boolean;
+    /** Present when the component stayed installed but could not be activated. */
+    activationError?: string;
+    /** Present when the reviewed permission decisions could not be saved. */
+    permissionError?: string;
+  }>;
+}
+
+export interface PluginImportInstallOutcome {
+  pluginId: string;
+  activated: boolean;
+  /** Present when the package stayed installed but could not be activated. */
+  activationError?: string;
+}
+
+export interface AvailableBundleUpdate {
+  bundleId: string;
+  name: string;
+  installedVersion: string;
+  versions: string[];
+}
+
+export interface AvailableBundleRollback {
+  bundleId: string;
+  name: string;
+  activeVersion: string;
+  versions: string[];
+}
+
+/** One component's old/new facts in a bundle update or rollback review. */
+export interface BundleComponentUpdateReview {
+  pluginId: string;
+  kind: 'provider' | 'extension';
+  installedVersion: string;
+  candidateVersion: string;
+  addedPermissions: string[];
+  removedPermissions: string[];
+  changedPermissions: string[];
+  permissionChanges: Array<{
+    id: string;
+    installedScope: string;
+    candidateScope: string;
+    installedRequired: boolean;
+    candidateRequired: boolean;
+  }>;
+  addedNativeAccess: string[];
+  removedNativeAccess: string[];
+  apiChanged: boolean;
+  installedApi: string;
+  candidateApi: string;
+  availability: PluginBundleComponentAvailability;
+  compatibility: 'compatible' | 'incompatible' | 'unknown';
+  compatibilityReason?: string;
+  compatibilityDetails?: PluginCompatibilityDetails;
+  publisherChanged: boolean;
+  isDowngrade: boolean;
+}
+
+/** The grouped review of one bundle release or rollback target. */
+export interface BundleUpdateReview {
+  bundleId: string;
+  name: string;
+  installedVersion: string;
+  candidateVersion: string;
+  bundleSha256: string;
+  publisherFingerprint: string;
+  components: BundleComponentUpdateReview[];
+  addedPermissions: string[];
+  removedPermissions: string[];
+  changedPermissions: string[];
+  requiresManualApproval: boolean;
+  isDowngrade: boolean;
+  isRollback: boolean;
+}
+
+export interface BundleUpdateOutcome {
+  bundleId: string;
+  previousVersion: string;
+  version: string;
+  components: Array<{
+    pluginId: string;
+    kind: 'provider' | 'extension';
+    previousVersion: string;
+    version: string;
+    active: boolean;
+  }>;
+}
+
+export type BundleRollbackOutcome = BundleUpdateOutcome;
+
+/** Host-owned effective permission state for the currently active account profile. */
+export interface PluginPermissionSnapshot {
+  pluginId: string;
+  publisherFingerprint: string;
+  profileId: string;
+  grantRevision: number;
+  requestedPermissions: Array<{
+    permission_id: string;
+    required: boolean;
+    allowed_scopes: PluginGrantScope[];
+  }>;
+  /** Rust grant records retain their serialized snake_case protocol fields. */
+  effectiveGrants: Array<{
+    permission_id: string;
+    required: boolean;
+    scope: Record<string, unknown>;
+    state: 'granted' | 'denied' | 'unsupported';
+  }>;
+}
+
+export type PluginGrantScope =
+  | { scope: 'own-creator'; category: 'runtime' | 'library-root' | 'save-profile' }
+  | { scope: 'public-category'; category: 'runtime' | 'library-root' | 'save-profile' }
+  | { scope: 'selected-records'; category: 'runtime' | 'library-root' | 'save-profile'; record_ids: string[] }
+  | { scope: 'declared'; value: string }
+  | { scope: 'own-private-namespace' };
+
+export interface PluginPermissionDecision {
+  permission_id: string;
+  scope: PluginGrantScope;
+  granted: boolean;
+}
+
+export type SharedDataCategory =
+  | 'gamePaths'
+  | 'gamePerformanceHistory'
+  | 'runtimeCatalog'
+  | 'contentAvailability'
+  | 'libraryRoots'
+  | 'saveProfiles';
+
+export interface SharedDataCatalogRecord {
+  sourcePluginId: string;
+  sourcePublisherFingerprint: string;
+  datasetId: string;
+  class: 'common' | 'sensitive' | 'custom';
+  category: SharedDataCategory | null;
+  recordId: string;
+  fields: string[];
+}
+
+export interface SharedDataSourcePolicy {
+  sourcePluginId: string;
+  sourcePublisherFingerprint: string;
+  datasetId: string;
+  class: 'sensitive' | 'custom';
+  fields: string[];
+  history: boolean;
+  live: boolean;
+}
+
+export interface PluginSharedDataSnapshot {
+  pluginId: string;
+  publisherFingerprint: string;
+  profileId: string;
+  policyRevision: number;
+  commonCategories: SharedDataCategory[];
+  selectedRecordIds: string[];
+  /** Host metadata only; records contain no payload values. */
+  catalog: SharedDataCatalogRecord[];
+  sourcePolicies: SharedDataSourcePolicy[];
+}
+
+export interface SharedDataSourcePolicyDecision extends SharedDataSourcePolicy {}
+
+export interface PluginSharedDataPolicyUpdate {
+  profileId: string;
+  expectedPublisherFingerprint: string;
+  expectedRevision: number;
+  commonCategories: SharedDataCategory[];
+  selectedRecordIds: string[];
+  sourcePolicies: SharedDataSourcePolicyDecision[];
+}
+
+/** Logical durable-pool usage of one producer. The host discloses no physical path. */
+export interface PluginDurableUsage {
+  pluginId: string;
+  profileId: string;
+  recordCount: number;
+  logicalBytes: number;
+  maxBytes: number;
+  maxAgeSeconds: number | null;
+  oldestUpdatedAt: number | null;
+}
+
+/** The outcome of deleting one producer's retained durable records. */
+export interface PluginDurableDeletion {
+  pluginId: string;
+  profileId: string;
+  removedRecords: number;
+  reclaimedBytes: number;
+  usage: PluginDurableUsage;
+}
+
+/**
+ * One host-managed physical file holding plugin data. Host administration only: these paths are
+ * never part of a plugin reply.
+ */
+export interface PluginStorageLocation {
+  pluginId: string;
+  kind: 'durable_shared' | 'private_persistence';
+  path: string;
+  scope: 'namespace' | 'pool';
+  fileBytes: number;
+  logicalBytes: number;
+  records: number;
+  protectedRecords: number;
+  archivedRecords: number;
+  oldestUsedAt: number | null;
+  maxBytes: number | null;
+  maxAgeSeconds: number | null;
+}
+
+/** The durable pool file, counted once because every producer shares it. */
+export interface PluginStoragePool {
+  path: string;
+  fileBytes: number;
+  logicalBytes: number;
+  overheadBytes: number;
+  owners: number;
+  maxOwnerBytes: number;
+}
+
+/** Host-only physical accounting of the active profile's plugin data. */
+export interface PluginStorageAccounting {
+  profileId: string;
+  locations: PluginStorageLocation[];
+  pool: PluginStoragePool | null;
+  privateRootBytes: number;
+}
+
+/** One owner's non-empty dataset or private store, as presented for review, without a path. */
+export interface StorageCleanupCandidate {
+  candidateId: string;
+  kind: 'durable_shared' | 'private_persistence';
+  pluginId: string;
+  profileId: string;
+  records: number;
+  protectedRecords: number;
+  archivedRecords: number;
+  logicalBytes: number;
+  physicalBytesEstimate: number;
+  oldestUpdatedAt: number | null;
+  maxBytes: number | null;
+  maxAgeSeconds: number | null;
+}
+
+/** A single-use cleanup review the user must confirm. */
+export interface StorageCleanupReview {
+  token: string;
+  generatedAt: number;
+  candidates: StorageCleanupCandidate[];
+}
+
+/** One selected candidate's measured result; a partial failure is named, not collapsed. */
+export interface StorageCleanupResult {
+  candidateId: string;
+  kind: 'durable_shared' | 'private_persistence';
+  pluginId: string;
+  status: 'completed' | 'failed';
+  removedRecords: number;
+  reclaimedBytes: number;
+  error?: string | null;
+}
+
+/** The measured result of one confirmed cleanup; the token cannot be reused. */
+export interface StorageCleanupReport {
+  token: string;
+  removedRecords: number;
+  reclaimedBytes: number;
+  skippedProtectedRecords: number;
+  results: StorageCleanupResult[];
+}
+
+/** Host-owned configuration availability; no plugin preference values are included. */
+export interface PluginConfigurationState {
+  pluginId: string;
+  available: boolean;
+  revision: string | null;
 }
 
 export interface Snapshot {
@@ -1565,6 +2202,7 @@ export type LibraryInput =
   | 'openMatch'
   | 'closeMatch'
   | { setMatchQuery: string }
+  | { setMatchPlatformFilter: { enabled: boolean } }
   | 'searchMatch'
   | { pickMatch: { gameId: number; now: number } }
   | { selectMatch: { gameId: number } }

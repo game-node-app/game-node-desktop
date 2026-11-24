@@ -59,12 +59,31 @@ preference leaves the latest geometry in place.
 | Table | Holds |
 | --- | --- |
 | `library_entries` | Every game a provider has detected, keyed `<provider>:<store id>`, with its install folder, extra scan fields, `installed`, `owned` and `family_shared` flags and first/last seen times. Rows are never deleted: a game a completed scan no longer finds is marked `installed = 0`, so its matches and cover return with it. |
+| `library_installations` | The opaque installation id plugins see for each library entry, keyed by entry key. The id is 128 random bits assigned the first time a plugin projection needs it and never changed, so it survives rescans, renames and match changes without revealing the store id or a path. Rows are never deleted. |
+| `library_display_overrides` | The display name a provider's plugin set for one of its own entries, keyed by entry key, with a per-entry revision that starts at 1 and only grows. The detected name stays in `library_entries`; clearing an override sets the name to `NULL` and keeps the row so the revision keeps counting. |
+| `library_artwork_overrides` | The cover a provider's plugin set for one of its own entries, keyed by entry key: `file` names an image in the covers folder (`plugin-<entry>-<content>.jpg` or `.png`, decoded, shrunk to fit 600 x 900 and re-encoded by the host) that only that entry uses, with a per-entry revision that starts at 1 and only grows. The matched game's own cover is never touched; clearing an override sets `file` to `NULL` and keeps the row so the revision keeps counting. |
+| `plugin_custom_launch_recipes` | Plugin-scoped launch recipes keyed by owner and recipe id, with an installation id, revision and typed JSON. The JSON contains opaque host handles rather than executable paths or secret values; paths and secrets are resolved by the host when launching. |
+| `library_launch_recipe_selection` | One user's active recipe per library entry, including its plugin identity, recipe and detected-target revisions, and the fingerprint of the exact launch plan the user approved. A missing row means the detected target remains selected; stale rows are retained until the user repairs the recipe or explicitly returns to the detected target. |
+| `plugin_runtime_resources` | Plugin-owned approved runtime resources, keyed by owner and runtime id with a revision and typed JSON. Executable locations remain host-resolved and are never exposed as plugin supplied paths. |
+| `plugin_runtime_content_bindings` | Plugin-owned bindings between a GameNode game and a runtime content item for an installation, with revision checks so content moves or runtime changes invalidate the previous launch plan. |
+| `plugin_runtime_catalog_state` | Per-owner revision for the runtime resource catalog, advanced when its resources or bindings change so an existing launch approval cannot survive catalog edits. |
+| `plugin_bundles` | One installed bundle: its id, name, version, publisher fingerprint, SHA-256 of the signed `bundle.json` and the Unix time the mapping was recorded. A bundle only groups packages; it owns no payload, grant or session. |
+| `plugin_bundle_components` | The components of an installed bundle: plugin id, kind (`provider` or `extension`), component archive SHA-256 and package version. A plugin id belongs to at most one bundle; a standalone package has no row. Removing a row removes the grouping only, never the component package. |
+| `plugin_bundle_history` | One previous mapping of an installed bundle, archived by a bundle update: bundle id, version, name, publisher fingerprint, SHA-256 of the signed `bundle.json`, the original installed time and when it was archived. It exists only so a rollback can restore the component set and package versions that were active before the update; it owns no payload, grant or session. |
+| `plugin_bundle_history_components` | The component rows of one archived bundle mapping: plugin id, kind, component archive SHA-256 and package version. Restoring a version moves these rows back into `plugin_bundle_components` and removes the history entry. |
 | `provider_scans` | Per provider, the time of the last successful scan and the last error, plus the last owned (`last_catalog_at`, `catalog_error`) and family (`last_family_at`, `family_error`) catalog sync. A failed scan or catalog phase records the error and keeps the previous facts. |
 | `store_accounts` | The last connected account of a store provider: `provider`, `account_id`, optional `account_name` and optional `last_verified_at`. It holds no cookie, token or password. |
 | `auto_matches` | The GameNode game ids the server reported for a store id, per `(category, uid)` and PC. An empty list means the server knows no game. |
-| `chosen_matches` | The user's own match per `(account_id, entry_key)`. A null `game_id` means "no GameNode game". Each account keeps its own choices. |
+| `chosen_matches` | The explicit match per `(account_id, entry_key)`, made by the user or, through the plugin API, by the entry's own provider plugin (`source` is `user` or `plugin`; a plugin never replaces a `user` choice). A null `game_id` means "no GameNode game". Each account keeps its own choices. |
 | `favorites` | Each account's favorite GameNode games per `(account_id, game_id)`, with `is_favorite`, `pending` (a local change GameNode has not confirmed) and `updated_at`. A false, confirmed row is deleted. Favorites survive sign-out and stay hidden from other accounts. |
 | `games` | GameNode game name, release year, cover URL and cover state (`cover_file`, `cover_failed_at`) for display without the network. |
+
+Migration `0025_plugin_bundles.sql` adds the two bundle tables as additive STRICT
+tables. An upgraded database keeps every existing row, and packages installed on
+their own stay ungrouped because no bundle row exists for them.
+Migration `0026_plugin_bundle_history.sql` adds the two history tables used only
+by bundle update rollback; it is additive, starts empty and changes no current
+mapping.
 
 Saving a provider's scan is one transaction: it either fully applies or leaves
 the previous entries as they were. Migration `0006_store_accounts_and_catalog.sql`
@@ -99,6 +118,28 @@ application data directory (`DataPaths::covers_dir`). The folder is created on
 first use. Files are written atomically and are kept when a game is uninstalled
 or the user signs out. Unreferenced files are not cleaned up yet.
 
+## Third-party plugin storage
+
+The private key/value data of third-party plugins is stored outside the application database, in
+`plugin-data/<publisher fingerprint>/<plugin id>/<profile id>/storage.sqlite3` below the application
+data directory (`DataPaths::plugin_data_dir`). There is one small SQLite file per plugin and account
+profile, created the first time the plugin writes a `PERSISTENT` value; reading never creates one.
+Directory names are the identity with unsafe characters written as `%XX` (or a digest when the name
+would be too long), so no name can leave the folder. The `entries` table holds each key, value,
+revision and optional expiry, and `meta` the highest revision ever used so revisions keep growing
+across deletions and restarts. Session-only values are never written to disk.
+
+The same file holds the folders the user approved for the plugin's file access, in a `file_roots`
+table (store schema version 2): per installation and kind, the folder (a canonical path, kept only
+by the host), the volume and node it had when approved, the operations allowed, the library entries
+that shared it, and when it was approved or revoked. These rows are not charged to the plugin's
+quota, and the plugin never sees them: it receives only opaque handles.
+
+The location is for the user and the host only: the plugin API never accepts or returns it. Nothing
+cleans these folders up yet (unused-data cleanup and the uninstall keep/delete choice are separate
+tasks), so removing a plugin leaves its data in place. A store written by a newer version is refused
+and left untouched, and a damaged file is reported as unavailable, never replaced.
+
 Opening a fresh database creates migration history and applies every
 migration. A step 1 database gains the library tables and keeps its settings;
 a step 1 build refuses the upgraded database under its newer-schema rule and
@@ -126,6 +167,40 @@ The platform repositories have temporary-database tests for fresh creation,
 reopen, durable settings, ordered upgrade (including from a step 1 database),
 rollback and unchanged newer-schema files, and for rescans, uninstalls, failed
 scans, per-account matches, the layout and sign-out.
+
+## Durable shared data pool
+
+Public shared-data records a plugin publishes with `storage.persist` are stored outside the
+application database, in `plugin-shared-data.gnpersistence` below the application data directory. The
+file is separate from `gamenode.sqlite3` and from the private plugin stores, so a durable
+publication can outlive its producer session without making private storage public. It is created
+the first time a durable publication is accepted; a session-only publication is never written to
+disk.
+
+The host derives an opaque owner key from the signed plugin identity and the active account
+profile, and records the profile generation that last wrote. A plugin request never supplies or
+sees that key, a path or a physical location.
+
+| Table | Holds |
+| --- | --- |
+| `shared_records` | One published record: host record id, owner key, dataset and optional resource id, optional category, sharing class, schema id and version, structured JSON fields or opaque payload (exactly one), host-assigned provenance (plugin id, publisher fingerprint, profile id, declared developer, origin, package version and digest), observed and received times, update and optional expiry times, producer sequence and observation id, record revision, pool revision and the logical bytes it is charged. `(owner_key, dataset_id, resource_id)` is unique: a publish with that resource id replaces the previous record in place and keeps its record id, while a publish without one appends a new record with a new host id. |
+| `shared_state` | The persisted monotonic pool revision shared by lists and watches; it only grows and survives restarts. |
+| `shared_owners` | The opaque owner key and the profile generation it last accepted. A write from an older profile generation fails closed. |
+| `shared_retention` | Per-owner age and byte limits chosen by the user. Missing values mean no age limit and the host default size ceiling. |
+
+A record is charged its identifiers, provenance, payload and a small fixed overhead. Expiry is
+bounded by the producer's requested time-to-live and the existing maximum. Retention pruning
+removes expired rows first and then, when the owner crosses its age or byte limit, the oldest
+unprotected rows up to a bounded number per pass. Protection is host-only and never set by a
+plugin, and pruning one owner never removes another owner's rows. Usage (record count, logical
+bytes, effective limits) is available to the host for settings; the plugin API exposes neither a
+stored value nor a physical path.
+
+A session-only publication keeps today's behavior: it stays in the in-memory broker and ends with
+the producer's session. A durable publication requires both `data.publish` and `storage.persist`;
+a missing `storage.persist` is an explicit failure, never a session-only downgrade. Schema
+upgrades run in order and keep existing records, a database written by a newer build is refused
+and left untouched, and a damaged file is reported as unavailable rather than replaced.
 
 ## Playtime (migration `0003_playtime.sql`)
 

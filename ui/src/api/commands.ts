@@ -11,8 +11,37 @@ import type {
   GameNodeLink,
   GameNodePage,
   LaunchKind,
+  LaunchRecipeChoices,
   LibraryInput,
   PluginInfo,
+  PluginPermissionSnapshot,
+  PluginPermissionDecision,
+  PluginSharedDataSnapshot,
+  PluginSharedDataPolicyUpdate,
+  PluginDurableUsage,
+  PluginDurableDeletion,
+  PluginStorageAccounting,
+  StorageCleanupReview,
+  StorageCleanupReport,
+  PluginImportReview,
+  PluginImportInstallOutcome,
+  PluginBundleImportReview,
+  BundleImportInstallOutcome,
+  BundleComponentPermissionSubmission,
+  BundlePermissionResult,
+  BundleUninstallOutcome,
+  AvailableBundleUpdate,
+  AvailableBundleRollback,
+  BundleUpdateReview,
+  BundleUpdateOutcome,
+  BundleRollbackOutcome,
+  PluginConfigurationState,
+  PluginPlaytimeInfo,
+  PluginUpdatePreferences,
+  AvailablePluginUpdate,
+  AvailablePluginRollback,
+  PluginUpdateReview,
+  ExtensionReadinessSelection,
   PlaytimeSource,
   Registration,
   Snapshot,
@@ -27,6 +56,11 @@ import type {
   PortSuppliedPick,
   PortToolsCacheView,
 } from './ports';
+import type { RememberedConfirmation } from './pluginConfirmations';
+import type { PluginFolderApproval } from './pluginFolderApprovals';
+import type { PluginRuntimeApproval } from './pluginRuntimeApprovals';
+import type { PluginSharedResourceReview } from './sharedResources';
+import type { PluginConfigurationModes, PluginConfigurationStatus, PluginSettingsContext, PluginSettingsReply, PluginSettingsValue } from './pluginSettings';
 import { createDefaultSnapshot } from './types';
 
 export function isTauriRuntime(): boolean {
@@ -132,8 +166,63 @@ export const commands = {
   openEntry: (entryKey: string, kind: LaunchKind) =>
     safeInvoke<void>('open_entry', { entryKey, kind }, () => undefined),
 
+  reviewDetectedTarget: (entryKey: string, expectedRevision: number) =>
+    safeInvoke<void>(
+      'review_detected_target',
+      { entryKey, expectedRevision },
+      () => undefined,
+    ),
+
+  launchRecipeChoices: (entryKey: string) =>
+    safeInvoke<LaunchRecipeChoices>(
+      'launch_recipe_choices',
+      { entryKey },
+      () => ({
+        targetRevision: 0,
+        detectedDefaultAvailable: false,
+        selected: null,
+        recipes: [],
+      }),
+    ),
+
+  selectLaunchRecipe: (
+    entryKey: string,
+    recipe: {
+      pluginId: string;
+      publisherFingerprint: string;
+      recipeId: string;
+      recipeRevision: number;
+    },
+    expectedTargetRevision: number,
+  ) =>
+    safeInvoke<void>(
+      'select_launch_recipe',
+      { entryKey, ...recipe, expectedTargetRevision },
+      () => undefined,
+    ),
+
+  useDetectedDefault: (entryKey: string, expectedTargetRevision: number) =>
+    safeInvoke<void>(
+      'use_detected_default',
+      { entryKey, expectedTargetRevision },
+      () => undefined,
+    ),
+
+  repairDetectedTarget: (entryKey: string, expectedRevision: number) =>
+    safeInvoke<void>(
+      'repair_detected_target',
+      { entryKey, expectedRevision },
+      () => undefined,
+    ),
+
   launchSelected: (kind: LaunchKind) =>
     safeInvoke<void>('launch_selected', { kind }, () => undefined),
+
+  startExtensionAction: (entryKey: string, pluginId: string, operation: 'play' | 'install') =>
+    safeInvoke<void>('start_extension_action', { entryKey, pluginId, operation }, () => undefined),
+
+  availablePluginExtensions: (operation: 'play' | 'install') =>
+    safeInvoke<PluginInfo[]>('available_plugin_extensions', { operation }, () => []),
 
   dismissLaunch: () =>
     safeInvoke<void>('dismiss_launch', undefined, () => undefined),
@@ -143,10 +232,336 @@ export const commands = {
 
   pluginInventory: () =>
     safeInvoke<PluginInfo[]>('plugin_inventory', undefined, () => []),
+  pluginImportReview: (archivePath: string) =>
+    safeInvoke<PluginImportReview>('plugin_import_review', { archivePath }),
+  pluginImportConfirmPublisher: (token: string, confirmedFingerprint: string) =>
+    safeInvoke<PluginImportReview>('plugin_import_confirm_publisher', { token, confirmedFingerprint }),
+  pluginImportInstall: (
+    token: string,
+    nativeCodeConsent: boolean,
+    deniedPermissionIds: string[] = [],
+  ) =>
+    safeInvoke<PluginImportInstallOutcome>('plugin_import_install', {
+      token,
+      nativeCodeConsent,
+      deniedPermissionIds,
+    }),
+  pluginImportLicenseText: (token: string, file: string) =>
+    safeInvoke<string>('plugin_import_license_text', { token, file }),
+
+  pluginPermissionSnapshot: (pluginId: string, expectedAccountId: string) =>
+    safeInvoke<PluginPermissionSnapshot>(
+      'plugin_permission_snapshot',
+      { pluginId, expectedAccountId },
+      () => ({
+        pluginId,
+        publisherFingerprint: '',
+        profileId: '',
+        grantRevision: 0,
+        requestedPermissions: [],
+        effectiveGrants: [],
+      }),
+    ),
+
+  pluginPermissionsReplace: (
+    pluginId: string,
+    expectedProfileId: string,
+    expectedPublisherFingerprint: string,
+    expectedRevision: number,
+    decisions: PluginPermissionDecision[],
+  ) => safeInvoke<PluginPermissionSnapshot>('plugin_permissions_replace', {
+    pluginId,
+    expectedProfileId,
+    expectedPublisherFingerprint,
+    expectedRevision,
+    decisions,
+  }),
+  pluginSharedDataSnapshot: (pluginId: string, expectedProfileId: string) =>
+    safeInvoke<PluginSharedDataSnapshot>(
+      'plugin_shared_data_snapshot',
+      { pluginId, expectedProfileId },
+      () => ({
+        pluginId,
+        publisherFingerprint: '',
+        profileId: expectedProfileId,
+        policyRevision: 0,
+        commonCategories: [],
+        selectedRecordIds: [],
+        catalog: [],
+        sourcePolicies: [],
+      }),
+    ),
+  pluginSharedDataReplace: (pluginId: string, update: PluginSharedDataPolicyUpdate) =>
+    safeInvoke<PluginSharedDataSnapshot>('plugin_shared_data_replace', { pluginId, update }),
+  pluginDurableUsage: (pluginId: string, expectedProfileId: string) =>
+    safeInvoke<PluginDurableUsage>(
+      'plugin_durable_usage',
+      { pluginId, expectedProfileId },
+      () => ({
+        pluginId,
+        profileId: expectedProfileId,
+        recordCount: 0,
+        logicalBytes: 0,
+        maxBytes: 0,
+        maxAgeSeconds: null,
+        oldestUpdatedAt: null,
+      }),
+    ),
+  pluginDurableDelete: (pluginId: string, expectedProfileId: string, confirmed: boolean) =>
+    safeInvoke<PluginDurableDeletion>('plugin_durable_delete', {
+      pluginId,
+      expectedProfileId,
+      confirmed,
+    }),
+  pluginStorageLocations: () =>
+    safeInvoke<PluginStorageAccounting>('plugin_storage_locations', undefined, () => ({
+      profileId: '',
+      locations: [],
+      pool: null,
+      privateRootBytes: 0,
+    })),
+  pluginStorageCleanupReview: () =>
+    safeInvoke<StorageCleanupReview>('plugin_storage_cleanup_review', undefined, () => ({
+      token: 'mock-cleanup-review',
+      generatedAt: 0,
+      candidates: [],
+    })),
+  pluginStorageCleanupApply: (token: string, candidateIds: string[], confirmed: boolean) =>
+    safeInvoke<StorageCleanupReport>('plugin_storage_cleanup_apply', {
+      token,
+      candidateIds,
+      confirmed,
+    }),
+  pluginEnable: (pluginId: string) => safeInvoke<void>('plugin_enable', { pluginId }),
+  pluginDisable: (pluginId: string) => safeInvoke<void>('plugin_disable', { pluginId }),
+  pluginRemove: (pluginId: string, deleteData = false) =>
+    safeInvoke<void>('plugin_remove', { pluginId, deleteData }),
+  pluginBundleImportReview: (archivePath: string) =>
+    safeInvoke<PluginBundleImportReview>('plugin_bundle_import_review', { archivePath }),
+  pluginBundleImportConfirmPublisher: (token: string, confirmedFingerprint: string) =>
+    safeInvoke<PluginBundleImportReview>('plugin_bundle_import_confirm_publisher', {
+      token,
+      confirmedFingerprint,
+    }),
+  pluginBundleImportInstall: (
+    token: string,
+    nativeCodeConsent: boolean,
+    componentDeniedPermissions: Array<{ pluginId: string; deniedPermissionIds: string[] }> = [],
+  ) =>
+    safeInvoke<BundleImportInstallOutcome>('plugin_bundle_import_install', {
+      token,
+      nativeCodeConsent,
+      componentDeniedPermissions,
+    }),
+  pluginBundlePermissionsReplace: (submissions: BundleComponentPermissionSubmission[]) =>
+    safeInvoke<BundlePermissionResult>('plugin_bundle_permissions_replace', { submissions }),
+  pluginBundleUninstall: (bundleId: string, deleteData: boolean) =>
+    safeInvoke<BundleUninstallOutcome>('plugin_bundle_uninstall', { bundleId, deleteData }),
+  pluginBundleUpdateCheck: () =>
+    safeInvoke<AvailableBundleUpdate[]>('plugin_bundle_update_check'),
+  pluginBundleUpdateAvailable: () =>
+    safeInvoke<AvailableBundleUpdate[]>('plugin_bundle_update_available'),
+  pluginBundleUpdateReview: (bundleId: string, version: string) =>
+    safeInvoke<BundleUpdateReview>('plugin_bundle_update_review', { bundleId, version }),
+  pluginBundleUpdateApprove: (bundleId: string, version: string) =>
+    safeInvoke<BundleUpdateOutcome>('plugin_bundle_update_approve', { bundleId, version }),
+  pluginBundleUpdateDecline: (bundleId: string) =>
+    safeInvoke<void>('plugin_bundle_update_decline', { bundleId }),
+  pluginBundleRollbackAvailable: () =>
+    safeInvoke<AvailableBundleRollback[]>('plugin_bundle_rollback_available'),
+  pluginBundleRollbackReview: (bundleId: string, version: string) =>
+    safeInvoke<BundleUpdateReview>('plugin_bundle_rollback_review', { bundleId, version }),
+  pluginBundleRollbackApprove: (bundleId: string, version: string, confirmed: boolean) =>
+    safeInvoke<BundleRollbackOutcome>('plugin_bundle_rollback_approve', {
+      bundleId,
+      version,
+      confirmed,
+    }),
+
+  pluginConfigurationState: (pluginId: string) =>
+    safeInvoke<PluginConfigurationState>(
+      'plugin_configuration_state',
+      { pluginId },
+      () => ({ pluginId, available: false, revision: null }),
+    ),
+
+  pluginConfigurationModes: (providerId: string) =>
+    safeInvoke<PluginConfigurationModes>('plugin_configuration_modes', { providerId }, () => ({
+      externalDeclared: false, externalAuthorized: false,
+      declarativeDeclared: false, declarativeAuthorized: false,
+    })),
+  pluginConfigurationOpen: (providerId: string, focus: boolean) =>
+    safeInvoke<PluginConfigurationStatus>('plugin_configuration_open', { providerId, focus }, () => ({
+      status: 'unavailable', windowId: null, message: 'Native plugin configuration is unavailable in the web preview',
+    })),
+  pluginSettingsDescribe: (providerId: string) =>
+    safeInvoke<PluginSettingsReply>('plugin_settings_describe', { providerId }, () => {
+      throw new Error('Plugin settings are unavailable in the web preview');
+    }),
+  pluginSettingsSubmit: (
+    context: PluginSettingsContext,
+    schemaRevision: string,
+    configurationRevision: string,
+    values: Record<string, PluginSettingsValue>,
+  ) => safeInvoke<PluginSettingsReply>('plugin_settings_submit', {
+    context, schemaRevision, configurationRevision, values,
+  }, () => { throw new Error('Plugin settings are unavailable in the web preview'); }),
+  pluginSettingsCancel: (context: PluginSettingsContext) =>
+    safeInvoke<PluginSettingsReply>('plugin_settings_cancel', { context }, () => {
+      throw new Error('Plugin settings are unavailable in the web preview');
+    }),
+
+  pluginPlaytimeInventory: () =>
+    safeInvoke<PluginPlaytimeInfo[]>('plugin_playtime_inventory', undefined, () => []),
+  pluginPlaytimeSetAccounting: (pluginId: string, enabled: boolean) =>
+    safeInvoke<void>('plugin_playtime_set_accounting', { pluginId, enabled }, () => undefined),
+
+  pluginUpdatePreferences: () =>
+    safeInvoke<PluginUpdatePreferences>('plugin_update_preferences', undefined, () => ({ periodicChecks: false })),
+  pluginUpdateAvailable: () =>
+    safeInvoke<AvailablePluginUpdate[]>('plugin_update_available', undefined, () => []),
+  pluginUpdateSetPeriodicChecks: (enabled: boolean) =>
+    safeInvoke<PluginUpdatePreferences>('plugin_update_set_periodic_checks', { enabled }, () => ({ periodicChecks: enabled })),
+  pluginUpdateCheck: () =>
+    safeInvoke<AvailablePluginUpdate[]>('plugin_update_check', undefined, () => []),
+  pluginUpdateReview: (pluginId: string, version: string) =>
+    safeInvoke<PluginUpdateReview>('plugin_update_review', { pluginId, version }, () => ({
+      pluginId, installedVersion: '1.0.0', candidateVersion: version,
+      addedPermissions: [], removedPermissions: [], changedPermissions: [], permissionChanges: [],
+      addedNativeAccess: [], removedNativeAccess: [], apiChanged: false, installedApi: '1.0.0 – 1.0.0',
+      candidateApi: '1.0.0 – 1.0.0', licenseChanged: false, installedLicense: 'MIT',
+      candidateLicense: 'MIT', installedLicenseFiles: [], candidateLicenseFiles: [],
+      installedLicenseNotices: [], candidateLicenseNotices: [], publisherChanged: false,
+      installedPlaytime: { identifiesGameplay: false, identifiesPauses: false, withoutPauseDetection: 'disabled' },
+      candidatePlaytime: { identifiesGameplay: false, identifiesPauses: false, withoutPauseDetection: 'disabled' },
+      playtimeChanged: false,
+      installedPublisherKeyId: 'publisher', candidatePublisherKeyId: 'publisher', requiresManualApproval: true,
+      publisherFingerprint: '', changedDataSchemas: [], preservesPriorData: true, isDowngrade: false,
+    })),
+  pluginRollbackAvailable: () =>
+    safeInvoke<AvailablePluginRollback[]>('plugin_rollback_available', undefined, () => []),
+  pluginRollbackReview: (pluginId: string, version: string) =>
+    safeInvoke<PluginUpdateReview>('plugin_rollback_review', { pluginId, version }, () => ({
+      pluginId, installedVersion: '2.0.0', candidateVersion: version,
+      addedPermissions: [], removedPermissions: [], changedPermissions: [], permissionChanges: [],
+      addedNativeAccess: [], removedNativeAccess: [], apiChanged: false, installedApi: '1.0.0 – 1.0.0',
+      candidateApi: '1.0.0 – 1.0.0', licenseChanged: false, installedLicense: 'MIT', candidateLicense: 'MIT',
+      installedLicenseFiles: [], candidateLicenseFiles: [], installedLicenseNotices: [], candidateLicenseNotices: [],
+      installedPlaytime: { identifiesGameplay: false, identifiesPauses: false, withoutPauseDetection: 'disabled' },
+      candidatePlaytime: { identifiesGameplay: false, identifiesPauses: false, withoutPauseDetection: 'disabled' },
+      playtimeChanged: false, publisherChanged: false, installedPublisherKeyId: '', candidatePublisherKeyId: '', publisherFingerprint: '',
+      changedDataSchemas: [], preservesPriorData: true, isDowngrade: true, requiresManualApproval: true,
+    })),
+  pluginUpdateRetrustPublisher: (pluginId: string, version: string, fingerprint: string) =>
+    safeInvoke<void>('plugin_update_retrust_publisher', { pluginId, version, fingerprint }, () => undefined),
+  pluginRollbackApprove: (pluginId: string, version: string, confirmed: boolean, target?: ExtensionReadinessSelection) =>
+    safeInvoke<string>('plugin_rollback_approve', { pluginId, version, confirmed, target }, () => version),
+  pluginUpdateApprove: (pluginId: string, version: string, target?: ExtensionReadinessSelection) =>
+    safeInvoke<string>('plugin_update_approve', { pluginId, version, target }, () => version),
+  pluginUpdateDecline: (pluginId: string) =>
+    safeInvoke<void>('plugin_update_decline', { pluginId }, () => undefined),
+
+  /** Answers a plugin's confirmation. Late, repeated or unknown answers are ignored by the host. */
+  pluginConfirmationAnswer: (id: string, approved: boolean, remember: boolean) =>
+    safeInvoke<void>('plugin_confirmation_answer', { id, approved, remember }, () => undefined),
+
+  /** Answers a host-owned plugin folder chooser; null means decline. */
+  pluginFolderSelectionAnswer: (id: string, selectedRoot: string | null) =>
+    safeInvoke<void>('plugin_folder_selection_answer', { id, selectedRoot }, () => undefined),
+
+  /** Confirms or declines the exact folder scope shown in the approval modal. */
+  pluginFolderApprovalAnswer: (id: string, approved: boolean) =>
+    safeInvoke<void>('plugin_folder_approval_answer', { id, approved }, () => undefined),
+
+  /** Answers the host runtime picker; null means decline and creates nothing. */
+  pluginRuntimeSelectionAnswer: (id: string, selectedExecutable: string | null) =>
+    safeInvoke<void>('plugin_runtime_selection_answer', { id, selectedExecutable }, () => undefined),
+
+  pluginFolderApprovals: (pluginId: string, publisherFingerprint: string) =>
+    safeInvoke<PluginFolderApproval[]>(
+      'plugin_folder_approvals', { pluginId, publisherFingerprint }, () => [],
+    ),
+
+  pluginFolderRevoke: (pluginId: string, publisherFingerprint: string, id: string) =>
+    safeInvoke<boolean>(
+      'plugin_folder_revoke', { pluginId, publisherFingerprint, id }, () => false,
+    ),
+
+  pluginFolderChange: (pluginId: string, publisherFingerprint: string, id: string) =>
+    safeInvoke<void>(
+      'plugin_folder_change', { pluginId, publisherFingerprint, id }, () => undefined,
+    ),
+
+  pluginLibraryRootSetWatching: (pluginId: string, publisherFingerprint: string, id: string, watching: boolean) =>
+    safeInvoke<boolean>(
+      'plugin_library_root_set_watching', { pluginId, publisherFingerprint, id, watching }, () => false,
+    ),
+
+  /** Active runtime program approvals of one plugin in the active profile. */
+  pluginRuntimeApprovals: (pluginId: string, publisherFingerprint: string) =>
+    safeInvoke<PluginRuntimeApproval[]>(
+      'plugin_runtime_approvals', { pluginId, publisherFingerprint }, () => [],
+    ),
+
+  /** Revokes a runtime program approval, so the next Play asks for a fresh program. */
+  pluginRuntimeRevoke: (pluginId: string, publisherFingerprint: string, runtimeId: string) =>
+    safeInvoke<boolean>(
+      'plugin_runtime_revoke', { pluginId, publisherFingerprint, runtimeId }, () => false,
+    ),
+
+  /** Declared shared emulator resources and the host-resolved games affected by each. */
+  pluginSharedResourceReviews: (pluginId: string, publisherFingerprint: string) =>
+    safeInvoke<PluginSharedResourceReview[]>(
+      'plugin_shared_resource_reviews', { pluginId, publisherFingerprint }, () => [],
+    ),
+
+  /** Accepts the exact current declaration and affected-game scope of one shared resource. */
+  pluginSharedResourceAccept: (
+    pluginId: string, publisherFingerprint: string, profileId: string, resourceId: string,
+  ) =>
+    safeInvoke<void>(
+      'plugin_shared_resource_accept',
+      { pluginId, publisherFingerprint, profileId, resourceId },
+      () => undefined,
+    ),
+
+  /** Forgets a shared-resource consent; the next use asks for a fresh review. */
+  pluginSharedResourceRevoke: (
+    pluginId: string, publisherFingerprint: string, profileId: string, resourceId: string,
+  ) =>
+    safeInvoke<boolean>(
+      'plugin_shared_resource_revoke',
+      { pluginId, publisherFingerprint, profileId, resourceId },
+      () => false,
+    ),
+
+  /** What the user allowed one plugin to start without asking, in the active profile. */
+  pluginRememberedConfirmations: (pluginId: string, publisherFingerprint: string) =>
+    safeInvoke<RememberedConfirmation[]>(
+      'plugin_remembered_confirmations',
+      { pluginId, publisherFingerprint },
+      () => [],
+    ),
+
+  /** Forgets one remembered confirmation, so the next request asks the user again. */
+  pluginRevokeConfirmation: (pluginId: string, publisherFingerprint: string, id: string) =>
+    safeInvoke<boolean>(
+      'plugin_revoke_confirmation',
+      { pluginId, publisherFingerprint, id },
+      () => false,
+    ),
 
   /** Stops one plugin process for this run; a pending sign-in is cancelled first. */
   pluginStop: (providerId: string) =>
     safeInvoke<void>('plugin_stop', { providerId }, () => undefined),
+
+  /** Host-owned custom launches that have not been confirmed exited. */
+  customLaunchIds: (entryKey: string) =>
+    safeInvoke<number[]>('custom_launch_ids', { entryKey }, () => []),
+
+  /** Explicitly terminate a supervised launch and confirm its process tree has exited. */
+  customLaunchStop: (id: number) =>
+    safeInvoke<void>('custom_launch_stop', { id }, () => undefined),
 
   /** Starts a stopped plugin with a fresh session and restores its account. */
   pluginStart: (providerId: string) =>
@@ -378,6 +793,8 @@ export const commands = {
    * Starts a background install. Arg: `{ request }`. Returns the job id, or null when the
    * request is invalid or Install is unavailable.
    */
+  portsDismissPluginSetup: (requestId: string) =>
+    safeInvoke<void>('ports_dismiss_plugin_setup', { requestId }, () => undefined),
   portsInstall: (request: PortInstallRequest) =>
     safeInvoke<string | null>('ports_install', { request }, () => null),
 

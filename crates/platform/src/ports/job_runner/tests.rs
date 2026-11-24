@@ -1876,3 +1876,78 @@ fn an_awaiting_job_survives_a_restart_and_is_completed_from_the_stored_plan() {
     assert_eq!(fixture.local.registrations().unwrap().len(), 1);
     assert_eq!(fixture.ports.installations().unwrap().len(), 1);
 }
+
+#[test]
+fn scoped_authority_loss_during_identity_read_prevents_registration_and_cleans_files() {
+    let fixture = Fixture::new();
+    let bytes = zip_bytes(&[("Port.exe", b"fixture launcher")]);
+    let (plan, setup, matching) = plan_for(
+        entry("fixture", "Fixture", "Port.exe"),
+        &bytes,
+        "fixture.zip",
+        &fixture.parent,
+        "scoped-port",
+        vec![],
+    );
+    let folder = PathBuf::from(&plan.target);
+    let (identity, reached, release) = GatedIdentity::new();
+    let (runner, events) = fixture.start(FakeFetcher::new(bytes), Arc::new(identity));
+    let allowed = Arc::new(AtomicBool::new(true));
+    let flag = allowed.clone();
+    runner
+        .enqueue_checked(
+            request("scoped-port", plan, setup, matching),
+            Arc::new(move || flag.load(Ordering::SeqCst)),
+        )
+        .unwrap();
+    reached.recv_timeout(Duration::from_secs(15)).unwrap();
+    allowed.store(false, Ordering::SeqCst);
+    release.send(()).unwrap();
+    let (job, completion) = wait_for_finished(&events);
+    runner.shutdown();
+    assert_eq!(job.phase, PortJobPhase::Cancelled);
+    assert!(completion.is_none());
+    assert!(fixture.local.registrations().unwrap().is_empty());
+    assert!(fixture.ports.installations().unwrap().is_empty());
+    assert!(!folder.exists());
+}
+
+#[test]
+fn scoped_authority_survives_the_executable_wait_and_blocks_a_revoked_followup() {
+    let fixture = Fixture::new();
+    let bytes = zip_bytes(&[("Second.exe", b"second")]);
+    let (plan, setup, matching) = plan_for(
+        entry("fixture", "Fixture", "Missing.exe"),
+        &bytes,
+        "fixture.zip",
+        &fixture.parent,
+        "scoped-wait",
+        vec![],
+    );
+    let folder = PathBuf::from(&plan.target);
+    let (runner, events) = fixture.start(FakeFetcher::new(bytes), Arc::new(PathIdentity));
+    let allowed = Arc::new(AtomicBool::new(true));
+    let flag = allowed.clone();
+    runner
+        .enqueue_checked(
+            request("scoped-wait", plan, setup, matching),
+            Arc::new(move || flag.load(Ordering::SeqCst)),
+        )
+        .unwrap();
+    wait_for_phase(&events, "scoped-wait", PortJobPhase::AwaitingExecutable);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !lock(&runner.shared.awaiting).contains("scoped-wait") {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    allowed.store(false, Ordering::SeqCst);
+    runner
+        .complete_with_executable("scoped-wait", "Second.exe")
+        .unwrap();
+    let (job, completion) = wait_for_finished(&events);
+    runner.shutdown();
+    assert_eq!(job.phase, PortJobPhase::Cancelled);
+    assert!(completion.is_none());
+    assert!(!folder.exists());
+    assert!(fixture.local.registrations().unwrap().is_empty());
+}

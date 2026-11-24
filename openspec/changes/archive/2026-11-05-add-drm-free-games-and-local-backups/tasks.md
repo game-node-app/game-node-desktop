@@ -165,3 +165,22 @@ and Windows suites, formatting check, Clippy and packaging after finishing the c
 - The app already installed on the user's machine was not upgraded. The workspace,
   intermediate package and installed application must be distinguished.
 - No commit, push, spec synchronization or archive was performed for this change.
+
+## Reconciliação documental do histórico — 2026-11-09
+
+As 14 tarefas abertas são mantidas integralmente acima. Os apontamentos seguintes identificam implementações e testes presentes, sem declarar que toda a matriz de verificação de cada tarefa passou. Nenhuma suíte, helper ou aceitação Windows foi executada nesta reconciliação.
+
+| Tarefa original | Constatação e evidência | Destino e condição restante |
+| --- | --- | --- |
+| 7.1 | [ManifestCache](../../../../crates/platform/src/manifest_cache.rs) contém baseline/cache, ETag, 304, rejeição de downloads e testes de snapshot imutável. | Implementação e testes correspondentes identificados; permanece aqui a conferência/execução integral dos critérios antes de conclusão. |
+| 7.2 | [Engine DRM-free](../../../../crates/app/src/engine/drm_free.rs) oferece resolução, escolha e configuração de saves; [local_game_db](../../../../crates/platform/src/local_game_db.rs) preserva perfis e invalida jobs antigos. | Verificação completa de ambiguidades, retarget, rematch, preview e sobreposição permanece aqui. |
+| 7.3, 7.4 | [Adapter Ludusavi](../../../../crates/platform/src/backups.rs) gera configuração privada, limita seleção, saída/tempo e cancelamento; [fixture PowerShell](../../../../scripts/test-backup-helper.ps1) inclui arquivos e registro. | Evidência de implementação/fixtures, não execução integral. Permanecem aqui os casos de isolamento, títulos especiais, helper ausente/incompatível e falhas parciais. |
+| 7.5 | O adapter implementa staging, cópia, journal e promoção; há teste de recuperação de promoção interrompida. | Permanecem aqui os testes de disco cheio, cancelamento, histórico intacto e todas as fronteiras de crash exigidas. |
+| 8.1 | [Scheduler](../../../../crates/core/src/drm_free/scheduler.rs) e Engine contêm gate stopped, agendamento e retries; existem testes de persistência de jobs no local_game_db. | Permanecem aqui os critérios completos de execução externa, restart, incerteza, deduplicação e encerramentos administrativos. |
+| 8.2, 8.3 | Engine expõe controles, backup manual e histórico por instalação/perfil/destino; adapter usa retenção de dez versões completas. | Permanecem aqui os critérios de independência do sync, eleventh version, ausência de destino e isolamento completo de históricos/resultados. |
+| 8.4, 8.5 | Adapter implementa preview, recovery separado, checagens stopped e serialização. O teste Windows bundled_adapter_preserves_history_and_recovers_before_selected_restore requer o helper empacotado. | Permanecem aqui a execução real do teste e a matriz completa de falha de recovery, save compartilhado, restart externo e restore interrompido/parcial. Testes Linux não substituem esse adapter Windows. |
+| 8.6 | [drm-free-games.md](../../../../docs/drm-free-games.md) e [local-state.md](../../../../docs/local-state.md) documentam timing, retenção, recovery, caminhos e limitação do mesmo disco. | Documentação identificada; a verificação de todas as ações e mensagens contra fixtures Windows continua nesta tarefa. |
+| 10.1 | A [integração Steam](../../../../docs/steam-plugin-integration.md) registra um gate automatizado integrado; isso não prova toda a matriz Windows/helper/assets desta tarefa histórica. | Permanece aqui a verificação específica de workspace, adapter, cross-build e pacote de backup aplicável ao candidato. |
+| 10.2, 10.3 | [windows-verification.md](../../../../docs/windows-verification.md) mantém checklist DRM-free/handoff pendente. | Destino principal: estas tarefas para a aceitação DRM-free/backup/restore completa. Integração Steam 9.3 e [PC ports](../../add-pc-port-catalog/tasks.md) 10.1 cobrem somente regressões/subconjuntos; não substituem disco cheio, perda de drive, registry restore e interrupted promotion. |
+
+Nenhuma implementação pendente foi atribuída ao suporte comunitário. A UI sucessora está na tarefa 6.2 da [migração Tauri/React](../2026-11-07-migrate-slint-to-tauri-v2-react/tasks.md); essa substituição de UI não fecha os critérios do engine e da aceitação nativa.

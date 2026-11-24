@@ -5,6 +5,9 @@ import {
   MOCK_COLLECTIONS,
   MOCK_COVER_WALL,
   MOCK_HIDDEN_KEY,
+  MOCK_LIFECYCLE_PLUGIN_ID,
+  MOCK_LIFECYCLE_PLUGIN_NAME,
+  MOCK_LIFECYCLE_PROVIDER,
   MOCK_LIMIT_COLLECTION_NAME,
   mockHostOptionsFromSearch,
 } from './host';
@@ -15,7 +18,10 @@ import {
   type AppInfo,
   type LibraryFilters,
   type LibraryLayout,
+  type PluginDurableDeletion,
+  type PluginDurableUsage,
   type PluginInfo,
+  type PluginPlaytimeInfo,
   type Row,
   type Snapshot,
 } from '../api/types';
@@ -482,7 +488,7 @@ describe('UI mock host', () => {
   it('lists trusted plugin versions and lets Stop/Start change the session', async () => {
     const host = createMockHost({ platform: 'windows' });
     let plugins = await host.invoke('plugin_inventory') as PluginInfo[];
-    expect(plugins.map((plugin) => plugin.version)).toEqual(['0.1.0', '0.1.0', '0.3.1']);
+    expect(plugins.map((plugin) => plugin.version)).toEqual(['0.1.0', '0.1.0', '0.3.1', '1.0.0', '0.2.0']);
     expect(plugins.find((plugin) => plugin.providerId === 'community')?.session)
       .toBe('stopped');
 
@@ -500,6 +506,122 @@ describe('UI mock host', () => {
     expect(plugins.find((plugin) => plugin.providerId === 'epic')?.session).toBe('active');
     expect(snapshot.storeAccounts.find((account) => account.provider === 'epic')?.canCheck)
       .toBe(true);
+  });
+
+  it('maps the plugin lifecycle fixture from the documented query', () => {
+    expect(mockHostOptionsFromSearch('?plugins=lifecycle')).toMatchObject({
+      pluginLifecycle: true,
+    });
+    expect(mockHostOptionsFromSearch('?plugins=other').pluginLifecycle).toBe(false);
+  });
+
+  it('removes an uninstalled provider and its live rows, then restores the rescan count', async () => {
+    const host = createMockHost({ pluginLifecycle: true });
+    let snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.library!.providers.find(
+      (provider) => provider.id === MOCK_LIFECYCLE_PROVIDER.id,
+    )).toMatchObject({
+      name: MOCK_LIFECYCLE_PROVIDER.name,
+      count: 2,
+      installedCount: 2,
+    });
+    expect(snapshot.library!.rows.filter(
+      (row) => row.provider === MOCK_LIFECYCLE_PROVIDER.id,
+    )).toHaveLength(2);
+    expect((await host.invoke('plugin_inventory') as PluginInfo[]).find(
+      (plugin) => plugin.pluginId === MOCK_LIFECYCLE_PLUGIN_ID,
+    )).toMatchObject({ status: 'installed', session: 'active', enabled: true });
+
+    await host.invoke('plugin_remove', {
+      pluginId: MOCK_LIFECYCLE_PLUGIN_ID,
+      deleteData: false,
+    });
+    snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.library!.providers.some(
+      (provider) => provider.id === MOCK_LIFECYCLE_PROVIDER.id,
+    )).toBe(false);
+    expect(snapshot.library!.rows.some(
+      (row) => row.provider === MOCK_LIFECYCLE_PROVIDER.id,
+    )).toBe(false);
+    expect((await host.invoke('plugin_inventory') as PluginInfo[]).some(
+      (plugin) => plugin.pluginId === MOCK_LIFECYCLE_PLUGIN_ID,
+    )).toBe(false);
+
+    expect(await host.invoke('plugin_import_install', {
+      token: 'mock-package-review',
+      nativeCodeConsent: false,
+      deniedPermissionIds: [],
+    })).toEqual({ pluginId: MOCK_LIFECYCLE_PLUGIN_ID, activated: true });
+
+    snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.library!.providers.find(
+      (provider) => provider.id === MOCK_LIFECYCLE_PROVIDER.id,
+    )).toMatchObject({ count: 3, installedCount: 3 });
+    expect(snapshot.library!.rows.filter(
+      (row) => row.provider === MOCK_LIFECYCLE_PROVIDER.id,
+    )).toHaveLength(3);
+    expect(snapshot.library!.rows.some((row) => row.key === 'dolphin:fzero')).toBe(true);
+    expect((await host.invoke('plugin_inventory') as PluginInfo[]).find(
+      (plugin) => plugin.pluginId === MOCK_LIFECYCLE_PLUGIN_ID,
+    )).toMatchObject({ status: 'installed', session: 'active', enabled: true });
+  });
+
+  it('drops playtime accounting rows with an uninstalled plugin and restores them on reinstall', async () => {
+    const host = createMockHost({ pluginLifecycle: true });
+    expect(await host.invoke('plugin_playtime_inventory')).toEqual([{
+      pluginId: MOCK_LIFECYCLE_PLUGIN_ID,
+      name: MOCK_LIFECYCLE_PLUGIN_NAME,
+      version: '0.1.0',
+      playtime: {
+        identifiesGameplay: true,
+        identifiesPauses: false,
+        withoutPauseDetection: 'application_open',
+      },
+      accountingEnabled: true,
+    }] satisfies PluginPlaytimeInfo[]);
+
+    await host.invoke('plugin_remove', {
+      pluginId: MOCK_LIFECYCLE_PLUGIN_ID,
+      deleteData: false,
+    });
+    expect(await host.invoke('plugin_playtime_inventory')).toEqual([]);
+
+    await host.invoke('plugin_import_install', {
+      token: 'mock-package-review',
+      nativeCodeConsent: false,
+      deniedPermissionIds: [],
+    });
+    expect(await host.invoke('plugin_playtime_inventory')).toHaveLength(1);
+  });
+
+  it('keeps cached provider games when its plugin is disabled and restores the active state on enable', async () => {
+    const host = createMockHost({ pluginLifecycle: true });
+    await host.invoke('plugin_disable', { pluginId: MOCK_LIFECYCLE_PLUGIN_ID });
+
+    let snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.library!.providers.find(
+      (provider) => provider.id === MOCK_LIFECYCLE_PROVIDER.id,
+    )).toMatchObject({ count: 2, installedCount: 2 });
+    expect(snapshot.library!.rows.filter(
+      (row) => row.provider === MOCK_LIFECYCLE_PROVIDER.id,
+    )).toHaveLength(2);
+    expect((await host.invoke('plugin_inventory') as PluginInfo[]).find(
+      (plugin) => plugin.pluginId === MOCK_LIFECYCLE_PLUGIN_ID,
+    )).toMatchObject({
+      status: 'unavailable',
+      session: 'stopped',
+      enabled: false,
+      runtimeAvailable: true,
+    });
+
+    await host.invoke('plugin_enable', { pluginId: MOCK_LIFECYCLE_PLUGIN_ID });
+    snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.library!.rows.filter(
+      (row) => row.provider === MOCK_LIFECYCLE_PROVIDER.id,
+    )).toHaveLength(2);
+    expect((await host.invoke('plugin_inventory') as PluginInfo[]).find(
+      (plugin) => plugin.pluginId === MOCK_LIFECYCLE_PLUGIN_ID,
+    )).toMatchObject({ status: 'installed', session: 'active', enabled: true });
   });
 
   it.each(['en', 'pt-BR'] as const)('keeps Steam account and PC ports state together in the %s snapshot', async (locale) => {
@@ -2215,6 +2337,69 @@ describe('mock match dialog selection', () => {
     expect(snapshot.library!.matchDialog!.selected?.name).toBe(result.name);
   });
 
+  it('narrows the Dolphin match dialog by the declared platform and restores it on Show all', async () => {
+    const host = createMockHost({ variantLibrary: true });
+
+    // GameCube: only the NGC candidate and result are visible by default.
+    await host.invoke('library_input', {
+      input: { select: { key: 'dolphin:pikmin', mode: 'replace' } },
+    });
+    await host.invoke('library_input', { input: 'openMatch' });
+    let snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    let dialog = snapshot.library!.matchDialog!;
+    expect(dialog.platformFilter).toEqual({
+      platform: 'gamecube',
+      label: 'GameCube',
+      aliases: ['NGC', 'GC', 'GCN', 'GameCube'],
+      enabled: true,
+    });
+    expect(dialog.candidates.map((candidate) => candidate.gameId)).toEqual([400]);
+    expect(dialog.candidates[0].platforms).toEqual(['NGC']);
+    expect(dialog.filteredOut).toBe(1);
+    expect(dialog.selected?.gameId).toBe(400);
+
+    await host.invoke('library_input', { input: 'searchMatch' });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    dialog = snapshot.library!.matchDialog!;
+    expect(dialog.results.map((result) => result.gameId)).toEqual([402]);
+    expect(dialog.filteredOut).toBe(2);
+
+    // Show all restores the complete answer.
+    await host.invoke('library_input', {
+      input: { setMatchPlatformFilter: { enabled: false } },
+    });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    dialog = snapshot.library!.matchDialog!;
+    expect(dialog.platformFilter?.enabled).toBe(false);
+    expect(dialog.candidates.map((candidate) => candidate.gameId)).toEqual([400, 401]);
+    expect(dialog.results.map((result) => result.gameId)).toEqual([402, 403]);
+    expect(dialog.filteredOut).toBe(0);
+
+    // Wii: the Wii release is visible; the platform-less remaster only with Show all.
+    await host.invoke('library_input', { input: 'closeMatch' });
+    await host.invoke('library_input', {
+      input: { select: { key: 'dolphin:metroid', mode: 'replace' } },
+    });
+    await host.invoke('library_input', { input: 'openMatch' });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    dialog = snapshot.library!.matchDialog!;
+    expect(dialog.platformFilter?.label).toBe('Wii');
+    expect(dialog.candidates.map((candidate) => candidate.gameId)).toEqual([410]);
+    expect(dialog.filteredOut).toBe(1);
+
+    // A row without a declared platform keeps the full list and shows no filter.
+    await host.invoke('library_input', { input: 'closeMatch' });
+    await host.invoke('library_input', {
+      input: { select: { key: 'steam:1', mode: 'replace' } },
+    });
+    await host.invoke('library_input', { input: 'openMatch' });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    dialog = snapshot.library!.matchDialog!;
+    expect(dialog.platformFilter).toBeNull();
+    expect(dialog.filteredOut).toBe(0);
+    expect(dialog.candidates).toHaveLength(3);
+  });
+
   it('serves backup origins, retention and the history totals for the variant fixture', async () => {
     const host = createMockHost({ variantLibrary: true });
     const snapshot = (await host.invoke('get_snapshot')) as Snapshot;
@@ -2582,5 +2767,38 @@ describe('UI mock host settings data', () => {
     expect(usage.totalBytes).toBe(7_100_000 + 7_000_000 + 6_800_000 + 6_800_000);
     expect(usage.games[0].title).toBe('Brasa');
     expect(usage.games[0].versions).toBe(4);
+  });
+
+  it('provides a fictional durable producer and deletes only its retained records', async () => {
+    const host = createMockHost();
+    const profileId = 'mock-profile';
+    const pluginId = 'dev.prateleira.local';
+    const usage = await host.invoke('plugin_durable_usage', {
+      pluginId,
+      expectedProfileId: profileId,
+    }) as PluginDurableUsage;
+    expect(usage).toMatchObject({
+      pluginId,
+      profileId,
+      recordCount: 12,
+      logicalBytes: 153_600,
+      maxBytes: 16 * 1024 * 1024,
+    });
+
+    const deleted = await host.invoke('plugin_durable_delete', {
+      pluginId,
+      expectedProfileId: profileId,
+      confirmed: true,
+    }) as PluginDurableDeletion;
+    expect(deleted.removedRecords).toBe(12);
+    expect(deleted.reclaimedBytes).toBe(153_600);
+    expect(deleted.usage.recordCount).toBe(0);
+
+    const other = await host.invoke('plugin_durable_usage', {
+      pluginId: 'community.example.save-sync',
+      expectedProfileId: profileId,
+    }) as PluginDurableUsage;
+    expect(other.recordCount).toBe(0);
+    expect(other.logicalBytes).toBe(0);
   });
 });

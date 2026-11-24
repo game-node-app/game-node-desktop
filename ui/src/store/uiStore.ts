@@ -41,7 +41,7 @@ export interface ContextMenuState {
   entryKey: string | null;
 }
 
-export type ToastKind = 'success' | 'danger' | 'info' | 'progress';
+export type ToastKind = 'success' | 'danger' | 'info' | 'warning' | 'progress';
 
 /** One notification action. The callback stays in the UI; it is never sent to the engine. */
 export interface ToastAction {
@@ -57,7 +57,11 @@ export interface ToastItem {
   id: string;
   kind: ToastKind;
   title: string;
+  /** Legacy/plugin-facing short text; rendered as the title when `title` is absent. */
+  message?: string;
   body?: string;
+  source?: string;
+  durationMs?: number;
   actions?: ToastAction[];
   progress?: number;
   persistent?: boolean;
@@ -278,8 +282,11 @@ export function pushNotification(notification: ToastNotification): string {
   const item: ToastItem = {
     id,
     kind: notification.kind,
-    title: notification.title,
+    title: notification.title ?? notification.message ?? '',
+    message: notification.message,
     body: notification.body,
+    source: notification.source,
+    durationMs: notification.durationMs,
     actions: normalizeActions(notification.actions),
     progress: notification.progress,
     persistent: notification.persistent,
@@ -310,8 +317,14 @@ export function updateNotification(id: string, patch: Partial<Omit<ToastItem, 'i
 }
 
 /** Backward-compatible shorthand used by existing Settings callers. */
-export function pushToast(kind: 'success' | 'danger', message: string): string {
-  return pushNotification({ kind, title: message });
+export interface ToastExtras {
+  body?: string;
+  source?: string;
+  durationMs?: number;
+}
+
+export function pushToast(kind: ToastKind, message: string, extras: ToastExtras = {}): string {
+  return pushNotification({ kind, title: message, message, durationMs: 4000, ...extras });
 }
 
 export function dismissToast(id: string): void {

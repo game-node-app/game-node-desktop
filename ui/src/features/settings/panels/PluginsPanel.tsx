@@ -23,6 +23,7 @@ import {
   useSnapshot,
   type PluginInfo,
 } from '../../../api';
+import { useAuth } from '../../../api/useSnapshot';
 import {
   Button,
   Pill,
@@ -38,6 +39,8 @@ import { useI18n } from '../../../i18n';
 import { providerLabel } from '../../../i18n/providerLabel';
 import { IconBox, SettingsPanel } from '../components';
 import { providerIcon } from '../StoreAccountCard';
+import { PluginInventory } from '../PluginInventory';
+import { PluginStorageAdmin } from '../PluginStorageAdmin';
 
 export const PLUGIN_INVENTORY_QUERY_KEY = ['plugin-inventory'] as const;
 
@@ -132,8 +135,11 @@ export const PluginsPanel: React.FC = () => {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const { data: storeAccounts } = useSnapshot((snapshot) => snapshot.storeAccounts);
+  const auth = useAuth().auth;
+  const profileId = typeof auth === 'object' && auth !== null && 'signedIn' in auth
+    ? auth.signedIn.user.id
+    : null;
   const [origin, setOrigin] = useState<OriginFilter>('all');
-  const [selectedPluginId, setSelectedPluginId] = useState<string | null>(null);
   const [pendingProvider, setPendingProvider] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -242,7 +248,7 @@ export const PluginsPanel: React.FC = () => {
         </div>
       ) : null}
 
-      {isPending ? (
+      <PluginInventory renderCards={({ selectedPluginId, selectPlugin, details }) => isPending ? (
         <p role="status" className="text-body text-text-secondary">
           {t('plugins.loading')}
         </p>
@@ -273,7 +279,8 @@ export const PluginsPanel: React.FC = () => {
           const expired = expiredProviderIds.has(plugin.providerId);
           const headingId = `plugin-heading-${plugin.pluginId}`;
           const detailsId = `plugin-details-${plugin.pluginId}`;
-          const canToggleSession = plugin.status === 'installed';
+          const canToggleSession = plugin.status === 'installed'
+            && plugin.pluginKind === 'provider' && !plugin.publisherFingerprint;
           const isActive = plugin.session === 'active';
 
           return (
@@ -348,6 +355,22 @@ export const PluginsPanel: React.FC = () => {
                 ) : null}
               </div>
 
+              {plugin.bundleComponents ? (
+                <div className="flex flex-wrap items-center gap-compact border-t border-border-subtle px-md py-sm">
+                  <span className="text-xs text-text-secondary">
+                    {t('plugins.bundle.components')}
+                  </span>
+                  {plugin.bundleComponents.map((component) => (
+                    <Pill
+                      key={component.pluginId}
+                      tone={component.status === 'installed' ? 'success' : 'warning'}
+                    >
+                      {component.name}: {t(`plugins.status.${component.status}`)}
+                    </Pill>
+                  ))}
+                </div>
+              ) : null}
+
               {expired ? (
                 <button
                   type="button"
@@ -383,7 +406,7 @@ export const PluginsPanel: React.FC = () => {
                   aria-controls={detailsId}
                   className="ml-auto rounded-sm text-xs font-medium text-brand transition-colors hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
                   onClick={() =>
-                    setSelectedPluginId(expanded ? null : plugin.pluginId)
+                    selectPlugin(expanded ? null : plugin.pluginId)
                   }
                 >
                   {expanded
@@ -438,13 +461,16 @@ export const PluginsPanel: React.FC = () => {
                         })}
                       </ul>
                     </div>
+                    {details}
                   </>
                 ) : null}
               </div>
             </article>
           );
         })
-      )}
+      )} />
+
+      <PluginStorageAdmin profileId={profileId} />
 
       <div className="flex items-start gap-compact rounded-md border border-border-subtle bg-surface p-sm text-xs leading-note text-text-secondary">
         <IconInfoCircle

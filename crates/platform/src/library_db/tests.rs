@@ -47,7 +47,7 @@ fn a_scan_is_saved_and_loaded_with_its_fields() {
     let dir = TempDir::new().unwrap();
     let store = open(&dir).library_store();
     store
-        .save_scan("steam", &[record("620", "Portal 2")], 100)
+        .save_scan("steam", &[record("620", "Portal 2")], &BTreeMap::new(), 100)
         .unwrap();
 
     let cache = store.load_cache(None).unwrap();
@@ -86,13 +86,18 @@ fn a_rescan_updates_entries_adds_new_ones_and_keeps_first_seen() {
     let dir = TempDir::new().unwrap();
     let store = open(&dir).library_store();
     store
-        .save_scan("steam", &[record("620", "Portal 2")], 100)
+        .save_scan("steam", &[record("620", "Portal 2")], &BTreeMap::new(), 100)
         .unwrap();
 
     let mut moved = record("620", "Portal 2");
     moved.install_dir = "/other/Portal 2".into();
     store
-        .save_scan("steam", &[moved, record("570", "Dota 2")], 200)
+        .save_scan(
+            "steam",
+            &[moved, record("570", "Dota 2")],
+            &BTreeMap::new(),
+            200,
+        )
         .unwrap();
 
     let cache = store.load_cache(None).unwrap();
@@ -108,7 +113,7 @@ fn an_uninstalled_game_is_kept_with_its_matches_and_returns_with_them() {
     let dir = TempDir::new().unwrap();
     let store = open(&dir).library_store();
     store
-        .save_scan("steam", &[record("620", "Portal 2")], 100)
+        .save_scan("steam", &[record("620", "Portal 2")], &BTreeMap::new(), 100)
         .unwrap();
     store
         .save_auto_matches(&[AutoMatch {
@@ -125,6 +130,7 @@ fn an_uninstalled_game_is_kept_with_its_matches_and_returns_with_them() {
                 entry_key: "steam:620".into(),
                 game_id: Some(72),
                 chosen_at: 110,
+                source: gamenode_core::library::ChoiceSource::User,
             },
         )
         .unwrap();
@@ -137,7 +143,9 @@ fn an_uninstalled_game_is_kept_with_its_matches_and_returns_with_them() {
     store.save_cover_ready(72, "72.jpg").unwrap();
 
     // Steam no longer lists it.
-    store.save_scan("steam", &[], 200).unwrap();
+    store
+        .save_scan("steam", &[], &BTreeMap::new(), 200)
+        .unwrap();
     let cache = store.load_cache(Some("acct")).unwrap();
     assert_eq!(keys(&cache), [("steam:620", false)]);
     assert_eq!(cache.auto_matches.len(), 1);
@@ -146,7 +154,7 @@ fn an_uninstalled_game_is_kept_with_its_matches_and_returns_with_them() {
 
     // Reinstalled: same entry, same match and cover.
     store
-        .save_scan("steam", &[record("620", "Portal 2")], 300)
+        .save_scan("steam", &[record("620", "Portal 2")], &BTreeMap::new(), 300)
         .unwrap();
     let cache = store.load_cache(Some("acct")).unwrap();
     assert_eq!(keys(&cache), [("steam:620", true)]);
@@ -160,10 +168,10 @@ fn a_failed_scan_keeps_the_previous_entries_and_only_marks_that_provider() {
     let dir = TempDir::new().unwrap();
     let store = open(&dir).library_store();
     store
-        .save_scan("steam", &[record("620", "Portal 2")], 100)
+        .save_scan("steam", &[record("620", "Portal 2")], &BTreeMap::new(), 100)
         .unwrap();
     store
-        .save_scan("gog", &[record("g1", "Witcher")], 100)
+        .save_scan("gog", &[record("g1", "Witcher")], &BTreeMap::new(), 100)
         .unwrap();
 
     store
@@ -178,7 +186,7 @@ fn a_failed_scan_keeps_the_previous_entries_and_only_marks_that_provider() {
     assert_eq!(gog.last_error, None);
 
     store
-        .save_scan("steam", &[record("620", "Portal 2")], 200)
+        .save_scan("steam", &[record("620", "Portal 2")], &BTreeMap::new(), 200)
         .unwrap();
     let steam = store
         .load_cache(None)
@@ -205,7 +213,7 @@ fn a_scan_that_fails_part_way_changes_nothing() {
     let dir = TempDir::new().unwrap();
     let store = open(&dir).library_store();
     store
-        .save_scan("steam", &[record("620", "Portal 2")], 100)
+        .save_scan("steam", &[record("620", "Portal 2")], &BTreeMap::new(), 100)
         .unwrap();
     // Make the second insert fail, after the first has already been written.
     store
@@ -218,6 +226,7 @@ fn a_scan_that_fails_part_way_changes_nothing() {
     let result = store.save_scan(
         "steam",
         &[record("570", "Dota 2"), record("bad", "Bad")],
+        &BTreeMap::new(),
         200,
     );
     assert!(result.is_err());
@@ -240,6 +249,7 @@ fn chosen_matches_are_separate_per_account() {
         entry_key: "steam:620".into(),
         game_id,
         chosen_at: 5,
+        source: gamenode_core::library::ChoiceSource::User,
     };
     store.save_chosen_match("alice", &choice(Some(72))).unwrap();
     store.save_chosen_match("bob", &choice(None)).unwrap();
@@ -453,7 +463,7 @@ fn sign_out_removes_the_account_keys_and_keeps_everything_else() {
         })
         .unwrap();
     store
-        .save_scan("steam", &[record("620", "Portal 2")], 1)
+        .save_scan("steam", &[record("620", "Portal 2")], &BTreeMap::new(), 1)
         .unwrap();
     store
         .save_chosen_match(
@@ -462,6 +472,7 @@ fn sign_out_removes_the_account_keys_and_keeps_everything_else() {
                 entry_key: "steam:620".into(),
                 game_id: Some(1),
                 chosen_at: 1,
+                source: gamenode_core::library::ChoiceSource::User,
             },
         )
         .unwrap();
@@ -546,7 +557,7 @@ fn nothing_stored_is_a_credential_or_a_callback_url() {
         })
         .unwrap();
     store
-        .save_scan("steam", &[record("620", "Portal 2")], 1)
+        .save_scan("steam", &[record("620", "Portal 2")], &BTreeMap::new(), 1)
         .unwrap();
     store
         .save_games(&[game(
@@ -635,7 +646,7 @@ fn catalog_fields_fill_missing_keys_and_survive_a_restart() {
     {
         let store = open(&dir).library_store();
         store
-            .save_scan("steam", &[record("620", "Portal 2")], 100)
+            .save_scan("steam", &[record("620", "Portal 2")], &BTreeMap::new(), 100)
             .unwrap();
         store
             .save_catalog(
@@ -698,6 +709,7 @@ fn catalog_sync_replaces_its_facts_and_lets_owned_win_over_shared() {
         .save_scan(
             "steam",
             &[record("620", "Portal 2"), record("570", "Dota 2")],
+            &BTreeMap::new(),
             100,
         )
         .unwrap();
@@ -1002,7 +1014,12 @@ fn catalog_names_follow_installed_then_existing_then_catalog_precedence() {
 
     // Once installed, the installed scan's name wins over a catalog name.
     store
-        .save_scan("steam", &[record("730", "Installed name")], 400)
+        .save_scan(
+            "steam",
+            &[record("730", "Installed name")],
+            &BTreeMap::new(),
+            400,
+        )
         .unwrap();
     store
         .save_catalog(
@@ -1033,7 +1050,7 @@ fn save_scan_never_changes_owned_or_shared_facts() {
         .unwrap();
 
     store
-        .save_scan("steam", &[record("620", "Portal 2")], 200)
+        .save_scan("steam", &[record("620", "Portal 2")], &BTreeMap::new(), 200)
         .unwrap();
     let cache = store.load_cache(None).unwrap();
     let portal = cache.entries.iter().find(|e| e.key == "steam:620").unwrap();
@@ -1052,7 +1069,9 @@ fn save_scan_never_changes_owned_or_shared_facts() {
     );
 
     // A scan that no longer finds an entry only clears installed.
-    store.save_scan("steam", &[], 300).unwrap();
+    store
+        .save_scan("steam", &[], &BTreeMap::new(), 300)
+        .unwrap();
     let cache = store.load_cache(None).unwrap();
     let portal = cache.entries.iter().find(|e| e.key == "steam:620").unwrap();
     assert_eq!(
@@ -1074,7 +1093,7 @@ fn clear_catalog_keeps_entries_matches_and_covers() {
     let dir = TempDir::new().unwrap();
     let store = open(&dir).library_store();
     store
-        .save_scan("steam", &[record("620", "Portal 2")], 100)
+        .save_scan("steam", &[record("620", "Portal 2")], &BTreeMap::new(), 100)
         .unwrap();
     store
         .save_auto_matches(&[AutoMatch {
@@ -1091,6 +1110,7 @@ fn clear_catalog_keeps_entries_matches_and_covers() {
                 entry_key: "steam:620".into(),
                 game_id: Some(72),
                 chosen_at: 110,
+                source: gamenode_core::library::ChoiceSource::User,
             },
         )
         .unwrap();
@@ -1261,7 +1281,7 @@ fn unreadable_flags_and_error_categories_degrade_without_hiding_installed_games(
     let dir = TempDir::new().unwrap();
     let store = open(&dir).library_store();
     store
-        .save_scan("steam", &[record("620", "Portal 2")], 100)
+        .save_scan("steam", &[record("620", "Portal 2")], &BTreeMap::new(), 100)
         .unwrap();
     store
         .save_catalog(
@@ -1329,6 +1349,7 @@ fn a_chosen_match_can_be_forgotten_for_one_account_only() {
         entry_key: "steam:620".to_owned(),
         game_id,
         chosen_at: 5,
+        source: gamenode_core::library::ChoiceSource::User,
     };
     store.save_chosen_match("alice", &choice(Some(72))).unwrap();
     store.save_chosen_match("bob", &choice(None)).unwrap();
@@ -1842,4 +1863,974 @@ fn unknown_account_statuses_and_damaged_collections_degrade_to_none_and_empty() 
     );
     assert_eq!(library.collections[0].default_status, None);
     assert_eq!(library.collections[0].name, "Coop");
+}
+
+// Tests retained from the plugin branch during main integration.
+
+#[test]
+fn a_detected_target_approval_is_revision_checked_and_survives_reopening() {
+    use gamenode_core::library::{DetectedTarget, TargetApproval, TargetSpec};
+
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("test.sqlite3");
+    let db = SqliteSettingsStore::open(&path).unwrap();
+    let store = db.library_store();
+    let spec = TargetSpec::Executable {
+        root: r"C:\Games\Portal 2".into(),
+        path: "Portal2.exe".into(),
+        arguments: vec![],
+        working_directory: String::new(),
+    };
+    store
+        .save_scan(
+            "steam",
+            &[record("620", "Portal 2")],
+            &BTreeMap::from([("620".into(), spec)]),
+            100,
+        )
+        .unwrap();
+    let candidate = store
+        .load_cache(None)
+        .unwrap()
+        .entries
+        .remove(0)
+        .target
+        .unwrap();
+    assert!(!candidate.approved);
+    assert_eq!(candidate.revision, 1);
+
+    let approved = DetectedTarget {
+        approved: true,
+        identity: Some("volume:file-id".into()),
+        ..candidate.clone()
+    };
+    assert_eq!(
+        store.save_target_review("steam:620", 1, &approved).unwrap(),
+        TargetApproval::Applied { revision: 1 }
+    );
+    assert_eq!(
+        store.save_target_review("steam:620", 0, &approved).unwrap(),
+        TargetApproval::Conflict { current: 1 }
+    );
+
+    store
+        .save_scan(
+            "steam",
+            &[record("620", "Portal 2")],
+            &BTreeMap::from([("620".into(), approved.spec.clone())]),
+            200,
+        )
+        .unwrap();
+
+    drop(store);
+    drop(db);
+    let reopened = SqliteSettingsStore::open(&path).unwrap().library_store();
+    let target = reopened
+        .load_cache(None)
+        .unwrap()
+        .entries
+        .remove(0)
+        .target
+        .unwrap();
+    assert!(target.approved);
+    assert_eq!(target.identity.as_deref(), Some("volume:file-id"));
+}
+
+#[test]
+fn a_choice_keeps_who_made_it_and_older_rows_read_as_the_users() {
+    use gamenode_core::library::ChoiceSource;
+    let dir = TempDir::new().unwrap();
+    let store = open(&dir).library_store();
+    let choice = |source| ChosenMatch {
+        entry_key: "epic:abc".into(),
+        game_id: Some(9),
+        chosen_at: 5,
+        source,
+    };
+    store
+        .save_chosen_match("alice", &choice(ChoiceSource::Plugin))
+        .unwrap();
+    assert_eq!(
+        store.load_cache(Some("alice")).unwrap().chosen_matches,
+        [choice(ChoiceSource::Plugin)]
+    );
+    // The user choosing again takes the entry over.
+    store
+        .save_chosen_match("alice", &choice(ChoiceSource::User))
+        .unwrap();
+    assert_eq!(
+        store.load_cache(Some("alice")).unwrap().chosen_matches,
+        [choice(ChoiceSource::User)]
+    );
+    // A row written without the column (before migration 12) is the user's.
+    open(&dir)
+        .conn()
+        .execute(
+            "INSERT INTO chosen_matches (account_id, entry_key, game_id, chosen_at)
+             VALUES ('bob', 'steam:1', 2, 3)",
+            [],
+        )
+        .unwrap();
+    assert_eq!(
+        store.load_cache(Some("bob")).unwrap().chosen_matches[0].source,
+        ChoiceSource::User
+    );
+}
+
+#[test]
+fn installation_ids_are_random_durable_and_never_change_for_their_key() {
+    let dir = TempDir::new().unwrap();
+    let store = open(&dir);
+    let library = store.library_store();
+    let keys = ["steam:620".to_owned(), "epic:abc".to_owned()];
+    let first = library.installation_ids(&keys).unwrap();
+    assert_eq!(first.len(), 2);
+    assert_eq!(first[0].0, "steam:620");
+    assert_ne!(first[0].1, first[1].1);
+    for (key, id) in &first {
+        assert_eq!(id.len(), 32, "{key}");
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+    // A rescan, a match change or another request does not touch the ids.
+    library
+        .save_scan(
+            "steam",
+            &[record("620", "Portal 2 GOTY")],
+            &BTreeMap::new(),
+            2,
+        )
+        .unwrap();
+    library
+        .save_auto_matches(&[AutoMatch {
+            category: 1,
+            uid: "620".into(),
+            game_ids: vec![9],
+            checked_at: 3,
+        }])
+        .unwrap();
+    let again = library
+        .installation_ids(&["epic:abc".to_owned(), "steam:620".to_owned()])
+        .unwrap();
+    assert_eq!(again[0], first[1]);
+    assert_eq!(again[1], first[0]);
+    drop(library);
+    drop(store);
+    // And they survive a restart.
+    let reopened = open(&dir);
+    assert_eq!(
+        reopened.library_store().installation_ids(&keys).unwrap(),
+        first
+    );
+}
+
+#[test]
+fn display_names_are_guarded_by_a_revision_and_reset_keeps_counting() {
+    let dir = TempDir::new().unwrap();
+    let store = open(&dir);
+    let library = store.library_store();
+    let key = "steam:620";
+    // Never written: revision 0, and a stale expectation conflicts without writing.
+    assert_eq!(
+        library.save_display_name(key, 3, Some("X")).unwrap(),
+        DisplayWrite::Conflict { current: 0 }
+    );
+    assert!(
+        library
+            .load_cache(None)
+            .unwrap()
+            .display_overrides
+            .is_empty()
+    );
+    assert_eq!(
+        library
+            .save_display_name(key, 0, Some("Portal Two"))
+            .unwrap(),
+        DisplayWrite::Applied { revision: 1 }
+    );
+    // The same value again changes nothing and keeps the revision.
+    assert_eq!(
+        library
+            .save_display_name(key, 1, Some("Portal Two"))
+            .unwrap(),
+        DisplayWrite::Unchanged { revision: 1 }
+    );
+    // An obsolete revision does not overwrite the newer value.
+    assert_eq!(
+        library.save_display_name(key, 0, Some("Other")).unwrap(),
+        DisplayWrite::Conflict { current: 1 }
+    );
+    // Clearing restores the detected name, keeps the row and the revision keeps growing.
+    assert_eq!(
+        library.save_display_name(key, 1, None).unwrap(),
+        DisplayWrite::Applied { revision: 2 }
+    );
+    assert_eq!(
+        library.save_display_name(key, 2, None).unwrap(),
+        DisplayWrite::Unchanged { revision: 2 }
+    );
+    assert_eq!(
+        library.save_display_name(key, 2, Some("Back")).unwrap(),
+        DisplayWrite::Applied { revision: 3 }
+    );
+    drop(library);
+    drop(store);
+    let reopened = open(&dir);
+    assert_eq!(
+        reopened
+            .library_store()
+            .load_cache(None)
+            .unwrap()
+            .display_overrides,
+        [DisplayOverride {
+            entry_key: key.to_owned(),
+            display_name: Some("Back".to_owned()),
+            revision: 3,
+        }]
+    );
+}
+
+#[test]
+fn artwork_overrides_are_guarded_by_a_revision_and_report_the_file_they_replace() {
+    use gamenode_core::library::{ArtworkOverride, ArtworkWrite};
+    let dir = TempDir::new().unwrap();
+    let store = open(&dir);
+    let library = store.library_store();
+    let key = "steam:620";
+    assert_eq!(
+        library.save_artwork(key, 2, Some("a.jpg")).unwrap(),
+        ArtworkWrite::Conflict { current: 0 }
+    );
+    assert!(
+        library
+            .load_cache(None)
+            .unwrap()
+            .artwork_overrides
+            .is_empty()
+    );
+    assert_eq!(
+        library.save_artwork(key, 0, Some("a.jpg")).unwrap(),
+        ArtworkWrite::Applied {
+            revision: 1,
+            replaced: None
+        }
+    );
+    assert_eq!(
+        library.save_artwork(key, 1, Some("a.jpg")).unwrap(),
+        ArtworkWrite::Unchanged { revision: 1 }
+    );
+    assert_eq!(
+        library.save_artwork(key, 0, Some("b.jpg")).unwrap(),
+        ArtworkWrite::Conflict { current: 1 }
+    );
+    // Replacing names the file that is no longer used, so the caller can delete it.
+    assert_eq!(
+        library.save_artwork(key, 1, Some("b.jpg")).unwrap(),
+        ArtworkWrite::Applied {
+            revision: 2,
+            replaced: Some("a.jpg".to_owned())
+        }
+    );
+    // Clearing restores the game's cover and keeps counting.
+    assert_eq!(
+        library.save_artwork(key, 2, None).unwrap(),
+        ArtworkWrite::Applied {
+            revision: 3,
+            replaced: Some("b.jpg".to_owned())
+        }
+    );
+    assert_eq!(
+        library.save_artwork(key, 3, None).unwrap(),
+        ArtworkWrite::Unchanged { revision: 3 }
+    );
+    drop(library);
+    drop(store);
+    let reopened = open(&dir);
+    assert_eq!(
+        reopened
+            .library_store()
+            .load_cache(None)
+            .unwrap()
+            .artwork_overrides,
+        [ArtworkOverride {
+            entry_key: key.to_owned(),
+            file: None,
+            revision: 3,
+        }]
+    );
+}
+
+#[test]
+fn custom_launch_recipes_are_plugin_scoped_revision_checked_and_persistent() {
+    use gamenode_core::library::{CustomLaunchMutation, CustomLaunchRecipe};
+
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("test.sqlite3");
+    let db = SqliteSettingsStore::open(&path).unwrap();
+    let store = db.library_store();
+    let recipe = CustomLaunchRecipe {
+        recipe_id: "recipe-1".into(),
+        revision: 1,
+        requester_package_version: "1.0".into(),
+        game_id: 620,
+        installation_id: "install-1".into(),
+        base_target_revision: 1,
+        base_launch_fingerprint: 9,
+        executable_handle: "approved-executable-handle".into(),
+        executable: None,
+        uri: String::new(),
+        arguments: vec!["--profile".into(), "a profile & literal".into()],
+        working_directory_handle: "approved-directory-handle".into(),
+        working_directory: None,
+        runtime_handle: String::new(),
+        content_id: String::new(),
+        environment_set: BTreeMap::from([("GAME_MODE".into(), "custom".into())]),
+        environment_unset: Default::default(),
+        mod_layers: Vec::new(),
+    };
+    assert_eq!(
+        store
+            .save_custom_launch_recipe("plugin-a/profile-1", &recipe)
+            .unwrap(),
+        CustomLaunchMutation::Applied { revision: 1 }
+    );
+    assert_eq!(
+        store
+            .custom_launch_recipe("plugin-b/profile-1", "recipe-1")
+            .unwrap(),
+        None,
+        "another plugin cannot read this recipe"
+    );
+    assert_eq!(
+        store
+            .save_custom_launch_recipe("plugin-a/profile-1", &recipe)
+            .unwrap(),
+        CustomLaunchMutation::Conflict { current: 1 }
+    );
+    assert_eq!(
+        store
+            .remove_custom_launch_recipe("plugin-a/profile-1", "recipe-1", 0)
+            .unwrap(),
+        CustomLaunchMutation::Conflict { current: 1 }
+    );
+    drop(store);
+    drop(db);
+
+    let reopened = SqliteSettingsStore::open(&path).unwrap().library_store();
+    assert_eq!(
+        reopened
+            .custom_launch_recipe("plugin-a/profile-1", "recipe-1")
+            .unwrap(),
+        Some(recipe.clone()),
+        "recipe and literal argv survive restarting the store"
+    );
+    assert_eq!(
+        reopened
+            .remove_custom_launch_recipe("plugin-a/profile-1", "recipe-1", 1)
+            .unwrap(),
+        CustomLaunchMutation::Applied { revision: 1 }
+    );
+    assert_eq!(
+        reopened
+            .custom_launch_recipe("plugin-a/profile-1", "recipe-1")
+            .unwrap(),
+        None
+    );
+}
+
+#[test]
+fn a_runtime_recipe_selection_is_saved_without_a_detected_target() {
+    use gamenode_core::library::{
+        CustomLaunchMutation, CustomLaunchRecipe, LaunchRecipeSelection, LaunchRecipeSelectionWrite,
+    };
+
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("test.sqlite3");
+    let db = SqliteSettingsStore::open(&path).unwrap();
+    let store = db.library_store();
+    store
+        .save_scan(
+            "dolphin-emu",
+            &[record("GPIE01", "Pikmin")],
+            &BTreeMap::new(),
+            100,
+        )
+        .unwrap();
+    db.conn()
+        .execute(
+            "INSERT INTO library_installations (entry_key, installation_id)
+             VALUES ('dolphin-emu:GPIE01', 'install-1')",
+            [],
+        )
+        .unwrap();
+    let recipe = CustomLaunchRecipe {
+        recipe_id: "recipe-1".into(),
+        revision: 1,
+        requester_package_version: "0.3.1".into(),
+        game_id: 2239,
+        installation_id: "install-1".into(),
+        base_target_revision: 0,
+        base_launch_fingerprint: 9,
+        runtime_handle: "runtime-1".into(),
+        content_id: "content-1".into(),
+        ..CustomLaunchRecipe::default()
+    };
+    assert_eq!(
+        store
+            .save_custom_launch_recipe("plugin-owner", &recipe)
+            .unwrap(),
+        CustomLaunchMutation::Applied { revision: 1 }
+    );
+    let selection = LaunchRecipeSelection {
+        entry_key: "dolphin-emu:GPIE01".into(),
+        owner_key: "plugin-owner".into(),
+        plugin_id: "dev.richmont.gamenode.dolphin-emu-launch".into(),
+        publisher_fingerprint: "publisher-key-fingerprint".into(),
+        recipe_id: recipe.recipe_id.clone(),
+        recipe_revision: recipe.revision,
+        base_target_revision: 0,
+        approved_plan_fingerprint: String::new(),
+    };
+    assert_eq!(
+        store.save_launch_recipe_selection(&selection, 0).unwrap(),
+        LaunchRecipeSelectionWrite::Applied
+    );
+    assert_eq!(
+        store
+            .launch_recipe_selection("dolphin-emu:GPIE01")
+            .unwrap()
+            .unwrap()
+            .base_target_revision,
+        0
+    );
+    assert_eq!(
+        store
+            .clear_launch_recipe_selection("dolphin-emu:GPIE01", 0)
+            .unwrap(),
+        LaunchRecipeSelectionWrite::Applied
+    );
+    assert!(
+        store
+            .launch_recipe_selection("dolphin-emu:GPIE01")
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn selected_launch_recipe_is_revision_checked_persistent_and_never_falls_back_silently() {
+    use gamenode_core::library::{
+        CustomLaunchMutation, CustomLaunchRecipe, LaunchRecipeSelection,
+        LaunchRecipeSelectionWrite, TargetSpec,
+    };
+
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("test.sqlite3");
+    let db = SqliteSettingsStore::open(&path).unwrap();
+    let store = db.library_store();
+    store
+        .save_scan(
+            "steam",
+            &[record("620", "Portal 2")],
+            &BTreeMap::from([(
+                "620".into(),
+                TargetSpec::Executable {
+                    root: r"C:\Games\Portal 2".into(),
+                    path: "Portal2.exe".into(),
+                    arguments: vec![],
+                    working_directory: String::new(),
+                },
+            )]),
+            100,
+        )
+        .unwrap();
+    let target = store
+        .load_cache(None)
+        .unwrap()
+        .entries
+        .into_iter()
+        .find(|entry| entry.key == "steam:620")
+        .unwrap()
+        .target
+        .unwrap();
+    db.conn()
+        .execute(
+            "INSERT INTO library_installations (entry_key, installation_id) VALUES ('steam:620', 'install-1')",
+            [],
+        )
+        .unwrap();
+    let recipe = CustomLaunchRecipe {
+        recipe_id: "recipe-1".into(),
+        revision: 1,
+        requester_package_version: "1.0".into(),
+        game_id: 620,
+        installation_id: "install-1".into(),
+        base_target_revision: target.revision,
+        base_launch_fingerprint: 9,
+        executable_handle: "approved-executable-handle".into(),
+        executable: None,
+        uri: String::new(),
+        arguments: vec!["--custom".into()],
+        working_directory_handle: String::new(),
+        working_directory: None,
+        runtime_handle: String::new(),
+        content_id: String::new(),
+        environment_set: Default::default(),
+        environment_unset: Default::default(),
+        mod_layers: Vec::new(),
+    };
+    assert_eq!(
+        store
+            .save_custom_launch_recipe("plugin-owner", &recipe)
+            .unwrap(),
+        CustomLaunchMutation::Applied { revision: 1 }
+    );
+    let selection = LaunchRecipeSelection {
+        entry_key: "steam:620".into(),
+        owner_key: "plugin-owner".into(),
+        plugin_id: "example.launcher".into(),
+        publisher_fingerprint: "publisher-key-fingerprint".into(),
+        recipe_id: recipe.recipe_id.clone(),
+        recipe_revision: recipe.revision,
+        base_target_revision: target.revision,
+        approved_plan_fingerprint: String::new(),
+    };
+    assert_eq!(
+        store
+            .save_launch_recipe_selection(&selection, target.revision)
+            .unwrap(),
+        LaunchRecipeSelectionWrite::Applied
+    );
+    assert_eq!(
+        store
+            .save_launch_recipe_selection(&selection, target.revision + 1)
+            .unwrap(),
+        LaunchRecipeSelectionWrite::Conflict
+    );
+    drop(store);
+    drop(db);
+
+    let reopened = SqliteSettingsStore::open(&path).unwrap();
+    let store = reopened.library_store();
+    assert_eq!(
+        store.launch_recipe_selection("steam:620").unwrap(),
+        Some(selection)
+    );
+    assert_eq!(
+        store
+            .remove_custom_launch_recipe("plugin-owner", "recipe-1", 1)
+            .unwrap(),
+        CustomLaunchMutation::Applied { revision: 1 }
+    );
+    assert_eq!(
+        store
+            .launch_recipe_selection("steam:620")
+            .unwrap()
+            .unwrap()
+            .recipe_id,
+        "recipe-1",
+        "a removed recipe stays selected and unavailable until the user chooses a route"
+    );
+    assert_eq!(
+        store
+            .clear_launch_recipe_selection("steam:620", target.revision)
+            .unwrap(),
+        LaunchRecipeSelectionWrite::Applied
+    );
+    assert_eq!(store.launch_recipe_selection("steam:620").unwrap(), None);
+}
+
+#[test]
+fn runtime_resources_and_content_bindings_keep_identity_and_survive_runtime_removal() {
+    use gamenode_core::library::{
+        ApprovedFileReference, RuntimeArgumentTemplate, RuntimeContentBinding, RuntimeExtension,
+        RuntimeMutation, RuntimeProvenance, RuntimeResource,
+    };
+
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("test.sqlite3");
+    let db = SqliteSettingsStore::open(&path).unwrap();
+    let store = db.library_store();
+    db.conn()
+        .execute(
+            "INSERT INTO games (game_id, name) VALUES (72, 'Game A'), (73, 'Game B')",
+            [],
+        )
+        .unwrap();
+    db.conn()
+        .execute(
+            "INSERT INTO playtime_totals (account_id, entry_key, total_seconds)
+             VALUES ('account-1', 'steam:72', 600)",
+            [],
+        )
+        .unwrap();
+    db.conn()
+        .execute(
+            "INSERT INTO save_profiles (id, installation_id, revision, payload)
+             VALUES ('save-1', 'steam:72', 1, '{}')",
+            [],
+        )
+        .unwrap();
+
+    let runtime = |id: &str| RuntimeResource {
+        id: id.into(),
+        name: format!("Runtime {id}"),
+        version: "1.0".into(),
+        executable: ApprovedFileReference {
+            approval_id: format!("approval-{id}"),
+            relative_path: vec!["bin".into(), "emulator".into()],
+        },
+        platform: "linux".into(),
+        supported_formats: vec!["snes-rom".into()],
+        launch_arguments: vec![
+            RuntimeArgumentTemplate::Literal("--fullscreen".into()),
+            RuntimeArgumentTemplate::ContentPath,
+        ],
+        revision: 1,
+        observed_at: 100,
+        provenance: Default::default(),
+        extensions: Default::default(),
+    };
+    let plugin = "plugin-a/profile-1";
+    let runtime_a = runtime("runtime-a");
+    let runtime_b = runtime("runtime-b");
+    assert_eq!(
+        store.save_runtime_resource(plugin, &runtime_a).unwrap(),
+        RuntimeMutation::Applied { revision: 1 }
+    );
+    assert_eq!(
+        store.save_runtime_resource(plugin, &runtime_b).unwrap(),
+        RuntimeMutation::Applied { revision: 1 }
+    );
+    // A separate runtime owner can add its own binding to the same GameNode game/content. This
+    // is the DeSmuME -> melonDS migration path: it does not need to delete or mutate the old
+    // owner's record in order to make the new runtime selectable.
+    let next_owner = "plugin-b/profile-1";
+    let melonds = runtime("melonds");
+    assert_eq!(
+        store.save_runtime_resource(next_owner, &melonds).unwrap(),
+        RuntimeMutation::Applied { revision: 1 }
+    );
+    assert_eq!(
+        store.save_runtime_resource(plugin, &runtime_a).unwrap(),
+        RuntimeMutation::Conflict { current: 1 }
+    );
+    let mut updated_runtime = runtime_a.clone();
+    updated_runtime.revision = 2;
+    updated_runtime.version = "1.1".into();
+    updated_runtime.provenance = RuntimeProvenance {
+        plugin_id: "org.example.runtime".into(),
+        declared_developer: "Example developer".into(),
+        origin: "example".into(),
+        publisher_fingerprint: "ab".repeat(32),
+        package_version: "1.1.0".into(),
+        package_digest: vec![5; 32],
+    };
+    updated_runtime.extensions.insert(
+        "org.example.compatibility".into(),
+        RuntimeExtension {
+            schema_id: "org.example.compatibility.v1".into(),
+            schema_version: 1,
+            schema_digest: vec![3; 32],
+            data: serde_json::json!({"console": "snes"}),
+        },
+    );
+    assert_eq!(
+        store
+            .save_runtime_resource(plugin, &updated_runtime)
+            .unwrap(),
+        RuntimeMutation::Applied { revision: 2 }
+    );
+    drop(store);
+    let reopened = SqliteSettingsStore::open(&path).unwrap();
+    let store = reopened.library_store();
+    let reopened_a = store
+        .runtime_resource(plugin, "runtime-a")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        reopened_a.extensions["org.example.compatibility"].schema_version,
+        1
+    );
+    assert_eq!(
+        reopened_a.extensions["org.example.compatibility"].data,
+        serde_json::json!({"console": "snes"})
+    );
+    assert_eq!(
+        store.save_runtime_resource(plugin, &runtime_a).unwrap(),
+        RuntimeMutation::Conflict { current: 2 },
+        "a concurrent stale writer cannot replace the reopened revision"
+    );
+    let race_store_a = reopened.library_store();
+    let race_store_b = reopened.library_store();
+    let gate = std::sync::Barrier::new(2);
+    let (left, right) = std::thread::scope(|scope| {
+        let left_gate = &gate;
+        let right_gate = &gate;
+        let mut left = runtime_b.clone();
+        left.revision = 2;
+        left.version = "writer-a".into();
+        let mut right = runtime_b.clone();
+        right.revision = 2;
+        right.version = "writer-b".into();
+        let a = scope.spawn(move || {
+            left_gate.wait();
+            race_store_a.save_runtime_resource(plugin, &left).unwrap()
+        });
+        let b = scope.spawn(move || {
+            right_gate.wait();
+            race_store_b.save_runtime_resource(plugin, &right).unwrap()
+        });
+        (a.join().unwrap(), b.join().unwrap())
+    });
+    assert!(matches!(
+        (left, right),
+        (
+            RuntimeMutation::Applied { revision: 2 },
+            RuntimeMutation::Conflict { current: 2 }
+        ) | (
+            RuntimeMutation::Conflict { current: 2 },
+            RuntimeMutation::Applied { revision: 2 }
+        )
+    ));
+    assert_eq!(
+        store
+            .runtime_resource("plugin-b/profile-1", "runtime-a")
+            .unwrap(),
+        None,
+        "runtime records are scoped to their registering plugin"
+    );
+    assert_eq!(store.runtime_catalog_revision(plugin).unwrap(), 4);
+
+    let binding = |game_id, content_id: &str, runtime_id: &str, path: &str| RuntimeContentBinding {
+        game_id,
+        installation_id: format!("steam:{game_id}"),
+        content_id: content_id.into(),
+        content: ApprovedFileReference {
+            approval_id: format!("content-approval-{content_id}"),
+            relative_path: vec![path.into()],
+        },
+        content_kind: "snes-rom".into(),
+        runtime_id: runtime_id.into(),
+        supported_platforms: vec!["linux".into()],
+        revision: 1,
+    };
+    let content_a_runtime_a = binding(72, "content-a", "runtime-a", "a.sfc");
+    let content_a_runtime_b = binding(72, "content-a", "runtime-b", "a.sfc");
+    let content_a_variant = binding(72, "content-a-patched", "runtime-a", "a-patched.sfc");
+    let content_b_runtime_a = binding(73, "content-b", "runtime-a", "b.sfc");
+    let desmume_owner = "plugin-desmume/profile-1";
+    let desmume = runtime("desmume");
+    assert_eq!(
+        store
+            .save_runtime_resource(desmume_owner, &desmume)
+            .unwrap(),
+        RuntimeMutation::Applied { revision: 1 }
+    );
+    let desmume_binding = binding(72, "content-a", "desmume", "a.sfc");
+    assert_eq!(
+        store
+            .save_runtime_content_binding(desmume_owner, &desmume_binding)
+            .unwrap(),
+        RuntimeMutation::Applied { revision: 1 }
+    );
+    for binding in [
+        &content_a_runtime_a,
+        &content_a_runtime_b,
+        &content_a_variant,
+        &content_b_runtime_a,
+    ] {
+        assert_eq!(
+            store.save_runtime_content_binding(plugin, binding).unwrap(),
+            RuntimeMutation::Applied { revision: 1 }
+        );
+    }
+    let melonds_binding = binding(72, "content-a", "melonds", "a.sfc");
+    assert_eq!(
+        store
+            .save_runtime_content_binding(next_owner, &melonds_binding)
+            .unwrap(),
+        RuntimeMutation::Applied { revision: 1 }
+    );
+
+    // The shared catalog exposes every owner's typed metadata, while the safe availability
+    // projection joins bindings to runtime names without a path or handle.
+    let shared = store.shared_runtime_resources().unwrap();
+    assert_eq!(shared.len(), 4);
+    let stored = shared
+        .iter()
+        .find(|(owner, runtime)| owner == plugin && runtime.id == "runtime-a")
+        .map(|(_, runtime)| runtime)
+        .unwrap();
+    assert_eq!(stored.provenance.plugin_id, "org.example.runtime");
+    assert_eq!(
+        stored.extensions["org.example.compatibility"].schema_version,
+        1
+    );
+    assert!(store.shared_runtime_catalog_revision().unwrap() >= 3);
+
+    let private = store
+        .runtime_availability(Some(plugin), &["steam:72".to_owned()])
+        .unwrap();
+    assert_eq!(private.len(), 3);
+    assert!(private.iter().all(
+        |entry| entry.publisher_id == "org.example.runtime" || entry.runtime_id != "runtime-a"
+    ));
+    let all = store
+        .runtime_availability(None, &["steam:72".to_owned()])
+        .unwrap();
+    assert_eq!(all.len(), 5);
+    let melonds = all
+        .iter()
+        .find(|entry| entry.runtime_id == "melonds")
+        .unwrap();
+    assert_eq!(melonds.runtime_name, "Runtime melonds");
+    assert_eq!(melonds.content_id, "content-a");
+    assert_eq!(melonds.platform, "linux");
+
+    // Moving a file updates its approved location under the same stable content identity.
+    let mut moved_content = content_a_runtime_a.clone();
+    moved_content.revision = 2;
+    moved_content.content.relative_path = vec!["moved".into(), "renamed.sfc".into()];
+    assert_eq!(
+        store
+            .save_runtime_content_binding(plugin, &moved_content)
+            .unwrap(),
+        RuntimeMutation::Applied { revision: 2 }
+    );
+    assert_eq!(store.runtime_catalog_revision(plugin).unwrap(), 4);
+    let migrated = store
+        .runtime_content_bindings(next_owner, 72, "steam:72")
+        .unwrap();
+    assert_eq!(migrated.len(), 1);
+    assert_eq!(migrated[0].content_id, "content-a");
+    assert_eq!(migrated[0].runtime_id, "melonds");
+    assert_eq!(
+        migrated[0].content.approval_id,
+        "content-approval-content-a"
+    );
+    assert!(
+        store
+            .runtime_resource(desmume_owner, "desmume")
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(
+        store
+            .runtime_content_bindings(desmume_owner, 72, "steam:72")
+            .unwrap()[0]
+            .runtime_id,
+        "desmume",
+        "the migration leaves the foreign DeSmuME runtime and binding intact"
+    );
+
+    assert_eq!(
+        store
+            .remove_runtime_resource(plugin, "runtime-a", 1)
+            .unwrap(),
+        RuntimeMutation::Conflict { current: 2 }
+    );
+    assert_eq!(
+        store
+            .remove_runtime_resource(plugin, "runtime-a", 2)
+            .unwrap(),
+        RuntimeMutation::Applied { revision: 2 }
+    );
+    assert_eq!(store.runtime_resource(plugin, "runtime-a").unwrap(), None);
+    let bindings = store
+        .runtime_content_bindings(plugin, 72, "steam:72")
+        .unwrap();
+    assert_eq!(
+        bindings.len(),
+        3,
+        "two content variants and both runtime choices remain"
+    );
+    assert_eq!(
+        bindings
+            .iter()
+            .find(|binding| binding.runtime_id == "runtime-a")
+            .unwrap()
+            .content
+            .relative_path,
+        ["moved", "renamed.sfc"]
+    );
+    let sibling = bindings
+        .iter()
+        .find(|binding| binding.runtime_id == "runtime-b")
+        .unwrap();
+    assert_eq!(sibling.content_id, "content-a");
+    assert_eq!(sibling.revision, 2);
+    assert_eq!(
+        sibling.content.relative_path,
+        ["moved", "renamed.sfc"],
+        "all runtime choices for one content follow its moved locator"
+    );
+    assert!(
+        store
+            .runtime_content_bindings(plugin, 72, "steam:72")
+            .unwrap()
+            .iter()
+            .any(|binding| binding.runtime_id == "runtime-a"),
+        "migrating to another owner's runtime does not require deleting the original binding"
+    );
+    assert!(bindings.iter().any(|binding| {
+        binding.content_id == "content-a-patched"
+            && binding.content.relative_path == ["a-patched.sfc"]
+    }));
+    assert_eq!(
+        store
+            .runtime_content_bindings(plugin, 73, "steam:73")
+            .unwrap()
+            .len(),
+        1,
+        "one runtime can bind content from another game"
+    );
+    assert_eq!(
+        store
+            .runtime_resources(plugin)
+            .unwrap()
+            .iter()
+            .map(|runtime| runtime.id.as_str())
+            .collect::<Vec<_>>(),
+        ["runtime-b"]
+    );
+    assert_eq!(store.runtime_catalog_revision(plugin).unwrap(), 5);
+
+    let games: i64 = db
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM games WHERE game_id IN (72, 73)",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let registered_game_count: i64 = db
+        .conn()
+        .query_row("SELECT COUNT(*) FROM games WHERE game_id = 72", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    let history: i64 = db
+        .conn()
+        .query_row(
+            "SELECT total_seconds FROM playtime_totals
+             WHERE account_id = 'account-1' AND entry_key = 'steam:72'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let saves: i64 = db
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM save_profiles WHERE id = 'save-1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(games, 2);
+    assert_eq!(
+        registered_game_count, 1,
+        "multiple runtime bindings do not duplicate the game"
+    );
+    assert_eq!(history, 600);
+    assert_eq!(saves, 1);
 }

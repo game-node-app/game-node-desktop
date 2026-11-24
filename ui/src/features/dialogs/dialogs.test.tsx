@@ -1,6 +1,6 @@
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, act, waitFor } from '@testing-library/react';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { MantineProvider } from '@mantine/core';
 import { appTheme, createAppQueryClient } from '../../AppProviders';
@@ -26,13 +26,15 @@ function renderWithProviders(
   const queryClient = createAppQueryClient();
   queryClient.setQueryData(SNAPSHOT_QUERY_KEY, snapshot);
 
-  return render(
+  const result = render(
     <MantineProvider theme={appTheme} defaultColorScheme="dark">
       <QueryClientProvider client={queryClient}>
         <I18nProvider initialLocale={locale}>{ui}</I18nProvider>
       </QueryClientProvider>
     </MantineProvider>,
   );
+
+  return { ...result, queryClient };
 }
 
 describe('Dialogs Feature Tests', () => {
@@ -134,6 +136,8 @@ describe('Dialogs Feature Tests', () => {
             ],
           },
           noResults: false,
+          platformFilter: null,
+          filteredOut: 0,
           canClear: true,
           current: { matched: { gameId: 102, source: 'automatic' } },
           ...overrides,
@@ -286,6 +290,40 @@ describe('Dialogs Feature Tests', () => {
       });
     });
 
+    it('keeps focus on the option list when a new snapshot arrives', async () => {
+      const { queryClient } = renderWithProviders(
+        <MatchDialog />,
+        makeMatchSnapshot(),
+        'en',
+      );
+
+      // Let the dialog's opening focus settle before the option list takes focus.
+      await waitFor(() => {
+        expect(screen.getByTestId('match-search-input')).toHaveFocus();
+      });
+      const candidate = screen.getByTestId('candidate-101');
+      candidate.focus();
+      expect(document.activeElement).toBe(candidate);
+
+      // Selecting an option arrives as a fresh dialog view. That update must not
+      // pull focus back to the search field, or the next arrow key would be lost.
+      const next = makeMatchSnapshot();
+      next.library!.matchDialog!.selected =
+        next.library!.matchDialog!.candidates[0];
+      act(() => {
+        queryClient.setQueryData(SNAPSHOT_QUERY_KEY, next);
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('match-preview')).toHaveTextContent(
+          'Hades II',
+        );
+      });
+
+      expect(document.activeElement).toBe(candidate);
+      expect(screen.getByTestId('match-search-input')).not.toHaveFocus();
+    });
+
     it('renders covers from the asset protocol and never from a remote result URL', () => {
       const snapshot = makeMatchSnapshot();
       const dialog = snapshot.library!.matchDialog!;
@@ -370,6 +408,126 @@ describe('Dialogs Feature Tests', () => {
       expect(screen.getByTestId('match-options-container')).toHaveTextContent(
         '1 result',
       );
+    });
+
+    const gamecubeFilter = {
+      platform: 'gamecube',
+      label: 'GameCube',
+      aliases: ['NGC', 'GC', 'GCN', 'GameCube'],
+      enabled: true,
+    };
+
+    it('shows the derived platform filter, on by default, and sends the toggle', () => {
+      const libraryInputSpy = vi.spyOn(commands, 'libraryInput');
+      const { unmount } = renderWithProviders(
+        <MatchDialog />,
+        makeMatchSnapshot({ platformFilter: gamecubeFilter, filteredOut: 1 }),
+        'en',
+      );
+
+      expect(screen.getByTestId('match-platform-filter')).toHaveTextContent(
+        'Platform: GameCube',
+      );
+      const platformSwitch = screen.getByRole('switch', {
+        name: 'Platform: GameCube',
+      });
+      expect(platformSwitch).toBeChecked();
+
+      fireEvent.click(platformSwitch);
+      expect(libraryInputSpy).toHaveBeenCalledWith({
+        setMatchPlatformFilter: { enabled: false },
+      });
+
+      fireEvent.click(screen.getByTestId('match-show-all-btn'));
+      expect(libraryInputSpy).toHaveBeenCalledWith({
+        setMatchPlatformFilter: { enabled: false },
+      });
+
+      unmount();
+
+      renderWithProviders(
+        <MatchDialog />,
+        makeMatchSnapshot({ platformFilter: gamecubeFilter }),
+        'pt-BR',
+      );
+      expect(screen.getByTestId('match-platform-filter')).toHaveTextContent(
+        'Plataforma: GameCube',
+      );
+      expect(screen.getByTestId('match-show-all-btn')).toHaveTextContent(
+        'Mostrar tudo',
+      );
+    });
+
+    it('explains a filtered-empty answer and offers show all instead of a failed search', () => {
+      const libraryInputSpy = vi.spyOn(commands, 'libraryInput');
+      const { unmount } = renderWithProviders(
+        <MatchDialog />,
+        makeMatchSnapshot({
+          candidates: [],
+          results: [],
+          selected: null,
+          platformFilter: gamecubeFilter,
+          filteredOut: 2,
+        }),
+        'en',
+      );
+
+      const notice = screen.getByTestId('match-filtered-empty-notice');
+      expect(notice).toHaveTextContent('No GameCube results');
+      expect(notice).toHaveTextContent('Show all');
+      expect(screen.queryByTestId('match-no-results-notice')).not.toBeInTheDocument();
+      expect(screen.getByTestId('match-search-input')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId('match-filtered-empty-show-all'));
+      expect(libraryInputSpy).toHaveBeenCalledWith({
+        setMatchPlatformFilter: { enabled: false },
+      });
+
+      unmount();
+
+      const pt = renderWithProviders(
+        <MatchDialog />,
+        makeMatchSnapshot({
+          candidates: [],
+          results: [],
+          selected: null,
+          platformFilter: gamecubeFilter,
+          filteredOut: 2,
+        }),
+        'pt-BR',
+      );
+      expect(screen.getByTestId('match-filtered-empty-notice')).toHaveTextContent(
+        'Nenhum resultado de GameCube',
+      );
+
+      pt.unmount();
+
+      // A failed search keeps its own error and does not look like a narrowed answer.
+      renderWithProviders(
+        <MatchDialog />,
+        makeMatchSnapshot({
+          candidates: [],
+          results: [],
+          selected: null,
+          platformFilter: gamecubeFilter,
+          filteredOut: 2,
+          error: 'failed',
+        }),
+        'en',
+      );
+      expect(screen.getByTestId('match-error-notice')).toBeInTheDocument();
+      expect(
+        screen.queryByTestId('match-filtered-empty-notice'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('shows no platform filter for an entry without a declared platform', () => {
+      renderWithProviders(<MatchDialog />, makeMatchSnapshot(), 'en');
+
+      expect(screen.queryByTestId('match-platform-filter')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('match-filtered-empty-notice'),
+      ).not.toBeInTheDocument();
     });
 
     it('renders search error notices and searchBlocked notice in en and pt-BR', () => {

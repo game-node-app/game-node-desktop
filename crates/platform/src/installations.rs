@@ -1,17 +1,307 @@
-//! Worker-only executable inspection and direct Windows launch.
+//! Worker-only executable inspection and custom launch adapters.
+#[cfg(any(windows, target_os = "linux", test))]
+use gamenode_core::drm_free::LaunchEnvironmentDelta;
 use gamenode_core::drm_free::{
-    Evidence, InstallationHost, LaunchEnvironment, LocalError, Registration,
+    CustomLaunchCommand, Evidence, InstallationHost, LaunchEnvironment, LocalError, Registration,
 };
 
 /// Adds a port's provenance environment to the command that launches it (design D7).
 ///
 /// The variables are added to the inherited environment; the launcher's own variables stay.
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "linux", test))]
 fn apply_environment(command: &mut std::process::Command, environment: &LaunchEnvironment) {
     command.envs(environment);
 }
+
+#[cfg(any(windows, target_os = "linux", test))]
+fn apply_environment_delta(
+    command: &mut std::process::Command,
+    environment: &LaunchEnvironmentDelta,
+) -> Result<(), LocalError> {
+    if !environment.validate() {
+        return Err(LocalError::InvalidTarget);
+    }
+    command.env_clear();
+    for (key, value) in std::env::vars_os().filter(|(key, _)| safe_game_environment_key(key)) {
+        command.env(key, value);
+    }
+    command.envs(&environment.set);
+    for key in &environment.unset {
+        command.env_remove(key);
+    }
+    Ok(())
+}
+
+#[cfg(any(windows, target_os = "linux", test))]
+fn safe_game_environment_key(key: &std::ffi::OsStr) -> bool {
+    let key = key.to_string_lossy();
+    #[cfg(windows)]
+    {
+        matches!(
+            key.to_ascii_uppercase().as_str(),
+            "PATH"
+                | "PATHEXT"
+                | "SYSTEMROOT"
+                | "WINDIR"
+                | "TEMP"
+                | "TMP"
+                | "USERPROFILE"
+                | "HOMEDRIVE"
+                | "HOMEPATH"
+                | "APPDATA"
+                | "LOCALAPPDATA"
+                | "PROGRAMDATA"
+                | "COMSPEC"
+                | "NUMBER_OF_PROCESSORS"
+                | "PROCESSOR_ARCHITECTURE"
+                | "PROCESSOR_IDENTIFIER"
+                | "PROCESSOR_LEVEL"
+                | "PROCESSOR_REVISION"
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        key == "PATH"
+            || key == "HOME"
+            || key == "USER"
+            || key == "LOGNAME"
+            || key == "LANG"
+            || key == "DISPLAY"
+            || key == "WAYLAND_DISPLAY"
+            || key == "XAUTHORITY"
+            || key.starts_with("QT_")
+            || key.starts_with("LC_")
+            || key.starts_with("XDG_")
+            || key == "DBUS_SESSION_BUS_ADDRESS"
+    }
+}
+
+#[cfg(any(windows, target_os = "linux", test))]
+fn custom_command(
+    executable: &str,
+    arguments: &[String],
+    working_directory: &str,
+    environment: &LaunchEnvironmentDelta,
+) -> Result<std::process::Command, LocalError> {
+    if executable.is_empty()
+        || executable.contains('\0')
+        || working_directory.is_empty()
+        || working_directory.contains('\0')
+        || arguments.iter().any(|argument| argument.contains('\0'))
+    {
+        return Err(LocalError::InvalidTarget);
+    }
+    let mut command = std::process::Command::new(executable);
+    command.args(arguments).current_dir(working_directory);
+    apply_environment_delta(&mut command, environment)?;
+    Ok(command)
+}
 #[derive(Default)]
 pub struct WindowsInstallations;
+
+/// Linux executable inspection and direct launch, including explicit wrapper recipes such as
+/// Proton. The launch plan is already resolved and reviewed by the host before this adapter runs.
+#[derive(Default)]
+pub struct LinuxInstallations;
+
+#[cfg(target_os = "linux")]
+fn linux_canonical(path: &str) -> Result<std::path::PathBuf, LocalError> {
+    std::fs::canonicalize(path).map_err(|_| LocalError::InvalidTarget)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_identity(path: &std::path::Path) -> Result<String, LocalError> {
+    use std::os::unix::{fs::MetadataExt, fs::PermissionsExt};
+    let metadata = std::fs::metadata(path).map_err(|_| LocalError::InvalidTarget)?;
+    if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
+        return Err(LocalError::InvalidTarget);
+    }
+    Ok(format!(
+        "linux:{}:{}:{}:{}:{}:{}:{}:{}",
+        metadata.dev(),
+        metadata.ino(),
+        metadata.mode() & 0o7777,
+        metadata.len(),
+        metadata.mtime(),
+        metadata.mtime_nsec(),
+        metadata.ctime(),
+        metadata.ctime_nsec(),
+    ))
+}
+
+#[cfg(target_os = "linux")]
+impl LinuxInstallations {
+    fn spawn_custom(&self, request: &CustomLaunchCommand) -> Result<(), LocalError> {
+        let executable = linux_canonical(&request.executable)?;
+        if linux_identity(&executable)? != request.file_identity {
+            return Err(LocalError::InvalidTarget);
+        }
+        let working = linux_canonical(&request.working_directory)?;
+        if !working.is_dir() {
+            return Err(LocalError::InvalidTarget);
+        }
+        let mut command = custom_command(
+            &executable.to_string_lossy(),
+            &request.arguments,
+            &working.to_string_lossy(),
+            &request.environment,
+        )?;
+        command
+            .spawn()
+            .map_err(|error| LocalError::Failed(error.to_string()))?;
+        Ok(())
+    }
+}
+
+impl InstallationHost for LinuxInstallations {
+    fn inspect(&self, executable: &str) -> Result<Registration, LocalError> {
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = executable;
+            Err(LocalError::Unsupported)
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let path = linux_canonical(executable)?;
+            let file_identity = linux_identity(&path)?;
+            let root = path
+                .parent()
+                .ok_or(LocalError::InvalidTarget)?
+                .to_string_lossy()
+                .into_owned();
+            let executable = path.to_string_lossy().into_owned();
+            let title = path
+                .file_stem()
+                .ok_or(LocalError::InvalidTarget)?
+                .to_string_lossy()
+                .into_owned();
+            Ok(Registration {
+                id: crate::random::session_id(),
+                title,
+                executable: executable.clone(),
+                file_identity,
+                root: root.clone(),
+                working_directory: root,
+                arguments: vec![],
+                gameplay: vec![executable],
+                launchers: vec![],
+                revision: 1,
+                removed: false,
+                rediscovery_allowed: false,
+                transferred_from: None,
+                custom_cover: None,
+                available: true,
+            })
+        }
+    }
+
+    fn validate_registration(
+        &self,
+        registration: &Registration,
+    ) -> Result<Registration, LocalError> {
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = registration;
+            Err(LocalError::Unsupported)
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let executable = linux_canonical(&registration.executable)?;
+            let root = linux_canonical(&registration.root)?;
+            let working = linux_canonical(&registration.working_directory)?;
+            if registration.removed
+                || !root.is_dir()
+                || !working.is_dir()
+                || !executable.starts_with(&root)
+                || linux_identity(&executable)? != registration.file_identity
+            {
+                return Err(LocalError::InvalidTarget);
+            }
+            let mut result = registration.clone();
+            result.executable = executable.to_string_lossy().into_owned();
+            result.root = root.to_string_lossy().into_owned();
+            result.working_directory = working.to_string_lossy().into_owned();
+            Ok(result)
+        }
+    }
+
+    fn launch(&self, registration: &Registration) -> Result<(), LocalError> {
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = registration;
+            Err(LocalError::Unsupported)
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let registration = self.validate_registration(registration)?;
+            let mut command = std::process::Command::new(&registration.executable);
+            command
+                .args(&registration.arguments)
+                .current_dir(&registration.working_directory);
+            command
+                .spawn()
+                .map_err(|error| LocalError::Failed(error.to_string()))?;
+            Ok(())
+        }
+    }
+
+    fn launch_with_environment(
+        &self,
+        registration: &Registration,
+        environment: &LaunchEnvironment,
+    ) -> Result<(), LocalError> {
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (registration, environment);
+            Err(LocalError::Unsupported)
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let registration = self.validate_registration(registration)?;
+            let mut command = std::process::Command::new(&registration.executable);
+            command
+                .args(&registration.arguments)
+                .current_dir(&registration.working_directory);
+            apply_environment(&mut command, environment);
+            command
+                .spawn()
+                .map_err(|error| LocalError::Failed(error.to_string()))?;
+            Ok(())
+        }
+    }
+
+    fn launch_custom(&self, request: &CustomLaunchCommand) -> Result<(), LocalError> {
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = request;
+            Err(LocalError::Unsupported)
+        }
+        #[cfg(target_os = "linux")]
+        {
+            self.spawn_custom(request)
+        }
+    }
+
+    fn evidence(&self, registration: &Registration) -> Result<Vec<Evidence>, LocalError> {
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = registration;
+            Err(LocalError::Unsupported)
+        }
+        #[cfg(target_os = "linux")]
+        {
+            Ok(vec![Evidence {
+                kind: gamenode_core::drm_free::EvidenceKind::Executable,
+                value: std::path::Path::new(&registration.executable)
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned(),
+                strong: false,
+            }])
+        }
+    }
+}
 #[cfg(windows)]
 pub(crate) fn canonical(path: &str) -> Result<std::path::PathBuf, LocalError> {
     std::fs::canonicalize(path)
@@ -129,6 +419,30 @@ impl WindowsInstallations {
         command
             .spawn()
             .map_err(|e| LocalError::Failed(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Starts a fully resolved custom executable after repeating identity checks on the worker.
+    #[cfg(windows)]
+    fn spawn_custom(&self, request: &CustomLaunchCommand) -> Result<(), LocalError> {
+        let path = canonical(&request.executable)?;
+        validate(&path)?;
+        if identity(&path)? != request.file_identity {
+            return Err(LocalError::InvalidTarget);
+        }
+        let working = canonical(&request.working_directory)?;
+        if !working.is_dir() {
+            return Err(LocalError::InvalidTarget);
+        }
+        let mut command = custom_command(
+            &path.to_string_lossy(),
+            &request.arguments,
+            &working.to_string_lossy(),
+            &request.environment,
+        )?;
+        command
+            .spawn()
+            .map_err(|error| LocalError::Failed(error.to_string()))?;
         Ok(())
     }
 }
@@ -276,6 +590,17 @@ impl InstallationHost for WindowsInstallations {
         #[cfg(windows)]
         {
             self.spawn(registration, environment)
+        }
+    }
+    fn launch_custom(&self, request: &CustomLaunchCommand) -> Result<(), LocalError> {
+        #[cfg(not(windows))]
+        {
+            let _ = request;
+            Err(LocalError::Unsupported)
+        }
+        #[cfg(windows)]
+        {
+            self.spawn_custom(request)
         }
     }
     fn evidence(&self, registration: &Registration) -> Result<Vec<Evidence>, LocalError> {
@@ -505,6 +830,100 @@ pub fn pick_save_location(folder: bool) -> Result<Option<String>, LocalError> {
     pick_folder(None)
 }
 
+#[cfg(test)]
+mod custom_launch_tests {
+    use super::*;
+
+    #[test]
+    fn spawned_fixture_receives_literal_arguments_cwd_and_environment_delta() {
+        let directory = tempfile::tempdir().unwrap();
+        let interpreter = std::process::Command::new("python3")
+            .args(["-c", "import sys; print(sys.executable)"])
+            .output()
+            .expect("Python is available to the repository tooling");
+        assert!(interpreter.status.success());
+        let interpreter = String::from_utf8(interpreter.stdout).unwrap();
+        let interpreter = interpreter.trim();
+        let script = "import json,os,sys; print(json.dumps({'executable':sys.executable, 'argv':sys.argv[1:], 'cwd':os.getcwd(), 'set':os.environ.get('GAMENODE_TEST_SET'), 'unset':'PATH' not in os.environ}))";
+        let arguments = vec![
+            "-c".into(),
+            script.into(),
+            "space and & literal".into(),
+            "$(not-a-shell)".into(),
+        ];
+        let environment = LaunchEnvironmentDelta {
+            set: LaunchEnvironment::from([("GAMENODE_TEST_SET".into(), "one value".into())]),
+            unset: ["PATH".into()].into(),
+        };
+        let mut command = custom_command(
+            interpreter,
+            &arguments,
+            &directory.path().to_string_lossy(),
+            &environment,
+        )
+        .unwrap();
+        // Process creation and waiting happen on a worker, matching the production contract.
+        let output = std::thread::spawn(move || command.output())
+            .join()
+            .expect("launch worker should finish")
+            .expect("fixture process should start without a shell");
+
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["executable"], interpreter);
+        assert_eq!(
+            result["argv"],
+            serde_json::json!(["space and & literal", "$(not-a-shell)"])
+        );
+        assert_eq!(result["cwd"], directory.path().to_string_lossy().as_ref());
+        assert_eq!(result["set"], "one value");
+        assert_eq!(result["unset"], true);
+    }
+
+    #[test]
+    fn invalid_environment_deltas_are_rejected_before_process_creation() {
+        let invalid_name = LaunchEnvironmentDelta {
+            set: LaunchEnvironment::from([("BAD=KEY".into(), "value".into())]),
+            unset: Default::default(),
+        };
+        assert!(!invalid_name.validate());
+        assert!(custom_command("python3", &[], ".", &invalid_name).is_err());
+
+        let credential_name = LaunchEnvironmentDelta {
+            set: LaunchEnvironment::from([("STEAM_SESSION".into(), "value".into())]),
+            unset: Default::default(),
+        };
+        assert!(!credential_name.validate());
+    }
+
+    #[test]
+    fn inherited_custom_launch_environment_is_restricted_to_host_allowlisted_keys() {
+        assert!(safe_game_environment_key(std::ffi::OsStr::new("PATH")));
+        #[cfg(not(windows))]
+        assert!(safe_game_environment_key(std::ffi::OsStr::new("HOME")));
+        #[cfg(not(windows))]
+        {
+            assert!(safe_game_environment_key(std::ffi::OsStr::new(
+                "XAUTHORITY"
+            )));
+            assert!(safe_game_environment_key(std::ffi::OsStr::new(
+                "QT_QPA_PLATFORM"
+            )));
+        }
+        assert!(!safe_game_environment_key(std::ffi::OsStr::new(
+            "STEAM_SESSION"
+        )));
+        assert!(!safe_game_environment_key(std::ffi::OsStr::new(
+            "TAURI_PLUGIN_TOKEN"
+        )));
+        assert!(!safe_game_environment_key(std::ffi::OsStr::new("RUST_LOG")));
+    }
+}
+
 fn pick_folder(initial: Option<&str>) -> Result<Option<String>, LocalError> {
     #[cfg(not(windows))]
     {
@@ -593,7 +1012,9 @@ mod tests {
     #[test]
     #[cfg(not(windows))]
     fn unsupported_on_linux() {
-        use gamenode_core::drm_free::{InstallationHost, Registration};
+        use gamenode_core::drm_free::{
+            CustomLaunchCommand, InstallationHost, LaunchEnvironmentDelta, Registration,
+        };
         let host = super::WindowsInstallations;
         let registration = Registration {
             id: "test".into(),
@@ -629,6 +1050,16 @@ mod tests {
                 &registration,
                 &gamenode_core::drm_free::LaunchEnvironment::new()
             ),
+            Err(super::LocalError::Unsupported)
+        );
+        assert_eq!(
+            host.launch_custom(&CustomLaunchCommand {
+                executable: "game.exe".into(),
+                file_identity: "1:2:3".into(),
+                arguments: vec!["--profile".into()],
+                working_directory: "/game".into(),
+                environment: LaunchEnvironmentDelta::default(),
+            }),
             Err(super::LocalError::Unsupported)
         );
         assert_eq!(
@@ -840,5 +1271,193 @@ mod windows_tests {
                 .iter()
                 .any(|e| e.kind == gamenode_core::drm_free::EvidenceKind::Executable)
         );
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_tests {
+    use super::*;
+    use gamenode_core::drm_free::LaunchEnvironmentDelta;
+    use std::{collections::BTreeSet, os::unix::fs::PermissionsExt};
+
+    fn executable(directory: &std::path::Path, name: &str) -> std::path::PathBuf {
+        let path = directory.join(name);
+        std::fs::write(
+            &path,
+            "#!/bin/sh\nprintf '%s\\n' \"$PWD\" \"$@\" \"$PLAN_MARKER\" > \"$CAPTURE\"\n",
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&path, permissions).unwrap();
+        path
+    }
+
+    fn wait_for_capture(path: &std::path::Path) -> String {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            if let Ok(result) = std::fs::read_to_string(path) {
+                return result;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "launch fixture timed out"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn direct_linux_launch_keeps_approved_identity_and_reviewed_fields() {
+        let directory = tempfile::tempdir().unwrap();
+        let working = directory.path().join("game folder");
+        std::fs::create_dir(&working).unwrap();
+        let game = executable(&working, "game");
+        let capture = directory.path().join("direct.out");
+        let host = LinuxInstallations;
+        let approved = host.inspect(game.to_str().unwrap()).unwrap();
+        let request = CustomLaunchCommand {
+            executable: approved.executable.clone(),
+            file_identity: approved.file_identity.clone(),
+            arguments: vec!["--profile".into(), "two words".into(), "semi;colon".into()],
+            working_directory: working.to_string_lossy().into_owned(),
+            environment: LaunchEnvironmentDelta {
+                set: [
+                    ("CAPTURE".into(), capture.to_string_lossy().into_owned()),
+                    ("PLAN_MARKER".into(), "reviewed".into()),
+                ]
+                .into(),
+                unset: BTreeSet::new(),
+            },
+        };
+        host.launch_custom(&request).unwrap();
+        assert_eq!(
+            wait_for_capture(&capture),
+            format!(
+                "{}\n--profile\ntwo words\nsemi;colon\nreviewed\n",
+                working.display()
+            )
+        );
+
+        let mut stale = request;
+        stale.file_identity.push_str(":stale");
+        assert_eq!(host.launch_custom(&stale), Err(LocalError::InvalidTarget));
+    }
+
+    #[test]
+    fn proton_style_wrapper_receives_the_exact_reviewed_game_arguments_and_context() {
+        let directory = tempfile::tempdir().unwrap();
+        let working = directory.path().join("prefix");
+        std::fs::create_dir(&working).unwrap();
+        let wrapper = executable(&working, "approved-proton-wrapper");
+        let capture = directory.path().join("wrapper.out");
+        let host = LinuxInstallations;
+        let approved = host.inspect(wrapper.to_str().unwrap()).unwrap();
+        let request = CustomLaunchCommand {
+            executable: approved.executable,
+            file_identity: approved.file_identity,
+            arguments: vec![
+                "run".into(),
+                "--prefix".into(),
+                "/approved/prefix with spaces".into(),
+                "--".into(),
+                "Z:/Games/Example/game.exe".into(),
+                "--name".into(),
+                "value with spaces".into(),
+            ],
+            working_directory: working.to_string_lossy().into_owned(),
+            environment: LaunchEnvironmentDelta {
+                set: [
+                    ("CAPTURE".into(), capture.to_string_lossy().into_owned()),
+                    ("PLAN_MARKER".into(), "proton-reviewed".into()),
+                ]
+                .into(),
+                unset: BTreeSet::new(),
+            },
+        };
+        host.launch_custom(&request).unwrap();
+        assert_eq!(
+            wait_for_capture(&capture),
+            format!(
+                "{}\nrun\n--prefix\n/approved/prefix with spaces\n--\nZ:/Games/Example/game.exe\n--name\nvalue with spaces\nproton-reviewed\n",
+                working.display()
+            )
+        );
+    }
+
+    #[test]
+    fn linux_custom_launch_rejects_non_executable_and_missing_working_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let non_executable = directory.path().join("not-executable");
+        std::fs::write(&non_executable, "data").unwrap();
+        assert_eq!(
+            LinuxInstallations.inspect(non_executable.to_str().unwrap()),
+            Err(LocalError::InvalidTarget)
+        );
+
+        let game = executable(directory.path(), "game");
+        let approved = LinuxInstallations.inspect(game.to_str().unwrap()).unwrap();
+        let request = CustomLaunchCommand {
+            executable: approved.executable,
+            file_identity: approved.file_identity,
+            arguments: vec![],
+            working_directory: directory
+                .path()
+                .join("missing")
+                .to_string_lossy()
+                .into_owned(),
+            environment: LaunchEnvironmentDelta::default(),
+        };
+        assert_eq!(
+            LinuxInstallations.launch_custom(&request),
+            Err(LocalError::InvalidTarget)
+        );
+    }
+
+    #[test]
+    fn missing_wrapper_and_unsupported_environment_fields_fail_before_spawn() {
+        let directory = tempfile::tempdir().unwrap();
+        let game = executable(directory.path(), "game");
+        let approved = LinuxInstallations.inspect(game.to_str().unwrap()).unwrap();
+        let missing_output = directory.path().join("should-not-exist.out");
+        let request = CustomLaunchCommand {
+            executable: directory
+                .path()
+                .join("removed-wrapper")
+                .to_string_lossy()
+                .into_owned(),
+            file_identity: approved.file_identity.clone(),
+            arguments: vec!["run".into()],
+            working_directory: directory.path().to_string_lossy().into_owned(),
+            environment: LaunchEnvironmentDelta {
+                set: [(
+                    "CAPTURE".into(),
+                    missing_output.to_string_lossy().into_owned(),
+                )]
+                .into(),
+                unset: BTreeSet::new(),
+            },
+        };
+        assert_eq!(
+            LinuxInstallations.launch_custom(&request),
+            Err(LocalError::InvalidTarget)
+        );
+        assert!(!missing_output.exists());
+
+        let unsupported_environment = CustomLaunchCommand {
+            executable: approved.executable,
+            file_identity: approved.file_identity,
+            arguments: vec![],
+            working_directory: directory.path().to_string_lossy().into_owned(),
+            environment: LaunchEnvironmentDelta {
+                set: [("STEAM_SESSION".into(), "must-not-leak".into())].into(),
+                unset: BTreeSet::new(),
+            },
+        };
+        assert_eq!(
+            LinuxInstallations.launch_custom(&unsupported_environment),
+            Err(LocalError::InvalidTarget)
+        );
+        assert!(!missing_output.exists());
     }
 }

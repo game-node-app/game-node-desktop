@@ -8,10 +8,12 @@ use std::sync::{Arc, Mutex};
 
 use gamenode_core::game_api::{AccountEntry, Collection};
 use gamenode_core::library::{
-    AccountLibrary, AutoMatch, CatalogError, CatalogRecord, CatalogUpdate, ChosenMatch,
-    EntryStatus, FavoriteRecord, GameRecord, LastAccount, LibraryCache, LibraryLayout,
-    LibraryStore, ProviderScanState, SavedView, SavedViewPayload, StoreAccount, StoredEntry,
-    entry_key,
+    AccountLibrary, ArtworkOverride, ArtworkWrite, AutoMatch, CatalogError, CatalogRecord,
+    CatalogUpdate, ChoiceSource, ChosenMatch, DisplayOverride, DisplayWrite, EntryStatus,
+    FavoriteRecord, GameRecord, LastAccount, LaunchRecipeSelection, LaunchRecipeSelectionWrite,
+    LibraryCache, LibraryLayout, LibraryStore, ProviderScanState, RuntimeAvailabilityEntry,
+    RuntimeContentBinding, RuntimeMutation, RuntimeResource, SavedView, SavedViewPayload,
+    StoreAccount, StoredEntry, entry_key,
 };
 use gamenode_core::ports::StorageError;
 use gamenode_core::provider::Record;
@@ -36,6 +38,27 @@ fn db_id(game_id: u64) -> Result<i64, StorageError> {
 
 fn game_id(raw: i64) -> Option<u64> {
     u64::try_from(raw).ok()
+}
+
+fn bump_runtime_catalog_revision(
+    tx: &rusqlite::Transaction<'_>,
+    owner_key: &str,
+) -> Result<u64, StorageError> {
+    tx.execute(
+        "INSERT INTO plugin_runtime_catalog_state (owner_key, catalog_revision)
+         VALUES (?1, 1)
+         ON CONFLICT(owner_key) DO UPDATE SET
+            catalog_revision = plugin_runtime_catalog_state.catalog_revision + 1",
+        [owner_key],
+    )
+    .map_err(failed)?;
+    tx.query_row(
+        "SELECT catalog_revision FROM plugin_runtime_catalog_state WHERE owner_key = ?1",
+        [owner_key],
+        |row| row.get::<_, i64>(0),
+    )
+    .map_err(failed)
+    .and_then(|revision| u64::try_from(revision).map_err(failed))
 }
 
 impl SqliteLibraryStore {
@@ -100,7 +123,7 @@ fn read_catalog_error(provider: &str, column: &str, value: Option<String>) -> Op
 fn load_entries(conn: &Connection) -> rusqlite::Result<Vec<StoredEntry>> {
     let mut stmt = conn.prepare(
         "SELECT key, provider, store_id, name, install_dir, fields_json, installed, owned,
-                family_shared, first_seen, last_seen
+                family_shared, first_seen, last_seen, target_json
          FROM library_entries ORDER BY key",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -120,11 +143,25 @@ fn load_entries(conn: &Connection) -> rusqlite::Result<Vec<StoredEntry>> {
             install_dir: row.get(4)?,
             fields,
             installed: row.get::<_, i64>(6)? != 0,
+            target: read_target(row.get::<_, Option<String>>(11)?),
             first_seen: row.get(9)?,
             last_seen: row.get(10)?,
         })
     })?;
     rows.collect()
+}
+
+/// A stored detected target, or `None` when the entry has none. An unreadable value is dropped
+/// with a warning: the entry stays usable and the next scan registers the target again.
+fn read_target(value: Option<String>) -> Option<gamenode_core::library::DetectedTarget> {
+    let value = value?;
+    match serde_json::from_str(&value) {
+        Ok(target) => Some(target),
+        Err(error) => {
+            tracing::warn!(%error, "ignored an unreadable detected target");
+            None
+        }
+    }
 }
 
 /// Which catalog fact set a phase covers. The SQL columns keep their historical
@@ -512,7 +549,7 @@ impl LibraryStore for SqliteLibraryStore {
             None => Vec::new(),
             Some(account) => conn
                 .prepare(
-                    "SELECT entry_key, game_id, chosen_at FROM chosen_matches
+                    "SELECT entry_key, game_id, chosen_at, source FROM chosen_matches
                      WHERE account_id = ?1 ORDER BY entry_key",
                 )
                 .map_err(failed)?
@@ -521,6 +558,8 @@ impl LibraryStore for SqliteLibraryStore {
                         entry_key: row.get(0)?,
                         game_id: row.get::<_, Option<i64>>(1)?.and_then(game_id),
                         chosen_at: row.get(2)?,
+                        // The column is constrained to the known values.
+                        source: ChoiceSource::parse(&row.get::<_, String>(3)?).unwrap_or_default(),
                     })
                 })
                 .map_err(failed)?
@@ -578,8 +617,26 @@ impl LibraryStore for SqliteLibraryStore {
             })
             .unwrap_or_default();
 
-        // Organization and the account library are per account. Signing out (no account) keeps
-        // the rows for that account's next sign-in but exposes nothing.
+        let display_overrides = conn
+            .prepare("SELECT entry_key, display_name, revision FROM library_display_overrides ORDER BY entry_key")
+            .map_err(failed)?
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, i64>(2)?)))
+            .map_err(failed)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(failed)?
+            .into_iter()
+            .filter_map(|(entry_key, display_name, revision)| Some(DisplayOverride { entry_key, display_name, revision: u64::try_from(revision).ok()? }))
+            .collect();
+        let artwork_overrides = conn
+            .prepare("SELECT entry_key, file, revision FROM library_artwork_overrides ORDER BY entry_key")
+            .map_err(failed)?
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, i64>(2)?)))
+            .map_err(failed)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(failed)?
+            .into_iter()
+            .filter_map(|(entry_key, file, revision)| Some(ArtworkOverride { entry_key, file, revision: u64::try_from(revision).ok()? }))
+            .collect();
         let (saved_views, hidden, account_library) = match account_id {
             None => (Vec::new(), Vec::new(), None),
             Some(account) => (
@@ -597,15 +654,44 @@ impl LibraryStore for SqliteLibraryStore {
             favorites,
             games,
             excluded,
+            display_overrides,
+            artwork_overrides,
             saved_views,
             hidden,
             account_library,
         })
     }
 
-    fn save_scan(&self, provider: &str, records: &[Record], now: i64) -> Result<(), StorageError> {
+    fn save_scan(
+        &self,
+        provider: &str,
+        records: &[Record],
+        targets: &BTreeMap<String, gamenode_core::library::TargetSpec>,
+        now: i64,
+    ) -> Result<(), StorageError> {
         let mut conn = self.conn();
         let tx = conn.transaction().map_err(failed)?;
+        // Targets the scan does not report stay stored but unavailable, so a later scan can offer
+        // repair and an unavailable target can never launch.
+        let existing = {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT key, target_json FROM library_entries
+                     WHERE provider = ?1 AND target_json IS NOT NULL",
+                )
+                .map_err(failed)?;
+            let rows = stmt
+                .query_map([provider], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(failed)?;
+            rows.collect::<rusqlite::Result<Vec<_>>>().map_err(failed)?
+        };
+        let reported: BTreeSet<String> = records
+            .iter()
+            .filter(|record| targets.contains_key(&record.id))
+            .map(|record| entry_key(provider, &record.id))
+            .collect();
         tx.execute(
             "UPDATE library_entries SET installed = 0 WHERE provider = ?1",
             [provider],
@@ -615,27 +701,77 @@ impl LibraryStore for SqliteLibraryStore {
             let mut upsert = tx
                 .prepare(
                     "INSERT INTO library_entries
-                        (key, provider, store_id, name, install_dir, fields_json, installed, first_seen, last_seen)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?7)
+                        (key, provider, store_id, name, install_dir, fields_json, installed, first_seen, last_seen, target_json)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?7, ?8)
                      ON CONFLICT(key) DO UPDATE SET
                         name = excluded.name,
                         install_dir = excluded.install_dir,
                         fields_json = excluded.fields_json,
                         installed = 1,
-                        last_seen = excluded.last_seen",
+                        last_seen = excluded.last_seen,
+                        target_json = excluded.target_json",
                 )
                 .map_err(failed)?;
+            let existing_targets: BTreeMap<&str, &str> = existing
+                .iter()
+                .map(|(key, json)| (key.as_str(), json.as_str()))
+                .collect();
             for record in records {
                 let fields = serde_json::to_string(&record.fields).map_err(failed)?;
+                let key = entry_key(provider, &record.id);
+                let prior = existing_targets
+                    .get(key.as_str())
+                    .and_then(|json| serde_json::from_str(json).ok());
+                let target = match targets.get(&record.id) {
+                    Some(spec) => Some(gamenode_core::library::DetectedTarget::reported(
+                        prior.as_ref(),
+                        spec.clone(),
+                        now,
+                    )),
+                    None => prior
+                        .as_ref()
+                        .map(|target| gamenode_core::library::DetectedTarget::missing(target, now)),
+                };
+                let target_json = target
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()
+                    .map_err(failed)?;
                 upsert
                     .execute(params![
-                        entry_key(provider, &record.id),
+                        key,
                         provider,
                         record.id,
                         record.name,
                         record.install_dir,
                         fields,
-                        now
+                        now,
+                        target_json
+                    ])
+                    .map_err(failed)?;
+            }
+        }
+        {
+            let mut clear = tx
+                .prepare(
+                    "UPDATE library_entries SET target_json = ?1
+                     WHERE key = ?2 AND target_json IS NOT NULL",
+                )
+                .map_err(failed)?;
+            for (key, json) in &existing {
+                if reported.contains(key) {
+                    continue;
+                }
+                let Ok(target) =
+                    serde_json::from_str::<gamenode_core::library::DetectedTarget>(json)
+                else {
+                    continue;
+                };
+                let missing = gamenode_core::library::DetectedTarget::missing(&target, now);
+                clear
+                    .execute(params![
+                        serde_json::to_string(&missing).map_err(failed)?,
+                        key
                     ])
                     .map_err(failed)?;
             }
@@ -647,6 +783,956 @@ impl LibraryStore for SqliteLibraryStore {
         )
         .map_err(failed)?;
         tx.commit().map_err(failed)
+    }
+
+    fn save_target_review(
+        &self,
+        entry_key: &str,
+        expected_revision: u64,
+        replacement: &gamenode_core::library::DetectedTarget,
+    ) -> Result<gamenode_core::library::TargetApproval, StorageError> {
+        use gamenode_core::library::TargetApproval;
+        let mut conn = self.conn();
+        let tx = conn.transaction().map_err(failed)?;
+        let stored: Option<Option<String>> = tx
+            .query_row(
+                "SELECT target_json FROM library_entries WHERE key = ?1",
+                [entry_key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(failed)?;
+        let Some(Some(json)) = stored else {
+            return Ok(TargetApproval::Missing);
+        };
+        let Ok(target) = serde_json::from_str::<gamenode_core::library::DetectedTarget>(&json)
+        else {
+            return Ok(TargetApproval::Missing);
+        };
+        if target.revision != expected_revision {
+            return Ok(TargetApproval::Conflict {
+                current: target.revision,
+            });
+        }
+        if replacement.revision < target.revision
+            || replacement.revision > target.revision.saturating_add(1)
+            || (replacement.spec != target.spec && replacement.revision == target.revision)
+            || !replacement.spec.validate_shape()
+        {
+            return Ok(TargetApproval::Conflict {
+                current: target.revision,
+            });
+        }
+        tx.execute(
+            "UPDATE library_entries SET target_json = ?1 WHERE key = ?2",
+            params![
+                serde_json::to_string(replacement).map_err(failed)?,
+                entry_key
+            ],
+        )
+        .map_err(failed)?;
+        tx.commit().map_err(failed)?;
+        Ok(TargetApproval::Applied {
+            revision: replacement.revision,
+        })
+    }
+
+    fn custom_launch_recipe(
+        &self,
+        owner_key: &str,
+        recipe_id: &str,
+    ) -> Result<Option<gamenode_core::library::CustomLaunchRecipe>, StorageError> {
+        let conn = self.conn();
+        let json: Option<String> = conn
+            .query_row(
+                "SELECT recipe_json FROM plugin_custom_launch_recipes
+                 WHERE owner_key = ?1 AND recipe_id = ?2",
+                params![owner_key, recipe_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(failed)?;
+        json.map(|json| serde_json::from_str(&json).map_err(failed))
+            .transpose()
+    }
+
+    fn save_custom_launch_recipe(
+        &self,
+        owner_key: &str,
+        recipe: &gamenode_core::library::CustomLaunchRecipe,
+    ) -> Result<gamenode_core::library::CustomLaunchMutation, StorageError> {
+        use gamenode_core::library::CustomLaunchMutation;
+        if owner_key.is_empty() || !recipe.validate() {
+            return Err(failed("invalid custom launch recipe"));
+        }
+        let mut conn = self.conn();
+        let tx = conn.transaction().map_err(failed)?;
+        let current: Option<u64> = tx
+            .query_row(
+                "SELECT revision FROM plugin_custom_launch_recipes
+                 WHERE owner_key = ?1 AND recipe_id = ?2",
+                params![owner_key, recipe.recipe_id],
+                |row| row.get::<_, i64>(0).map(|value| value as u64),
+            )
+            .optional()
+            .map_err(failed)?;
+        let expected = match current {
+            Some(revision) => revision
+                .checked_add(1)
+                .ok_or_else(|| failed("custom launch recipe revision is exhausted"))?,
+            None => 1,
+        };
+        if recipe.revision != expected {
+            return Ok(match current {
+                Some(current) => CustomLaunchMutation::Conflict { current },
+                None => CustomLaunchMutation::Conflict { current: 0 },
+            });
+        }
+        tx.execute(
+            "INSERT INTO plugin_custom_launch_recipes
+                (owner_key, recipe_id, installation_id, revision, recipe_json)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(owner_key, recipe_id) DO UPDATE SET
+                installation_id = excluded.installation_id,
+                revision = excluded.revision,
+                recipe_json = excluded.recipe_json",
+            params![
+                owner_key,
+                recipe.recipe_id,
+                recipe.installation_id,
+                i64::try_from(recipe.revision).map_err(failed)?,
+                serde_json::to_string(recipe).map_err(failed)?,
+            ],
+        )
+        .map_err(failed)?;
+        tx.commit().map_err(failed)?;
+        Ok(CustomLaunchMutation::Applied {
+            revision: recipe.revision,
+        })
+    }
+
+    fn remove_custom_launch_recipe(
+        &self,
+        owner_key: &str,
+        recipe_id: &str,
+        expected_revision: u64,
+    ) -> Result<gamenode_core::library::CustomLaunchMutation, StorageError> {
+        use gamenode_core::library::CustomLaunchMutation;
+        let mut conn = self.conn();
+        let tx = conn.transaction().map_err(failed)?;
+        let current: Option<u64> = tx
+            .query_row(
+                "SELECT revision FROM plugin_custom_launch_recipes
+                 WHERE owner_key = ?1 AND recipe_id = ?2",
+                params![owner_key, recipe_id],
+                |row| row.get::<_, i64>(0).map(|value| value as u64),
+            )
+            .optional()
+            .map_err(failed)?;
+        let Some(current) = current else {
+            return Ok(CustomLaunchMutation::Missing);
+        };
+        if current != expected_revision {
+            return Ok(CustomLaunchMutation::Conflict { current });
+        }
+        tx.execute(
+            "DELETE FROM plugin_custom_launch_recipes
+             WHERE owner_key = ?1 AND recipe_id = ?2 AND revision = ?3",
+            params![
+                owner_key,
+                recipe_id,
+                i64::try_from(expected_revision).map_err(failed)?
+            ],
+        )
+        .map_err(failed)?;
+        tx.commit().map_err(failed)?;
+        Ok(CustomLaunchMutation::Applied {
+            revision: expected_revision,
+        })
+    }
+
+    fn custom_launch_recipes(
+        &self,
+        owner_key: &str,
+        game_id: u64,
+    ) -> Result<Vec<gamenode_core::library::CustomLaunchRecipe>, StorageError> {
+        let conn = self.conn();
+        let mut statement = conn
+            .prepare(
+                "SELECT recipe_json FROM plugin_custom_launch_recipes
+                 WHERE owner_key = ?1 ORDER BY recipe_id",
+            )
+            .map_err(failed)?;
+        let rows = statement
+            .query_map([owner_key], |row| row.get::<_, String>(0))
+            .map_err(failed)?;
+        rows.map(|row| {
+            let json = row.map_err(failed)?;
+            let recipe: gamenode_core::library::CustomLaunchRecipe =
+                serde_json::from_str(&json).map_err(failed)?;
+            Ok((recipe.game_id == game_id).then_some(recipe))
+        })
+        .collect::<Result<Vec<_>, StorageError>>()
+        .map(|recipes| recipes.into_iter().flatten().collect())
+    }
+
+    fn launch_recipe_selection(
+        &self,
+        entry_key: &str,
+    ) -> Result<Option<LaunchRecipeSelection>, StorageError> {
+        self.conn()
+            .query_row(
+                "SELECT entry_key, owner_key, plugin_id, publisher_fingerprint, recipe_id,
+                        recipe_revision, base_target_revision, approved_plan_fingerprint
+                 FROM library_launch_recipe_selection WHERE entry_key = ?1",
+                [entry_key],
+                |row| {
+                    Ok(LaunchRecipeSelection {
+                        entry_key: row.get(0)?,
+                        owner_key: row.get(1)?,
+                        plugin_id: row.get(2)?,
+                        publisher_fingerprint: row.get(3)?,
+                        recipe_id: row.get(4)?,
+                        recipe_revision: row.get::<_, i64>(5)? as u64,
+                        base_target_revision: row.get::<_, i64>(6)? as u64,
+                        approved_plan_fingerprint: row.get(7)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(failed)
+    }
+
+    fn save_launch_recipe_selection(
+        &self,
+        selection: &LaunchRecipeSelection,
+        expected_target_revision: u64,
+    ) -> Result<LaunchRecipeSelectionWrite, StorageError> {
+        let mut conn = self.conn();
+        let tx = conn.transaction().map_err(failed)?;
+        let entry: Option<(String, Option<String>)> = tx
+            .query_row(
+                "SELECT li.installation_id, le.target_json
+                 FROM library_installations li
+                 JOIN library_entries le ON le.key = li.entry_key
+                 WHERE li.entry_key = ?1",
+                [&selection.entry_key],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(failed)?;
+        let Some((installation_id, target_json)) = entry else {
+            return Ok(LaunchRecipeSelectionWrite::RecipeMissing);
+        };
+        // A ROM store reports no detected target. Revision zero is a valid selection there; a
+        // runtime recipe is the launch. A provider with a target still needs that exact revision.
+        let target_revision = match target_json {
+            Some(target_json) => {
+                let target: gamenode_core::library::DetectedTarget =
+                    serde_json::from_str(&target_json).map_err(failed)?;
+                target.revision
+            }
+            None if expected_target_revision == 0 => 0,
+            None => return Ok(LaunchRecipeSelectionWrite::Conflict),
+        };
+        if target_revision != expected_target_revision
+            || selection.base_target_revision != expected_target_revision
+            || selection.entry_key.is_empty()
+            || selection.owner_key.is_empty()
+            || selection.plugin_id.is_empty()
+            || selection.publisher_fingerprint.is_empty()
+            || selection.recipe_id.is_empty()
+            || selection.recipe_revision == 0
+        {
+            return Ok(LaunchRecipeSelectionWrite::Conflict);
+        }
+        let recipe_json: Option<String> = tx
+            .query_row(
+                "SELECT recipe_json FROM plugin_custom_launch_recipes
+                 WHERE owner_key = ?1 AND recipe_id = ?2 AND installation_id = ?3
+                       AND revision = ?4",
+                params![
+                    selection.owner_key,
+                    selection.recipe_id,
+                    installation_id,
+                    selection.recipe_revision as i64,
+                ],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(failed)?;
+        let Some(recipe_json) = recipe_json else {
+            return Ok(LaunchRecipeSelectionWrite::RecipeMissing);
+        };
+        let recipe: gamenode_core::library::CustomLaunchRecipe =
+            serde_json::from_str(&recipe_json).map_err(failed)?;
+        if recipe.installation_id != installation_id
+            || recipe.base_target_revision != expected_target_revision
+            || !recipe.validate()
+        {
+            return Ok(LaunchRecipeSelectionWrite::Conflict);
+        }
+        tx.execute(
+            "INSERT INTO library_launch_recipe_selection
+                 (entry_key, owner_key, plugin_id, publisher_fingerprint, recipe_id,
+                  recipe_revision, base_target_revision, approved_plan_fingerprint)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, '')
+             ON CONFLICT(entry_key) DO UPDATE SET
+                 owner_key = excluded.owner_key,
+                 plugin_id = excluded.plugin_id,
+                 publisher_fingerprint = excluded.publisher_fingerprint,
+                 recipe_id = excluded.recipe_id,
+                 recipe_revision = excluded.recipe_revision,
+                 base_target_revision = excluded.base_target_revision,
+                 approved_plan_fingerprint = ''",
+            params![
+                selection.entry_key,
+                selection.owner_key,
+                selection.plugin_id,
+                selection.publisher_fingerprint,
+                selection.recipe_id,
+                selection.recipe_revision as i64,
+                selection.base_target_revision as i64,
+            ],
+        )
+        .map_err(failed)?;
+        tx.commit().map_err(failed)?;
+        Ok(LaunchRecipeSelectionWrite::Applied)
+    }
+
+    fn clear_launch_recipe_selection(
+        &self,
+        entry_key: &str,
+        expected_target_revision: u64,
+    ) -> Result<LaunchRecipeSelectionWrite, StorageError> {
+        let mut conn = self.conn();
+        let tx = conn.transaction().map_err(failed)?;
+        let target_json: Option<Option<String>> = tx
+            .query_row(
+                "SELECT target_json FROM library_entries WHERE key = ?1",
+                [entry_key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(failed)?;
+        let Some(target_json) = target_json else {
+            return Ok(LaunchRecipeSelectionWrite::RecipeMissing);
+        };
+        match target_json {
+            Some(target_json) => {
+                let target: gamenode_core::library::DetectedTarget =
+                    serde_json::from_str(&target_json).map_err(failed)?;
+                if target.revision != expected_target_revision {
+                    return Ok(LaunchRecipeSelectionWrite::Conflict);
+                }
+            }
+            None if expected_target_revision != 0 => {
+                return Ok(LaunchRecipeSelectionWrite::Conflict);
+            }
+            None => {}
+        }
+        tx.execute(
+            "DELETE FROM library_launch_recipe_selection WHERE entry_key = ?1",
+            [entry_key],
+        )
+        .map_err(failed)?;
+        tx.commit().map_err(failed)?;
+        Ok(LaunchRecipeSelectionWrite::Applied)
+    }
+
+    fn approve_launch_recipe_plan(
+        &self,
+        entry_key: &str,
+        recipe_id: &str,
+        recipe_revision: u64,
+        expected_target_revision: u64,
+        fingerprint: &str,
+    ) -> Result<LaunchRecipeSelectionWrite, StorageError> {
+        let mut conn = self.conn();
+        let tx = conn.transaction().map_err(failed)?;
+        let selection: Option<(u64, u64)> = tx
+            .query_row(
+                "SELECT recipe_revision, base_target_revision
+                 FROM library_launch_recipe_selection
+                 WHERE entry_key = ?1 AND recipe_id = ?2",
+                params![entry_key, recipe_id],
+                |row| Ok((row.get::<_, i64>(0)? as u64, row.get::<_, i64>(1)? as u64)),
+            )
+            .optional()
+            .map_err(failed)?;
+        let Some((current_recipe_revision, base_revision)) = selection else {
+            return Ok(LaunchRecipeSelectionWrite::RecipeMissing);
+        };
+        let target_json: Option<String> = tx
+            .query_row(
+                "SELECT target_json FROM library_entries WHERE key = ?1",
+                [entry_key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(failed)?
+            .flatten();
+        let Some(target_json) = target_json else {
+            return Ok(LaunchRecipeSelectionWrite::RecipeMissing);
+        };
+        let target: gamenode_core::library::DetectedTarget =
+            serde_json::from_str(&target_json).map_err(failed)?;
+        if current_recipe_revision != recipe_revision
+            || base_revision != expected_target_revision
+            || target.revision != expected_target_revision
+            || fingerprint.is_empty()
+        {
+            return Ok(LaunchRecipeSelectionWrite::Conflict);
+        }
+        tx.execute(
+            "UPDATE library_launch_recipe_selection SET approved_plan_fingerprint = ?2
+             WHERE entry_key = ?1",
+            params![entry_key, fingerprint],
+        )
+        .map_err(failed)?;
+        tx.commit().map_err(failed)?;
+        Ok(LaunchRecipeSelectionWrite::Applied)
+    }
+
+    fn runtime_resources(&self, owner_key: &str) -> Result<Vec<RuntimeResource>, StorageError> {
+        if owner_key.is_empty() {
+            return Err(failed("runtime owner is required"));
+        }
+        let conn = self.conn();
+        let mut statement = conn
+            .prepare(
+                "SELECT runtime_json FROM plugin_runtime_resources
+                 WHERE owner_key = ?1 ORDER BY runtime_id",
+            )
+            .map_err(failed)?;
+        let rows = statement
+            .query_map([owner_key], |row| row.get::<_, String>(0))
+            .map_err(failed)?;
+        rows.map(|row| {
+            let json = row.map_err(failed)?;
+            let runtime: RuntimeResource = serde_json::from_str(&json).map_err(failed)?;
+            if !runtime.validate() {
+                return Err(failed("stored runtime resource is invalid"));
+            }
+            Ok(runtime)
+        })
+        .collect()
+    }
+
+    fn runtime_resource(
+        &self,
+        owner_key: &str,
+        runtime_id: &str,
+    ) -> Result<Option<RuntimeResource>, StorageError> {
+        if owner_key.is_empty() || runtime_id.is_empty() {
+            return Err(failed("runtime owner and id are required"));
+        }
+        let conn = self.conn();
+        let json: Option<String> = conn
+            .query_row(
+                "SELECT runtime_json FROM plugin_runtime_resources
+                 WHERE owner_key = ?1 AND runtime_id = ?2",
+                params![owner_key, runtime_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(failed)?;
+        json.map(|json| {
+            let runtime: RuntimeResource = serde_json::from_str(&json).map_err(failed)?;
+            if runtime.validate() {
+                Ok(runtime)
+            } else {
+                Err(failed("stored runtime resource is invalid"))
+            }
+        })
+        .transpose()
+    }
+
+    fn save_runtime_resource(
+        &self,
+        owner_key: &str,
+        runtime: &RuntimeResource,
+    ) -> Result<RuntimeMutation, StorageError> {
+        if owner_key.is_empty() || !runtime.validate() {
+            return Err(failed("invalid runtime resource"));
+        }
+        let mut conn = self.conn();
+        let tx = conn.transaction().map_err(failed)?;
+        let current: Option<u64> = tx
+            .query_row(
+                "SELECT revision FROM plugin_runtime_resources
+                 WHERE owner_key = ?1 AND runtime_id = ?2",
+                params![owner_key, runtime.id],
+                |row| row.get::<_, i64>(0).map(|value| value as u64),
+            )
+            .optional()
+            .map_err(failed)?;
+        let expected = match current {
+            Some(revision) => revision
+                .checked_add(1)
+                .ok_or_else(|| failed("runtime revision is exhausted"))?,
+            None => 1,
+        };
+        if runtime.revision != expected {
+            return Ok(match current {
+                Some(current) => RuntimeMutation::Conflict { current },
+                None => RuntimeMutation::Conflict { current: 0 },
+            });
+        }
+        tx.execute(
+            "INSERT INTO plugin_runtime_resources
+                (owner_key, runtime_id, revision, runtime_json)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(owner_key, runtime_id) DO UPDATE SET
+                revision = excluded.revision,
+                runtime_json = excluded.runtime_json",
+            params![
+                owner_key,
+                runtime.id,
+                i64::try_from(runtime.revision).map_err(failed)?,
+                serde_json::to_string(runtime).map_err(failed)?,
+            ],
+        )
+        .map_err(failed)?;
+        bump_runtime_catalog_revision(&tx, owner_key)?;
+        tx.commit().map_err(failed)?;
+        Ok(RuntimeMutation::Applied {
+            revision: runtime.revision,
+        })
+    }
+
+    fn remove_runtime_resource(
+        &self,
+        owner_key: &str,
+        runtime_id: &str,
+        expected_revision: u64,
+    ) -> Result<RuntimeMutation, StorageError> {
+        if owner_key.is_empty() || runtime_id.is_empty() || expected_revision == 0 {
+            return Err(failed("invalid runtime removal"));
+        }
+        let mut conn = self.conn();
+        let tx = conn.transaction().map_err(failed)?;
+        let current: Option<u64> = tx
+            .query_row(
+                "SELECT revision FROM plugin_runtime_resources
+                 WHERE owner_key = ?1 AND runtime_id = ?2",
+                params![owner_key, runtime_id],
+                |row| row.get::<_, i64>(0).map(|value| value as u64),
+            )
+            .optional()
+            .map_err(failed)?;
+        let Some(current) = current else {
+            return Ok(RuntimeMutation::Missing);
+        };
+        if current != expected_revision {
+            return Ok(RuntimeMutation::Conflict { current });
+        }
+        // Bindings intentionally outlive a runtime so the game remains identifiable and can be
+        // rebound later. This delete does not touch games, saves or play history.
+        tx.execute(
+            "DELETE FROM plugin_runtime_resources
+             WHERE owner_key = ?1 AND runtime_id = ?2 AND revision = ?3",
+            params![
+                owner_key,
+                runtime_id,
+                i64::try_from(expected_revision).map_err(failed)?
+            ],
+        )
+        .map_err(failed)?;
+        bump_runtime_catalog_revision(&tx, owner_key)?;
+        tx.commit().map_err(failed)?;
+        Ok(RuntimeMutation::Applied {
+            revision: expected_revision,
+        })
+    }
+
+    fn shared_runtime_resources(&self) -> Result<Vec<(String, RuntimeResource)>, StorageError> {
+        let conn = self.conn();
+        let mut statement = conn
+            .prepare(
+                "SELECT owner_key, runtime_json FROM plugin_runtime_resources
+                 ORDER BY owner_key, runtime_id",
+            )
+            .map_err(failed)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(failed)?;
+        rows.map(|row| {
+            let (owner_key, json) = row.map_err(failed)?;
+            let runtime: RuntimeResource = serde_json::from_str(&json).map_err(failed)?;
+            if !runtime.validate() {
+                return Err(failed("stored runtime resource is invalid"));
+            }
+            Ok((owner_key, runtime))
+        })
+        .collect()
+    }
+
+    fn shared_runtime_catalog_revision(&self) -> Result<u64, StorageError> {
+        let conn = self.conn();
+        let revision: i64 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(catalog_revision), 0) FROM plugin_runtime_catalog_state",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(failed)?;
+        u64::try_from(revision).map_err(failed)
+    }
+
+    fn runtime_availability(
+        &self,
+        owner_key: Option<&str>,
+        installation_ids: &[String],
+    ) -> Result<Vec<RuntimeAvailabilityEntry>, StorageError> {
+        if installation_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        if installation_ids.len() > 1024 {
+            return Err(failed("too many installations requested"));
+        }
+        let placeholders = std::iter::repeat_n("?", installation_ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let owner_clause = if owner_key.is_some() {
+            " AND b.owner_key = ?"
+        } else {
+            ""
+        };
+        let sql = format!(
+            "SELECT b.installation_id, b.binding_json, r.runtime_json
+             FROM plugin_runtime_content_bindings b
+             LEFT JOIN plugin_runtime_resources r
+               ON r.owner_key = b.owner_key
+              AND r.runtime_id = json_extract(b.binding_json, '$.runtimeId')
+             WHERE b.installation_id IN ({placeholders}){owner_clause}
+             ORDER BY b.installation_id, b.owner_key, b.content_id, b.runtime_id"
+        );
+        let conn = self.conn();
+        let mut statement = conn.prepare(&sql).map_err(failed)?;
+        let mut values: Vec<rusqlite::types::Value> = installation_ids
+            .iter()
+            .map(|id| rusqlite::types::Value::Text(id.clone()))
+            .collect();
+        if let Some(owner_key) = owner_key {
+            values.push(rusqlite::types::Value::Text(owner_key.to_owned()));
+        }
+        let rows = statement
+            .query_map(rusqlite::params_from_iter(values), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })
+            .map_err(failed)?;
+        let mut availability = Vec::new();
+        for row in rows {
+            let (installation_id, binding_json, runtime_json) = row.map_err(failed)?;
+            let binding: RuntimeContentBinding =
+                serde_json::from_str(&binding_json).map_err(failed)?;
+            if !binding.validate() {
+                return Err(failed("stored runtime binding is invalid"));
+            }
+            let runtime = runtime_json
+                .map(|json| serde_json::from_str::<RuntimeResource>(&json))
+                .transpose()
+                .map_err(failed)?;
+            let runtime = runtime.filter(RuntimeResource::validate);
+            availability.push(RuntimeAvailabilityEntry {
+                installation_id,
+                content_id: binding.content_id,
+                content_kind: binding.content_kind,
+                runtime_id: binding.runtime_id,
+                runtime_name: runtime
+                    .as_ref()
+                    .map(|value| value.name.clone())
+                    .unwrap_or_default(),
+                platform: runtime
+                    .as_ref()
+                    .map(|value| value.platform.clone())
+                    .or_else(|| binding.supported_platforms.first().cloned())
+                    .unwrap_or_default(),
+                publisher_id: runtime
+                    .as_ref()
+                    .map(|value| value.provenance.plugin_id.clone())
+                    .unwrap_or_default(),
+                revision: binding.revision,
+            });
+        }
+        Ok(availability)
+    }
+
+    fn runtime_content_bindings(
+        &self,
+        owner_key: &str,
+        game_id: u64,
+        installation_id: &str,
+    ) -> Result<Vec<RuntimeContentBinding>, StorageError> {
+        if owner_key.is_empty() || game_id == 0 || installation_id.is_empty() {
+            return Err(failed("runtime binding identity is required"));
+        }
+        let conn = self.conn();
+        let mut statement = conn
+            .prepare(
+                "SELECT binding_json FROM plugin_runtime_content_bindings
+                 WHERE owner_key = ?1 AND game_id = ?2 AND installation_id = ?3
+                 ORDER BY content_id, runtime_id",
+            )
+            .map_err(failed)?;
+        let rows = statement
+            .query_map(
+                params![owner_key, db_id(game_id)?, installation_id],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(failed)?;
+        rows.map(|row| {
+            let json = row.map_err(failed)?;
+            let binding: RuntimeContentBinding = serde_json::from_str(&json).map_err(failed)?;
+            if !binding.validate() {
+                return Err(failed("stored runtime binding is invalid"));
+            }
+            Ok(binding)
+        })
+        .collect()
+    }
+
+    fn runtime_catalog_revision(&self, owner_key: &str) -> Result<u64, StorageError> {
+        if owner_key.is_empty() {
+            return Err(failed("runtime owner is required"));
+        }
+        let conn = self.conn();
+        let revision: Option<i64> = conn
+            .query_row(
+                "SELECT catalog_revision FROM plugin_runtime_catalog_state WHERE owner_key = ?1",
+                [owner_key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(failed)?;
+        revision
+            .map(u64::try_from)
+            .transpose()
+            .map_err(failed)
+            .map(|revision| revision.unwrap_or(0))
+    }
+
+    fn save_runtime_content_binding(
+        &self,
+        owner_key: &str,
+        binding: &RuntimeContentBinding,
+    ) -> Result<RuntimeMutation, StorageError> {
+        if owner_key.is_empty() || !binding.validate() {
+            return Err(failed("invalid runtime content binding"));
+        }
+        let mut conn = self.conn();
+        let tx = conn.transaction().map_err(failed)?;
+        let runtime_exists: Option<i64> = tx
+            .query_row(
+                "SELECT 1 FROM plugin_runtime_resources
+                 WHERE owner_key = ?1 AND runtime_id = ?2",
+                params![owner_key, binding.runtime_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(failed)?;
+        if runtime_exists.is_none() {
+            return Ok(RuntimeMutation::Missing);
+        }
+        let current: Option<u64> = tx
+            .query_row(
+                "SELECT revision FROM plugin_runtime_content_bindings
+                 WHERE owner_key = ?1 AND game_id = ?2 AND installation_id = ?3
+                   AND content_id = ?4 AND runtime_id = ?5",
+                params![
+                    owner_key,
+                    db_id(binding.game_id)?,
+                    binding.installation_id,
+                    binding.content_id,
+                    binding.runtime_id,
+                ],
+                |row| row.get::<_, i64>(0).map(|value| value as u64),
+            )
+            .optional()
+            .map_err(failed)?;
+        let expected = match current {
+            Some(revision) => revision
+                .checked_add(1)
+                .ok_or_else(|| failed("runtime binding revision is exhausted"))?,
+            None => 1,
+        };
+        if binding.revision != expected {
+            return Ok(match current {
+                Some(current) => RuntimeMutation::Conflict { current },
+                None => RuntimeMutation::Conflict { current: 0 },
+            });
+        }
+        let mut stored_binding = binding.clone();
+        if current.is_none() {
+            // Adding another runtime for an existing content_id must use its already-current
+            // locator. A caller can move/rename it by revision-updating an existing binding first;
+            // a new runtime binding cannot accidentally roll the shared locator back from stale
+            // data.
+            let sibling_json: Option<String> = tx
+                .query_row(
+                    "SELECT binding_json FROM plugin_runtime_content_bindings
+                     WHERE owner_key = ?1 AND game_id = ?2 AND installation_id = ?3
+                       AND content_id = ?4 ORDER BY runtime_id LIMIT 1",
+                    params![
+                        owner_key,
+                        db_id(binding.game_id)?,
+                        binding.installation_id,
+                        binding.content_id,
+                    ],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(failed)?;
+            if let Some(json) = sibling_json {
+                let sibling: RuntimeContentBinding = serde_json::from_str(&json).map_err(failed)?;
+                stored_binding.content = sibling.content;
+                stored_binding.content_kind = sibling.content_kind;
+            }
+        }
+        tx.execute(
+            "INSERT INTO plugin_runtime_content_bindings
+                (owner_key, game_id, installation_id, content_id, runtime_id, revision, binding_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(owner_key, game_id, installation_id, content_id, runtime_id) DO UPDATE SET
+                revision = excluded.revision,
+                binding_json = excluded.binding_json",
+            params![
+                owner_key,
+                db_id(binding.game_id)?,
+                binding.installation_id,
+                binding.content_id,
+                binding.runtime_id,
+                i64::try_from(binding.revision).map_err(failed)?,
+                serde_json::to_string(&stored_binding).map_err(failed)?,
+            ],
+        )
+        .map_err(failed)?;
+        // A content locator is keyed by stable content_id, not by the runtime. Refresh every
+        // sibling binding in the same transaction so choosing another runtime cannot resolve the
+        // same moved/renamed content through a stale handle. Sibling revisions advance so stale
+        // clients cannot overwrite the new location.
+        let siblings = {
+            let mut statement = tx
+                .prepare(
+                    "SELECT runtime_id, revision, binding_json
+                     FROM plugin_runtime_content_bindings
+                     WHERE owner_key = ?1 AND game_id = ?2 AND installation_id = ?3
+                       AND content_id = ?4 AND runtime_id <> ?5",
+                )
+                .map_err(failed)?;
+            let rows = statement
+                .query_map(
+                    params![
+                        owner_key,
+                        db_id(binding.game_id)?,
+                        binding.installation_id,
+                        binding.content_id,
+                        binding.runtime_id,
+                    ],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    },
+                )
+                .map_err(failed)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(failed)?
+        };
+        for (runtime_id, revision, json) in siblings {
+            let mut sibling: RuntimeContentBinding = serde_json::from_str(&json).map_err(failed)?;
+            if sibling.content != stored_binding.content
+                || sibling.content_kind != stored_binding.content_kind
+            {
+                sibling.content = stored_binding.content.clone();
+                sibling.content_kind = stored_binding.content_kind.clone();
+                sibling.revision = u64::try_from(revision)
+                    .map_err(failed)?
+                    .checked_add(1)
+                    .ok_or_else(|| failed("runtime binding revision is exhausted"))?;
+                tx.execute(
+                    "UPDATE plugin_runtime_content_bindings
+                     SET revision = ?1, binding_json = ?2
+                     WHERE owner_key = ?3 AND game_id = ?4 AND installation_id = ?5
+                       AND content_id = ?6 AND runtime_id = ?7 AND revision = ?8",
+                    params![
+                        i64::try_from(sibling.revision).map_err(failed)?,
+                        serde_json::to_string(&sibling).map_err(failed)?,
+                        owner_key,
+                        db_id(binding.game_id)?,
+                        binding.installation_id,
+                        binding.content_id,
+                        runtime_id,
+                        revision,
+                    ],
+                )
+                .map_err(failed)?;
+            }
+        }
+        tx.commit().map_err(failed)?;
+        Ok(RuntimeMutation::Applied {
+            revision: binding.revision,
+        })
+    }
+
+    fn remove_runtime_content_binding(
+        &self,
+        owner_key: &str,
+        binding: &RuntimeContentBinding,
+    ) -> Result<RuntimeMutation, StorageError> {
+        if owner_key.is_empty() || !binding.validate() {
+            return Err(failed("invalid runtime binding removal"));
+        }
+        let mut conn = self.conn();
+        let tx = conn.transaction().map_err(failed)?;
+        let current: Option<u64> = tx
+            .query_row(
+                "SELECT revision FROM plugin_runtime_content_bindings
+                 WHERE owner_key = ?1 AND game_id = ?2 AND installation_id = ?3
+                   AND content_id = ?4 AND runtime_id = ?5",
+                params![
+                    owner_key,
+                    db_id(binding.game_id)?,
+                    binding.installation_id,
+                    binding.content_id,
+                    binding.runtime_id,
+                ],
+                |row| row.get::<_, i64>(0).map(|value| value as u64),
+            )
+            .optional()
+            .map_err(failed)?;
+        let Some(current) = current else {
+            return Ok(RuntimeMutation::Missing);
+        };
+        if current != binding.revision {
+            return Ok(RuntimeMutation::Conflict { current });
+        }
+        tx.execute(
+            "DELETE FROM plugin_runtime_content_bindings
+             WHERE owner_key = ?1 AND game_id = ?2 AND installation_id = ?3
+               AND content_id = ?4 AND runtime_id = ?5 AND revision = ?6",
+            params![
+                owner_key,
+                db_id(binding.game_id)?,
+                binding.installation_id,
+                binding.content_id,
+                binding.runtime_id,
+                i64::try_from(binding.revision).map_err(failed)?,
+            ],
+        )
+        .map_err(failed)?;
+        tx.commit().map_err(failed)?;
+        Ok(RuntimeMutation::Applied {
+            revision: binding.revision,
+        })
     }
 
     fn save_scan_failure(&self, provider: &str, error: &str) -> Result<(), StorageError> {
@@ -767,11 +1853,18 @@ impl LibraryStore for SqliteLibraryStore {
         let game = choice.game_id.map(db_id).transpose()?;
         self.conn()
             .execute(
-                "INSERT INTO chosen_matches (account_id, entry_key, game_id, chosen_at)
-                 VALUES (?1, ?2, ?3, ?4)
+                "INSERT INTO chosen_matches (account_id, entry_key, game_id, chosen_at, source)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
                  ON CONFLICT(account_id, entry_key) DO UPDATE SET
-                    game_id = excluded.game_id, chosen_at = excluded.chosen_at",
-                params![account_id, choice.entry_key, game, choice.chosen_at],
+                    game_id = excluded.game_id, chosen_at = excluded.chosen_at,
+                    source = excluded.source",
+                params![
+                    account_id,
+                    choice.entry_key,
+                    game,
+                    choice.chosen_at,
+                    choice.source.as_str()
+                ],
             )
             .map(drop)
             .map_err(failed)
@@ -1093,6 +2186,133 @@ impl LibraryStore for SqliteLibraryStore {
     fn save_excluded(&self, excluded: &[String]) -> Result<(), StorageError> {
         let json = serde_json::to_string(excluded).map_err(failed)?;
         write_setting(&self.conn(), KEY_EXCLUDED, &json).map_err(failed)
+    }
+
+    fn save_display_name(
+        &self,
+        entry_key: &str,
+        expected_revision: u64,
+        display_name: Option<&str>,
+    ) -> Result<DisplayWrite, StorageError> {
+        let mut conn = self.conn();
+        let tx = conn.transaction().map_err(failed)?;
+        let current: Option<(Option<String>, i64)> = tx
+            .query_row(
+                "SELECT display_name, revision FROM library_display_overrides WHERE entry_key = ?1",
+                [entry_key],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(failed)?;
+        let (current_name, current_revision) = match current {
+            Some((name, revision)) => (name, u64::try_from(revision).map_err(failed)?),
+            None => (None, 0),
+        };
+        if current_revision != expected_revision {
+            return Ok(DisplayWrite::Conflict {
+                current: current_revision,
+            });
+        }
+        if current_name.as_deref() == display_name {
+            return Ok(DisplayWrite::Unchanged {
+                revision: current_revision,
+            });
+        }
+        let revision = current_revision + 1;
+        tx.execute(
+            "INSERT INTO library_display_overrides (entry_key, display_name, revision)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(entry_key) DO UPDATE SET
+                display_name = excluded.display_name, revision = excluded.revision",
+            params![
+                entry_key,
+                display_name,
+                i64::try_from(revision).map_err(failed)?
+            ],
+        )
+        .map_err(failed)?;
+        tx.commit().map_err(failed)?;
+        Ok(DisplayWrite::Applied { revision })
+    }
+
+    fn save_artwork(
+        &self,
+        entry_key: &str,
+        expected_revision: u64,
+        file: Option<&str>,
+    ) -> Result<ArtworkWrite, StorageError> {
+        let mut conn = self.conn();
+        let tx = conn.transaction().map_err(failed)?;
+        let current: Option<(Option<String>, i64)> = tx
+            .query_row(
+                "SELECT file, revision FROM library_artwork_overrides WHERE entry_key = ?1",
+                [entry_key],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(failed)?;
+        let (current_file, current_revision) = match current {
+            Some((file, revision)) => (file, u64::try_from(revision).map_err(failed)?),
+            None => (None, 0),
+        };
+        if current_revision != expected_revision {
+            return Ok(ArtworkWrite::Conflict {
+                current: current_revision,
+            });
+        }
+        if current_file.as_deref() == file {
+            return Ok(ArtworkWrite::Unchanged {
+                revision: current_revision,
+            });
+        }
+        let revision = current_revision + 1;
+        tx.execute(
+            "INSERT INTO library_artwork_overrides (entry_key, file, revision)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(entry_key) DO UPDATE SET
+                file = excluded.file, revision = excluded.revision",
+            params![entry_key, file, i64::try_from(revision).map_err(failed)?],
+        )
+        .map_err(failed)?;
+        tx.commit().map_err(failed)?;
+        Ok(ArtworkWrite::Applied {
+            revision,
+            replaced: current_file,
+        })
+    }
+
+    fn installation_ids(
+        &self,
+        entry_keys: &[String],
+    ) -> Result<Vec<(String, String)>, StorageError> {
+        let mut conn = self.conn();
+        let tx = conn.transaction().map_err(failed)?;
+        let mut ids = Vec::with_capacity(entry_keys.len());
+        {
+            // 128 random bits from SQLite's CSPRNG; an (astronomically unlikely) duplicate id
+            // is ignored and the key simply has no id until the next request.
+            let mut assign = tx
+                .prepare(
+                    "INSERT OR IGNORE INTO library_installations (entry_key, installation_id)
+                     VALUES (?1, lower(hex(randomblob(16))))",
+                )
+                .map_err(failed)?;
+            let mut read = tx
+                .prepare("SELECT installation_id FROM library_installations WHERE entry_key = ?1")
+                .map_err(failed)?;
+            for key in entry_keys {
+                assign.execute([key]).map_err(failed)?;
+                if let Some(id) = read
+                    .query_row([key], |row| row.get::<_, String>(0))
+                    .optional()
+                    .map_err(failed)?
+                {
+                    ids.push((key.clone(), id));
+                }
+            }
+        }
+        tx.commit().map_err(failed)?;
+        Ok(ids)
     }
 
     fn load_last_account(&self) -> Result<Option<LastAccount>, StorageError> {

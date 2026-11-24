@@ -133,7 +133,7 @@ impl Engine {
                             let store_key = entry.key.clone();
                             let store_title =
                                 entry.name.clone().unwrap_or_else(|| entry.store_id.clone());
-                            let store_cover = state.library.cover_for(&store_key);
+                            let store_cover = state.library.entry_cover_file(&store_key);
                             let playtime_seconds = state
                                 .library
                                 .playtime_for(&store_key)
@@ -142,7 +142,7 @@ impl Engine {
                             let registration_cover = registration
                                 .custom_cover
                                 .clone()
-                                .or_else(|| state.library.cover_for(&key));
+                                .or_else(|| state.library.entry_cover_file(&key));
                             (
                                 PendingClaim {
                                     store_key,
@@ -446,13 +446,23 @@ impl Engine {
         });
         finished.await.map_err(|_| LocalError::Cancelled)?
     }
-    fn load_local_view(&self) -> LocalView {
+    pub(super) fn load_local_view(&self) -> LocalView {
         let Some(store) = &self.shared.ports.local_games else {
             return LocalView::default();
         };
         let result = (|| {
             let mut roots = store.watches()?;
             let registrations = store.registrations()?;
+            let plugin_watch_ids: Vec<_> = self
+                .shared
+                .plugin_scan_roots
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .values()
+                .flatten()
+                .filter(|r| r.root.watching && (r.valid)().is_ok())
+                .map(|r| r.root.id.clone())
+                .collect();
             // Availability is a fact of this moment: the first time a folder is missing keeps
             // the time it became unavailable, and reconnecting clears it.
             let now = unix_now();
@@ -484,9 +494,10 @@ impl Engine {
                 .candidates()?
                 .into_iter()
                 .filter(|candidate| {
-                    watches
+                    (watches
                         .iter()
                         .any(|watch| watch.enabled && watch.id == candidate.watch)
+                        || plugin_watch_ids.contains(&candidate.watch))
                         && !registrations.iter().any(|r| {
                             candidate_matches_registration(candidate, r)
                                 && r.removed
@@ -1700,7 +1711,7 @@ impl Engine {
         let mut usage = backup_usage_at(&settings.destination, &registrations, &profiles);
         let state = self.lock();
         for game in &mut usage.games {
-            game.cover_file = state.library.cover_for(&game.entry_key);
+            game.cover_file = state.library.entry_cover_file(&game.entry_key);
         }
         usage.total_bytes = usage.games.iter().map(|game| game.bytes).sum();
         usage.total_versions = usage.games.iter().map(|game| game.versions).sum();
@@ -1891,6 +1902,15 @@ impl Engine {
         &self,
         candidates: Vec<gamenode_core::drm_free::Candidate>,
     ) -> Result<Vec<String>, LocalError> {
+        self.auto_register_candidates_checked(candidates, &|| Ok(()))
+    }
+
+    fn auto_register_candidates_checked(
+        &self,
+        candidates: Vec<gamenode_core::drm_free::Candidate>,
+        valid: &dyn Fn() -> Result<(), LocalError>,
+    ) -> Result<Vec<String>, LocalError> {
+        valid()?;
         let store = self
             .shared
             .ports
@@ -1912,6 +1932,7 @@ impl Engine {
         };
         let mut added_titles = Vec::new();
         for mut candidate in candidates {
+            valid()?;
             if candidate.ignored
                 || prior
                     .iter()
@@ -1946,6 +1967,7 @@ impl Engine {
             }
             candidate.likely_non_game =
                 gamenode_core::drm_free::identity::likely_non_game(&candidate);
+            valid()?;
             store.save_candidate(&candidate).map_err(local_storage)?;
             if candidate.likely_non_game {
                 // A likely non-game stays in the review unchecked; it is never added on its own.
@@ -1956,6 +1978,7 @@ impl Engine {
                 candidate.selected_target.as_deref(),
             ) {
                 let mut registration = host.inspect(target)?;
+                valid()?;
                 registration.root = candidate.root.clone();
                 registration.title = candidate.title.clone();
                 if let Some(pos) = registrations.iter().position(|r| {
@@ -2069,6 +2092,7 @@ impl Engine {
                 return;
             };
             let mut added_titles = Vec::new();
+            let mut checked_ids = Vec::new();
             let result = (|| {
                 // One parse serves every watched root; the scan drops it when it ends.
                 let _release = gamenode_platform::manifest_cache::release_on_drop();
@@ -2093,15 +2117,86 @@ impl Engine {
                         added_titles.extend(engine.auto_register_candidates(pending)?);
                     }
                 }
+                let contributions: Vec<_> = engine
+                    .shared
+                    .plugin_scan_roots
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .values()
+                    .flatten()
+                    .cloned()
+                    .collect();
+                let mut all: Vec<_> = enabled_watches.into_iter().map(|w| (w, None)).collect();
+                all.extend(
+                    contributions
+                        .into_iter()
+                        .filter(|r| only.is_none() && r.root.watching)
+                        .map(|r| {
+                            (
+                                WatchRoot {
+                                    id: r.root.id.clone(),
+                                    path: r.root.path.clone(),
+                                    enabled: true,
+                                    ..Default::default()
+                                },
+                                Some(r),
+                            )
+                        }),
+                );
+                for (watch, _) in &mut all {
+                    if let Ok(path) = std::fs::canonicalize(&watch.path) {
+                        watch.path = gamenode_platform::host::strip_verbatim_prefix(
+                            path.to_string_lossy().into_owned(),
+                        );
+                    }
+                }
+                all.sort_by_key(|(w, _)| w.path.len());
                 let mut scanned_roots = Vec::<String>::new();
                 let mut incomplete = Vec::new();
-                let mut checked_ids = Vec::new();
-                for watch in enabled_watches {
+                let mut failure = None;
+                for (watch, contribution) in all {
+                    let valid = || -> Result<(), LocalError> {
+                        if let Some(r) = &contribution {
+                            (r.valid)().map_err(|_| LocalError::Cancelled)?;
+                            let root = gamenode_platform::plugin_files::ApprovedRoot {
+                                path: std::path::PathBuf::from(&r.root.path),
+                                identity: gamenode_platform::plugin_files::Identity {
+                                    volume: r.root.volume,
+                                    node: r.root.node,
+                                },
+                            };
+                            gamenode_platform::plugin_files::Confined::open(
+                                &root,
+                                &Default::default(),
+                            )
+                            .map_err(|_| LocalError::InvalidTarget)?;
+                            if gamenode_platform::volume::volume_info(&root.path).is_none_or(|v| {
+                                v.volume_identity_token.is_empty()
+                                    || v.volume_identity_token != r.root.volume_token
+                            }) {
+                                return Err(LocalError::InvalidTarget);
+                            }
+                        }
+                        Ok(())
+                    };
+                    if valid().is_err() {
+                        incomplete.push(watch.path.clone());
+                        continue;
+                    }
                     if !std::path::Path::new(&watch.path).is_dir() {
                         continue;
                     }
-                    let normalized =
-                        gamenode_core::provider::path::normalize(&watch.path).to_lowercase();
+                    let normalized = gamenode_core::provider::path::normalize(&watch.path);
+                    if !std::path::Path::new(&watch.path).is_dir() {
+                        continue;
+                    }
+                    let normalized = if cfg!(windows)
+                        || gamenode_core::provider::path::is_windows_style(&normalized)
+                    {
+                        normalized.to_lowercase()
+                    } else {
+                        normalized
+                    };
                     if scanned_roots.iter().any(|root| {
                         let sep = if gamenode_core::provider::path::is_windows_style(root) {
                             '\\'
@@ -2116,32 +2211,54 @@ impl Engine {
                     }) {
                         continue;
                     }
-                    scanned_roots.push(normalized);
-                    checked_ids.push(watch.id.clone());
-                    let found = match gamenode_platform::discovery::WindowsDiscovery
-                        .discover(&watch, &engine.shared.local_cancel)
-                    {
+                    if contribution.is_none() {
+                        checked_ids.push(watch.id.clone());
+                    }
+                    let scanner = engine
+                        .shared
+                        .ports
+                        .discovery
+                        .as_deref()
+                        .unwrap_or(&gamenode_platform::discovery::WindowsDiscovery);
+                    let found = match scanner.discover(&watch, &engine.shared.local_cancel) {
                         Ok(found) => found,
                         Err(LocalError::Unsupported)
                             if engine.shared.ports.installations.is_some() =>
                         {
                             DiscoveryReport::default()
                         }
-                        Err(error) => return Err(error),
+                        Err(error) => {
+                            failure.get_or_insert(error);
+                            incomplete.push(watch.path.clone());
+                            continue;
+                        }
                     };
+                    if valid().is_err() {
+                        incomplete.push(watch.path.clone());
+                        continue;
+                    }
                     if found.incomplete {
                         incomplete.push(watch.path.clone());
+                    } else {
+                        scanned_roots.push(normalized);
                     }
-                    for title in engine.auto_register_candidates(found.candidates)? {
+                    let titles =
+                        match engine.auto_register_candidates_checked(found.candidates, &valid) {
+                            Ok(titles) => titles,
+                            Err(error) => {
+                                failure.get_or_insert(error);
+                                continue;
+                            }
+                        };
+                    for title in titles {
                         if !added_titles.contains(&title) {
                             added_titles.push(title);
                         }
                     }
                 }
                 engine.lock().local.discovery_incomplete = incomplete;
-                Ok::<_, LocalError>(checked_ids)
+                failure.map_or(Ok(()), Err)
             })();
-            let checked_ids = result.clone().unwrap_or_default();
             {
                 let mut state = engine.lock();
                 for title in &added_titles {

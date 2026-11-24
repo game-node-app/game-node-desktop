@@ -46,11 +46,14 @@ jobs:
         run: pnpm --dir ui test --run
       - name: Typecheck and build UI
         run: pnpm --dir ui build
+      - name: Install plugin packaging dependencies
+        run: python3 -m pip install --disable-pip-version-check -r scripts/plugin-package-requirements.txt
       - name: Validate formatting and plugin boundaries
         run: |
           cargo fmt --all --check
           cargo metadata --format-version 1 --locked > /dev/null
           python3 scripts/check-plugin-boundaries.py
+          python3 scripts/check-plugin-conformance.py
           python3 -m unittest discover -s scripts/tests
       - name: Test all workspace crates (including app and PackageKit)
         run: cargo test --locked --workspace

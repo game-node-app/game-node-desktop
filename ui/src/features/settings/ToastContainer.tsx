@@ -3,6 +3,7 @@ import { Notification, Progress } from '@mantine/core';
 import {
   IconCircleCheck,
   IconCircleX,
+  IconAlertTriangle,
   IconDownload,
   IconInfoCircle,
   IconX,
@@ -20,6 +21,7 @@ const accentBarClass: Record<ToastKind, string> = {
   success: 'bg-success',
   danger: 'bg-danger',
   info: 'bg-brand',
+  warning: 'bg-warning',
   progress: 'bg-brand',
 };
 
@@ -27,6 +29,7 @@ const iconClass: Record<ToastKind, string> = {
   success: 'text-success',
   danger: 'text-danger',
   info: 'text-text-secondary',
+  warning: 'text-warning',
   progress: 'text-brand',
 };
 
@@ -37,6 +40,9 @@ function ToastIcon({ kind }: { kind: ToastKind }) {
   if (kind === 'danger') {
     return <IconCircleX size={18} stroke={1.75} className={iconClass.danger} aria-hidden="true" />;
   }
+  if (kind === 'warning') {
+    return <IconAlertTriangle size={18} stroke={1.75} className={iconClass.warning} aria-hidden="true" />;
+  }
   if (kind === 'progress') {
     return <IconDownload size={18} stroke={1.75} className={iconClass.progress} aria-hidden="true" />;
   }
@@ -44,7 +50,7 @@ function ToastIcon({ kind }: { kind: ToastKind }) {
 }
 
 function isAutoClosing(toast: ToastItem): boolean {
-  return (toast.kind === 'success' || toast.kind === 'info') && toast.persistent !== true;
+  return toast.persistent !== true && (toast.durationMs != null || toast.kind === 'success' || toast.kind === 'info');
 }
 
 /**
@@ -54,7 +60,7 @@ function isAutoClosing(toast: ToastItem): boolean {
  */
 function useAutoCloseToast(toast: ToastItem, paused: boolean): void {
   const autoClose = isAutoClosing(toast);
-  const remainingMs = useRef(TOAST_AUTO_CLOSE_MS);
+  const remainingMs = useRef(toast.durationMs ?? TOAST_AUTO_CLOSE_MS);
 
   useEffect(() => {
     if (!autoClose || paused) return;
@@ -108,7 +114,7 @@ const ToastCard: React.FC<ToastCardProps> = ({ toast }) => {
       }
       title={
         <span className="text-body font-semibold leading-[1.2] text-text-primary">
-          {toast.title}
+          {toast.title ?? toast.message ?? ''}
         </span>
       }
       onMouseEnter={() => setHovered(true)}
@@ -130,8 +136,9 @@ const ToastCard: React.FC<ToastCardProps> = ({ toast }) => {
         closeButton: '!text-text-dimmed hover:!bg-raised hover:!text-text-primary',
       }}
     >
+      {toast.source ? <div className="text-[11px] text-text-dimmed">{t('plugins.noticeFrom', { plugin: toast.source })}</div> : null}
       {toast.body ? (
-        <div className="text-xs leading-[1.4] text-text-secondary">{toast.body}</div>
+        <div className="whitespace-pre-line text-xs leading-[1.4] text-text-secondary">{toast.body}</div>
       ) : null}
 
       {actions.length > 0 ? (
@@ -155,7 +162,7 @@ const ToastCard: React.FC<ToastCardProps> = ({ toast }) => {
             value={progress}
             size={4}
             radius="xs"
-            aria-label={`${toast.title} ${progress}%`}
+            aria-label={`${toast.title ?? toast.message ?? ''} ${progress}%`}
             classNames={{ root: 'bg-raised', section: 'bg-brand' }}
           />
         </div>

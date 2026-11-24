@@ -18,6 +18,11 @@ import {
 } from './features/shell/WindowControls';
 import { useGlobalShortcuts } from './features/shell/useGlobalShortcuts';
 import { useLocalGameErrorToast } from './features/drm-free/useLocalGameErrorToast';
+import { usePluginNotices } from './features/plugins/usePluginNotices';
+import { PluginPortSetupHost } from './features/ports/setup/PluginPortSetupHost';
+import { PluginConfirmationHost } from './features/plugins/PluginConfirmationHost';
+import { PluginFolderApprovalHost } from './features/plugins/PluginFolderApprovalHost';
+import { PluginRuntimeApprovalHost } from './features/plugins/PluginRuntimeApprovalHost';
 import { useUiStore } from './store/uiStore';
 
 // Snapshot- or store-gated overlays are split out of the startup bundle. They are
@@ -128,6 +133,7 @@ export const App: React.FC = () => {
   useGlobalShortcuts();
   useLibraryNotifications();
   useLocalGameErrorToast();
+  usePluginNotices();
 
   // Follow the language preference: an explicit choice applies at once, while System keeps the
   // OS locale the host reports. Preferences arrive in every snapshot, so a change re-renders the
@@ -240,6 +246,10 @@ export const App: React.FC = () => {
       <LazyOverlay>
         <GameToolsPanel />
       </LazyOverlay>
+      <PluginConfirmationHost />
+      <PluginFolderApprovalHost />
+      <PluginRuntimeApprovalHost />
+      <PluginPortSetupHost />
       <ToastContainer />
     </div>
   );

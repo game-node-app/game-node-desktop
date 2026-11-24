@@ -36,9 +36,9 @@ use super::organization::{
 };
 use super::selection::{Direction, SelectMode, Selection};
 use super::store::{
-    AccountLibrary, AutoMatch, CatalogError, CatalogRecord, CatalogUpdate, ChosenMatch,
-    FavoriteRecord, GameRecord, LastAccount, LibraryCache, ProviderScanState, StoredEntry,
-    entry_key,
+    AccountLibrary, ArtworkOverride, AutoMatch, CatalogError, CatalogRecord, CatalogUpdate,
+    ChosenMatch, DisplayOverride, FavoriteRecord, GameRecord, LastAccount, LibraryCache,
+    ProviderScanState, StoredEntry, entry_key,
 };
 use super::suggest::SuggestionView;
 use super::view::{LibraryView, ScanProgress, ScanProgressState};
@@ -62,7 +62,11 @@ pub enum Access {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ScanOutcome {
-    Scanned(Vec<Record>),
+    Scanned {
+        records: Vec<Record>,
+        /// The detected launch target of each record id, if any (task 7.7).
+        targets: std::collections::BTreeMap<String, super::target::TargetSpec>,
+    },
     /// The provider's roots could not be read. The message is for the log and the detail view.
     Failed(String),
 }
@@ -270,8 +274,18 @@ pub enum Input {
         op: u64,
         provider: String,
         result: Result<Vec<Record>, String>,
+        /// The detected launch target of each record id, if any (task 7.7).
+        #[allow(clippy::type_complexity)]
+        targets: std::collections::BTreeMap<String, super::target::TargetSpec>,
         /// Unix seconds.
         now: i64,
+    },
+    /// The user approved or repaired the detected target of one entry. The host writes the
+    /// target first and reports the stored value.
+    TargetReviewed {
+        entry_key: String,
+        expected_revision: u64,
+        target: super::target::DetectedTarget,
     },
     /// Where a scan looked, reported with its successful answer before [`Input::ProviderScanned`].
     /// A scan that reports no location clears the previous one for that provider.
@@ -306,36 +320,50 @@ pub enum Input {
     RequestCatalog,
     /// Replace the toolbar filters.
     SetFilters(LibraryFilters),
+    /// A plugin's display-name override of an entry was stored (or cleared with `None`) at this
+    /// revision. Applies only to entries the library knows.
+    DisplayNameStored {
+        key: String,
+        display_name: Option<String>,
+        revision: u64,
+    },
+    /// A plugin's artwork override of an entry was stored (or cleared with `None`) at this revision.
+    ArtworkStored {
+        key: String,
+        file: Option<String>,
+        revision: u64,
+    },
+    /// A plugin's catalog search returned these games; they can now be assigned to its entries.
+    CatalogSearched {
+        games: Vec<GameSummary>,
+    },
+    /// Match a plugin's own entry to a game (`plan_plugin_match` decides).
+    AssignPluginMatch {
+        key: String,
+        game_id: u64,
+        now: i64,
+    },
     /// Save the effective scope, filters, sort, grouping and view mode as a named view.
     SaveView {
         name: String,
     },
-    /// Rename one saved view. Its payload and position do not change.
     RenameView {
         id: i64,
         name: String,
     },
-    /// Delete one saved view. When it is the highlighted one, the layout keeps the payload's
-    /// effective scope, filters, sort, grouping and view mode.
     DeleteView {
         id: i64,
     },
-    /// Apply one saved view and highlight it. The payload becomes the layout; the scope marker is
-    /// only the highlight until the payload changes again.
     ApplyView {
         id: i64,
     },
-    /// Hide or reveal library keys for the account. Hiding never removes matches, favorites,
-    /// playtime or GameNode data; it only leaves the normal view and counts.
     SetHidden {
         keys: Vec<String>,
         hidden: bool,
     },
-    /// The answer to [`Effect::PersistView`]: the database id of the inserted or updated view.
     ViewPersisted {
         op: u64,
         account_id: String,
-        /// `Err` keeps the previous list: the write did not happen.
         result: Result<i64, ()>,
     },
     /// Mark or unmark the entry's matched game as a favorite. `now` is unix seconds.
@@ -379,6 +407,11 @@ pub enum Input {
     CloseMatch,
     /// The dialog's search text changed. Nothing is sent until [`Input::SearchMatch`].
     SetMatchQuery(String),
+    /// Narrow the dialog's candidates and results to the entry's declared platform, or show the
+    /// complete answer again. The already-received answer is filtered locally; nothing is sent.
+    SetMatchPlatformFilter {
+        enabled: bool,
+    },
     SearchMatch,
     MatchSearched {
         op: u64,
@@ -694,6 +727,10 @@ pub struct LibraryMachine {
     pub(super) auto_matches: BTreeMap<(u32, String), AutoMatch>,
     pub(super) chosen: BTreeMap<String, ChosenMatch>,
     pub(super) games: BTreeMap<u64, GameRecord>,
+    /// Presentation overrides by entry key, written by the entry's own provider plugin.
+    pub(super) display_overrides: BTreeMap<String, DisplayOverride>,
+    /// Cover overrides by entry key, written by the entry's own provider plugin.
+    pub(super) artwork_overrides: BTreeMap<String, ArtworkOverride>,
     pub(super) scan: Option<ScanRun>,
     pub(super) rescan_pending: bool,
     pub(super) layout: LibraryLayout,
@@ -748,6 +785,8 @@ pub struct LibraryMachine {
     pub(super) lookups: BTreeMap<u32, LookupRun>,
     /// The match dialog, while it is open.
     pub(super) dialog: Option<MatchDialog>,
+    /// Games plugin searches offered, still open for assignment (bounded, oldest first).
+    pub(super) offered: super::plugin_match::Offered,
     pub(super) covers: CoverQueue,
     /// Artwork is loaded on demand; the engine checks its disk cache before downloading.
     pub(super) artwork_focus: Option<u64>,
@@ -798,6 +837,8 @@ impl LibraryMachine {
             auto_matches: BTreeMap::new(),
             chosen: BTreeMap::new(),
             games: BTreeMap::new(),
+            display_overrides: BTreeMap::new(),
+            artwork_overrides: BTreeMap::new(),
             scan: None,
             rescan_pending: false,
             layout: layout.normalized(),
@@ -826,6 +867,7 @@ impl LibraryMachine {
             last_collection_run: None,
             lookups: BTreeMap::new(),
             dialog: None,
+            offered: Default::default(),
             covers: CoverQueue::default(),
             artwork_focus: None,
             artwork_requests: BTreeMap::new(),
@@ -848,6 +890,71 @@ impl LibraryMachine {
 
     pub fn provider(&self, id: &str) -> Option<&Provider> {
         self.providers.iter().find(|provider| provider.id() == id)
+    }
+
+    /// Adds one provider to the scan list, or replaces the entry with the same id in place.
+    ///
+    /// This is the post-startup registration path for an accepted import: stored entries,
+    /// matches, settings and the running scan are untouched, and the provider keeps its existing
+    /// position when it was already known. Callers request a scan afterwards; a scan already
+    /// running coalesces that request into one more run. Returns whether the list changed.
+    pub fn put_provider(&mut self, provider: Provider) -> bool {
+        if let Some(existing) = self
+            .providers
+            .iter_mut()
+            .find(|existing| existing.id() == provider.id())
+        {
+            *existing = provider;
+        } else {
+            self.providers.push(provider);
+        }
+        self.view_dirty = true;
+        true
+    }
+
+    /// Removes one provider and its live entries after an accepted uninstall.
+    ///
+    /// Persisted rows stay in the account cache for a later reinstall; the provider's scan state
+    /// and pending slot in a running scan are dropped so a late answer cannot bring it back. A
+    /// subsequent import calls [`Self::put_provider`] and requests a scan, which repopulates the
+    /// rows. Returns whether the provider was loaded.
+    pub fn remove_provider(&mut self, id: &str) -> bool {
+        let before = self.providers.len();
+        self.providers.retain(|provider| provider.id() != id);
+        if self.providers.len() == before {
+            return false;
+        }
+        self.entries.retain(|_, entry| entry.provider != id);
+        self.scans.remove(id);
+        self.scan_progress.remove(id);
+        if let Some(run) = &mut self.scan {
+            run.waiting.remove(id);
+            if run.waiting.is_empty() {
+                self.scan = None;
+            }
+        }
+        self.view_dirty = true;
+        true
+    }
+
+    /// Removes the provider a plugin package contributes after an accepted uninstall.
+    ///
+    /// The installed plugin id is not necessarily the provider id: a package such as
+    /// `dev.example.dolphin-emu` can contribute `dolphin-emu`. The composed provider records the
+    /// package as its discovery plugin, so uninstall resolves the store through that instead of
+    /// assuming both ids match. Returns whether a provider was loaded.
+    pub fn remove_provider_for_plugin(&mut self, plugin_id: &str) -> bool {
+        let providers: Vec<String> = self
+            .providers
+            .iter()
+            .filter(|provider| provider.discovery_plugin() == Some(plugin_id))
+            .map(|provider| provider.id().to_owned())
+            .collect();
+        let mut removed = false;
+        for provider in providers {
+            removed |= self.remove_provider(&provider);
+        }
+        removed
     }
 
     /// Whether the library is shown (an account is set, even before it is verified).
@@ -918,18 +1025,6 @@ impl LibraryMachine {
         self.entries.get(key)
     }
 
-    /// The cover file one entry's row resolves to: a DRM-free custom cover first, then the
-    /// matched GameNode cover. `None` when the entry is unknown or has no cover.
-    pub fn cover_for(&self, key: &str) -> Option<String> {
-        let entry = self.entries.get(key)?;
-        let game_cover = self
-            .match_status(entry)
-            .game_id()
-            .and_then(|game_id| self.games.get(&game_id))
-            .and_then(|game| game.cover_file.clone());
-        self.local_covers.get(key).cloned().or(game_cover)
-    }
-
     /// The playtime recorded for one entry, if the selected source knows any.
     pub fn playtime_for(&self, key: &str) -> Option<crate::playtime::PlaytimeView> {
         self.playtime.get(key).copied()
@@ -947,6 +1042,7 @@ impl LibraryMachine {
         self.entries
             .values()
             .filter(|entry| entry.is_visible() && !self.excluded.contains(&entry.key))
+            .filter(|entry| self.provider(&entry.provider).is_some())
     }
 
     /// Whether the shared-games preference leaves this entry out: only entries that are shared
@@ -971,6 +1067,18 @@ impl LibraryMachine {
 
     pub fn all_entries(&self) -> impl Iterator<Item = &StoredEntry> {
         self.entries.values()
+    }
+
+    /// The plugin-written display override of an entry, if one was ever written. A cleared
+    /// override stays here with no name, so its revision keeps counting.
+    pub fn display_override(&self, key: &str) -> Option<&DisplayOverride> {
+        self.display_overrides.get(key)
+    }
+
+    /// The plugin-written cover override of an entry, if one was ever written. A cleared override
+    /// stays here with no file, so its revision keeps counting.
+    pub fn artwork_override(&self, key: &str) -> Option<&ArtworkOverride> {
+        self.artwork_overrides.get(key)
     }
 
     pub fn chosen_match(&self, key: &str) -> Option<&ChosenMatch> {
@@ -1098,8 +1206,25 @@ impl LibraryMachine {
                 op,
                 provider,
                 result,
+                targets,
                 now,
-            } => self.on_provider_scanned(op, provider, result, now),
+            } => self.on_provider_scanned(op, provider, result, targets, now),
+            Input::TargetReviewed {
+                entry_key,
+                expected_revision,
+                target,
+            } => {
+                if let Some(entry) = self.entries.get_mut(&entry_key)
+                    && entry
+                        .target
+                        .as_ref()
+                        .is_some_and(|current| current.revision == expected_revision)
+                {
+                    entry.target = Some(target);
+                    self.view_dirty = true;
+                }
+                vec![]
+            }
             Input::ProviderLocated {
                 op,
                 provider,
@@ -1128,6 +1253,40 @@ impl LibraryMachine {
             Input::SetFilters(filters) => {
                 let filters = filters.normalized();
                 self.update_layout(|layout| layout.filters = filters)
+            }
+            Input::DisplayNameStored {
+                key,
+                display_name,
+                revision,
+            } => {
+                if self.entries.contains_key(&key) {
+                    self.display_overrides.insert(
+                        key.clone(),
+                        DisplayOverride {
+                            entry_key: key,
+                            display_name,
+                            revision,
+                        },
+                    );
+                }
+                vec![]
+            }
+            Input::ArtworkStored {
+                key,
+                file,
+                revision,
+            } => {
+                if self.entries.contains_key(&key) {
+                    self.artwork_overrides.insert(
+                        key.clone(),
+                        ArtworkOverride {
+                            entry_key: key,
+                            file,
+                            revision,
+                        },
+                    );
+                }
+                vec![]
             }
             Input::SaveView { name } => self.save_view(name),
             Input::RenameView { id, name } => self.rename_view(id, name),
@@ -1196,6 +1355,14 @@ impl LibraryMachine {
             Input::SetMatchQuery(text) => {
                 self.set_match_query(text);
                 vec![]
+            }
+            Input::SetMatchPlatformFilter { enabled } => self.set_match_platform_filter(enabled),
+            Input::CatalogSearched { games } => {
+                self.catalog_searched(games);
+                vec![]
+            }
+            Input::AssignPluginMatch { key, game_id, now } => {
+                self.assign_plugin_match(&key, game_id, now)
             }
             Input::SearchMatch => self.search_match(),
             Input::MatchSearched { op, result } => self.on_match_searched(op, result),
@@ -1612,6 +1779,16 @@ impl LibraryMachine {
             .map(|game| (game.game_id, game))
             .collect();
         self.excluded = cache.excluded.into_iter().collect();
+        self.display_overrides = cache
+            .display_overrides
+            .into_iter()
+            .map(|over| (over.entry_key.clone(), over))
+            .collect();
+        self.artwork_overrides = cache
+            .artwork_overrides
+            .into_iter()
+            .map(|over| (over.entry_key.clone(), over))
+            .collect();
         self.saved_views = cache.saved_views;
         self.hidden = cache.hidden.into_iter().collect();
         self.account_library = cache.account_library;
@@ -1904,6 +2081,7 @@ impl LibraryMachine {
                             install_dir: String::new(),
                             fields: record.fields.clone(),
                             installed: false,
+                            target: None,
                             owned: fact == CatalogFact::Owned,
                             shared: fact == CatalogFact::Shared,
                             first_seen: now,
@@ -2004,8 +2182,14 @@ impl LibraryMachine {
         op: u64,
         provider: String,
         result: Result<Vec<Record>, String>,
+        targets: std::collections::BTreeMap<String, super::target::TargetSpec>,
         now: i64,
     ) -> Vec<Effect> {
+        // An uninstalled provider is removed from the scan list and its pending slot; a late
+        // child answer must not repopulate rows the user just removed.
+        if self.provider(&provider).is_none() {
+            return vec![];
+        }
         let Some(run) = &mut self.scan else {
             return vec![];
         };
@@ -2034,7 +2218,7 @@ impl LibraryMachine {
         );
 
         let outcome = match result {
-            Ok(records) => ScanOutcome::Scanned(records),
+            Ok(records) => ScanOutcome::Scanned { records, targets },
             Err(message) => ScanOutcome::Failed(message),
         };
         self.merge_scan(&provider, &outcome, now);
@@ -2067,7 +2251,7 @@ impl LibraryMachine {
             ScanOutcome::Failed(message) => {
                 state.last_error = Some(message.clone());
             }
-            ScanOutcome::Scanned(records) => {
+            ScanOutcome::Scanned { records, targets } => {
                 state.last_success_at = Some(now);
                 state.last_error = None;
                 // A successful scan with a location or any record proves the store is installed
@@ -2079,6 +2263,11 @@ impl LibraryMachine {
                     .filter(|entry| entry.provider == provider)
                 {
                     entry.installed = false;
+                    // A target this scan no longer reports stays stored, so a later scan can
+                    // offer repair, but it cannot launch while it is unavailable.
+                    if let Some(target) = entry.target.take() {
+                        entry.target = Some(super::target::DetectedTarget::missing(&target, now));
+                    }
                 }
                 for record in records {
                     let key = entry_key(provider, &record.id);
@@ -2087,6 +2276,13 @@ impl LibraryMachine {
                     let (owned, shared) = existing
                         .map(|entry| (entry.owned, entry.shared))
                         .unwrap_or_default();
+                    let target = targets.get(&record.id).map(|spec| {
+                        super::target::DetectedTarget::reported(
+                            existing.and_then(|entry| entry.target.as_ref()),
+                            spec.clone(),
+                            now,
+                        )
+                    });
                     self.entries.insert(
                         key.clone(),
                         StoredEntry {
@@ -2097,6 +2293,7 @@ impl LibraryMachine {
                             install_dir: record.install_dir.clone(),
                             fields: record.fields.clone(),
                             installed: true,
+                            target,
                             owned,
                             shared,
                             first_seen,

@@ -22,10 +22,25 @@ pub mod local_game_db;
 pub mod manifest_cache;
 pub mod paths;
 pub mod playtime_db;
+pub mod plugin_artwork;
+pub mod plugin_bundle_db;
+pub mod plugin_bundles;
+pub mod plugin_environment;
+pub mod plugin_files;
+pub mod plugin_locations;
+pub mod plugin_network;
+pub mod plugin_packages;
+pub mod plugin_persistence;
+pub mod plugin_registry;
+pub mod plugin_shared_data;
+pub mod plugin_storage;
+pub mod plugin_telemetry;
+pub mod plugin_updates;
 pub mod ports;
 pub mod ports_db;
 pub mod processes;
 pub mod random;
+pub mod sealed;
 pub mod storage;
 pub mod system;
 pub mod tools;
@@ -34,3 +49,5 @@ pub mod uri;
 
 #[cfg(windows)]
 pub mod autostart;
+
+pub mod volume;

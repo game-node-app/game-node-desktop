@@ -20,8 +20,16 @@ import {
   type LibraryView,
   type EntryStatus,
   type MatchOption,
+  type MatchPlatformFilter,
   type PaletteEntry,
+  type PluginCompatibilityDetails,
+  type PluginDurableUsage,
   type PluginInfo,
+  type PluginBundleComponent,
+  type PluginBundleImportReview,
+  type PluginImportReview,
+  type BundleUpdateReview,
+  type PluginUpdateReview,
   type Provider,
   type Registration,
   type Row,
@@ -63,9 +71,21 @@ import type {
   PortToolsCacheView,
   PortsView,
 } from '../api/ports';
+import type { PluginNotice } from '../api/pluginNotices';
+import type { PluginConfirmation, RememberedConfirmation } from '../api/pluginConfirmations';
+import type { PluginFolderApproval, RootConfirmationPrompt, RootSelectionPrompt } from '../api/pluginFolderApprovals';
+import type { PluginRuntimeApproval } from '../api/pluginRuntimeApprovals';
+import type { RuntimeSelectionPrompt } from '../api/pluginRuntimeApprovals';
 
 type Listener = (snapshot: Snapshot) => void;
 type ProgressListener = (progress: PortProgress) => void;
+type PluginNoticeListener = (notice: PluginNotice) => void;
+type PluginConfirmationListener = (confirmation: unknown) => void;
+type PluginConfirmationClosedListener = (id: string) => void;
+type PluginRootPromptListener = (prompt: unknown) => void;
+type PluginRootPromptClosedListener = (id: string) => void;
+type PluginRuntimePromptListener = (prompt: unknown) => void;
+type PluginRuntimePromptClosedListener = (id: string) => void;
 
 export type MockSteamScenario =
   | 'notConnected'
@@ -493,10 +513,111 @@ const MOCK_SUGGESTIONS: Record<string, SuggestionView[]> = {
 };
 
 /**
+ * Content platforms the mock match fixtures declare, mirroring a provider record's
+ * `fields.platform`. Every other fixture entry behaves like a record without a platform field.
+ */
+const MOCK_ENTRY_PLATFORMS: Record<string, string> = {
+  'dolphin:pikmin': 'gamecube',
+  'dolphin:metroid': 'wii',
+};
+
+/** Catalog abbreviations per declared platform, as the host maps them. */
+const MOCK_PLATFORM_ALIASES: Record<string, { label: string; aliases: string[] }> = {
+  gamecube: { label: 'GameCube', aliases: ['NGC', 'GC', 'GCN', 'GameCube'] },
+  wii: { label: 'Wii', aliases: ['Wii'] },
+};
+
+/** The platform filter the mock derives from a fixture row, as the host derives it from fields. */
+function mockMatchPlatformFilter(rowKey: string): MatchPlatformFilter | null {
+  const platform = MOCK_ENTRY_PLATFORMS[rowKey]?.trim().toLowerCase();
+  const known = platform ? MOCK_PLATFORM_ALIASES[platform] : undefined;
+  if (!platform || !known) return null;
+  return {
+    platform,
+    label: known.label,
+    aliases: [...known.aliases],
+    enabled: true,
+  };
+}
+
+/** Whether the platform filter shows an option, mirroring the host's case-insensitive aliases. */
+function mockPlatformShows(filter: MatchPlatformFilter, option: MatchOption): boolean {
+  return (
+    !filter.enabled ||
+    option.platforms.some((platform) =>
+      filter.aliases.some((alias) => alias.toLowerCase() === platform.toLowerCase()),
+    )
+  );
+}
+
+/**
  * Three match candidates at 96/74/38%, as in the design's D01 fixture. A matched row's current
  * game replaces the first option so the dialog preselects it; every other row gets generated ids.
+ * The Dolphin fixture rows return their declared platform's releases instead, so the platform
+ * filter has an NGC, Switch, Wii and platform-less case to narrow.
  */
 function mockMatchCandidates(row: Row): MatchOption[] {
+  if (row.key === 'dolphin:pikmin') {
+    const matched = getMatchedGameId(row.status);
+    return [
+      {
+        gameId: 400,
+        name: matched === 400 ? (row.matchedName ?? 'Pikmin') : 'Pikmin',
+        releaseYear: 2001,
+        coverUrl: '/mock-covers/mock-4.svg',
+        coverFile: 'mock-4.svg',
+        current: matched === 400,
+        confidence: 96,
+        tone: 'success',
+        platforms: ['NGC'],
+        reasons: [{ titleSimilarity: { percent: 96 } }, 'storeIdRecognized'],
+      },
+      {
+        gameId: 401,
+        name: matched === 401 ? (row.matchedName ?? 'Pikmin 4') : 'Pikmin 4',
+        releaseYear: 2023,
+        coverUrl: '/mock-covers/mock-8.svg',
+        coverFile: null,
+        current: matched === 401,
+        confidence: 74,
+        tone: 'warning',
+        platforms: ['Switch'],
+        reasons: [{ titleSimilarity: { percent: 74 } }, 'storeIdRecognized'],
+      },
+    ];
+  }
+  if (row.key === 'dolphin:metroid') {
+    const matched = getMatchedGameId(row.status);
+    return [
+      {
+        gameId: 410,
+        name: matched === 410 ? (row.matchedName ?? 'Metroid Prime') : 'Metroid Prime',
+        releaseYear: 2002,
+        coverUrl: '/mock-covers/mock-2.svg',
+        coverFile: 'mock-2.svg',
+        current: matched === 410,
+        confidence: 94,
+        tone: 'success',
+        platforms: ['Wii'],
+        reasons: [{ titleSimilarity: { percent: 94 } }, 'storeIdRecognized'],
+      },
+      {
+        gameId: 411,
+        name:
+          matched === 411
+            ? (row.matchedName ?? 'Metroid Prime Remastered')
+            : 'Metroid Prime Remastered',
+        releaseYear: 2023,
+        coverUrl: '/mock-covers/mock-10.svg',
+        coverFile: null,
+        current: matched === 411,
+        confidence: 61,
+        tone: 'warning',
+        platforms: [],
+        reasons: [{ titleSimilarity: { percent: 61 } }, 'storeIdRecognized'],
+      },
+    ];
+  }
   const matched = getMatchedGameId(row.status);
   const year = row.releaseYear ?? 2024;
   return [
@@ -550,7 +671,63 @@ function mockMatchCandidates(row: Row): MatchOption[] {
 }
 
 /** The search answer's results, in the server's order and without the candidates. */
-function mockMatchResults(query: string): MatchOption[] {
+function mockMatchResults(query: string, platform: string | null): MatchOption[] {
+  if (platform === 'gamecube') {
+    return [
+      {
+        gameId: 402,
+        name: `${query} 2`,
+        releaseYear: 2004,
+        coverUrl: null,
+        coverFile: null,
+        current: false,
+        confidence: 58,
+        tone: 'warning',
+        platforms: ['NGC'],
+        reasons: [{ titleSimilarity: { percent: 58 } }],
+      },
+      {
+        gameId: 403,
+        name: `${query} 3 Deluxe`,
+        releaseYear: 2020,
+        coverUrl: null,
+        coverFile: null,
+        current: false,
+        confidence: 34,
+        tone: 'neutral',
+        platforms: ['Switch'],
+        reasons: [{ titleSimilarity: { percent: 34 } }],
+      },
+    ];
+  }
+  if (platform === 'wii') {
+    return [
+      {
+        gameId: 412,
+        name: `${query} 2: Echoes`,
+        releaseYear: 2004,
+        coverUrl: null,
+        coverFile: null,
+        current: false,
+        confidence: 77,
+        tone: 'success',
+        platforms: ['Wii'],
+        reasons: [{ titleSimilarity: { percent: 77 } }],
+      },
+      {
+        gameId: 413,
+        name: `${query} 3`,
+        releaseYear: 2007,
+        coverUrl: null,
+        coverFile: null,
+        current: false,
+        confidence: 42,
+        tone: 'neutral',
+        platforms: [],
+        reasons: [{ titleSimilarity: { percent: 42 } }],
+      },
+    ];
+  }
   return [
     {
       gameId: 2000,
@@ -897,7 +1074,132 @@ function createVariantRows(): Row[] {
       hidden: false,
       gamenode: null,
     },
+    // Emulator-detected entries whose records declare a content platform. The match dialog
+    // narrows their NGC/Wii options by default and offers Show all for the other releases.
+    {
+      key: 'dolphin:pikmin',
+      title: 'Pikmin',
+      detectedName: 'Pikmin',
+      matchedName: null,
+      provider: 'dolphin',
+      providerName: 'Dolphin',
+      installed: true,
+      owned: false,
+      shared: false,
+      running: false,
+      status: 'unmatched',
+      coverFile: 'mock-4.svg',
+      playtime: { seconds: 2 * 3600, source: 'internal', lastPlayedAt: NOW - 3 * DAY },
+      releaseYear: 2001,
+      addedAt: NOW - 6 * DAY,
+      isFavorite: false,
+      hidden: false,
+      gamenode: null,
+    },
+    {
+      key: 'dolphin:metroid',
+      title: 'Metroid Prime',
+      detectedName: 'Metroid Prime',
+      matchedName: null,
+      provider: 'dolphin',
+      providerName: 'Dolphin',
+      installed: true,
+      owned: false,
+      shared: false,
+      running: false,
+      status: 'unmatched',
+      coverFile: 'mock-2.svg',
+      playtime: { seconds: 90 * 60, source: 'internal', lastPlayedAt: null },
+      releaseYear: 2002,
+      addedAt: NOW - 7 * DAY,
+      isFavorite: false,
+      hidden: false,
+      gamenode: null,
+    },
   ];
+}
+
+/**
+ * The third-party provider of the plugin lifecycle fixture (`?plugins=lifecycle`).
+ * The library name is the store shortcut label; the plugin manifest name is longer.
+ */
+export const MOCK_LIFECYCLE_PROVIDER = {
+  id: 'dolphin',
+  name: 'Dolphin',
+} satisfies ProviderRef;
+export const MOCK_LIFECYCLE_PLUGIN_ID = 'org.example.dolphin';
+export const MOCK_LIFECYCLE_PLUGIN_NAME = 'Dolphin GameCube and Wii';
+
+/**
+ * Two emulator records on the first install and a third after the reinstall, so a live
+ * rescan changes the store count instead of restoring a cached number.
+ */
+function createLifecycleRows(includeReinstalled: boolean): Row[] {
+  const rows: Row[] = [
+    {
+      key: 'dolphin:pikmin',
+      title: 'Pikmin',
+      detectedName: 'Pikmin',
+      matchedName: 'Pikmin',
+      provider: MOCK_LIFECYCLE_PROVIDER.id,
+      providerName: MOCK_LIFECYCLE_PROVIDER.name,
+      installed: true,
+      owned: false,
+      shared: false,
+      running: false,
+      status: { matched: { gameId: 400, source: 'automatic' } },
+      coverFile: 'mock-4.svg',
+      playtime: { seconds: 2 * 3600, source: 'internal', lastPlayedAt: NOW - 3 * DAY },
+      releaseYear: 2001,
+      addedAt: NOW - 6 * DAY,
+      isFavorite: false,
+      hidden: false,
+      gamenode: null,
+    },
+    {
+      key: 'dolphin:metroid',
+      title: 'Metroid Prime',
+      detectedName: 'Metroid Prime',
+      matchedName: 'Metroid Prime',
+      provider: MOCK_LIFECYCLE_PROVIDER.id,
+      providerName: MOCK_LIFECYCLE_PROVIDER.name,
+      installed: true,
+      owned: false,
+      shared: false,
+      running: false,
+      status: { matched: { gameId: 410, source: 'automatic' } },
+      coverFile: 'mock-2.svg',
+      playtime: { seconds: 90 * 60, source: 'internal', lastPlayedAt: null },
+      releaseYear: 2002,
+      addedAt: NOW - 7 * DAY,
+      isFavorite: false,
+      hidden: false,
+      gamenode: null,
+    },
+  ];
+  if (includeReinstalled) {
+    rows.push({
+      key: 'dolphin:fzero',
+      title: 'F-Zero GX',
+      detectedName: 'F-Zero GX',
+      matchedName: 'F-Zero GX',
+      provider: MOCK_LIFECYCLE_PROVIDER.id,
+      providerName: MOCK_LIFECYCLE_PROVIDER.name,
+      installed: true,
+      owned: false,
+      shared: false,
+      running: false,
+      status: { matched: { gameId: 420, source: 'automatic' } },
+      coverFile: 'mock-9.svg',
+      playtime: { seconds: 45 * 60, source: 'internal', lastPlayedAt: NOW - DAY },
+      releaseYear: 2003,
+      addedAt: NOW - 2 * DAY,
+      isFavorite: false,
+      hidden: false,
+      gamenode: null,
+    });
+  }
+  return rows;
 }
 
 /** The tracking conflict behind the DRM-free `?claim=1` fixture. */
@@ -1723,9 +2025,414 @@ export function createMockHost(options: {
   syncFirstRun?: boolean;
   /** What the mock executable picker does: accept a file, cancel, report a failure, or reject a path outside the game folder. */
   toolPick?: 'accept' | 'cancel' | 'fail' | 'outside';
+  /** A signed third-party provider whose install, enable, disable, remove and reinstall are live. */
+  pluginLifecycle?: boolean;
 } = {}) {
   const listeners = new Set<Listener>();
   const progressListeners = new Set<ProgressListener>();
+  const pluginNoticeListeners = new Set<PluginNoticeListener>();
+  const confirmationListeners = new Set<PluginConfirmationListener>();
+  const confirmationClosedListeners = new Set<PluginConfirmationClosedListener>();
+  const rootSelectionListeners = new Set<PluginRootPromptListener>();
+  const rootConfirmationListeners = new Set<PluginRootPromptListener>();
+  const rootPromptClosedListeners = new Set<PluginRootPromptClosedListener>();
+  const runtimeSelectionListeners = new Set<PluginRuntimePromptListener>();
+  const runtimePromptClosedListeners = new Set<PluginRuntimePromptClosedListener>();
+  /** Confirmations the fictional user left open, and what they chose to remember, by plugin. */
+  const openConfirmations = new Map<string, PluginConfirmation>();
+  const openRootSelections = new Map<string, RootSelectionPrompt>();
+  const openRootConfirmations = new Map<string, RootConfirmationPrompt>();
+  const openRuntimeSelections = new Map<string, RuntimeSelectionPrompt>();
+  const remembered = new Map<string, RememberedConfirmation[]>();
+  const mockPublisher = 'cd'.repeat(32);
+  /** A fictional producer with retained durable records so the cleanup surface is exercisable. */
+  const durableUsage = new Map<string, PluginDurableUsage>([[
+    'dev.prateleira.local',
+    {
+      pluginId: 'dev.prateleira.local',
+      profileId: 'mock-profile',
+      recordCount: 12,
+      logicalBytes: 153_600,
+      maxBytes: 16 * 1024 * 1024,
+      maxAgeSeconds: 30 * 24 * 60 * 60,
+      oldestUpdatedAt: Math.floor(Date.now() / 1000) - 86_400,
+    },
+  ]]);
+  const emptyDurableUsage = (pluginId: string, profileId: string): PluginDurableUsage => ({
+    pluginId,
+    profileId,
+    recordCount: 0,
+    logicalBytes: 0,
+    maxBytes: 16 * 1024 * 1024,
+    maxAgeSeconds: null,
+    oldestUpdatedAt: null,
+  });
+  /** Host-managed plugin data files and their cleanup candidates, reset on reload. */
+  interface MockStorageEntry {
+    candidateId: string;
+    pluginId: string;
+    kind: 'durable_shared' | 'private_persistence';
+    scope: 'namespace' | 'pool';
+    path: string;
+    fileBytes: number;
+    logicalBytes: number;
+    records: number;
+    protectedRecords: number;
+    archivedRecords: number;
+    oldestUsedAt: number | null;
+    maxBytes: number;
+    maxAgeSeconds: number | null;
+  }
+  const mockDataDir = '/home/mock/.local/share/gamenode';
+  const mockPoolPath = `${mockDataDir}/plugin-shared-data.gnpersistence`;
+  const mockPrivatePath = `${mockDataDir}/plugin-data/cdcdcdcdcdcdcdcd/dev.prateleira.local/mock-profile/storage.sqlite3`;
+  let mockCleanupToken = 'mock-cleanup-review';
+  let mockStorageEntries: MockStorageEntry[] = [
+    {
+      candidateId: 'mock-candidate-durable-plateleira',
+      pluginId: 'dev.prateleira.local',
+      kind: 'durable_shared',
+      scope: 'pool',
+      path: mockPoolPath,
+      fileBytes: 262_144,
+      logicalBytes: 153_600,
+      records: 12,
+      protectedRecords: 0,
+      archivedRecords: 0,
+      oldestUsedAt: Math.floor(Date.now() / 1000) - 86_400,
+      maxBytes: 64 * 1024 * 1024,
+      maxAgeSeconds: 30 * 24 * 60 * 60,
+    },
+    {
+      candidateId: 'mock-candidate-private-plateleira',
+      pluginId: 'dev.prateleira.local',
+      kind: 'private_persistence',
+      scope: 'namespace',
+      path: mockPrivatePath,
+      fileBytes: 57_344,
+      logicalBytes: 40_960,
+      records: 5,
+      protectedRecords: 2,
+      archivedRecords: 1,
+      oldestUsedAt: Math.floor(Date.now() / 1000) - 3_600,
+      maxBytes: 16 * 1024 * 1024,
+      maxAgeSeconds: null,
+    },
+  ];
+  const mockStorageLocations = (profileId: string) => {
+    const durable = mockStorageEntries.filter((entry) => entry.kind === 'durable_shared');
+    const poolLogical = durable.reduce((total, entry) => total + entry.logicalBytes, 0);
+    const poolBytes = durable[0]?.fileBytes ?? 0;
+    return {
+      profileId,
+      locations: mockStorageEntries.map((entry) => ({
+        pluginId: entry.pluginId,
+        kind: entry.kind,
+        path: entry.path,
+        scope: entry.scope,
+        fileBytes: entry.fileBytes,
+        logicalBytes: entry.logicalBytes,
+        records: entry.records,
+        protectedRecords: entry.protectedRecords,
+        archivedRecords: entry.archivedRecords,
+        oldestUsedAt: entry.oldestUsedAt,
+        maxBytes: entry.maxBytes,
+        maxAgeSeconds: entry.maxAgeSeconds,
+      })),
+      pool: durable.length === 0 ? null : {
+        path: mockPoolPath,
+        fileBytes: poolBytes,
+        logicalBytes: poolLogical,
+        overheadBytes: Math.max(0, poolBytes - poolLogical),
+        owners: durable.length,
+        maxOwnerBytes: 64 * 1024 * 1024,
+      },
+      privateRootBytes: mockStorageEntries
+        .filter((entry) => entry.scope === 'namespace')
+        .reduce((total, entry) => total + entry.fileBytes, 0),
+    };
+  };
+  const mockCleanupReview = () => ({
+    token: mockCleanupToken,
+    generatedAt: Math.floor(Date.now() / 1000),
+    candidates: mockStorageEntries.map((entry) => ({
+      candidateId: entry.candidateId,
+      kind: entry.kind,
+      pluginId: entry.pluginId,
+      profileId: 'mock-profile',
+      records: entry.records,
+      protectedRecords: entry.protectedRecords,
+      archivedRecords: entry.archivedRecords,
+      logicalBytes: entry.logicalBytes,
+      physicalBytesEstimate: entry.fileBytes,
+      oldestUpdatedAt: entry.oldestUsedAt,
+      maxBytes: entry.maxBytes,
+      maxAgeSeconds: entry.maxAgeSeconds,
+    })),
+  });
+  const mockBundlePublisher = `SHA256:${'ef'.repeat(32)}`;
+  const mockPluginEnabled = new Map<string, boolean>();
+  // A bundle fixture would duplicate the lifecycle plugin's Dolphin card and name.
+  let mockBundleInstalled = options.pluginLifecycle !== true;
+  /** The live signed-provider fixture: installed, enabled and scanned into the library. */
+  let lifecycleInstalled = options.pluginLifecycle === true;
+  let lifecycleEnabled = true;
+  let lifecycleExtraRow = false;
+  let lifecycleAccountingEnabled = true;
+  let mockBundleVersion = '0.2.0';
+  let mockBundleRollbackVersion: string | undefined;
+  let mockBundleUpdateReview: BundleUpdateReview | undefined;
+  const folderApprovals = new Map<string, PluginFolderApproval[]>([[
+    'community.example.save-sync',
+    [
+      {
+        id: 'mock-file-approval', pluginId: 'community.example.save-sync', publisherFingerprint: mockPublisher,
+        installationName: 'Aster Vale', kind: 'save', root: 'C:\\Games\\Aster Vale\\Saves',
+        operations: ['read'], affectedGames: ['Aster Vale'], revoked: false, declaredByPlugin: false,
+        logicalLibrary: false, libraryId: null, watching: null,
+      },
+      {
+        id: 'mock-library-root', pluginId: 'community.example.save-sync', publisherFingerprint: mockPublisher,
+        installationName: 'Community library', kind: 'library', root: 'C:\\Games',
+        operations: ['read', 'plugin_discovery', 'core_executable_discovery'], affectedGames: [],
+        revoked: false, declaredByPlugin: true, logicalLibrary: true, libraryId: 'mock-library', watching: true,
+      },
+    ],
+  ]]);
+  const runtimeApprovals = new Map<string, PluginRuntimeApproval[]>([[
+    'org.example.dolphin.launch',
+    [{
+      runtimeId: 'mock-dolphin-runtime',
+      path: '/usr/bin/dolphin-emu',
+      approvedAt: 1_760_000_000,
+    }],
+  ]]);
+  let periodicPluginChecks = false;
+  const mockUpdatePlugin = 'community.example.save-sync';
+  let mockPluginVersion = '1.0.0';
+  let mockRollbackVersion: string | undefined;
+  let mockUpdateReview: PluginUpdateReview | undefined;
+  const mockCompatibility: PluginCompatibilityDetails = {
+    state: 'compatible', ambiguous: false, os: 'ubuntu', release: '24.04', architecture: 'x86_64', abi: 'gnu',
+    libc: { family: 'gnu', version: '2.39' }, emulation: 'native',
+    targets: [{
+      target: {
+        os: 'linux', arch: 'x86_64', abi: 'gnu', entrypoint: 'bin/linux-x86_64-gnu/save-sync',
+        requires: { linux: { libc: { family: 'glibc', min_version: '2.31' } } },
+        tested_on: [{ distribution: 'ubuntu', version: '22.04' }],
+      },
+      verdict: { state: 'compatible', reasons: ['requirementsSatisfied'], unknownFacts: [] },
+    }],
+  };
+  const mockUpdates = () => mockPluginVersion === '1.0.0' ? [{
+    pluginId: mockUpdatePlugin, name: 'Community Save Sync', installedVersion: mockPluginVersion, versions: ['2.0.0'],
+  }] : [];
+
+  /** The one installed bundle fixture: a usable discovery provider and an unavailable launcher. */
+  const mockBundleComponents = (): PluginBundleComponent[] => [
+    {
+      pluginId: 'org.example.dolphin',
+      pluginKind: 'provider',
+      name: 'Dolphin GameCube and Wii',
+      version: '0.1.0',
+      status: 'installed',
+      session: 'stopped',
+      enabled: mockPluginEnabled.get('org.example.dolphin') === true,
+      runtimeAvailable: true,
+      publisherFingerprint: mockBundlePublisher,
+      nativeAccess: ['files', 'network'],
+    },
+    {
+      pluginId: 'org.example.dolphin.launch',
+      pluginKind: 'extension',
+      name: 'Dolphin launch extension',
+      version: '0.2.0',
+      status: 'unavailable',
+      session: 'stopped',
+      enabled: mockPluginEnabled.get('org.example.dolphin.launch') === true,
+      runtimeAvailable: false,
+      publisherFingerprint: mockBundlePublisher,
+      nativeAccess: ['files', 'process'],
+      compatibilityDetails: mockCompatibility,
+    },
+  ];
+  const mockBundleEntry = (): PluginInfo => {
+    const components = mockBundleComponents();
+    return {
+      providerId: '',
+      pluginId: 'org.example.dolphin.bundle',
+      pluginKind: 'bundle',
+      name: 'Dolphin GameCube and Wii',
+      version: '0.2.0',
+      source: 'community',
+      status: components.some((component) => component.status === 'installed') ? 'installed' : 'unavailable',
+      capabilities: [],
+      session: 'stopped',
+      nativeAccess: ['files', 'network', 'process'],
+      bundleId: 'org.example.dolphin.bundle',
+      bundleName: 'Dolphin GameCube and Wii',
+      bundleVersion: mockBundleVersion,
+      bundlePublisherFingerprint: mockBundlePublisher,
+      bundleComponents: components,
+    };
+  };
+  /** The signed provider card whose lifecycle follows the live library in this fixture. */
+  const mockLifecyclePlugin = (): PluginInfo => ({
+    providerId: MOCK_LIFECYCLE_PROVIDER.id,
+    pluginId: MOCK_LIFECYCLE_PLUGIN_ID,
+    pluginKind: 'provider',
+    name: MOCK_LIFECYCLE_PLUGIN_NAME,
+    version: '0.1.0',
+    source: 'community',
+    status: lifecycleEnabled ? 'installed' : 'unavailable',
+    capabilities: ['provider.context.read', 'library.discovery', 'storage.persist'],
+    session: lifecycleEnabled ? 'active' : 'stopped',
+    enabled: lifecycleEnabled,
+    runtimeAvailable: true,
+    publisherFingerprint: mockBundlePublisher,
+    nativeAccess: ['files'],
+  });
+  const mockBundleReview = (): PluginBundleImportReview => ({
+    token: 'mock-bundle-review',
+    bundle: {
+      id: 'org.example.dolphin.bundle',
+      name: 'Dolphin GameCube and Wii',
+      version: '0.2.0',
+      publisherKeyId: 'dolphin-dev',
+      publisherFingerprint: mockBundlePublisher,
+    },
+    trust: 'untrusted',
+    license: {
+      expressions: ['MIT'],
+      components: mockBundleComponents().map((component) => ({
+        pluginId: component.pluginId,
+        expression: 'MIT',
+        files: ['licenses/LICENSE'],
+        notices: [],
+      })),
+    },
+    components: mockBundleComponents().map((component) => ({
+      kind: component.pluginKind,
+      availability: component.status === 'installed'
+        ? { status: 'available' }
+        : { status: 'unavailable', reason: 'noCompatibleTarget' },
+      review: {
+        pluginId: component.pluginId,
+        name: component.name,
+        version: component.version,
+        publisherKeyId: 'dolphin-dev',
+        publisherFingerprint: mockBundlePublisher,
+        trust: 'untrusted',
+        license: 'MIT',
+        licenseFiles: ['licenses/LICENSE'],
+        licenseNotices: [],
+        permissionIds: component.pluginKind === 'provider' ? ['storage.persist'] : ['game.launch'],
+        requestedPermissions: component.pluginKind === 'provider'
+          ? [{
+              id: 'storage.persist',
+              required: false,
+              scope: 'own-provider',
+              reason: 'Keep the local game catalog between scans.',
+              impactIfDisabled: 'The catalog is rebuilt on every start and plugin preferences are lost.',
+            }]
+          : [{
+              id: 'game.launch',
+              required: false,
+              scope: 'approved-game-session',
+              reason: 'Start the selected game in this emulator.',
+              impactIfDisabled: 'Games cannot be started from GameNode with this extension.',
+            }],
+        supportedPlatforms: ['gamecube', 'wii'],
+        nativeAccess: component.nativeAccess,
+        playtime: { identifiesGameplay: false, identifiesPauses: false, withoutPauseDetection: 'disabled' },
+        compatibility: component.status === 'installed' ? 'compatible' : 'incompatible',
+        compatibilityDetails: component.compatibilityDetails ?? mockCompatibility,
+      },
+    })),
+  });
+  /** A standalone package review so the individual-path flow can be exercised in the mock host. */
+  const mockPackageReview = (trust: 'untrusted' | 'trusted' = 'untrusted'): PluginImportReview => ({
+    token: 'mock-package-review',
+    pluginId: 'org.example.dolphin',
+    providerId: 'dolphin',
+    name: 'Dolphin discovery',
+    version: '0.1.0',
+    publisherKeyId: 'dolphin-dev',
+    publisherFingerprint: mockBundlePublisher,
+    trust,
+    license: 'MIT',
+    licenseFiles: ['licenses/LICENSE'],
+    licenseNotices: [],
+    permissionIds: ['provider.context.read', 'library.discovery', 'storage.persist'],
+    requestedPermissions: [
+      {
+        id: 'provider.context.read',
+        required: true,
+        scope: 'own-provider',
+        reason: 'Read the host-issued provider context.',
+      },
+      {
+        id: 'library.discovery',
+        required: false,
+        scope: 'own-provider',
+        reason: 'Report the emulator library to GameNode.',
+        impactIfDisabled: 'GameCube and Wii titles from this emulator are not discovered.',
+      },
+      {
+        id: 'storage.persist',
+        required: false,
+        scope: 'own-provider',
+        reason: 'Keep the local game catalog between scans.',
+        impactIfDisabled: 'The catalog is rebuilt on every start and plugin preferences are lost.',
+      },
+    ],
+    supportedPlatforms: ['gamecube', 'wii'],
+    nativeAccess: ['files'],
+    playtime: { identifiesGameplay: false, identifiesPauses: false, withoutPauseDetection: 'disabled' },
+    compatibility: 'compatible',
+    compatibilityDetails: mockCompatibility,
+  });
+  /** A grouped bundle update/rollback review fixture with per-component old/new versions. */
+  const mockBundleUpdateReviewFor = (version: string, rollback: boolean): BundleUpdateReview => {
+    const components = mockBundleComponents();
+    return {
+      bundleId: 'org.example.dolphin.bundle',
+      name: 'Dolphin GameCube and Wii',
+      installedVersion: mockBundleVersion,
+      candidateVersion: version,
+      bundleSha256: 'ab'.repeat(32),
+      publisherFingerprint: mockBundlePublisher,
+      components: components.map((component) => ({
+        pluginId: component.pluginId,
+        kind: component.pluginKind,
+        installedVersion: component.version,
+        candidateVersion: rollback ? '0.1.0' : '0.3.0',
+        addedPermissions: rollback ? [] : ['library.write'],
+        removedPermissions: [],
+        changedPermissions: [],
+        permissionChanges: [],
+        addedNativeAccess: [],
+        removedNativeAccess: [],
+        apiChanged: false,
+        installedApi: '1.6.0',
+        candidateApi: '1.6.0',
+        availability: component.status === 'installed'
+          ? { status: 'available' as const }
+          : { status: 'unavailable' as const, reason: 'noCompatibleTarget' as const },
+        compatibility: component.status === 'installed' ? 'compatible' : 'incompatible',
+        compatibilityDetails: component.compatibilityDetails ?? mockCompatibility,
+        publisherChanged: false,
+        isDowngrade: rollback,
+      })),
+      addedPermissions: rollback ? [] : ['library.write'],
+      removedPermissions: [],
+      changedPermissions: [],
+      requiresManualApproval: true,
+      isDowngrade: rollback,
+      isRollback: rollback,
+    };
+  };
+
   const snapshot = createDefaultSnapshot();
   const systemLocale = mockNormalizeLocale(options.locale ?? 'en');
   const effectiveLocale = () => mockEffectiveLocale(snapshot.preferences, systemLocale);
@@ -1786,10 +2493,14 @@ export function createMockHost(options: {
   const epicEnabled = platform !== 'linux';
   // The manual provider only exists in the comprehensive fixture; the default store list stays
   // at the three stores so its counts and sidebar are unchanged.
-  const queryProviders: ProviderRef[] = options.variantLibrary
-    ? [...MOCK_PROVIDERS, { id: 'manual', name: 'DRM-free' }]
-    : MOCK_PROVIDERS;
-  const baseRows = options.firstRun || options.emptyLibrary
+  // Mutable because an accepted uninstall drops a provider from the running library and a
+  // reinstall adds it back while the same snapshot consumer stays mounted.
+  let queryProviders: ProviderRef[] = options.pluginLifecycle
+    ? [...MOCK_PROVIDERS, MOCK_LIFECYCLE_PROVIDER]
+    : options.variantLibrary
+      ? [...MOCK_PROVIDERS, { id: 'manual', name: 'DRM-free' }]
+      : MOCK_PROVIDERS;
+  const standardRows: Row[] = options.firstRun || options.emptyLibrary
     ? []
     : options.largeLibrary
       ? createLargeLibraryRows()
@@ -1798,8 +2509,16 @@ export function createMockHost(options: {
         : options.noInstalledLibrary
           ? allRows.map((row) => ({ ...row, installed: false }))
           : allRows;
+  const baseRows = options.pluginLifecycle
+    ? [...standardRows, ...createLifecycleRows(false)]
+    : standardRows;
   const initialScope: LibraryScope = options.noInstalledLibrary ? 'installed' : 'all';
   let rows = structuredClone(baseRows);
+  /** The match dialog's complete answer, before the mock's platform narrowing. */
+  let matchAnswer: { candidates: MatchOption[]; results: MatchOption[] } = {
+    candidates: [],
+    results: [],
+  };
   /** The GameNode cover each DRM-free row had before a custom cover replaced it in the mock. */
   const mockGameNodeCovers = new Map<string, string | null>();
   let gridColumns = 1;
@@ -1930,6 +2649,13 @@ export function createMockHost(options: {
     for (const provider of storeIds) {
       if (scenarios[provider] === 'notConnected') {
         next = installedOnlyRows(next, provider);
+      }
+    }
+    if (options.pluginLifecycle) {
+      // The account cache may be replayed while signing in; keep the live provider state.
+      next = next.filter((row) => row.provider !== MOCK_LIFECYCLE_PROVIDER.id);
+      if (lifecycleInstalled) {
+        next.push(...structuredClone(createLifecycleRows(lifecycleExtraRow)));
       }
     }
     return next;
@@ -3635,6 +4361,37 @@ export function createMockHost(options: {
       selectedKeys = new Set([next.key]);
     }
   }
+  /**
+   * Recomputes the dialog's visible options from the complete answer and its platform filter,
+   * mirroring the host: a hidden pick yields to the best visible option.
+   */
+  function projectMatchPlatform() {
+    const dialog = snapshot.library?.matchDialog;
+    if (!dialog) return;
+    const filter = dialog.platformFilter;
+    const visible = (options: MatchOption[]) =>
+      filter && filter.enabled
+        ? options.filter((option) => mockPlatformShows(filter, option))
+        : options;
+    const candidates = visible(matchAnswer.candidates);
+    const results = visible(matchAnswer.results);
+    dialog.candidates = candidates;
+    dialog.results = results;
+    dialog.filteredOut =
+      matchAnswer.candidates.length +
+      matchAnswer.results.length -
+      candidates.length -
+      results.length;
+    const offered = [...candidates, ...results];
+    const selectedVisible = offered.some(
+      (option) => option.gameId === dialog.selected?.gameId,
+    );
+    if (!selectedVisible) {
+      dialog.selected =
+        [...offered].sort((left, right) => right.confidence - left.confidence)[0] ??
+        null;
+    }
+  }
   function libraryInput(input: LibraryInput) {
     const lib = snapshot.library;
     if (!lib) return;
@@ -3721,6 +4478,10 @@ export function createMockHost(options: {
           input.openAddForGame.coverUrl,
         );
       } else if ('setMatchQuery' in input && lib.matchDialog) lib.matchDialog.query = input.setMatchQuery;
+      else if ('setMatchPlatformFilter' in input && lib.matchDialog?.platformFilter) {
+        lib.matchDialog.platformFilter.enabled = input.setMatchPlatformFilter.enabled;
+        projectMatchPlatform();
+      }
       else if ('selectMatch' in input && lib.matchDialog) {
         const offered = [
           ...lib.matchDialog.candidates,
@@ -3785,11 +4546,15 @@ export function createMockHost(options: {
       focusedKey = null;
     } else if (input === 'openDetails') lib.layout.detailOpen = true;
     else if (input === 'catalogClear') catalogClear();
-    else if (input === 'closeMatch') lib.matchDialog = null;
+    else if (input === 'closeMatch') {
+      lib.matchDialog = null;
+      matchAnswer = { candidates: [], results: [] };
+    }
     else if (input === 'openMatch') {
       const row = rows.find((item) => item.key === lib.focused);
       if (row) {
         const candidates = mockMatchCandidates(row);
+        matchAnswer = { candidates, results: [] };
         lib.matchDialog = {
           entryKey: row.key,
           detectedName: row.detectedName,
@@ -3798,19 +4563,25 @@ export function createMockHost(options: {
           searching: false,
           candidates,
           results: [],
-          selected: candidates[0] ?? null,
+          selected: candidates.find((candidate) => candidate.current) ?? candidates[0] ?? null,
           noResults: false,
+          platformFilter: mockMatchPlatformFilter(row.key),
+          filteredOut: 0,
           current: row.status,
           canClear: typeof row.status === 'object',
         };
+        projectMatchPlatform();
       }
     } else if (input === 'searchMatch' && lib.matchDialog) {
-      lib.matchDialog.results = mockMatchResults(lib.matchDialog.query);
-      if (!lib.matchDialog.selected) {
-        const offered = [...lib.matchDialog.candidates, ...lib.matchDialog.results];
-        lib.matchDialog.selected =
-          offered.sort((left, right) => right.confidence - left.confidence)[0] ?? null;
-      }
+      matchAnswer = {
+        candidates: matchAnswer.candidates,
+        results: mockMatchResults(
+          lib.matchDialog.query,
+          lib.matchDialog.platformFilter?.platform ?? null,
+        ),
+      };
+      lib.matchDialog.results = matchAnswer.results;
+      projectMatchPlatform();
     } else if (input === 'openAdd') {
       // One run at a time: an Add while a batch is going reopens its progress.
       if (!reopenAddRun()) {
@@ -3897,13 +4668,199 @@ export function createMockHost(options: {
       progressListeners.add(listener);
       return () => { progressListeners.delete(listener); };
     },
+    /** Plugin notifications, as the host's `plugin:notification` event delivers them. */
+    subscribePluginNotices(listener: PluginNoticeListener) {
+      pluginNoticeListeners.add(listener);
+      return () => { pluginNoticeListeners.delete(listener); };
+    },
+    /** Lets a test or the browser preview publish a notification as a fictional plugin. */
+    publishPluginNotice(notice: PluginNotice) {
+      pluginNoticeListeners.forEach((listener) => listener(notice));
+    },
+    /** Confirmations a plugin asks of the user, as the host's `plugin:confirmation` event does. */
+    subscribePluginConfirmations(listener: PluginConfirmationListener) {
+      confirmationListeners.add(listener);
+      return () => { confirmationListeners.delete(listener); };
+    },
+    subscribePluginConfirmationsClosed(listener: PluginConfirmationClosedListener) {
+      confirmationClosedListeners.add(listener);
+      return () => { confirmationClosedListeners.delete(listener); };
+    },
+    /** Lets a test or the browser preview ask for a confirmation as a fictional plugin. */
+    publishPluginConfirmation(confirmation: PluginConfirmation) {
+      openConfirmations.set(confirmation.id, confirmation);
+      confirmationListeners.forEach((listener) => listener(confirmation));
+    },
+    /** The host stopping to wait for a confirmation (withdrawn or timed out). */
+    closePluginConfirmation(id: string) {
+      openConfirmations.delete(id);
+      confirmationClosedListeners.forEach((listener) => listener(id));
+    },
+    subscribeRootSelections(listener: PluginRootPromptListener) {
+      rootSelectionListeners.add(listener);
+      return () => { rootSelectionListeners.delete(listener); };
+    },
+    subscribeRootConfirmations(listener: PluginRootPromptListener) {
+      rootConfirmationListeners.add(listener);
+      return () => { rootConfirmationListeners.delete(listener); };
+    },
+    subscribeRootPromptsClosed(listener: PluginRootPromptClosedListener) {
+      rootPromptClosedListeners.add(listener);
+      return () => { rootPromptClosedListeners.delete(listener); };
+    },
+    publishRootSelection(prompt: RootSelectionPrompt) {
+      openRootSelections.set(prompt.id, prompt);
+      rootSelectionListeners.forEach((listener) => listener(prompt));
+    },
+    publishRootConfirmation(prompt: RootConfirmationPrompt) {
+      openRootConfirmations.set(prompt.id, prompt);
+      rootConfirmationListeners.forEach((listener) => listener(prompt));
+    },
+    closeRootPrompt(id: string) {
+      openRootSelections.delete(id);
+      openRootConfirmations.delete(id);
+      rootPromptClosedListeners.forEach((listener) => listener(id));
+    },
+    subscribeRuntimeSelections(listener: PluginRuntimePromptListener) {
+      runtimeSelectionListeners.add(listener);
+      return () => { runtimeSelectionListeners.delete(listener); };
+    },
+    subscribeRuntimePromptsClosed(listener: PluginRuntimePromptClosedListener) {
+      runtimePromptClosedListeners.add(listener);
+      return () => { runtimePromptClosedListeners.delete(listener); };
+    },
+    publishRuntimeSelection(prompt: RuntimeSelectionPrompt) {
+      openRuntimeSelections.set(prompt.id, prompt);
+      runtimeSelectionListeners.forEach((listener) => listener(prompt));
+    },
+    closeRuntimePrompt(id: string) {
+      openRuntimeSelections.delete(id);
+      runtimePromptClosedListeners.forEach((listener) => listener(id));
+    },
     async invoke(cmd: string, args: Record<string, unknown> = {}): Promise<unknown> {
       if (cmd === 'get_snapshot') return copy();
+      if (cmd === 'plugin_update_preferences') return { periodicChecks: periodicPluginChecks };
+      if (cmd === 'plugin_update_available' || cmd === 'plugin_update_check') return mockUpdates();
+      if (cmd === 'plugin_update_set_periodic_checks') {
+        periodicPluginChecks = args.enabled === true;
+        return { periodicChecks: periodicPluginChecks };
+      }
+      if (cmd === 'plugin_rollback_available') {
+        return mockRollbackVersion && mockPluginVersion === '2.0.0' ? [{
+          pluginId: mockUpdatePlugin, name: 'Community Save Sync', activeVersion: mockPluginVersion, versions: [mockRollbackVersion],
+        }] : [];
+      }
+      if (cmd === 'plugin_update_review' || cmd === 'plugin_rollback_review') {
+        const rollback = cmd === 'plugin_rollback_review';
+        const version = rollback ? mockRollbackVersion : mockUpdates()[0]?.versions[0];
+        if (!version || args.pluginId !== mockUpdatePlugin || args.version !== version) throw new Error('Package version is unavailable');
+        const playtime = { identifiesGameplay: false, identifiesPauses: false, withoutPauseDetection: 'disabled' } as const;
+        mockUpdateReview = {
+          pluginId: mockUpdatePlugin, installedVersion: mockPluginVersion, candidateVersion: version,
+          addedPermissions: rollback ? [] : ['network.fetch'], removedPermissions: rollback ? ['network.fetch'] : [],
+          changedPermissions: [], permissionChanges: [], addedNativeAccess: [], removedNativeAccess: [],
+          apiChanged: false, installedApi: '1.0.0', candidateApi: '1.0.0',
+          licenseChanged: false, installedLicense: 'MIT', candidateLicense: 'MIT',
+          installedLicenseFiles: ['LICENSE'], candidateLicenseFiles: ['LICENSE'],
+          installedLicenseNotices: [], candidateLicenseNotices: [],
+          installedPlaytime: playtime, candidatePlaytime: playtime, playtimeChanged: false,
+          publisherChanged: false, installedPublisherKeyId: 'mock-publisher', candidatePublisherKeyId: 'mock-publisher',
+          publisherFingerprint: mockPublisher, changedDataSchemas: [], preservesPriorData: true,
+          isDowngrade: rollback, requiresManualApproval: true, compatibilityDetails: mockCompatibility,
+        };
+        return mockUpdateReview;
+      }
+      if (cmd === 'plugin_update_approve' || cmd === 'plugin_rollback_approve') {
+        const rollback = cmd === 'plugin_rollback_approve';
+        const review = mockUpdateReview;
+        if (!review || args.pluginId !== review.pluginId || args.version !== review.candidateVersion
+          || review.isDowngrade !== rollback || (rollback && args.confirmed !== true)) throw new Error('Review and confirm the package first');
+        mockUpdateReview = undefined;
+        mockRollbackVersion = mockPluginVersion;
+        mockPluginVersion = review.candidateVersion;
+        return mockPluginVersion;
+      }
+      if (cmd === 'plugin_update_decline') {
+        if (args.pluginId === mockUpdateReview?.pluginId) mockUpdateReview = undefined;
+        return undefined;
+      }
+      if (cmd === 'available_plugin_extensions') return [];
+      if (cmd === 'start_extension_action') return undefined;
+      if (cmd === 'plugin_confirmation_answer') {
+        const id = String(args.id ?? '');
+        const asked = openConfirmations.get(id);
+        openConfirmations.delete(id);
+        if (asked && args.approved === true && args.remember === true) {
+          const list = remembered.get(asked.pluginId) ?? [];
+          list.push({
+            id: `remembered-${list.length + 1}`,
+            gameName: asked.gameName,
+            operation: asked.operation,
+            approvedAt: Math.floor(Date.now() / 1000),
+          });
+          remembered.set(asked.pluginId, list);
+        }
+        return undefined;
+      }
+      if (cmd === 'plugin_folder_selection_answer') {
+        openRootSelections.delete(String(args.id ?? ''));
+        return undefined;
+      }
+      if (cmd === 'plugin_folder_approval_answer') {
+        openRootConfirmations.delete(String(args.id ?? ''));
+        return undefined;
+      }
+      if (cmd === 'plugin_folder_approvals') {
+        return structuredClone(folderApprovals.get(String(args.pluginId ?? '')) ?? []);
+      }
+      if (cmd === 'plugin_folder_revoke') {
+        const pluginId = String(args.pluginId ?? '');
+        const before = folderApprovals.get(pluginId) ?? [];
+        const current = before.find((item) => item.id === args.id);
+        if (!current || current.revoked) return false;
+        if (current.logicalLibrary) {
+          folderApprovals.set(pluginId, before.filter((item) => item.id !== args.id));
+        } else {
+          folderApprovals.set(pluginId, before.map((item) => item.id === args.id ? { ...item, revoked: true } : item));
+        }
+        return true;
+      }
+      if (cmd === 'plugin_folder_change') return undefined;
+      if (cmd === 'plugin_library_root_set_watching') {
+        const pluginId = String(args.pluginId ?? '');
+        const before = folderApprovals.get(pluginId) ?? [];
+        const current = before.find((item) => item.id === args.id && item.logicalLibrary);
+        if (!current) return false;
+        folderApprovals.set(pluginId, before.map((item) => item.id === args.id ? { ...item, watching: args.watching === true } : item));
+        return true;
+      }
+      if (cmd === 'plugin_runtime_approvals') {
+        return structuredClone(runtimeApprovals.get(String(args.pluginId ?? '')) ?? []);
+      }
+      if (cmd === 'plugin_runtime_revoke') {
+        const pluginId = String(args.pluginId ?? '');
+        const before = runtimeApprovals.get(pluginId) ?? [];
+        const next = before.filter((item) => item.runtimeId !== args.runtimeId);
+        if (next.length === before.length) return false;
+        runtimeApprovals.set(pluginId, next);
+        return true;
+      }
+      if (cmd === 'plugin_remembered_confirmations') {
+        return [...(remembered.get(String(args.pluginId ?? '')) ?? [])];
+      }
+      if (cmd === 'plugin_revoke_confirmation') {
+        const pluginId = String(args.pluginId ?? '');
+        const before = remembered.get(pluginId) ?? [];
+        const after = before.filter((item) => item.id !== args.id);
+        remembered.set(pluginId, after);
+        return after.length !== before.length;
+      }
       if (cmd === 'plugin_inventory') {
         const platform = options.platform ?? 'windows';
         const steamPlugin: PluginInfo = {
           providerId: 'steam',
           pluginId: 'org.gamenode.plugin.steam-discovery',
+          pluginKind: 'provider',
           name: 'Steam',
           version: '0.1.0',
           source: 'official',
@@ -3923,6 +4880,7 @@ export function createMockHost(options: {
         const epicPlugin: PluginInfo = {
           providerId: 'epic',
           pluginId: 'org.gamenode.plugin.epic',
+          pluginKind: 'provider',
           name: 'Epic Games Store',
           version: '0.1.0',
           source: 'official',
@@ -3936,25 +4894,37 @@ export function createMockHost(options: {
           session: pluginSessions.epic,
           nativeAccess: ['files', 'network', 'registry'],
         };
-        // One community plugin, stopped, so the origin filter and Start button are
-        // reachable from the default mock (D16).
         const communityPlugin: PluginInfo = {
           providerId: 'community',
           pluginId: 'dev.prateleira.local',
+          pluginKind: 'provider',
           name: 'Prateleira Local',
           version: '0.3.1',
           source: 'community',
           status: 'installed',
           capabilities: ['provider.context.read'],
           session: pluginSessions.community,
-          nativeAccess: platform === 'linux'
-            ? ['files', 'dbus']
-            : ['files', 'network'],
+          nativeAccess: platform === 'linux' ? ['files', 'dbus'] : ['files', 'network'],
+        };
+        const communitySaveSyncPlugin: PluginInfo = {
+          providerId: 'community-save-sync',
+          pluginId: 'community.example.save-sync',
+          pluginKind: 'extension',
+          name: 'Community Save Sync',
+          version: mockPluginVersion,
+          compatibilityDetails: mockCompatibility,
+          source: 'community',
+          status: 'installed',
+          capabilities: ['library.read', 'files.read', 'libraries.roots.write'],
+          session: 'active',
+          nativeAccess: ['files', 'network'],
+          publisherFingerprint: mockPublisher,
         };
         if (platform === 'linux') {
           const packageManagerPlugin: PluginInfo = {
             providerId: 'packagekit',
             pluginId: 'org.gamenode.plugin.packagekit-discovery',
+            pluginKind: 'provider',
             name: 'Gerenciador de pacotes Linux',
             version: '0.1.0',
             source: 'official',
@@ -3963,10 +4933,319 @@ export function createMockHost(options: {
             session: pluginSessions.packagekit,
             nativeAccess: ['files', 'process', 'dbus'],
           };
-          return [steamPlugin, packageManagerPlugin, communityPlugin];
+          const plugins = [steamPlugin, packageManagerPlugin, communityPlugin, communitySaveSyncPlugin];
+          if (options.pluginLifecycle && lifecycleInstalled) plugins.push(mockLifecyclePlugin());
+          if (mockBundleInstalled) plugins.push(mockBundleEntry());
+          return plugins;
         }
-        return [steamPlugin, epicPlugin, communityPlugin];
+        const plugins = [steamPlugin, epicPlugin, communityPlugin, communitySaveSyncPlugin];
+        if (options.pluginLifecycle && lifecycleInstalled) plugins.push(mockLifecyclePlugin());
+        if (mockBundleInstalled) plugins.push(mockBundleEntry());
+        return plugins;
       }
+      if (cmd === 'plugin_playtime_inventory') {
+        if (!options.pluginLifecycle || !lifecycleInstalled) return [];
+        return [{
+          pluginId: MOCK_LIFECYCLE_PLUGIN_ID,
+          name: MOCK_LIFECYCLE_PLUGIN_NAME,
+          version: '0.1.0',
+          playtime: {
+            identifiesGameplay: true,
+            identifiesPauses: false,
+            withoutPauseDetection: 'application_open' as const,
+          },
+          accountingEnabled: lifecycleAccountingEnabled,
+        }];
+      }
+      if (cmd === 'plugin_playtime_set_accounting') {
+        if (String(args.pluginId ?? '') === MOCK_LIFECYCLE_PLUGIN_ID) {
+          lifecycleAccountingEnabled = args.enabled === true;
+        }
+        return undefined;
+      }
+      if (cmd === 'plugin_permission_snapshot') {
+        const pluginId = String(args.pluginId ?? '');
+        return {
+          pluginId,
+          publisherFingerprint: pluginId === MOCK_LIFECYCLE_PLUGIN_ID ? mockBundlePublisher : '',
+          profileId: String(args.expectedAccountId ?? ''),
+          grantRevision: 0,
+          requestedPermissions: [],
+          effectiveGrants: [],
+        };
+      }
+      if (cmd === 'plugin_shared_data_snapshot') {
+        const pluginId = String(args.pluginId ?? '');
+        return {
+          pluginId,
+          publisherFingerprint: pluginId === MOCK_LIFECYCLE_PLUGIN_ID ? mockBundlePublisher : '',
+          profileId: String(args.expectedProfileId ?? ''),
+          policyRevision: 0,
+          commonCategories: [],
+          selectedRecordIds: [],
+          catalog: [],
+          sourcePolicies: [],
+        };
+      }
+      if (cmd === 'plugin_configuration_state') {
+        return { pluginId: String(args.pluginId ?? ''), available: false, revision: null };
+      }
+      if (cmd === 'plugin_configuration_modes') {
+        return {
+          externalDeclared: false, externalAuthorized: false,
+          declarativeDeclared: false, declarativeAuthorized: false,
+        };
+      }
+      if (cmd === 'plugin_shared_resource_reviews') return [];
+      if (cmd === 'plugin_durable_usage') {
+        const pluginId = String(args.pluginId ?? '');
+        const profileId = String(args.expectedProfileId ?? '');
+        const usage = durableUsage.get(pluginId) ?? emptyDurableUsage(pluginId, profileId);
+        return structuredClone({ ...usage, profileId });
+      }
+      if (cmd === 'plugin_durable_delete') {
+        if (args.confirmed !== true) {
+          throw new Error('deleting retained shared data requires confirmation');
+        }
+        const pluginId = String(args.pluginId ?? '');
+        const profileId = String(args.expectedProfileId ?? '');
+        const before = durableUsage.get(pluginId) ?? emptyDurableUsage(pluginId, profileId);
+        const after = { ...before, profileId, recordCount: 0, logicalBytes: 0 };
+        durableUsage.set(pluginId, after);
+        return structuredClone({
+          pluginId,
+          profileId,
+          removedRecords: before.recordCount,
+          reclaimedBytes: before.logicalBytes,
+          usage: after,
+        });
+      }
+      if (cmd === 'plugin_storage_locations') {
+        return structuredClone(mockStorageLocations(String(args.profileId ?? 'mock-profile')));
+      }
+      if (cmd === 'plugin_storage_cleanup_review') {
+        return structuredClone(mockCleanupReview());
+      }
+      if (cmd === 'plugin_storage_cleanup_apply') {
+        if (args.confirmed !== true) {
+          throw new Error('reviewed storage cleanup requires confirmation');
+        }
+        if (String(args.token ?? '') !== mockCleanupToken) {
+          throw new Error('cleanup review expired or was used');
+        }
+        const ids = (args.candidateIds ?? []) as string[];
+        const selected = mockStorageEntries.filter((entry) => ids.includes(entry.candidateId));
+        const missing = ids.find((id) => !selected.some((entry) => entry.candidateId === id));
+        if (missing) throw new Error('a selected candidate is not in this cleanup review');
+        mockStorageEntries = mockStorageEntries.filter((entry) => !ids.includes(entry.candidateId));
+        mockCleanupToken = `mock-cleanup-review-${Date.now()}`;
+        return structuredClone({
+          token: mockCleanupToken,
+          removedRecords: selected.reduce((total, entry) => total + entry.records, 0),
+          reclaimedBytes: selected.reduce((total, entry) => total + entry.logicalBytes, 0),
+          skippedProtectedRecords: selected.reduce((total, entry) => total + entry.protectedRecords, 0),
+          results: selected.map((entry) => ({
+            candidateId: entry.candidateId,
+            kind: entry.kind,
+            pluginId: entry.pluginId,
+            status: 'completed' as const,
+            removedRecords: entry.records,
+            reclaimedBytes: entry.logicalBytes,
+            error: null,
+          })),
+        });
+      }
+      if (cmd === 'plugin_import_review') {
+        return structuredClone(mockPackageReview());
+      }
+      if (cmd === 'plugin_import_confirm_publisher') {
+        const review = mockPackageReview();
+        const confirmed = String(args.confirmedFingerprint ?? '');
+        if (confirmed !== review.publisherFingerprint) {
+          throw new Error('publisher fingerprint confirmation does not match');
+        }
+        return structuredClone(mockPackageReview('trusted'));
+      }
+      if (cmd === 'plugin_import_install') {
+        if (args.token !== 'mock-package-review') throw new Error('plugin import review expired');
+        if (options.pluginLifecycle) {
+          // The accepted import registers the same provider again and its scan publishes a
+          // fresh count, so the mounted sidebar and grid update without a restart.
+          lifecycleInstalled = true;
+          lifecycleEnabled = true;
+          lifecycleExtraRow = true;
+          if (!queryProviders.some((provider) => provider.id === MOCK_LIFECYCLE_PROVIDER.id)) {
+            queryProviders = [...queryProviders, MOCK_LIFECYCLE_PROVIDER];
+          }
+          rows = [
+            ...rows.filter((row) => row.provider !== MOCK_LIFECYCLE_PROVIDER.id),
+            ...structuredClone(createLifecycleRows(true)),
+          ];
+          lifecycleAccountingEnabled = true;
+          publish();
+        }
+        return { pluginId: MOCK_LIFECYCLE_PLUGIN_ID, activated: true };
+      }
+      if (cmd === 'plugin_import_license_text') {
+        return 'MIT License\n\nPermission is hereby granted, free of charge, to any person obtaining a copy.';
+      }
+      if (cmd === 'plugin_bundle_import_review') {
+        return structuredClone(mockBundleReview());
+      }
+      if (cmd === 'plugin_bundle_import_confirm_publisher') {
+        const review = mockBundleReview();
+        const confirmed = String(args.confirmedFingerprint ?? '');
+        if (confirmed !== review.bundle.publisherFingerprint) {
+          throw new Error('publisher fingerprint confirmation does not match');
+        }
+        return { ...review, trust: 'trusted' as const, components: review.components.map((component) => ({
+          ...component,
+          review: { ...component.review, trust: 'trusted', publisherFingerprint: review.bundle.publisherFingerprint },
+        })) };
+      }
+      if (cmd === 'plugin_bundle_import_install') {
+        if (args.token !== 'mock-bundle-review') throw new Error('plugin bundle import review expired');
+        mockBundleInstalled = true;
+        return {
+          bundleId: 'org.example.dolphin.bundle',
+          components: mockBundleComponents().map((component) => ({
+            pluginId: component.pluginId,
+            kind: component.pluginKind,
+            version: component.version,
+            active: component.status === 'installed',
+          })),
+        };
+      }
+      if (cmd === 'plugin_bundle_permissions_replace') {
+        const submissions = (args.submissions ?? []) as Array<{ pluginId: string }>;
+        return {
+          components: submissions.map((submission) => ({ pluginId: submission.pluginId })),
+        };
+      }
+      if (cmd === 'plugin_bundle_update_check' || cmd === 'plugin_bundle_update_available') {
+        if (!mockBundleInstalled || mockBundleVersion !== '0.2.0') return [];
+        return [{
+          bundleId: 'org.example.dolphin.bundle',
+          name: 'Dolphin GameCube and Wii',
+          installedVersion: mockBundleVersion,
+          versions: ['0.3.0'],
+        }];
+      }
+      if (cmd === 'plugin_bundle_update_review') {
+        if (!mockBundleInstalled || mockBundleVersion !== '0.2.0' || args.version !== '0.3.0') {
+          throw new Error('release is no longer available');
+        }
+        mockBundleUpdateReview = mockBundleUpdateReviewFor('0.3.0', false);
+        return structuredClone(mockBundleUpdateReview);
+      }
+      if (cmd === 'plugin_bundle_update_approve') {
+        const review = mockBundleUpdateReview;
+        if (!review || review.isRollback || args.version !== review.candidateVersion) {
+          throw new Error('review the bundle update before approving it');
+        }
+        mockBundleUpdateReview = undefined;
+        mockBundleRollbackVersion = mockBundleVersion;
+        mockBundleVersion = review.candidateVersion;
+        return {
+          bundleId: review.bundleId,
+          previousVersion: review.installedVersion,
+          version: review.candidateVersion,
+          components: review.components.map((component) => ({
+            pluginId: component.pluginId,
+            kind: component.kind,
+            previousVersion: component.installedVersion,
+            version: component.candidateVersion,
+            active: component.availability.status === 'available',
+          })),
+        };
+      }
+      if (cmd === 'plugin_bundle_update_decline') {
+        mockBundleUpdateReview = undefined;
+        return undefined;
+      }
+      if (cmd === 'plugin_bundle_rollback_available') {
+        return mockBundleInstalled && mockBundleRollbackVersion ? [{
+          bundleId: 'org.example.dolphin.bundle',
+          name: 'Dolphin GameCube and Wii',
+          activeVersion: mockBundleVersion,
+          versions: [mockBundleRollbackVersion],
+        }] : [];
+      }
+      if (cmd === 'plugin_bundle_rollback_review') {
+        if (!mockBundleRollbackVersion || args.version !== mockBundleRollbackVersion) {
+          throw new Error('that bundle version is not available for rollback');
+        }
+        mockBundleUpdateReview = mockBundleUpdateReviewFor(mockBundleRollbackVersion, true);
+        return structuredClone(mockBundleUpdateReview);
+      }
+      if (cmd === 'plugin_bundle_rollback_approve') {
+        const review = mockBundleUpdateReview;
+        if (!review || !review.isRollback || args.confirmed !== true || args.version !== review.candidateVersion) {
+          throw new Error('rollback requires explicit user confirmation');
+        }
+        mockBundleUpdateReview = undefined;
+        mockBundleRollbackVersion = undefined;
+        mockBundleVersion = review.candidateVersion;
+        return {
+          bundleId: review.bundleId,
+          previousVersion: review.installedVersion,
+          version: review.candidateVersion,
+          components: review.components.map((component) => ({
+            pluginId: component.pluginId,
+            kind: component.kind,
+            previousVersion: component.installedVersion,
+            version: component.candidateVersion,
+            active: component.availability.status === 'available',
+          })),
+        };
+      }
+      if (cmd === 'plugin_bundle_uninstall') {
+        const bundleId = String(args.bundleId ?? '');
+        if (bundleId !== 'org.example.dolphin.bundle' || !mockBundleInstalled) {
+          throw new Error(`bundle ${bundleId} is not installed`);
+        }
+        mockBundleInstalled = false;
+        return {
+          bundleId,
+          removed: mockBundleComponents().map((component) => ({
+            pluginId: component.pluginId,
+            version: component.version,
+            stopped: component.status === 'installed',
+          })),
+          failures: [],
+          dataRetention: args.deleteData === true ? 'deleted' as const : 'kept' as const,
+        };
+      }
+      if (cmd === 'plugin_enable' || cmd === 'plugin_disable') {
+        const pluginId = String(args.pluginId ?? '');
+        mockPluginEnabled.set(pluginId, cmd === 'plugin_enable');
+        if (options.pluginLifecycle && pluginId === MOCK_LIFECYCLE_PLUGIN_ID) {
+          // Disabling stops the provider but keeps its cached rows, matching the host: only an
+          // uninstall removes the store from the running library.
+          lifecycleEnabled = cmd === 'plugin_enable';
+        }
+        publish();
+        return undefined;
+      }
+      if (cmd === 'plugin_remove') {
+        const pluginId = String(args.pluginId ?? '');
+        if (options.pluginLifecycle && pluginId === MOCK_LIFECYCLE_PLUGIN_ID) {
+          lifecycleInstalled = false;
+          lifecycleEnabled = true;
+          queryProviders = queryProviders.filter(
+            (provider) => provider.id !== MOCK_LIFECYCLE_PROVIDER.id,
+          );
+          rows = rows.filter((row) => row.provider !== MOCK_LIFECYCLE_PROVIDER.id);
+          pruneSelectionToRows();
+          if (args.deleteData === true) durableUsage.delete(pluginId);
+          publish();
+          return undefined;
+        }
+        if (args.deleteData === true) durableUsage.delete(pluginId);
+        return undefined;
+      }
+      if (cmd === 'custom_launch_ids') return [];
+      if (cmd === 'custom_launch_stop') return undefined;
       if (cmd === 'plugin_stop' || cmd === 'plugin_start') {
         const providerId = args.providerId as string;
         if (!(providerId in pluginSessions)) {
@@ -4609,6 +5888,9 @@ export function mockHostOptionsFromSearch(
     variantLibrary: requestedParams.get('library') === 'variants',
     emptyLibrary: requestedParams.get('library') === 'empty',
     noInstalledLibrary: requestedParams.get('library') === 'no-installed',
+    // `?plugins=lifecycle` exposes a signed Dolphin provider whose install, enable, disable,
+    // remove and reinstall update the same running library.
+    pluginLifecycle: requestedParams.get('plugins') === 'lifecycle',
     discoveries: requestedParams.get('discoveries') === '1',
     claim: requestedParams.get('claim') === '1',
     startScanning: requestedParams.get('scanning') === '1',

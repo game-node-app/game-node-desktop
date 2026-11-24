@@ -54,6 +54,7 @@ fn library() -> LibraryMachine {
     let (mut machine, _) = loaded(false, cache);
     let op = machine.scan.as_ref().unwrap().op;
     machine.handle(Input::ProviderScanned {
+        targets: Default::default(),
         op,
         provider: "steam".to_owned(),
         result: Ok(vec![
@@ -143,6 +144,57 @@ fn opening_prefills_the_detected_title_and_searches_it() {
     assert!(view.searching && view.results.is_empty() && view.error.is_none());
     assert_eq!(view.current, MatchStatus::Unmatched);
     assert!(!view.can_clear);
+}
+
+#[test]
+fn opening_a_dump_searches_its_record_title_instead_of_the_file_name() {
+    let mut cache = LibraryCache::default();
+    cache
+        .entries
+        .push(stored("steam", "GPIE01", "Pikmin (USA) (Rev 1)", true));
+    cache.games = vec![platform_record(500, "Pikmin", 2001, &["NGC"])];
+    let (mut machine, _) = loaded(false, cache);
+    let op = machine.scan.as_ref().unwrap().op;
+    let mut scanned = record(
+        "GPIE01",
+        "Pikmin (USA) (Rev 1)",
+        "/games/Pikmin (USA) (Rev 1)",
+    );
+    scanned
+        .fields
+        .insert("platform".to_owned(), "gamecube".to_owned());
+    scanned
+        .fields
+        .insert("title".to_owned(), "Pikmin".to_owned());
+    machine.handle(Input::ProviderScanned {
+        op,
+        provider: "steam".to_owned(),
+        result: Ok(vec![scanned]),
+        targets: Default::default(),
+        now: NOW,
+    });
+    machine.handle(Input::SetAccess {
+        access: Access::Verified,
+        now: NOW,
+    });
+
+    let effects = open(&mut machine, "GPIE01");
+    let sent = searches(&effects);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(
+        sent[0].1, "Pikmin",
+        "the record title, not the tagged file name"
+    );
+
+    let view = dialog(&mut machine);
+    assert_eq!(view.query, "Pikmin");
+    assert_eq!(view.detected_name, "Pikmin (USA) (Rev 1)");
+    assert_eq!(
+        view.platform_filter
+            .as_ref()
+            .map(|filter| filter.platform.as_str()),
+        Some("gamecube")
+    );
 }
 
 #[test]
@@ -698,6 +750,7 @@ fn year_library() -> LibraryMachine {
         op,
         provider: "steam".to_owned(),
         result: Ok(vec![record("900", "Hollow Mountain 2024", "/g")]),
+        targets: Default::default(),
         now: NOW,
     });
     machine.handle(Input::SetAccess {
@@ -950,4 +1003,446 @@ fn a_selection_the_dialog_does_not_offer_is_ignored() {
             .is_empty()
     );
     assert!(dialog(&mut machine).selected.is_none());
+}
+
+/// A catalog game the search answer can carry, with its platform abbreviations.
+fn game_with(id: u64, name: &str, platforms: &[&str]) -> GameSummary {
+    GameSummary {
+        platforms: platforms
+            .iter()
+            .map(|platform| (*platform).to_owned())
+            .collect(),
+        ..game(id, name)
+    }
+}
+
+/// A library whose single Steam entry declares `platform` in its scan record, so the match dialog
+/// derives the platform filter independently of the provider. `candidates` become the store-id
+/// candidates; games 500–503 cover both platforms.
+fn platform_library(platform: Option<&str>, candidates: &[u64]) -> LibraryMachine {
+    let mut cache = LibraryCache::default();
+    cache.entries.push(stored("steam", "500", "Pikmin", true));
+    if !candidates.is_empty() {
+        cache.auto_matches.push(AutoMatch {
+            category: 1,
+            uid: "500".to_owned(),
+            game_ids: candidates.to_vec(),
+            checked_at: NOW,
+        });
+    }
+    cache.games = vec![
+        platform_record(500, "Pikmin", 2001, &["NGC"]),
+        platform_record(501, "Pikmin 4", 2023, &["Switch"]),
+        platform_record(502, "Pikmin 2", 2004, &["NGC"]),
+        platform_record(503, "Pikmin 3 Deluxe", 2020, &["Switch"]),
+    ];
+    let (mut machine, _) = loaded(false, cache);
+    let op = machine.scan.as_ref().unwrap().op;
+    let mut scanned = record("500", "Pikmin", "/g");
+    if let Some(platform) = platform {
+        scanned
+            .fields
+            .insert("platform".to_owned(), platform.to_owned());
+    }
+    machine.handle(Input::ProviderScanned {
+        op,
+        provider: "steam".to_owned(),
+        result: Ok(vec![scanned]),
+        targets: Default::default(),
+        now: NOW,
+    });
+    machine.handle(Input::SetAccess {
+        access: Access::Verified,
+        now: NOW,
+    });
+    machine
+}
+
+/// A cached game record with the platforms the catalog reported.
+fn platform_record(id: u64, name: &str, year: i32, platforms: &[&str]) -> GameRecord {
+    GameRecord {
+        game_id: id,
+        name: name.to_owned(),
+        release_year: Some(year),
+        cover_url: None,
+        cover_file: None,
+        cover_failed_at: None,
+        platforms: platforms
+            .iter()
+            .map(|platform| (*platform).to_owned())
+            .collect(),
+    }
+}
+
+fn option_with(platforms: &[&str]) -> MatchOption {
+    MatchOption {
+        game_id: 1,
+        name: "Pikmin".to_owned(),
+        release_year: Some(2001),
+        cover_url: None,
+        cover_file: None,
+        current: false,
+        confidence: 90,
+        tone: SuggestionTone::Success,
+        platforms: platforms
+            .iter()
+            .map(|platform| (*platform).to_owned())
+            .collect(),
+        reasons: Vec::new(),
+    }
+}
+
+fn result_ids(view: &MatchDialogView) -> Vec<u64> {
+    view.results.iter().map(|option| option.game_id).collect()
+}
+
+fn candidate_ids(view: &MatchDialogView) -> Vec<u64> {
+    view.candidates
+        .iter()
+        .map(|option| option.game_id)
+        .collect()
+}
+
+#[test]
+fn the_declared_platform_maps_to_catalog_aliases() {
+    let gamecube = MatchPlatformFilter::derived(Some(" GameCube ")).expect("known platform");
+    assert_eq!(gamecube.platform, "gamecube");
+    assert_eq!(gamecube.label, "GameCube");
+    assert_eq!(gamecube.aliases, ["NGC", "GC", "GCN", "GameCube"]);
+    assert!(gamecube.enabled, "on by default when the platform is known");
+    for alias in ["NGC", "gc", "GCN", "gamecube"] {
+        assert!(gamecube.shows(&option_with(&[alias])), "{alias}");
+    }
+    assert!(!gamecube.shows(&option_with(&["Switch"])));
+    assert!(
+        !gamecube.shows(&option_with(&[])),
+        "an option without platforms cannot be shown to belong to the entry's platform"
+    );
+
+    let wii = MatchPlatformFilter::derived(Some("WII")).expect("known platform");
+    assert_eq!(wii.label, "Wii");
+    assert!(wii.shows(&option_with(&["wii"])));
+    assert!(!wii.shows(&option_with(&["NGC"])));
+
+    for unknown in [None, Some(""), Some("   "), Some("dreamcast")] {
+        assert_eq!(MatchPlatformFilter::derived(unknown), None, "{unknown:?}");
+    }
+
+    let mut disabled = gamecube.clone();
+    disabled.enabled = false;
+    assert!(
+        disabled.shows(&option_with(&["Switch"])),
+        "showing all hides nothing"
+    );
+}
+
+#[test]
+fn a_gamecube_entry_shows_the_ngc_candidates_and_results_by_default() {
+    let mut machine = platform_library(Some("gamecube"), &[500, 501]);
+    let effects = open(&mut machine, "500");
+
+    // The search request is unchanged: text only, whatever platform the entry declares.
+    let sent = searches(&effects);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].1, "Pikmin");
+
+    let view = dialog(&mut machine);
+    let filter = view
+        .platform_filter
+        .as_ref()
+        .expect("the entry declares a platform");
+    assert_eq!(filter.platform, "gamecube");
+    assert_eq!(filter.label, "GameCube");
+    assert!(filter.enabled);
+    assert_eq!(
+        candidate_ids(&view),
+        [500],
+        "the Switch candidate is hidden"
+    );
+    assert_eq!(
+        view.selected.as_ref().map(|option| option.game_id),
+        Some(500),
+        "the default selection comes from the filtered candidates"
+    );
+    assert_eq!(view.filtered_out, 1);
+    assert!(!view.no_results);
+
+    let (op, _) = sent[0];
+    machine.handle(Input::MatchSearched {
+        op,
+        result: Ok(vec![
+            game_with(502, "Pikmin 2", &["NGC"]),
+            game_with(503, "Pikmin 3 Deluxe", &["Switch"]),
+        ]),
+    });
+    let view = dialog(&mut machine);
+    assert_eq!(result_ids(&view), [502]);
+    assert_eq!(
+        view.filtered_out, 2,
+        "one candidate and one result are hidden"
+    );
+    assert!(!view.no_results);
+
+    // Show all restores the complete answer and the full list, with no new search.
+    let effects = machine.handle(Input::SetMatchPlatformFilter { enabled: false });
+    assert!(
+        effects.is_empty(),
+        "the filter works on the received answer"
+    );
+    let view = dialog(&mut machine);
+    assert!(!view.platform_filter.as_ref().unwrap().enabled);
+    assert_eq!(candidate_ids(&view), [500, 501]);
+    assert_eq!(result_ids(&view), [502, 503]);
+    assert_eq!(view.filtered_out, 0);
+    assert_eq!(
+        view.selected.as_ref().map(|option| option.game_id),
+        Some(500),
+        "the best option of the full answer is preselected"
+    );
+
+    // Turning it back on narrows the same lists again.
+    machine.handle(Input::SetMatchPlatformFilter { enabled: true });
+    let view = dialog(&mut machine);
+    assert_eq!(candidate_ids(&view), [500]);
+    assert_eq!(result_ids(&view), [502]);
+    assert_eq!(view.filtered_out, 2);
+}
+
+#[test]
+fn a_wii_entry_matches_the_wii_alias_and_keeps_its_manual_choice() {
+    let mut machine = platform_library(Some("Wii"), &[]);
+    let (op, _) = searches(&open(&mut machine, "500")).remove(0);
+    machine.handle(Input::MatchSearched {
+        op,
+        result: Ok(vec![
+            game_with(500, "Metroid Prime", &["Wii"]),
+            game_with(501, "Metroid Prime Remastered", &["Switch"]),
+            game_with(502, "Metroid Prime 2: Echoes", &["wii"]),
+        ]),
+    });
+    let view = dialog(&mut machine);
+    assert_eq!(view.platform_filter.as_ref().unwrap().platform, "wii");
+    assert_eq!(view.platform_filter.as_ref().unwrap().label, "Wii");
+    assert_eq!(result_ids(&view), [500, 502]);
+    assert_eq!(view.filtered_out, 1);
+
+    // A visible manual choice survives turning the filter off.
+    machine.handle(Input::SelectMatch { game_id: 502 });
+    let effects = machine.handle(Input::SetMatchPlatformFilter { enabled: false });
+    assert!(effects.is_empty());
+    let view = dialog(&mut machine);
+    assert_eq!(result_ids(&view), [500, 501, 502]);
+    assert_eq!(
+        view.selected.as_ref().map(|option| option.game_id),
+        Some(502)
+    );
+}
+
+#[test]
+fn an_entry_without_a_known_platform_is_not_filtered() {
+    for platform in [None, Some("dreamcast")] {
+        let mut machine = platform_library(platform, &[500, 501]);
+        let (op, _) = searches(&open(&mut machine, "500")).remove(0);
+        machine.handle(Input::MatchSearched {
+            op,
+            result: Ok(vec![
+                game_with(502, "Pikmin 2", &["NGC"]),
+                game_with(503, "Pikmin 3 Deluxe", &[]),
+            ]),
+        });
+        let view = dialog(&mut machine);
+        assert!(
+            view.platform_filter.is_none(),
+            "{platform:?} declares no known platform"
+        );
+        assert_eq!(view.filtered_out, 0);
+        assert_eq!(candidate_ids(&view), [500, 501]);
+        assert_eq!(result_ids(&view), [502, 503]);
+        assert_eq!(
+            machine.handle(Input::SetMatchPlatformFilter { enabled: false }),
+            Vec::<Effect>::new(),
+            "a dialog without a filter ignores the toggle"
+        );
+    }
+}
+
+#[test]
+fn an_answer_the_filter_hides_entirely_is_not_a_failed_search() {
+    let mut machine = platform_library(Some("gamecube"), &[]);
+    let (op, _) = searches(&open(&mut machine, "500")).remove(0);
+    machine.handle(Input::MatchSearched {
+        op,
+        result: Ok(vec![
+            game_with(503, "Pikmin 3 Deluxe", &["Switch"]),
+            game_with(501, "Pikmin 4", &["Switch"]),
+        ]),
+    });
+    let view = dialog(&mut machine);
+    assert!(
+        !view.no_results,
+        "the server answered; the filter is what hides the answer"
+    );
+    assert_eq!(view.filtered_out, 2);
+    assert!(view.results.is_empty() && view.candidates.is_empty());
+    assert!(view.selected.is_none());
+
+    // Show all makes the same answer visible.
+    machine.handle(Input::SetMatchPlatformFilter { enabled: false });
+    let view = dialog(&mut machine);
+    assert_eq!(result_ids(&view), [503, 501]);
+    assert_eq!(view.filtered_out, 0);
+    assert!(view.selected.is_some());
+
+    // A genuinely empty answer is still reported as no results.
+    let mut empty = platform_library(Some("gamecube"), &[]);
+    let (op, _) = searches(&open(&mut empty, "500")).remove(0);
+    empty.handle(Input::MatchSearched {
+        op,
+        result: Ok(vec![]),
+    });
+    let view = dialog(&mut empty);
+    assert!(view.no_results);
+    assert_eq!(view.filtered_out, 0);
+}
+
+#[test]
+fn toggling_the_filter_recomputes_a_hidden_selection() {
+    let mut machine = platform_library(Some("gamecube"), &[500, 501]);
+    let (op, _) = searches(&open(&mut machine, "500")).remove(0);
+    machine.handle(Input::MatchSearched {
+        op,
+        result: Ok(vec![
+            game_with(502, "Pikmin 2", &["NGC"]),
+            game_with(503, "Pikmin 3 Deluxe", &["Switch"]),
+        ]),
+    });
+
+    // Show all, then pick the Switch game the GameCube filter would hide.
+    machine.handle(Input::SetMatchPlatformFilter { enabled: false });
+    machine.handle(Input::SelectMatch { game_id: 503 });
+    assert_eq!(
+        dialog(&mut machine)
+            .selected
+            .as_ref()
+            .map(|option| option.game_id),
+        Some(503)
+    );
+
+    // Turning the filter on hides the pick, so the best visible option takes over.
+    machine.handle(Input::SetMatchPlatformFilter { enabled: true });
+    let view = dialog(&mut machine);
+    assert_eq!(
+        view.selected.as_ref().map(|option| option.game_id),
+        Some(500)
+    );
+    assert!(view.results.iter().all(|option| option.game_id != 503));
+    assert_eq!(view.filtered_out, 2);
+
+    // Turning it off restores the full answer; the recomputed default is the best of it.
+    machine.handle(Input::SetMatchPlatformFilter { enabled: false });
+    let view = dialog(&mut machine);
+    assert_eq!(result_ids(&view), [502, 503]);
+    assert_eq!(
+        view.selected.as_ref().map(|option| option.game_id),
+        Some(500)
+    );
+
+    // A hidden option cannot be selected while the filter is on.
+    machine.handle(Input::SetMatchPlatformFilter { enabled: true });
+    machine.handle(Input::SelectMatch { game_id: 503 });
+    assert_eq!(
+        dialog(&mut machine)
+            .selected
+            .as_ref()
+            .map(|option| option.game_id),
+        Some(500)
+    );
+}
+
+#[test]
+fn the_current_match_is_kept_when_it_is_visible_and_yielded_when_it_is_hidden() {
+    // The current match is a GameCube game: it stays selected and previewed.
+    let mut cache = LibraryCache::default();
+    cache.entries.push(stored("steam", "500", "Pikmin", true));
+    cache.auto_matches.push(AutoMatch {
+        category: 1,
+        uid: "500".to_owned(),
+        game_ids: vec![500],
+        checked_at: NOW,
+    });
+    cache.games = vec![
+        platform_record(500, "Pikmin", 2001, &["NGC"]),
+        platform_record(501, "Pikmin 4", 2023, &["Switch"]),
+    ];
+    let (mut machine, _) = loaded(false, cache);
+    let op = machine.scan.as_ref().unwrap().op;
+    let mut scanned = record("500", "Pikmin", "/g");
+    scanned
+        .fields
+        .insert("platform".to_owned(), "gamecube".to_owned());
+    machine.handle(Input::ProviderScanned {
+        op,
+        provider: "steam".to_owned(),
+        result: Ok(vec![scanned]),
+        targets: Default::default(),
+        now: NOW,
+    });
+    machine.handle(Input::SetAccess {
+        access: Access::Verified,
+        now: NOW,
+    });
+    open(&mut machine, "500");
+    let view = dialog(&mut machine);
+    assert_eq!(
+        view.selected.as_ref().map(|option| option.game_id),
+        Some(500)
+    );
+    assert!(view.selected.unwrap().current);
+
+    // The same entry matched to a Switch game, with the search answer offering a GameCube game:
+    // the hidden current match yields to the visible option, and the entry itself is unchanged.
+    let mut cache = LibraryCache::default();
+    cache.entries.push(stored("steam", "500", "Pikmin", true));
+    cache.auto_matches.push(AutoMatch {
+        category: 1,
+        uid: "500".to_owned(),
+        game_ids: vec![501],
+        checked_at: NOW,
+    });
+    cache.games = vec![
+        platform_record(501, "Pikmin 4", 2023, &["Switch"]),
+        platform_record(502, "Pikmin 2", 2004, &["NGC"]),
+    ];
+    let (mut machine, _) = loaded(false, cache);
+    let op = machine.scan.as_ref().unwrap().op;
+    let mut scanned = record("500", "Pikmin", "/g");
+    scanned
+        .fields
+        .insert("platform".to_owned(), "gamecube".to_owned());
+    machine.handle(Input::ProviderScanned {
+        op,
+        provider: "steam".to_owned(),
+        result: Ok(vec![scanned]),
+        targets: Default::default(),
+        now: NOW,
+    });
+    machine.handle(Input::SetAccess {
+        access: Access::Verified,
+        now: NOW,
+    });
+    let (op, _) = searches(&open(&mut machine, "500")).remove(0);
+    machine.handle(Input::MatchSearched {
+        op,
+        result: Ok(vec![
+            game_with(502, "Pikmin 2", &["NGC"]),
+            game_with(503, "Pikmin 3 Deluxe", &["Switch"]),
+        ]),
+    });
+    let view = dialog(&mut machine);
+    assert_eq!(
+        view.selected.as_ref().map(|option| option.game_id),
+        Some(502)
+    );
+    assert_eq!(view.filtered_out, 1);
+    assert_eq!(status(&machine, "500").game_id(), Some(501));
 }

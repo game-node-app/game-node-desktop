@@ -59,3 +59,18 @@
 ## Workflow follow-up
 
 - Arquivar a change depois da revisão do PR, e depois do archive de `add-drm-free-games-and-local-backups`, da qual ela depende.
+
+## Reconciliação documental do histórico — 2026-11-09
+
+As seis tarefas abertas permanecem inalteradas. Esta revisão estática distingue código/testes existentes de execução comprovada e não aprova verificações visuais ou nativas não realizadas.
+
+| Tarefa original | Constatação e evidência | Destino e condição restante |
+| --- | --- | --- |
+| 5.2 | Pendência funcional confirmada por inspeção: [update_settings](../../../../crates/app/src/engine/mod.rs), set_sync e set_playtime_source em [playtime.rs](../../../../crates/app/src/engine/playtime.rs) atualizam memória e somente registram erro se a gravação falha. O [comando](../../../../crates/app/src/commands.rs) de sync retorna sucesso. A [spec vigente](../../../specs/desktop-settings/spec.md) continua exigindo reversão e erro no painel. | Permanece aberta aqui, sem change sucessora ativa completa. A correção requer fluxo de implementação próprio com store que falha, reversão do estado e erro visível; a migração React e as permissões futuras de plugins não comprovam essa correção. |
+| 7.2 | Presets Slint/dev-screen substituídos pelo fluxo Vite/mock em [development.md](../../../../docs/development.md) e pelas tarefas 1.2/7.2 da [migração](../2026-11-07-migrate-slint-to-tauri-v2-react/tasks.md). | Registrar a migração como sucessora da ferramenta; os comandos de presets antigos não são mais o fluxo de desenvolvimento atual. Não há nova execução de comandos nesta reconciliação. |
+| 7.3 | Os testes Slint citados foram substituídos pelos [testes React de Settings](../../../../ui/src/features/settings/SettingsModal.test.tsx) e pela tarefa 4.3 da migração. | Sucessor técnico identificado. A execução histórica dos comandos originais não é declarada concluída. |
+| 8.1 | Existe [theme-provenance.json](../../../../ui/src/assets/theme-provenance.json), preservado pela migração. Sua existência não demonstra comparação integral com os nós Figma, estados e valores visuais. | Permanece aberta aqui para auditoria visual/proveniência do modal atual. Nenhuma aprovação visual foi inferida. |
+| 8.2 | [steam-plugin-integration.md](../../../../docs/steam-plugin-integration.md) registra resultados automatizados de um candidato integrado e distingue cross-build de execução nativa. A migração também registra sua suíte sucessora. | Preservar resultados por revisão/ambiente. Execução da suíte Windows completa para o candidato atual e critérios ainda sem resultado permanecem nesta tarefa; integração Steam 7.1 cobre apenas o gate integrado ali especificado. |
+| 8.3 | Seletor Skia/software removido pela migração. Atalhos e modal têm testes React; seleção nativa de pasta continua sendo comportamento do SO. | Parte do renderizador substituída. A aceitação Windows de atalhos, menu, sidebar e picker permanece aqui, com sobreposição parcial em integração Steam 9.1; sem alegação de execução manual. |
+
+Não foram criadas tarefas em outras changes nem alterados checkboxes. Pendências sem sucessora completa continuam com estes IDs até sua correção ou transferência explicitamente documentada.

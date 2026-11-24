@@ -1,0 +1,13 @@
+[package]
+name = "gamenode-plugin-configuration-example"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT"
+
+[workspace]
+
+[dependencies]
+async-trait = "0.1.92"
+gamenode-plugin-sdk = { path = "../../../crates/plugin-sdk" }
+tokio = { version = "1.54.1", features = ["macros", "process", "rt-multi-thread", "sync", "time"] }

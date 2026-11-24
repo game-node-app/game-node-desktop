@@ -1,12 +1,13 @@
 # PC ports
 
 **PC ports** installs community native PC ports and decompilation projects that run on
-Windows. The catalog is browsable on a signed-in Windows build. GameNode downloads the
+Windows, and native Linux builds on Linux. The catalog is browsable on signed-in Windows and
+Linux builds. GameNode downloads the
 port project's own release, asks for the game files the port needs, places or extracts
 them as the recipe says, and registers the result as an ordinary DRM-free library entry.
 GameNode never supplies game content, keys or firmware.
 
-Linux installs are deferred; see [Linux scope](#linux-scope).
+Native Linux installs are in progress and have known gaps; see [Linux scope](#linux-scope).
 
 ## Catalog source and credit
 
@@ -601,24 +602,49 @@ The DRM-free repair flow still applies: if the executable moved, **Locate execut
 Game settings repairs the registration without changing its identity. The host also
 records the launch executable's file identity at install time and rechecks it before
 launch. If a self-update replaces that executable file, the launch is refused as a changed
-target and **Locate executable** repairs it. Files overwritten in place normally keep
-their identity and launch normally.
+target and **Locate executable** repairs it. On Windows, files overwritten in place keep
+their identity (volume serial and file index) and launch normally. On Linux the identity
+currently also includes size, mode and timestamps, so an in-place rewrite, `touch` or
+`chmod` is refused as well; see [Linux scope](#linux-scope).
 
 ## Linux scope
 
-Windows comes first; Linux installs are deferred.
+Change: `openspec/changes/add-linux-pc-port-catalog`. The read-only "Coming Soon" phase has
+been replaced by native installs, which are not yet usable end to end. Task numbers below
+refer to that change's `tasks.md`.
 
-- `PortPlatform::supports_installs()` is true only on Windows. Linux and macOS builds do
-  not start the PC ports service, and the `EXPLORE` destination is hidden on non-Windows
-  signed-in builds (`?platform=linux` in the UI mock shows that state).
-- PC ports lists only upstream entries that support Windows. Linux-only entries are not
-  shown.
-- The install engine is Windows-specific by design: `%APPDATA%` and `%LOCALAPPDATA%`
-  placement roots, Windows file identity for launch validation, `.exe` executables,
-  `CREATE_NO_WINDOW`, job objects and a pinned Windows extraction tool.
-- Supporting Linux installs would need Linux asset selection, placement roots, launcher
-  validation, extractor pins and a Linux extraction tool, plus a review of the overlay
-  recipes. Nothing in this change promises that work.
+What works on Linux:
+
+- `PortPlatform::supports_installs()` is true on Windows and Linux; the service starts the
+  catalog worker and the install runner on Linux. macOS has neither.
+- The `EXPLORE → PC ports` destination is shown on signed-in Linux builds
+  (`?platform=linux` in the UI mock).
+- A persisted platform filter (**All**, **Native Linux**, **Windows-only**) is shown on
+  Linux only.
+- Windows-only entries stay visible and blocked with a Proton note.
+- An AppImage or `.bin` asset is copied into the install folder, made executable and
+  registered (end-to-end runner test).
+- The Windows PS4 package extractor is never run on Linux; a `Packages` source is refused
+  at plan time.
+
+Known gaps:
+
+- Linux-only entries are not listed: `Overlay::apply` still keeps only entries that support
+  Windows (task 3.1).
+- Availability uses the declared `supportedOS`, not the release assets (task 1.1).
+- The folder and file pickers are Windows-only, so Install cannot start on Linux and
+  **Pick executable** cannot recover a missing executable (tasks 2.7, 3.2).
+- The detail pane and the malware confirmation use the Windows asset (task 3.3).
+- Asset selection ranks architecture before format, so an unsupported tarball can win over
+  an AppImage (task 3.4). Tar archives are not supported yet (task 2.1).
+- zip/7z installs fail launch validation because the extracted executable has no execute
+  bit (task 3.5).
+- Preferred executables match exactly and case-sensitively (task 3.6).
+- Overlay launcher and gameplay executables are not per platform (task 3.7).
+- Windows-authored guided recipes can run on Linux (tasks 2.3, 3.8).
+- `data` and `config` both map to `~/.config` and `localData` to `~/.local/share`; the
+  proposed XDG mapping is pending (task 3.10).
+- The Linux launch identity includes size, mode and timestamps (task 3.11).
 
 ## Implementation notes and spec divergences
 

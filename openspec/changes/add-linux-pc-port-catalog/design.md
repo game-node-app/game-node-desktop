@@ -3,131 +3,225 @@
 ## Context
 
 `add-pc-port-catalog` delivers the Windows-first catalog and installer. Its catalog model already
-carries `supportedOS`, a per-release asset list and per-platform preferred executables, but the
-host service only starts on Windows and the sidebar hides the destination elsewhere. The upstream
-catalog contains native Linux builds (for example entries with Linux AppImages or tarballs), while
-the install engine is Windows-specific: `%APPDATA%`/`%LOCALAPPDATA%` placement, `.exe` identity,
+carries `supportedOS`, a per-release asset list and per-platform preferred executables. The
+upstream catalog contains native Linux builds (AppImages, zips, tarballs), while the original
+install engine was Windows-specific: `%APPDATA%`/`%LOCALAPPDATA%` placement, `.exe` identity,
 `CREATE_NO_WINDOW`, job objects and a pinned Windows PS4 PKG extractor.
 
-The product decision is to make discovery available on Linux without pretending that every entry
-is installable there. Windows acceptance remains unchanged.
+This change was planned in two phases: a read-only "Coming Soon" catalog on Linux, then native
+Linux installs. Both phases have partly landed (commits `ac0c981` to `41bfd36`): the service and
+the install runner start on Linux, the Coming Soon block is gone, and an AppImage installs end to
+end in a runner test. A review on 2026-11-24 compared the artifacts with the code and found gaps
+in both directions (see [Review findings](#review-findings-2026-11-24)). The specs now describe the
+**final state** only; the phase-1 Coming Soon requirements were removed because the code no longer
+has that state and the main specs must not require it after archiving.
 
 ## Goals / Non-Goals
 
 **Goals**
 
-- Show the catalog on signed-in Linux builds without enabling unsafe or non-functional installs.
-- Derive installability from the selected release assets and recipe requirements.
-- Filter native Linux versus Windows-only entries; keep Windows-only entries visible and blocked.
-- Install native Linux releases in phase 2 under XDG roots with Linux launch validation.
-- Keep the existing Windows engine, catalog cache and overlay behavior intact.
+- List host-compatible entries on Linux, including Linux-only entries.
+- Derive installability from the selected release's assets and the recipe, not from `supportedOS`.
+- Filter native Linux versus Windows-only entries; keep blocked entries visible with a reason.
+- Install native Linux releases with the same safety model as Windows.
+- Keep the existing Windows engine, catalog cache, overlay behavior and acceptance intact.
 
 **Non-Goals**
 
 - Proton, Wine, containers, remote streaming or any Windows-on-Linux execution.
 - macOS catalog or installs.
 - Re-hosting upstream releases or changing the Quiver source/credit model.
-- Replacing the Windows PS4 PKG extractor or inventing game content.
+- A Linux PS4 PKG extractor, or running the Windows one.
 - Reopening the Windows acceptance tasks in `add-pc-port-catalog`.
 
 ## Decisions
 
-### D1. Asset-level availability, not `supportedOS` alone
+### D1. Asset-level availability, with a declared state before release details load
 
-`supportedOS` is a discovery hint. An entry is eligible for installation on a platform only when
-the selected release contains a verified asset for that platform (matching the recipe's format
-filters) and the recipe does not require a tool that is unavailable on that platform. The view
-model exposes a per-entry `PlatformAvailability` with `native`/`blocked`/`unknown` and the reason.
-This keeps an inconsistent upstream claim from turning into an install attempt.
+`supportedOS` decides listing and the initial label only. Installability comes from the same
+asset selection the plan uses (`select_asset_for`) plus the recipe checks (D13, D14). The catalog
+listing carries no release assets — releases are fetched lazily when an entry's details load (see
+the lazy-release divergence in `docs/pc-ports.md`). Availability therefore has three states:
 
-### D2. Phase 1 is a read-only “Coming Soon” catalog on Linux
+| State | Source | UI |
+| --- | --- | --- |
+| `declared` | `supportedOS` only, details not loaded | platform label, Install enabled only after details confirm |
+| `native` | details loaded, a supported asset for the host exists, recipe can run | Install enabled |
+| `blocked(reason)` | Windows-only, no Linux asset, unsupported format, console extraction, recipe not reviewed | Install disabled with reason |
 
-In phase 1 the host starts the catalog worker on Linux, but the install service remains
-Windows-only. The sidebar shows PC ports on signed-in Linux builds with an “Em breve”/“Coming
-Soon” label, and the catalog header repeats the phase note. The catalog, search, filters and detail
-pane are fully browsable, but the Install action is disabled for every entry on Linux in phase 1,
-native or not, with the Coming Soon reason. This delivers discovery without a half-implemented
-install engine or a misleading install button.
+`entry_view` must stop using the declared platform as install authority on Linux; today the
+`asset_reason` is only computed for Windows (`view.rs`).
 
-Phase 2 removes the Coming Soon block for native Linux entries and leaves Windows-only entries
-blocked with their own reason (Proton is future work). The sidebar label changes to a normal
-destination; the catalog header keeps a note only for entries that remain blocked.
+### D2. Superseded: phase-1 Coming Soon catalog
 
-### D3. Platform filter and blocked cards
+The read-only phase shipped and was replaced by native installs in task 2.5. Its requirements are
+removed from the deltas. There is no recorded packaged evidence of the phase-1 state (task 1.7 is
+marked superseded). The guarantee it gave — no enabled Install that cannot work — is kept by D9.
 
-The existing persisted port filters gain a platform field:
+### D3. Platform filter
 
-- **All** (default): every entry the catalog returns. In phase 1 every card is blocked on Linux
-  with the Coming Soon reason; in phase 2 only Windows-only cards stay blocked.
-- **Native Linux**: only entries with a Linux asset and a Linux-compatible recipe. In phase 1 the
-  cards are still browsable but blocked with Coming Soon; in phase 2 they become installable.
-- **Windows-only**: only entries without a Linux asset, so the user can see what is not available
-  yet without mistaking it for a broken catalog (Proton is future work).
+The persisted port filters gain a platform field with **All** (default), **Native Linux** and
+**Windows-only**, stored in `port_preferences.filters_json`; an unknown value reads as All. The
+filter is shown on Linux only. Windows keeps its current toolbar; the proposal's mention of an
+"equivalent Windows view" is dropped. Native Linux shows `declared` and `native` Linux entries;
+Windows-only shows entries without Linux support and entries blocked for lacking a Linux asset.
 
-The filter is persisted in `port_preferences` with the existing filter revision; an unknown value
-falls back to All. Windows keeps its existing catalog and filters; this change adds the platform
-filter to Linux only, so Windows behavior and acceptance remain unchanged.
+### D4. Native Linux install
 
-A blocked card remains selectable. Its detail pane shows the available platforms and why Install is
-disabled: the Coming Soon note in phase 1, or the Windows-only/Proton note in phase 2. Install
-never starts a download or extractor for a blocked entry.
-
-### D4. Native Linux install phase
-
-Phase 2 uses the existing job runner with a Linux platform strategy:
-
-- select a Linux asset (AppImage, tar, zip or a bare executable; reject Windows-only assets);
-- normalize the executable bit and validate the executable/launcher before registration;
-- map `app`, `data`, `config` and `localData` to XDG placement roots instead of `%APPDATA%`/
-  `%LOCALAPPDATA%`;
-- register the result as an ordinary DRM-free entry with the same provenance and playtime model;
-- keep the release-only path first. Guided setup is available only when the overlay recipe is
-  explicitly Linux-compatible. A recipe requiring `from_package` with the Windows PS4 extractor is
-  reported unavailable, not run under Wine.
+The existing job runner gains a Linux strategy: Linux asset selection (D8), executable bit (D11),
+XDG roots (D16), launch identity (D17), registration as an ordinary DRM-free entry. Cancellation,
+journaling, crash recovery and no-partial-registration stay shared. Guided setup runs only for
+recipes reviewed for Linux (D14).
 
 ### D5. The Windows extractor is not a Linux dependency
 
-The pinned `ps4-pkg` extractor is a Windows `.exe` with `CREATE_NO_WINDOW` and a Windows job
-object. It must not be fetched, started or emulated on Linux. Linux entries that need a console
-package extraction require a separate reviewed Linux tool and recipe in a future change; until
-then those entries remain blocked with an explicit reason.
+The pinned `ps4-pkg` extractor is a Windows `.exe`. It is never fetched, started or emulated on
+Linux. A required slot that can only be produced from packages blocks the entry on Linux; a slot
+that also accepts an extracted folder offers only the folder on Linux. Today `plan_install`
+refuses only a `Packages` source at plan time (`plan.rs`), so the block is not visible in the
+catalog — D13 moves it into availability.
 
 ### D6. Proton is future work
 
-Proton/Wine execution is outside this change. The model keeps the blocked reason and the platform
-availability separate so a later change can add a `Proton` installation strategy without
-migrating catalog data or changing the Windows engine. No Proton setting, dependency or launch
-recipe is added here.
+Unchanged. The blocked reason and the availability are separate so a later change can add a
+Proton strategy without migrating data.
 
 ### D7. Windows behavior is frozen
 
-The Windows catalog, filters, install engine and acceptance stay as delivered by
-`add-pc-port-catalog`. Linux changes must not alter Windows asset selection, placement or launch
-semantics. Shared code can grow a platform strategy, but the Windows branch must keep its current
-tests and acceptance evidence.
+Unchanged. Every Linux fix must keep the Windows tests; `select_asset` stays the Windows entry
+point, and the format-before-architecture fix (D8) must keep Windows' current choices in its tests.
+
+### D8. Asset selection: OS, filter, format, then architecture
+
+`select_asset_for` currently ranks by architecture before checking the format, so a release with
+`x86_64.tar.gz` and `x86_64.AppImage` can pick the tar and answer `UnsupportedFormat`. The order
+becomes: OS → recipe asset filter → supported format → architecture. Supported Linux formats are
+AppImage, bare executable, zip and 7z. `.run` is either added to `SUPPORTED_LINUX_FORMATS` and
+`linux_asset::kind` or removed from `detect_asset_type`; the three lists must agree. "Bare
+executable" must cover names without a known extension (for example Godot's `game.x86_64`), with a
+rule that does not misread arbitrary files. Tar support stays open (task 2.1); until then tar is
+rejected explicitly, and the design no longer promises it.
+
+### D9. No enabled Install without a working folder choice
+
+Folder and file pickers are Windows-only today (`pick_folder_starting_at` returns
+`Unsupported`), so the Linux setup modal shows Install but can never start. Until task 2.7 lands,
+Linux Install is disabled with a translated "folder picker unavailable" reason (or 2.7 lands
+first). 2.7 adds an XDG desktop portal / native dialog picker (the Tauri dialog plugin is
+acceptable) behind `ports_pick_parent`, `ports_pick_supplied` and `ports_pick_executable`, plus a
+typed absolute-path fallback validated by the host.
+
+### D10. The detail pane uses the platform's asset
+
+`build_detail`, `release_view` and `no_asset_reason` call the Windows `select_asset` and receive no
+platform. On Linux they show the Windows file's name, size, checksum and malware warning, and the
+`PortSetupModal` malware gate evaluates the wrong file. They take the `PortPlatform` and call
+`select_asset_for`, so the pane, the modal and the plan agree.
+
+### D11. Executable bit after extraction
+
+The extractor does not apply the zip `unix_mode`, and 7z records none, while `linux_identity`
+rejects a file without an execute bit — so a zip/7z Linux port ends in `InvalidTarget`. After
+extraction on Linux the runner applies the zip's recorded mode where present and always sets
+`0o755` on the executable it registers (preferred, picked or fallback).
+
+### D12. Executable discovery on Linux
+
+`find_executable` compares the preferred name exactly and case-sensitively; upstream AppImages
+carry version and case in the name. On Linux the match ignores case, and when the installed asset
+is a single AppImage or bare executable and nothing matches, that file is the executable without
+asking. Archives keep the existing "pick the executable" fallback, which needs D9's picker.
+*Proposed; needs confirmation.*
+
+### D13. Overlay is platform-aware and does not filter by Windows
+
+`Overlay::apply` filters merged entries with `CatalogEntry::supports_windows`, so Linux-only
+entries never reach the Linux catalog and the Windows-only branch of `entry_view` is never really
+exercised. The platform rule moves to the view (Windows lists Windows entries; Linux lists Linux or
+Windows entries). `launcher_executable` and `gameplay_executables` gain per-platform values
+(*proposed shape*: `launcher_executable: { windows, linux }`, `gameplay_executables: { windows,
+linux }`, with the old scalar fields read as Windows). Linux never uses a Windows name.
+
+### D14. Linux guided setup requires a reviewed recipe
+
+Overlay recipes are Windows-authored. A recipe with required setup files runs on Linux only when
+the overlay marks it reviewed for Linux (*proposed field*: `linux_reviewed: true`); otherwise the
+entry is blocked with the not-reviewed reason in availability (D1). Release-only entries need no
+review. The final overlay schema is decided in task 3.8.
+
+### D15. Rollback switch
+
+Forcing the platform filter to Windows-only does not block installs after native installs exist.
+Rollback is: make `PortPlatform::supports_installs()` false on Linux (the service then serves the
+catalog read-only and refuses installs, as task 1.2 tested), or hide the destination. Installed
+Linux entries are ordinary DRM-free entries and keep working either way.
+
+### D16. Linux data roots follow XDG
+
+`CopyRoots::host` maps `data` and `config` to `dirs::config_dir()` and `localData` to
+`dirs::data_local_dir()`, which copies the Windows `%APPDATA%`/`%LOCALAPPDATA%` split. On Linux
+that puts `data` under `~/.config`, where native ports such as devilutionX do not look. Proposed
+Linux mapping: `config` → `$XDG_CONFIG_HOME`, `data` and `localData` → `$XDG_DATA_HOME`. Windows
+keeps its mapping. *Proposed; needs confirmation (task 3.10).*
+
+### D17. Linux launch identity
+
+`linux_identity` records device, inode, mode, size, mtime and ctime, so any in-place self-update,
+`touch` or `chmod` refuses the launch. That breaks the base requirement "Self-updating ports are
+left alone" more than Windows does (Windows uses volume + file index only), and contradicts the
+`docs/pc-ports.md` claim that in-place rewrites keep working. Recommended: compare device + inode
+only and check the execute bit separately at launch; a replaced file goes through the existing
+repair flow. *Recommended; needs confirmation (task 3.11). The install spec states the behavior.*
+
+## Review findings (2026-11-24)
+
+| # | Finding | Decision | Task |
+| --- | --- | --- | --- |
+| 1 | Overlay drops Linux-only entries (`supports_windows` filter) | D13 | 3.1 |
+| 2 | zip/7z Linux ports fail validation (no execute bit) | D11 | 3.5 |
+| 3 | Detail pane and malware gate use the Windows asset | D10 | 3.3 |
+| 4 | Architecture ranked before format | D8 | 3.4 |
+| 5 | Install enabled on Linux with no folder picker | D9 | 3.2, 2.7 |
+| 6 | Availability from `supportedOS`, not assets (1.1 open) | D1 | 1.1 |
+| 7 | Windows-authored recipes run on Linux | D14, D5 | 2.3, 3.8 |
+| 8 | Overlay launcher/gameplay not per platform | D13 | 3.7 |
+| 9 | Exact, case-sensitive executable match | D12 | 3.6 |
+| 10 | `data` mapped to `~/.config`, not XDG data | D16 | 3.10 |
+| 11 | Linux identity includes size and timestamps | D17 | 3.11 |
+| 12 | Format lists disagree (`.run`, bare binaries, tar, 7z) | D8 | 3.9, 2.1 |
+| 13 | Deltas added requirements contradicting the base | specs use MODIFIED/RENAMED | 4.1 |
+| 14 | Specs described the removed Coming Soon state | D2 | 4.1 |
+| 15 | Task 1.7 no longer verifiable; 2.2 closed without launch | D2 | 1.7, 2.2 |
+| 16 | Proposal vs. D3 on a Windows platform filter | D3 | 4.2 |
+| 17 | Rollback did not block installs | D15 | 4.2 |
+| 18 | Base change not archived | dependency | 4.3 |
+| 19 | `docs/pc-ports.md` and `docs/linux-verification.md` stale | docs | 4.2, 3.12 |
+| 20 | Duplicate `cfg(not(any(windows, linux)))` block breaks non-Windows/non-Linux builds | — | 3.12 |
 
 ## Risks / Trade-offs
 
-- **Upstream inconsistency** (`supportedOS` values/case; an OS claim without an asset) → derive
-  availability from the release and test the mismatch cases.
-- **Linux assets vary** (AppImage, tar, zip, scripts) → start with the formats the upstream
-  actually publishes; reject unsupported formats explicitly instead of extracting arbitrary
-  archives.
-- **Overlay recipes are Windows-authored** → phase 2 must not assume a `setup_file` recipe works
-  on Linux; unverified recipes remain blocked.
-- **Read-only phase 1 looks like a bug** → make the disabled Install state and the phase note
-  explicit in the card and detail pane; add translations and tests.
-- **Windows regression** → keep the platform strategy behind a boundary and run the existing
-  Windows tests plus the Linux catalog tests.
-- **No Linux packaged acceptance available yet** → phase 2 ends with fixtures and a documented
-  packaged-Linux acceptance handoff, not a claim of native execution from fixtures alone.
+- **Upstream inconsistency** (`supportedOS` case or an OS claim without an asset) → D1's declared
+  state is shown until details confirm; Install is never enabled from the claim alone.
+- **Linux assets vary** → install only the formats in D8, reject others explicitly.
+- **Windows-authored overlay recipes** → D14; unreviewed recipes stay blocked.
+- **Picker availability differs across desktops** → portal first, typed-path fallback (D9).
+- **Identity relaxation** (D17) accepts any in-place change to the executable; the user still
+  launches a file they installed, and replacement still needs repair.
+- **Windows regression** → D7; the Windows tests stay as they are.
+- **No packaged Linux acceptance yet** → task 2.6 records it separately; fixtures alone are not
+  native acceptance.
 
 ## Migration Plan
 
-1. Land the base `add-pc-port-catalog` change and archive it.
-2. Phase 1: add platform availability to the catalog view, start the read-only catalog service on
-   Linux, add the filter and blocked cards, preserve existing Windows behavior.
-3. Phase 2: add the Linux install strategy, XDG placement and launch validation; keep Windows
-   blocked Linux-only entries symmetrical.
-4. Rollback: hide the destination or force the platform filter back to Windows-only; the Windows
-   install path and existing Linux library entries are unaffected either way.
+1. Archive `add-pc-port-catalog` first (its 10.1 and 10.2 are still open), then this change.
+2. Fix the blockers before calling Linux installs usable: D13 listing, D1 availability, D9 picker
+   (or a disabled Install), D10 detail asset.
+3. Install correctness: D8, D11, D12; then D14, D13 overlay fields, D16, D17.
+4. Packaged Linux acceptance (2.6), recorded in `docs/linux-verification.md`.
+5. Rollback: D15.
+
+## Open Questions
+
+- D16 data mapping and D17 identity — confirm before tasks 3.10 and 3.11.
+- D12 single-file fallback and the D13/D14 overlay field shapes — confirm before 3.6–3.8.
+- Tar support (2.1): in this change or a follow-up.

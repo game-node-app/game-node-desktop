@@ -4,12 +4,20 @@ This change depends on `add-pc-port-catalog`. Do not archive it before that chan
 requirements extend the same `desktop-port-catalog`, `desktop-port-install` and `desktop-shell`
 capabilities. Windows behavior and the existing Windows acceptance are not reopened.
 
-## 1. Phase 1 — Coming Soon catalog on Linux
+Review 2026-11-24: the artifacts were reconciled with the code (see the design's review-findings
+table). Tasks 2.2, 2.4 and 2.5 were reopened, 1.7 was superseded, and sections 3 and 4 were added.
+
+## 1. Phase 1 — Linux catalog (Coming Soon state superseded by 2.5)
 
 - [ ] 1.1 Derive per-entry platform availability from the selected release's verified assets and
-  the recipe's tool requirements, not from `supportedOS` alone. Expose native/blocked/unknown and
-  the reason in the catalog view model. Verify Linux-only, Windows-only, mixed and inconsistent
-  upstream claims (an OS listed without an asset) produce the expected availability.
+  the recipe's tool requirements, not from `supportedOS` alone. Expose declared/native/blocked and
+  the reason in the catalog view model (design D1): `declared` until the lazy release details
+  load, then `native` or `blocked`. Pass the platform into `entry_view`'s asset reason instead of
+  computing it only on Windows, and enable Linux Install only from `native`. Verify Linux-only,
+  Windows-only, mixed and inconsistent upstream claims (an OS listed without an asset) produce the
+  expected availability.
+  - Review note (2026-11-24): 1.4, 1.5 and 2.5 were completed on top of the declared
+    `supportedOS`; their filtering and blocking must be rechecked once this lands.
 - [x] 1.2 Start the PC ports catalog service on signed-in Linux builds in read-only mode while the
   install service stays Windows-only. Keep the existing Windows catalog path unchanged.
   - Completion (2026-11-22): `main.rs` now starts `PortsService` on every platform and builds
@@ -50,9 +58,10 @@ capabilities. Windows behavior and the existing Windows acceptance are not reope
     Windows-only entries, reachable with `VITE_UI_MOCK=1` plus `?platform=linux`. Component tests
     cover the label, banner, filter, blocked install and Platforms row; the i18n parity test allows
     the proper-noun platform names.
-- [ ] 1.7 Run a native Linux packaged-host check: open PC ports, see Coming Soon, list the cached
-  catalog, filter native Linux and Windows-only, and confirm no install/network download starts.
-  Record the evidence as a packaging check.
+- [x] 1.7 ~~Run a native Linux packaged-host check of the Coming Soon state.~~
+  - Superseded (2026-11-24): task 2.5 removed the Coming Soon state, so it can no longer be
+    observed. **No packaged evidence of the phase-1 state was recorded.** Packaged Linux evidence
+    is now covered only by 2.6.
 
 ## 2. Phase 2 — native Linux installs
 
@@ -70,7 +79,7 @@ capabilities. Windows behavior and the existing Windows acceptance are not reope
     Linux identity the launch validation compares. An end-to-end runner test installs an AppImage
     and asserts the file, mode, and registration. Remaining for the task: tar support. Phase 2.2
     and 2.5 (enabling the Linux service and per-entry availability in the UI) are still open.
-- [x] 2.2 Map `app`, `data`, `config` and `localData` to XDG placement roots, register the result
+- [ ] 2.2 Map `app`, `data`, `config` and `localData` to XDG placement roots, register the result
   as an ordinary DRM-free entry, and validate the Linux launcher/executable before launch.
   - Completion (2026-11-22): `UserDataRoots::host`/`CopyRoots::host` already resolve XDG
     (`dirs::config_dir` and `data_local_dir`), and the Linux plan uses the recipe's
@@ -78,10 +87,14 @@ capabilities. Windows behavior and the existing Windows acceptance are not reope
     device/inode/mode/timestamp identity `LinuxInstallations::validate_registration` compares, so
     the registration written at the commit point launches after a restart. The end-to-end runner
     test asserts the registration and the executable; the native launch itself is part of 2.6.
+  - Reopened (2026-11-24): the mapping is not XDG — `data` and `config` both resolve to
+    `~/.config` and only `localData` to `~/.local/share` (design D16, task 3.10). Launch
+    validation was never exercised (it moved to 2.6), and the identity it compares breaks on
+    in-place updates (D17, task 3.11).
 - [ ] 2.3 Support Linux guided setup only for overlay recipes explicitly reviewed for Linux. A
   recipe requiring the Windows PS4 PKG extractor is reported unavailable; never fetch or run that
   tool on Linux.
-- [x] 2.4 Extend the port job runner for Linux assets and placement: cancellation, crash recovery,
+- [ ] 2.4 Extend the port job runner for Linux assets and placement: cancellation, crash recovery,
   no partial registration, journaled paths and no game-file deletion. Keep the Windows branch
   unchanged.
   - Completion (2026-11-22): the runner detects AppImage/bin/run as a bare executable, copies it
@@ -90,7 +103,11 @@ capabilities. Windows behavior and the existing Windows acceptance are not reope
     The end-to-end test `a_native_linux_appimage_installs_and_becomes_executable` covers download,
     checksum, placement, mode and registration; `beyond_the_pines`-style archive installs reuse the
     existing zip/7z extractor. Windows tests are unchanged.
-- [x] 2.5 Remove the Coming Soon block for native Linux entries; keep Windows-only entries blocked
+  - Reopened (2026-11-24): archive installs were never tested end to end and do not work — the
+    extractor ignores the zip `unix_mode`, 7z records none, and `linux_identity` rejects a file
+    without an execute bit, so a zip/7z Linux port ends in `InvalidTarget` (design D11, task 3.5).
+    `.run` is detected here but is not a supported Linux format (task 3.9).
+- [ ] 2.5 Remove the Coming Soon block for native Linux entries; keep Windows-only entries blocked
   with their own reason. Add en/pt-BR strings, mocks and tests for the mixed catalog.
   - Completion (2026-11-22): `supports_installs` now covers Windows and Linux, so the service
     starts the install runner on Linux. `entry_view` blocks only entries that do not declare the
@@ -99,6 +116,10 @@ capabilities. Windows behavior and the existing Windows acceptance are not reope
     plan's `NoLinuxAsset` has its own user-facing message. Tests cover a native Linux entry, a
     Windows-only entry on Linux, the sidebar, the app destination, the filter and the blocked
     install.
+  - Reopened (2026-11-24): blocking uses the declared `supportedOS`, not the release (1.1); the
+    overlay still drops Linux-only entries, so the native-Linux path mostly sees mixed entries
+    (3.1); and Install is enabled while the folder picker cannot work (2.7, 3.2), which regresses
+    the phase-1 guarantee of no misleading Install.
 - [ ] 2.6 Run focused Linux install fixtures and a packaged Linux acceptance with at least one
   native port built from the user's own files. Record the evidence separately from Windows
   acceptance.
@@ -119,7 +140,62 @@ capabilities. Windows behavior and the existing Windows acceptance are not reope
     parent folder.
   - Status: documented only, deliberately not fixed yet. It blocks 2.6 native acceptance.
 
-## 3. Future
+## 3. Review fixes (2026-11-24)
+
+Each task names the decision in `design.md` and needs a regression test; Windows tests stay
+unchanged (D7).
+
+- [ ] 3.1 Remove the `CatalogEntry::supports_windows` filter from `Overlay::apply`
+  (`crates/core/src/ports/overlay.rs`) and apply the platform rule in the view (D13). Test: a
+  Linux-only entry is listed on Linux and not on Windows; the UI mock's Linux-only entry comes
+  through the overlay like real data.
+- [ ] 3.2 Until 2.7 lands, disable Linux Install with a translated "folder picker unavailable"
+  reason (D9), in en and pt-BR. Test: no enabled Install on Linux without a working picker.
+- [ ] 3.3 Pass `PortPlatform` to `build_detail`, `release_view` and `no_asset_reason`
+  (`crates/app/src/engine/pc_ports/view.rs`) and use `select_asset_for`, so the pane and the
+  `PortSetupModal` malware gate evaluate the platform's asset (D10). Test: Windows asset flagged
+  and AppImage clean → no confirmation on Linux, and the reverse.
+- [ ] 3.4 Filter by supported format before ranking architecture in `select_asset_for`
+  (`crates/core/src/ports/plan.rs`) (D8). Test: `x86_64.tar.gz` + `x86_64.AppImage` selects the
+  AppImage; Windows selection tests unchanged.
+- [ ] 3.5 After zip/7z extraction on Linux apply the recorded zip mode and set `0o755` on the
+  registered executable (D11). Test: end-to-end runner install of a zip and a 7z Linux port whose
+  binary has no recorded execute bit.
+- [ ] 3.6 Match preferred executables case-insensitively on Linux and fall back to the single
+  installed AppImage/bare executable (D12, confirm first). Test: a versioned, mixed-case AppImage
+  name registers without `AwaitingExecutable`.
+- [ ] 3.7 Make the overlay's `launcher_executable` and `gameplay_executables` per platform, reading
+  the old scalar fields as Windows (D13, confirm the schema first). Test: an overlay with
+  `Lantern.exe` does not affect a Linux install or its playtime tracking.
+- [ ] 3.8 Add the Linux-review mark to overlay recipes and block unreviewed guided recipes and
+  package-only slots in availability, not only at plan time (D14, D5; closes 2.3 with the
+  extractor rule). Test: a Windows-authored recipe is blocked in the catalog on Linux with the
+  not-reviewed reason; a package-only slot is blocked with the console-extraction reason.
+- [ ] 3.9 Make `detect_asset_type`, `SUPPORTED_LINUX_FORMATS` and `linux_asset::kind` agree on
+  `.run`, and recognize extensionless and `.x86_64` bare executables (D8). Test per format.
+- [ ] 3.10 **Decision needed (D16).** Map Linux `config` to `$XDG_CONFIG_HOME` and `data`/
+  `localData` to `$XDG_DATA_HOME` in `CopyRoots::host` and `UserDataRoots::host`; Windows
+  unchanged. Test with the `XDG_*` variables set and unset.
+- [ ] 3.11 **Decision needed (D17).** Compare only device + inode in the Linux launch identity and
+  check the execute bit separately; update the identity sentence in `docs/pc-ports.md`. Test: an
+  in-place rewrite, `touch` and `chmod` keep the entry launchable; a replaced file asks for repair.
+- [ ] 3.12 Remove the duplicated `#[cfg(not(any(windows, target_os = "linux")))]` block in
+  `SystemExecutableIdentity::identity` (`crates/platform/src/ports/job_runner.rs`) and record the
+  Linux PC ports scope in `docs/linux-verification.md`. Check: `cargo check` for a target that is
+  neither Windows nor Linux compiles that function.
+
+## 4. Artifacts and archive
+
+- [x] 4.1 Rewrite the spec deltas to describe the final state: MODIFIED/RENAMED where the base
+  change's Windows-only requirements are replaced, no Coming Soon requirements (review items 13
+  and 14). `openspec validate add-linux-pc-port-catalog --strict` passes.
+- [x] 4.2 Align `proposal.md`, `design.md` (D2, D3, D15–D17, review-findings table) and the
+  header and "Linux scope" section of `docs/pc-ports.md` with the code and the review.
+- [ ] 4.3 Archive `add-pc-port-catalog` first (its 10.1 and 10.2 are open), then archive this
+  change once sections 1–3 and 2.6 are complete. Until the base is archived, the validator warns
+  that the MODIFIED/RENAMED requirements have no main spec to apply to; that is expected.
+
+## 5. Future
 
 - Proton/Wine execution, Windows-only installs on Linux, macOS catalog/installs and a Linux PS4
   package extractor are future proposals. They are not tasks in this change.

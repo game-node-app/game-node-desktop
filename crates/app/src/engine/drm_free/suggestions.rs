@@ -153,7 +153,7 @@ impl Engine {
         let api = self.shared.ports.games.clone();
         self.shared.runtime.spawn(async move {
             loop {
-                let (fingerprint, candidate, cached_to_persist) = {
+                let (candidate, cached_to_persist) = {
                     let mut state = engine.lock();
                     let valid = state.local_generation == generation
                         && state
@@ -196,30 +196,47 @@ impl Engine {
                         .candidates
                         .iter()
                         .find(|candidate| candidate.fingerprint == fingerprint)
-                        .cloned();
-                    (fingerprint, candidate, cached)
+                        .cloned()
+                        .filter(|candidate| !candidate.ignored);
+                    // Claim the title in the same critical section that pops it. Marking it in
+                    // flight later let a concurrent request queue the same title again and search
+                    // it twice.
+                    let candidate = match candidate {
+                        Some(candidate)
+                            if candidate.suggestion.is_some()
+                                || candidate.likely_non_game
+                                || state.local_suggestion_searched.contains(&fingerprint) =>
+                        {
+                            state.local_suggestion_searched.insert(fingerprint.clone());
+                            None
+                        }
+                        Some(candidate) => {
+                            let title_key = normalize_title(&candidate.title);
+                            if title_key.is_empty()
+                                || state.local_suggestion_in_flight.contains(&title_key)
+                                || state.local_suggestion_titles.contains_key(&title_key)
+                            {
+                                // Another step owns or already answered this title; the next
+                                // queue fill applies its cached answer.
+                                None
+                            } else {
+                                state.local_suggestion_in_flight.insert(title_key.clone());
+                                Some((candidate, title_key))
+                            }
+                        }
+                        None => None,
+                    };
+                    (candidate, cached)
                 };
                 if !cached_to_persist.is_empty() {
                     persist_suggestions(&engine, cached_to_persist);
                 }
-                let Some(candidate) = candidate else {
-                    // The view may have been replaced while the request was queued; a later
-                    // refresh re-queues the candidate if it is still there.
+                let Some((candidate, title_key)) = candidate else {
+                    // Removed, ignored, answered or owned by another step. The view may have been
+                    // replaced while the request was queued; a later refresh re-queues it.
                     continue;
                 };
-                if candidate.ignored {
-                    continue;
-                }
-                if candidate.suggestion.is_some() || candidate.likely_non_game {
-                    engine.lock().local_suggestion_searched.insert(fingerprint);
-                    continue;
-                }
                 let title = candidate.title.clone();
-                let title_key = normalize_title(&title);
-                engine
-                    .lock()
-                    .local_suggestion_in_flight
-                    .insert(title_key.clone());
                 let years = years_in(&format!("{} {}", candidate.title, candidate.root));
                 let result = api.search_page(&credential, &title).await;
                 let rejected = matches!(result, Err(ApiError::Rejected));

@@ -163,9 +163,24 @@ async fn a_selected_unmatched_entry_gets_engine_fetched_suggestions_and_can_use_
             .suggestions
             .is_empty()
     );
-    let covers = h.api.covers_fetched.lock().unwrap();
+    // The cover download is planned with the match and runs after the snapshot that shows it.
+    let fetched = tokio::time::timeout(std::time::Duration::from_secs(45), async {
+        loop {
+            if h.api
+                .covers_fetched
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|url| url.ends_with("co7.jpg"))
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
     assert!(
-        covers.iter().any(|url| url.ends_with("co7.jpg")),
+        fetched.is_ok(),
         "the chosen game's cover is fetched like a match-dialog choice"
     );
 }

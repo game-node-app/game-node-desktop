@@ -908,9 +908,11 @@ mod tests {
         use gamenode_core::drm_free::InstallationHost as _;
         use std::process::{Command, Stdio};
 
-        // A private executable identity keeps the check independent of unrelated processes.
+        // A private executable identity keeps the check independent of unrelated processes. The
+        // copy keeps the name `sleep`: multicall coreutils builds (uutils, the Ubuntu 26.04
+        // default) pick the utility from the file name and exit at once under any other name.
         let dir = tempfile::tempdir().unwrap();
-        let executable = dir.path().join("approved-runtime");
+        let executable = dir.path().join("sleep");
         std::fs::copy("/bin/sleep", &executable).unwrap();
         let registration = gamenode_platform::installations::LinuxInstallations
             .inspect(executable.to_str().unwrap())
@@ -944,7 +946,7 @@ mod tests {
                 .unwrap_or_default()
                 .into_iter()
                 .filter(|process| {
-                    process.pid == child.id() || process.exe_path.contains("approved-runtime")
+                    process.pid == child.id() || process.exe_path == registration.executable
                 })
                 .map(|process| (process.pid, process.exe_path))
                 .collect::<Vec<_>>();

@@ -865,6 +865,19 @@ impl Harness {
         })
     }
 
+    /// Waits for the credential write that follows `SignedIn`; it runs on the storage worker
+    /// after the snapshot is published, so a direct read can race it on a loaded runner.
+    async fn stored_credential(&self, expected: &str) -> Option<String> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+        loop {
+            let stored = self.creds.stored();
+            if stored.as_deref() == Some(expected) || tokio::time::Instant::now() >= deadline {
+                return stored;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
     async fn signed_out(&mut self) {
         self.engine.start();
         self.until("signed out", |s| s.auth == AuthView::SignedOut)
@@ -945,13 +958,10 @@ async fn fixture_browser_flow_signs_in_stores_and_shows_the_user() {
     assert_eq!(user.display_name(), "Ana");
     // The credential was verified with GameNode, then stored, exactly as received.
     assert_eq!(*h.api.verified.lock().unwrap(), ["signed.token+/=="]);
-    for _ in 0..50 {
-        if h.creds.stored().is_some() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert_eq!(h.creds.stored().as_deref(), Some("signed.token+/=="));
+    assert_eq!(
+        h.stored_credential("signed.token+/==").await.as_deref(),
+        Some("signed.token+/==")
+    );
     assert_eq!(snapshot.notice, None);
 }
 
@@ -1007,7 +1017,7 @@ async fn reopen_failure_keeps_the_pending_attempt_and_reports_it() {
         .until("signed in", |s| matches!(s.auth, AuthView::SignedIn { .. }))
         .await;
     assert!(matches!(snapshot.auth, AuthView::SignedIn { .. }));
-    assert_eq!(h.creds.stored().as_deref(), Some("tok"));
+    assert_eq!(h.stored_credential("tok").await.as_deref(), Some("tok"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1043,6 +1053,7 @@ async fn failed_replayed_and_late_callbacks_cannot_replace_the_session() {
     let mut h = harness(FakeApi::new(), FakeCreds::with(None));
     h.signed_out().await;
     h.sign_in("good").await;
+    assert_eq!(h.stored_credential("good").await.as_deref(), Some("good"));
 
     // Replay of the consumed callback, an intruder's attempt id, and garbage.
     let replay = h.callback("evil");

@@ -2799,34 +2799,46 @@ async fn local_custom_cover_commits_survives_a_match_and_cleans_up_on_replace_ca
     })
     .await;
     assert!(!h.covers.path().join(&second).exists());
-    {
-        // The in-memory match this test set is not persisted; re-apply it while checking that the
-        // cleared registration falls back to the GameNode cover.
-        let mut state = h.engine.lock();
-        state.library.set_local_inference(
-            key.clone(),
-            Some(10),
-            Some(GameRecord {
-                game_id: 10,
-                name: "Matched".into(),
-                release_year: Some(2020),
-                cover_url: None,
-                cover_file: Some("10.jpg".into()),
-                cover_failed_at: None,
-                platforms: vec![],
-            }),
-        );
-    }
-    let row = h
-        .engine
-        .snapshot()
-        .library
-        .unwrap()
-        .rows
-        .iter()
-        .find(|row| row.key == key)
-        .cloned()
-        .unwrap();
+    // The in-memory match this test set is not persisted; re-apply it while checking that the
+    // cleared registration falls back to the GameNode cover. The edit above starts an inference
+    // for the new revision whose result, and the refresh after it, replace the in-memory match
+    // when they land, so re-apply until no such write is left in flight.
+    let row = tokio::time::timeout(Duration::from_secs(45), async {
+        loop {
+            {
+                let mut state = h.engine.lock();
+                state.library.set_local_inference(
+                    key.clone(),
+                    Some(10),
+                    Some(GameRecord {
+                        game_id: 10,
+                        name: "Matched".into(),
+                        release_year: Some(2020),
+                        cover_url: None,
+                        cover_file: Some("10.jpg".into()),
+                        cover_failed_at: None,
+                        platforms: vec![],
+                    }),
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let row = h
+                .engine
+                .snapshot()
+                .library
+                .unwrap()
+                .rows
+                .iter()
+                .find(|row| row.key == key)
+                .cloned()
+                .unwrap();
+            if row.cover_file.as_deref() == Some("10.jpg") {
+                break row;
+            }
+        }
+    })
+    .await
+    .expect("the cleared registration falls back to the matched GameNode cover");
     assert_eq!(row.cover_file.as_deref(), Some("10.jpg"));
     assert_eq!(row.game_cover_file.as_deref(), Some("10.jpg"));
 

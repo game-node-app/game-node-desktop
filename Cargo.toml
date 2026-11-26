@@ -17,6 +17,8 @@ debug = "line-tables-only"
 # Dependencies (image, crypto, TLS, JSON) are slow unoptimized and rarely rebuilt.
 [profile.dev.package."*"]
 opt-level = 3
+# Keep dependency artifacts small; their debug info is rarely useful and dominated `target/`.
+debug = "none"
 
 # Profile of the Windows packages built by `scripts/build-windows-wsl.sh`. The default unwinding
 # panic strategy is kept on purpose: `panic = "abort"` is not set.

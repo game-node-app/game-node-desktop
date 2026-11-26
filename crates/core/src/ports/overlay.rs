@@ -277,13 +277,13 @@ impl Overlay {
         Some(merged)
     }
 
-    /// The listable catalog: the overlay merged into every entry, hidden entries removed and
-    /// entries that do not support Windows dropped.
+    /// The merged catalog: the overlay applied to every entry and hidden entries removed. The
+    /// platform rule is not applied here (design D13): the view decides which entries the running
+    /// platform lists, so a Linux-only entry survives the merge and reaches the Linux catalog.
     pub fn apply(&self, entries: Vec<CatalogEntry>) -> Vec<CatalogEntry> {
         entries
             .into_iter()
             .filter_map(|entry| self.merge(entry))
-            .filter(CatalogEntry::supports_windows)
             .collect()
     }
 }
@@ -556,7 +556,7 @@ from_package = {{ extractor = "ps4-pkg", title_id = "CUSA03173", needs_update = 
     }
 
     #[test]
-    fn the_listed_catalog_is_windows_only_and_keeps_order() {
+    fn the_merged_catalog_keeps_every_platform_in_order() {
         let overlay = Overlay::parse(&overlay_toml()).unwrap();
         let linux = CatalogEntry {
             catalog_id: "qcat_linux".into(),
@@ -565,16 +565,23 @@ from_package = {{ extractor = "ps4-pkg", title_id = "CUSA03173", needs_update = 
             supported_os: vec!["linux".into()],
             ..CatalogEntry::default()
         };
-        let unsupported = CatalogEntry {
+        let unknown = CatalogEntry {
             catalog_id: "qcat_unknown".into(),
             slug: "unknown".into(),
             name: "Unknown".into(),
             supported_os: vec!["unknown".into()],
             ..CatalogEntry::default()
         };
-        let listed = overlay.apply(vec![linux, upstream_entry(), unsupported]);
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].catalog_id, "qcat_lantern");
+        // The overlay never applies the platform rule; the view lists what the running platform
+        // can run (design D13).
+        let merged = overlay.apply(vec![linux, upstream_entry(), unknown]);
+        assert_eq!(
+            merged
+                .iter()
+                .map(|entry| entry.catalog_id.as_str())
+                .collect::<Vec<_>>(),
+            ["qcat_linux", "qcat_lantern", "qcat_unknown"]
+        );
     }
 
     #[test]

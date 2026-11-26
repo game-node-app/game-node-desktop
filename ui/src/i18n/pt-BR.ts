@@ -2054,6 +2054,7 @@ export const ptBR: TranslationCatalog = {
   "Ports::Windows-only": "Somente Windows",
   "Ports::This port is Windows-only. Proton support is future work.": "Este port é somente para Windows. O suporte a Proton é trabalho futuro.",
   "Ports::No native Linux download is available.": "Nenhum download nativo para Linux está disponível.",
+  "Ports::The Linux folder picker is not available yet, so Install is disabled.": "O seletor de pastas do Linux ainda não está disponível, então Instalar está desativado.",
   "Ports::{} installs running or unseen": "{} instalações em andamento ou ainda não vistas",
   "Ports::Refreshing the catalog": "Atualizando o catálogo",
   "Ports::Catalog ready": "Catálogo pronto",

@@ -145,19 +145,36 @@ table). Tasks 2.2, 2.4 and 2.5 were reopened, 1.7 was superseded, and sections 3
 Each task names the decision in `design.md` and needs a regression test; Windows tests stay
 unchanged (D7).
 
-- [ ] 3.1 Remove the `CatalogEntry::supports_windows` filter from `Overlay::apply`
+- [x] 3.1 Remove the `CatalogEntry::supports_windows` filter from `Overlay::apply`
   (`crates/core/src/ports/overlay.rs`) and apply the platform rule in the view (D13). Test: a
   Linux-only entry is listed on Linux and not on Windows; the UI mock's Linux-only entry comes
   through the overlay like real data.
-- [ ] 3.2 Until 2.7 lands, disable Linux Install with a translated "folder picker unavailable"
+  - Completion (2026-11-26): `Overlay::apply` now only merges and drops hidden entries;
+    `lists_entry` in `crates/app/src/engine/pc_ports/view.rs` applies D13 (Windows lists Windows
+    entries, Linux lists Linux or Windows entries, macOS none) and `build` filters with it. Tests:
+    the overlay keeps every platform in order, the catalog worker keeps the Linux-only entry after
+    the overlay, and the view lists it on Linux but not on Windows.
+- [x] 3.2 Until 2.7 lands, disable Linux Install with a translated "folder picker unavailable"
   reason (D9), in en and pt-BR. Test: no enabled Install on Linux without a working picker.
-- [ ] 3.3 Pass `PortPlatform` to `build_detail`, `release_view` and `no_asset_reason`
+  - Completion (2026-11-26): `PortInstallBlockReason::FolderPickerUnavailable` turns Install off
+    on every Linux entry, with the pane and the setup modal using the new en/pt-BR text. The
+    `?platform=linux` mock mirrors the reason. Tests: `linux_install_waits_for_the_folder_picker`
+    and the UI's `blocks Install on Linux until the folder picker exists`.
+- [x] 3.3 Pass `PortPlatform` to `build_detail`, `release_view` and `no_asset_reason`
   (`crates/app/src/engine/pc_ports/view.rs`) and use `select_asset_for`, so the pane and the
   `PortSetupModal` malware gate evaluate the platform's asset (D10). Test: Windows asset flagged
   and AppImage clean → no confirmation on Linux, and the reverse.
-- [ ] 3.4 Filter by supported format before ranking architecture in `select_asset_for`
+  - Completion (2026-11-26): `build_detail`, `release_view`, `no_asset_reason` and
+    `update_available` take the `PortPlatform` and call `select_asset_for`; `PortsService`
+    passes `config.platform`. Test `the_detail_reads_the_asset_of_its_platform` covers a flagged
+    Windows file with a clean AppImage and the reverse.
+- [x] 3.4 Filter by supported format before ranking architecture in `select_asset_for`
   (`crates/core/src/ports/plan.rs`) (D8). Test: `x86_64.tar.gz` + `x86_64.AppImage` selects the
   AppImage; Windows selection tests unchanged.
+  - Completion (2026-11-26): selection partitions by installable format before
+    `best_by_architecture`; when nothing is installable it still reports the problem on the
+    best-ranked file, so the existing error messages and Windows tests are unchanged. Test:
+    `an_installable_format_wins_over_the_best_ranked_one`.
 - [ ] 3.5 After zip/7z extraction on Linux apply the recorded zip mode and set `0o755` on the
   registered executable (D11). Test: end-to-end runner install of a zip and a 7z Linux port whose
   binary has no recorded execute bit.
@@ -199,3 +216,6 @@ unchanged (D7).
 
 - Proton/Wine execution, Windows-only installs on Linux, macOS catalog/installs and a Linux PS4
   package extractor are future proposals. They are not tasks in this change.
+- Malware-gate hardening (warning verdicts, scan links, unknown-verdict badges, local scanning)
+  is recorded in `docs/pc-ports.md` under "Malware gate: possible hardening". It needs its own
+  change and is not a task here.

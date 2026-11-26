@@ -2052,6 +2052,7 @@ export const en = {
   "Ports::Windows-only": "Windows-only",
   "Ports::This port is Windows-only. Proton support is future work.": "This port is Windows-only. Proton support is future work.",
   "Ports::No native Linux download is available.": "No native Linux download is available.",
+  "Ports::The Linux folder picker is not available yet, so Install is disabled.": "The Linux folder picker is not available yet, so Install is disabled.",
   "Ports::{} installs running or unseen": "{} installs running or unseen",
   "Ports::Refreshing the catalog": "Refreshing the catalog",
   "Ports::Catalog ready": "Catalog ready",

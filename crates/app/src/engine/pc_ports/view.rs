@@ -19,7 +19,7 @@ use gamenode_core::ports::catalog::{
     CatalogEntry, CopyRoot, Placement, PortAsset, PortRelease, SetupKind,
 };
 use gamenode_core::ports::job::{PortJobPhase as WorkerJobPhase, SuppliedStep};
-use gamenode_core::ports::plan::{select_asset, select_release};
+use gamenode_core::ports::plan::{select_asset_for, select_release};
 use gamenode_core::ports::store::{PortInstallation, PortJobRow, PortPreferences};
 use gamenode_core::ports::view::{
     PortArgumentKind, PortArgumentSpec, PortArtView, PortCatalogError, PortCatalogState,
@@ -33,16 +33,31 @@ use gamenode_platform::ports::catalog_worker::{CatalogError, CatalogState, Catal
 /// Facts a detail response adds to an entry the listing could not answer.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EntryFacts {
-    /// The selected release has no installable Windows asset.
+    /// The selected release has no installable asset for the running platform.
     pub no_asset_reason: Option<PortNoAssetReason>,
     /// The selected release was withdrawn upstream.
     pub withdrawn: bool,
 }
 
+/// Whether the catalog lists this entry on `platform` (design D13). Windows lists Windows
+/// entries. Linux lists Linux or Windows entries, so Linux-only entries appear and Windows-only
+/// entries stay visible as blocked. macOS lists no PC ports.
+pub fn lists_entry(
+    entry: &CatalogEntry,
+    platform: gamenode_core::ports::view::PortPlatform,
+) -> bool {
+    use gamenode_core::ports::view::PortPlatform;
+    match platform {
+        PortPlatform::Windows => entry.supports_windows(),
+        PortPlatform::Linux => entry.supports_linux() || entry.supports_windows(),
+        PortPlatform::Macos => false,
+    }
+}
+
 /// Everything one view build needs.
 pub struct ViewInput<'a> {
     pub status: CatalogStatus,
-    /// The stored snapshot with the overlay applied, already filtered to Windows entries.
+    /// The stored snapshot with the overlay applied. [`build`] applies the platform rule.
     pub entries: &'a [CatalogEntry],
     /// Newest first.
     pub jobs: &'a [PortJobRow],
@@ -69,6 +84,7 @@ pub fn build(input: ViewInput<'_>) -> PortsView {
     let entries = input
         .entries
         .iter()
+        .filter(|entry| lists_entry(entry, input.platform))
         .map(|entry| {
             let facts = input
                 .facts
@@ -159,20 +175,28 @@ pub fn entry_view(
         PortPlatform::Linux => entry.supports_linux(),
         PortPlatform::Macos => false,
     };
+    // Design D9: Linux has no folder or file picker until task 2.7, so the setup could never choose
+    // the folder an install needs. Until it lands, a Linux build offers no enabled Install.
+    let picker_unavailable = matches!(platform, PortPlatform::Linux);
     // The detail-derived reason comes from the Windows asset selection. Until the equivalent
     // Linux fact is computed (1.1), a Linux build trusts the declared platform and lets the plan
     // refuse a release without a usable asset.
     let asset_reason = (platform == PortPlatform::Windows)
         .then_some(no_asset_reason)
         .flatten();
-    let installable =
-        supported && !withdrawn && (verified || pinned.is_some()) && asset_reason.is_none();
+    let installable = supported
+        && !withdrawn
+        && (verified || pinned.is_some())
+        && asset_reason.is_none()
+        && !picker_unavailable;
     let install_block_reason = if !supported {
         Some(PortInstallBlockReason::WindowsOnly)
     } else if withdrawn {
         Some(PortInstallBlockReason::Withdrawn)
     } else if !verified && pinned.is_none() {
         Some(PortInstallBlockReason::NoVerifiedRelease)
+    } else if picker_unavailable {
+        Some(PortInstallBlockReason::FolderPickerUnavailable)
     } else {
         asset_reason.map(PortInstallBlockReason::from)
     };
@@ -563,12 +587,14 @@ fn preferences_view(preferences: &PortPreferences) -> PortPreferencesView {
     }
 }
 
-/// Builds `ports_detail` and the facts the entry list should learn from it.
+/// Builds `ports_detail` and the facts the entry list should learn from it. The selected asset,
+/// its checksum gate and its malware warning come from `platform` (design D10).
 pub fn build_detail(
     entry: &CatalogEntry,
     detail: Option<&CatalogEntry>,
     releases: &[PortRelease],
     installed_version: Option<&str>,
+    platform: gamenode_core::ports::view::PortPlatform,
 ) -> (PortDetailView, EntryFacts) {
     let merged = detail.unwrap_or(entry);
     let mut releases = releases.to_vec();
@@ -599,10 +625,10 @@ pub fn build_detail(
         });
     let selected_view = selected
         .as_ref()
-        .map(|release| release_view(merged, release));
+        .map(|release| release_view(merged, release, platform));
     let selected_asset = selected
         .as_ref()
-        .and_then(|release| select_asset(merged, release).ok());
+        .and_then(|release| select_asset_for(platform, merged, release).ok());
     let selected_withdrawn = selected.as_ref().is_some_and(|release| {
         merged
             .withdrawn
@@ -611,7 +637,7 @@ pub fn build_detail(
     });
     let no_asset_reason = match (&selected, &selected_asset) {
         (None, _) | (_, Some(_)) => None,
-        (Some(_), None) => Some(no_asset_reason(merged, selected.as_ref())),
+        (Some(_), None) => Some(no_asset_reason(merged, selected.as_ref(), platform)),
     };
     let withdrawal_reason = configured_version.as_deref().and_then(|version| {
         merged
@@ -621,7 +647,7 @@ pub fn build_detail(
             .map(|withdrawn| withdrawn.reason.clone())
             .filter(|reason| !reason.trim().is_empty())
     });
-    let update_available = update_available(merged, &releases, installed_version);
+    let update_available = update_available(merged, &releases, installed_version, platform);
     let facts = EntryFacts {
         no_asset_reason,
         withdrawn: selected_withdrawn,
@@ -641,7 +667,7 @@ pub fn build_detail(
         requirements: setup_slots(merged),
         releases: releases
             .iter()
-            .map(|release| release_view(merged, release))
+            .map(|release| release_view(merged, release, platform))
             .collect(),
         selected_release: selected_view,
         withdrawal_reason,
@@ -651,13 +677,18 @@ pub fn build_detail(
     (view, facts)
 }
 
-fn no_asset_reason(entry: &CatalogEntry, release: Option<&PortRelease>) -> PortNoAssetReason {
+fn no_asset_reason(
+    entry: &CatalogEntry,
+    release: Option<&PortRelease>,
+    platform: gamenode_core::ports::view::PortPlatform,
+) -> PortNoAssetReason {
     let Some(release) = release else {
         return PortNoAssetReason::NoWindowsAsset;
     };
-    match select_asset(entry, release) {
+    match select_asset_for(platform, entry, release) {
         Ok(_) => PortNoAssetReason::NoExecutable,
-        Err(gamenode_core::ports::plan::PlanError::NoWindowsAsset) => {
+        Err(gamenode_core::ports::plan::PlanError::NoWindowsAsset)
+        | Err(gamenode_core::ports::plan::PlanError::NoLinuxAsset) => {
             PortNoAssetReason::NoWindowsAsset
         }
         Err(gamenode_core::ports::plan::PlanError::NoMatchingAsset { .. })
@@ -670,8 +701,12 @@ fn no_asset_reason(entry: &CatalogEntry, release: Option<&PortRelease>) -> PortN
     }
 }
 
-fn release_view(entry: &CatalogEntry, release: &PortRelease) -> PortReleaseView {
-    let asset = select_asset(entry, release).ok();
+fn release_view(
+    entry: &CatalogEntry,
+    release: &PortRelease,
+    platform: gamenode_core::ports::view::PortPlatform,
+) -> PortReleaseView {
+    let asset = select_asset_for(platform, entry, release).ok();
     let withdrawn = entry
         .withdrawn
         .iter()
@@ -725,6 +760,7 @@ fn update_available(
     entry: &CatalogEntry,
     releases: &[PortRelease],
     installed_version: Option<&str>,
+    platform: gamenode_core::ports::view::PortPlatform,
 ) -> Option<PortReleaseView> {
     let installed_version = installed_version?.trim();
     let verified = entry.verified.as_ref()?;
@@ -744,7 +780,7 @@ fn update_available(
     if installed_index.is_some_and(|index| verified_index > index) {
         return None;
     }
-    Some(release_view(entry, verified_release))
+    Some(release_view(entry, verified_release, platform))
 }
 
 fn text(value: &str) -> Option<String> {
@@ -807,8 +843,9 @@ mod tests {
     use super::*;
     use gamenode_core::ports::catalog::{
         AcceptedHash, CatalogProject, HashAlgorithm, LauncherRecipe, PreferredExecutables,
-        SetupFile, VerifiedRelease, WithdrawnRelease,
+        ReleaseScan, ScanVerdict, SetupFile, VerifiedRelease, WithdrawnRelease,
     };
+    use gamenode_core::ports::view::PortPlatform;
 
     fn entry() -> CatalogEntry {
         CatalogEntry {
@@ -883,6 +920,24 @@ mod tests {
         live: &'a HashSet<String>,
         active: &'a HashSet<String>,
     ) -> ViewInput<'a> {
+        input_on(
+            gamenode_core::ports::view::PortPlatform::Windows,
+            entries,
+            jobs,
+            installations,
+            live,
+            active,
+        )
+    }
+
+    fn input_on<'a>(
+        platform: gamenode_core::ports::view::PortPlatform,
+        entries: &'a [CatalogEntry],
+        jobs: &'a [PortJobRow],
+        installations: &'a [PortInstallation],
+        live: &'a HashSet<String>,
+        active: &'a HashSet<String>,
+    ) -> ViewInput<'a> {
         static STATUS: std::sync::OnceLock<CatalogStatus> = std::sync::OnceLock::new();
         static PREFERENCES: std::sync::OnceLock<PortPreferences> = std::sync::OnceLock::new();
         static FACTS: std::sync::OnceLock<HashMap<String, EntryFacts>> = std::sync::OnceLock::new();
@@ -903,7 +958,7 @@ mod tests {
             preferences,
             facts,
             active_jobs: active,
-            platform: gamenode_core::ports::view::PortPlatform::Windows,
+            platform,
         }
     }
 
@@ -941,6 +996,55 @@ mod tests {
             Some("https://github.com/owner/lantern")
         );
         assert!(!entry.art.capsule);
+    }
+
+    #[test]
+    fn linux_lists_linux_only_entries_and_windows_does_not() {
+        use gamenode_core::ports::view::PortPlatform;
+
+        let mut native = entry();
+        native.catalog_id = "qcat_native".into();
+        native.slug = "native".into();
+        native.name = "Native".into();
+        native.supported_os = vec!["linux".into()];
+        let entries = [native, entry()];
+        let live = HashSet::new();
+        let active = HashSet::new();
+
+        let view = build(input_on(
+            PortPlatform::Linux,
+            &entries,
+            &[],
+            &[],
+            &live,
+            &active,
+        ));
+        let ids = view
+            .entries
+            .iter()
+            .map(|entry| entry.catalog_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["qcat_native", "qcat_lantern"]);
+        // A Windows-only entry stays listed on Linux so the pane can explain why it is blocked.
+        assert_eq!(
+            view.entries[1].install_block_reason,
+            Some(PortInstallBlockReason::WindowsOnly)
+        );
+
+        let view = build(input_on(
+            PortPlatform::Windows,
+            &entries,
+            &[],
+            &[],
+            &live,
+            &active,
+        ));
+        let ids = view
+            .entries
+            .iter()
+            .map(|entry| entry.catalog_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["qcat_lantern"]);
     }
 
     #[test]
@@ -1077,7 +1181,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        let (detail, facts) = build_detail(&entry, None, &[release], None);
+        let (detail, facts) = build_detail(&entry, None, &[release], None, PortPlatform::Windows);
         assert_eq!(facts, EntryFacts::default());
         let selected = detail.selected_release.expect("selected");
         assert_eq!(selected.version, "v0.9.38");
@@ -1113,7 +1217,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        let (detail, facts) = build_detail(&entry, None, &[release], None);
+        let (detail, facts) = build_detail(&entry, None, &[release], None, PortPlatform::Windows);
         assert_eq!(
             facts.no_asset_reason,
             Some(PortNoAssetReason::InstallerOnly)
@@ -1121,6 +1225,103 @@ mod tests {
         assert_eq!(
             detail.no_asset_reason,
             Some(PortNoAssetReason::InstallerOnly)
+        );
+    }
+
+    #[test]
+    fn the_detail_reads_the_asset_of_its_platform() {
+        let entry = entry();
+        let windows = PortAsset {
+            id: "win".into(),
+            url: "https://example.com/port-windows.zip".into(),
+            filename: "port-windows.zip".into(),
+            os: Some("windows".into()),
+            format: Some("zip".into()),
+            size: 10,
+            checksum: Some(format!("sha256:{}", "b".repeat(64))),
+            scan: Some(ReleaseScan {
+                verdict: ScanVerdict::Flagged,
+                engines: Some("Trojan.Win32.MockPort".into()),
+                url: None,
+            }),
+            ..Default::default()
+        };
+        let linux = PortAsset {
+            id: "linux".into(),
+            url: "https://example.com/port-linux.appimage".into(),
+            filename: "port-linux.appimage".into(),
+            os: Some("linux".into()),
+            format: Some("appimage".into()),
+            size: 20,
+            checksum: Some(format!("sha256:{}", "d".repeat(64))),
+            ..Default::default()
+        };
+        let release = |assets: Vec<PortAsset>| PortRelease {
+            release_id: "rel".into(),
+            version: "v0.9.38".into(),
+            released_at: 1_793_220_348_000,
+            assets,
+            ..Default::default()
+        };
+
+        // A flagged Windows file must not raise the Linux malware gate.
+        let (detail, _) = build_detail(
+            &entry,
+            None,
+            &[release(vec![windows.clone(), linux.clone()])],
+            None,
+            PortPlatform::Linux,
+        );
+        let selected = detail.selected_release.expect("selected");
+        assert_eq!(selected.asset_name.as_deref(), Some("port-linux.appimage"));
+        assert_eq!(selected.malware_flag, None);
+        let (detail, _) = build_detail(
+            &entry,
+            None,
+            &[release(vec![windows.clone(), linux.clone()])],
+            None,
+            PortPlatform::Windows,
+        );
+        let selected = detail.selected_release.expect("selected");
+        assert_eq!(selected.asset_name.as_deref(), Some("port-windows.zip"));
+        assert_eq!(
+            selected.malware_flag.as_deref(),
+            Some("Trojan.Win32.MockPort")
+        );
+
+        // The reverse: a flagged Linux file must not raise the Windows gate.
+        let mut flagged_linux = linux;
+        flagged_linux.scan = Some(ReleaseScan {
+            verdict: ScanVerdict::Flagged,
+            engines: None,
+            url: None,
+        });
+        let mut clean_windows = windows;
+        clean_windows.scan = None;
+        let assets = vec![clean_windows, flagged_linux];
+        let (detail, _) = build_detail(
+            &entry,
+            None,
+            &[release(assets.clone())],
+            None,
+            PortPlatform::Windows,
+        );
+        assert_eq!(
+            detail
+                .selected_release
+                .expect("selected")
+                .malware_flag
+                .as_deref(),
+            None
+        );
+        let (detail, _) = build_detail(&entry, None, &[release(assets)], None, PortPlatform::Linux);
+        assert_eq!(
+            detail
+                .selected_release
+                .expect("selected")
+                .malware_flag
+                .as_deref(),
+            Some("a malware scan flagged this file")
         );
     }
 
@@ -1144,7 +1345,13 @@ mod tests {
             version: "v0.9.40".into(),
             ..Default::default()
         });
-        let (detail, _) = build_detail(&entry, None, &[newer, older], Some("v0.9.38"));
+        let (detail, _) = build_detail(
+            &entry,
+            None,
+            &[newer, older],
+            Some("v0.9.38"),
+            PortPlatform::Windows,
+        );
         assert_eq!(
             detail.update_available.map(|release| release.version),
             Some("v0.9.40".to_owned())
@@ -1175,7 +1382,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        let (detail, facts) = build_detail(&entry, None, &[release], None);
+        let (detail, facts) = build_detail(&entry, None, &[release], None, PortPlatform::Windows);
         assert!(facts.withdrawn);
         assert_eq!(
             detail.withdrawal_reason.as_deref(),
@@ -1202,7 +1409,7 @@ mod tests {
     }
 
     #[test]
-    fn each_platform_blocks_only_the_entries_it_cannot_run() {
+    fn linux_install_waits_for_the_folder_picker() {
         use gamenode_core::ports::view::PortPlatform;
 
         // The fixture declares Windows only.
@@ -1222,11 +1429,18 @@ mod tests {
             Some(PortInstallBlockReason::WindowsOnly)
         );
 
+        // A native Linux entry is listed, but Install stays off until task 2.7 lands the picker.
         let mut native = entry();
         native.supported_os = vec!["linux".into()];
         let view = entry_view(&native, None, &EntryFacts::default(), PortPlatform::Linux);
-        assert!(view.installable, "a declared Linux entry can install");
-        assert_eq!(view.install_block_reason, None);
+        assert!(
+            !view.installable,
+            "no enabled Install without a folder picker"
+        );
+        assert_eq!(
+            view.install_block_reason,
+            Some(PortInstallBlockReason::FolderPickerUnavailable)
+        );
     }
 
     #[test]

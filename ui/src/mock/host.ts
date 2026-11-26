@@ -1880,8 +1880,20 @@ function mockDetailFor(entry: PortEntryView): PortDetailView {
   };
 }
 
-function createMockPortsView(scenario: 'default' | 'unavailable'): PortsView {
+function createMockPortsView(
+  scenario: 'default' | 'unavailable',
+  platform: 'windows' | 'linux',
+): PortsView {
   const entries = createMockPortEntries();
+  // A Linux build cannot choose an install folder until task 2.7 lands (design D9), and a
+  // Windows-only entry is blocked there anyway, so the fixture never offers Install on Linux.
+  if (platform === 'linux') {
+    for (const entry of entries) {
+      const linux = entry.supportedOS.some((os) => os.trim().toLowerCase() === 'linux');
+      entry.installable = false;
+      entry.installBlockReason = linux ? 'folderPickerUnavailable' : 'windowsOnly';
+    }
+  }
   const unavailable = scenario === 'unavailable';
   const catalog: PortCatalogStatus = unavailable
     ? { state: 'unavailable', fetchedAt: null, entryCount: 0, error: 'unreachable' }
@@ -2488,7 +2500,10 @@ export function createMockHost(options: {
     snapshot.localGames.discoveryCompleted = false;
     snapshot.localGames.discoveryLastCheckedAt = null;
   }
-  const ports = createMockPortsView(options.portsScenario ?? 'default');
+  const ports = createMockPortsView(
+    options.portsScenario ?? 'default',
+    options.platform === 'linux' ? 'linux' : 'windows',
+  );
   snapshot.ports = ports;
   const platform = options.platform ?? 'windows';
   const epicEnabled = platform !== 'linux';

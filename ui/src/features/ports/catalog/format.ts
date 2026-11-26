@@ -103,6 +103,8 @@ export function installBlockReasonText(
       return t('Ports::This port was withdrawn upstream.');
     case 'noVerifiedRelease':
       return t('Ports::No verified release is available, so Install is unavailable.');
+    case 'folderPickerUnavailable':
+      return t('Ports::The Linux folder picker is not available yet, so Install is disabled.');
     case 'installerOnly':
       return t('Ports::The Windows download is an installer, which GameNode does not run.');
     case 'noWindowsAsset':

@@ -110,7 +110,7 @@ export interface PortLink {
 
 export type PortOperatingSystem = 'windows' | 'linux' | 'macos';
 
-/** Why an entry that supports Windows offers no installable Windows asset. */
+/** Why an entry offers no installable asset for the running platform. */
 export type PortNoAssetReason =
   | 'installerOnly'
   | 'noWindowsAsset'
@@ -122,6 +122,7 @@ export type PortInstallBlockReason =
   | 'windowsOnly'
   | 'withdrawn'
   | 'noVerifiedRelease'
+  | 'folderPickerUnavailable'
   | PortNoAssetReason;
 
 export type PortSetupKind = 'file' | 'folder';
@@ -187,7 +188,10 @@ export interface PortSetupSlot {
   packageOption: PortPackageOption | null;
 }
 
-/** One merged catalog entry. Only entries supporting Windows are present. */
+/**
+ * One merged catalog entry the running platform lists. Windows lists Windows entries; Linux
+ * lists Linux or Windows entries, the latter with an install block reason.
+ */
 export interface PortEntryView {
   /** Upstream stable id; also the `port-art` path segment. */
   catalogId: string;
@@ -370,14 +374,14 @@ export interface PortsView {
 
 export type PortAssetFormat = 'zip' | '7z' | 'exe';
 
-/** One release with the Windows asset selection and its safety flags. */
+/** One release with the running platform's asset selection and its safety flags. */
 export interface PortReleaseView {
   version: string;
   /** ISO-8601 date as upstream sends it; null when unknown. */
   releasedAt: string | null;
   verified: boolean;
   withdrawn: boolean;
-  /** Windows asset chosen by the recipe's filter; null when none exists. */
+  /** Asset chosen for the running platform; null when none exists. */
   assetName: string | null;
   assetFormat: PortAssetFormat | null;
   sizeBytes: number | null;

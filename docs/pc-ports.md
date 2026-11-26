@@ -370,15 +370,16 @@ When the user starts, the host loads the entry detail and release list, merges t
 again and plans the install. Planning is pure and every failure happens before a job is
 queued:
 
-- The entry must support Windows.
+- The entry must support the running platform.
 - The release is the overlay's pinned version when it names one, else the upstream
   verified version. A withdrawn release is refused with its reason, and a pinned version
   that no longer exists is refused as unavailable.
-- The Windows asset is chosen by the recipe's `releaseAssetFilter`, then by operating
+- The platform's asset is chosen by the recipe's `releaseAssetFilter`, then by operating
   system, then by architecture: x86-64 first, unknown next, anything else last. An asset
-  without a declared operating system is not assumed to be a Windows one. Only `zip`, `7z`
-  and a bare `.exe` are installable; an installer-only entry is listed but Install is
-  unavailable.
+  without a declared operating system is not assumed to belong to the running platform.
+  The detail pane, the setup modal and the malware confirmation use the same selection.
+  Only `zip`, `7z` and a bare `.exe` (or a Linux AppImage/bare executable) are
+  installable; an installer-only entry is listed but Install is unavailable.
 - The file needs a checksum. A file whose verified checksum changed upstream, or that a
   malware scan flagged, needs the explicit confirmations the modal asks for. With no
   checksum at all, the install cannot be planned.
@@ -586,6 +587,33 @@ choice the user made still wins.
 - **No upstream writes.** Install, cancel and failure never send a report, review, check
   or other write request to the catalog upstream.
 
+### Malware gate: possible hardening
+
+The scan verdict is upstream metadata (VirusTotal's verdict, carried on each release
+asset); GameNode does not scan files itself. Only `flagged` currently needs a
+confirmation, and confirming installs the file anyway. These are possible improvements,
+recorded here so they are not mistaken for tasks of the Linux change:
+
+- **Treat `warning` as a gate.** Needs data on how often the upstream reports it; gating a
+  common heuristic verdict would mostly teach users to tick the box unread.
+- **Link the scan report.** The plan already carries the scan URL, but the detail pane and
+  the setup modal only show the engine count. Expose it in `PortReleaseView` and open it
+  as an external link, restricted to HTTPS on the scan provider's host because the URL is
+  untrusted catalog metadata.
+- **Show an unknown verdict.** `missing` and `pending` currently look the same as clean;
+  a neutral "no scan available" badge would be more honest.
+- **Re-evaluate at install time.** The catalog snapshot can be up to a day old, so the
+  verdict shown may not be the current one when the job starts.
+- **Keep the verdict tied to the checksum.** Make sure the scan shown belongs to the exact
+  file hash the plan will download.
+- **Optional local scan or reputation lookup.** ClamAV, Windows Defender, YARA and a
+  VirusTotal hash lookup each carry costs (signature size and updates, Windows packaging,
+  scan time on large archives, API limits and privacy). A hash-only lookup is the cheapest
+  middle ground; a local engine is a larger, ongoing maintenance commitment.
+
+Changing any of these behaviors needs its own OpenSpec change; they are not part of
+`add-pc-port-catalog` or `add-linux-pc-port-catalog`.
+
 ## Self-updating ports
 
 Some ports, including Lantern Engine, update themselves through their own launcher.
@@ -621,7 +649,15 @@ What works on Linux:
   (`?platform=linux` in the UI mock).
 - A persisted platform filter (**All**, **Native Linux**, **Windows-only**) is shown on
   Linux only.
-- Windows-only entries stay visible and blocked with a Proton note.
+- The platform rule lives in the view: Linux lists Linux or Windows entries, so Linux-only
+  entries appear and Windows-only entries stay visible and blocked with a Proton note
+  (task 3.1).
+- Install is disabled on every Linux entry with a "folder picker unavailable" reason until
+  task 2.7 lands (task 3.2).
+- The detail pane, the setup modal and the malware confirmation select the platform's
+  asset (task 3.3).
+- Asset selection filters to an installable format before ranking architecture, so an
+  unsupported tarball cannot win over an AppImage (task 3.4).
 - An AppImage or `.bin` asset is copied into the install folder, made executable and
   registered (end-to-end runner test).
 - The Windows PS4 package extractor is never run on Linux; a `Packages` source is refused
@@ -629,14 +665,11 @@ What works on Linux:
 
 Known gaps:
 
-- Linux-only entries are not listed: `Overlay::apply` still keeps only entries that support
-  Windows (task 3.1).
 - Availability uses the declared `supportedOS`, not the release assets (task 1.1).
-- The folder and file pickers are Windows-only, so Install cannot start on Linux and
-  **Pick executable** cannot recover a missing executable (tasks 2.7, 3.2).
-- The detail pane and the malware confirmation use the Windows asset (task 3.3).
-- Asset selection ranks architecture before format, so an unsupported tarball can win over
-  an AppImage (task 3.4). Tar archives are not supported yet (task 2.1).
+- The folder and file pickers are Windows-only, so Install stays disabled on Linux
+  (task 2.7) and **Pick executable** cannot recover a missing executable.
+- Asset selection prefers an installable format, but tar archives are not supported yet
+  (task 2.1).
 - zip/7z installs fail launch validation because the extracted executable has no execute
   bit (task 3.5).
 - Preferred executables match exactly and case-sensitively (task 3.6).

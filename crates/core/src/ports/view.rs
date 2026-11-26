@@ -117,7 +117,7 @@ pub struct PortLink {
     pub url: String,
 }
 
-/// Why an entry that supports Windows offers no installable Windows asset.
+/// Why an entry offers no installable asset for the running platform.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PortNoAssetReason {
@@ -135,6 +135,8 @@ pub enum PortInstallBlockReason {
     WindowsOnly,
     Withdrawn,
     NoVerifiedRelease,
+    /// The platform has no working folder picker, so no install can choose its folder.
+    FolderPickerUnavailable,
     InstallerOnly,
     NoWindowsAsset,
     MissingAsset,
@@ -221,7 +223,8 @@ pub struct PortSetupSlot {
     pub package_option: Option<PortPackageOption>,
 }
 
-/// One merged catalog entry. Only entries supporting Windows are present.
+/// One merged catalog entry the running platform lists. Windows lists Windows entries; Linux
+/// lists Linux or Windows entries, the latter with an install block reason.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PortEntryView {
@@ -433,7 +436,7 @@ impl PortToolsCacheView {
     }
 }
 
-/// One release with the Windows asset selection and its safety flags.
+/// One release with the running platform's asset selection and its safety flags.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PortReleaseView {

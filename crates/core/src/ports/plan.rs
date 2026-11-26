@@ -228,23 +228,44 @@ pub fn select_asset_for(
         }
         None => platform_assets,
     };
+    // The supported format is a precondition, not a tie-breaker (design D8): a release with
+    // `x86_64.tar.gz` and `x86_64.AppImage` must pick the AppImage instead of choosing the tar
+    // and then refusing the install.
+    let installable: Vec<&PortAsset> = candidates
+        .iter()
+        .copied()
+        .filter(|asset| {
+            asset_format(asset).is_some_and(|format| formats.contains(&format.as_str()))
+        })
+        .collect();
+    if installable.is_empty() {
+        // No candidate can be installed. Report the problem on the best-ranked one, which is the
+        // file the old architecture-first order would have chosen, so the message stays specific.
+        let asset = best_by_architecture(candidates.iter().copied()).ok_or(missing)?;
+        let format = asset_format(asset).ok_or_else(|| PlanError::UnknownAssetFormat {
+            filename: asset.filename.clone(),
+        })?;
+        return Err(PlanError::UnsupportedFormat { format });
+    }
+    let asset = best_by_architecture(installable.iter().copied())
+        .ok_or(missing)?
+        .clone();
+    Ok(asset)
+}
+
+/// The highest-ranked candidate by architecture: 64-bit first, unknown next, anything else last.
+/// Ties keep the first candidate, so the upstream order decides.
+fn best_by_architecture<'a>(assets: impl Iterator<Item = &'a PortAsset>) -> Option<&'a PortAsset> {
     let mut best: Option<&PortAsset> = None;
     let mut best_rank = u8::MAX;
-    for asset in candidates {
+    for asset in assets {
         let rank = asset.architecture_rank();
         if rank < best_rank {
             best_rank = rank;
             best = Some(asset);
         }
     }
-    let asset = best.cloned().ok_or(missing)?;
-    let format = asset_format(&asset).ok_or_else(|| PlanError::UnknownAssetFormat {
-        filename: asset.filename.clone(),
-    })?;
-    if !formats.contains(&format.as_str()) {
-        return Err(PlanError::UnsupportedFormat { format });
-    }
-    Ok(asset)
+    best
 }
 
 /// The asset's file format in lowercase, from its declared format or its file extension.
@@ -989,6 +1010,46 @@ mod tests {
                 format: "tar.gz".into()
             })
         );
+    }
+
+    #[test]
+    fn an_installable_format_wins_over_the_best_ranked_one() {
+        use crate::ports::view::PortPlatform;
+        // Both assets rank as x86_64; the tar is first upstream. Selection must skip it because
+        // tar is not installable and pick the AppImage (design D8).
+        let release = PortRelease {
+            release_id: "rel".into(),
+            version: "1.0.0".into(),
+            released_at: 1,
+            assets: vec![
+                PortAsset {
+                    id: "tar".into(),
+                    filename: "devilutionx-linux-x86_64.tar.gz".into(),
+                    url: "https://example.com/devilutionx.tar.gz".into(),
+                    os: Some("linux".into()),
+                    architecture: Some("x86_64".into()),
+                    format: Some("tar.gz".into()),
+                    size: 1_000,
+                    checksum: Some(format!("sha256:{}", digest('a'))),
+                    ..PortAsset::default()
+                },
+                PortAsset {
+                    id: "appimage".into(),
+                    filename: "devilutionx-linux-x86_64.AppImage".into(),
+                    url: "https://example.com/devilutionx.appimage".into(),
+                    os: Some("linux".into()),
+                    architecture: Some("x86_64".into()),
+                    format: Some("appimage".into()),
+                    size: 2_000,
+                    checksum: Some(format!("sha256:{}", digest('b'))),
+                    ..PortAsset::default()
+                },
+            ],
+            ..PortRelease::default()
+        };
+        let asset = select_asset_for(PortPlatform::Linux, &linux_entry(), &release)
+            .expect("the AppImage is installable");
+        assert_eq!(asset.id, "appimage");
     }
 
     #[test]

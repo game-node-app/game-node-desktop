@@ -569,6 +569,7 @@ impl PortsService {
             Some(&merged_detail),
             &releases,
             installed_version.as_deref(),
+            self.config.platform,
         );
         {
             let mut inner = lock(&self.inner);

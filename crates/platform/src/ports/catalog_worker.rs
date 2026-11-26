@@ -1141,8 +1141,11 @@ hidden = true
         wait_updated(&harness.events);
 
         let entries = harness.worker.entries();
-        assert_eq!(entries.len(), 1);
+        // The overlay hides qcat_hidden but never applies the platform rule (design D13): the
+        // Linux-only entry survives the merge and the view decides whether to list it.
+        assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].catalog_id, "qcat_visible");
+        assert_eq!(entries[1].catalog_id, "qcat_linux");
     }
 
     #[test]

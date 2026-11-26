@@ -502,6 +502,27 @@ describe('Ports catalog', () => {
     expect(screen.getByTestId('port-detail-platforms')).toHaveTextContent('Windows');
   });
 
+  it('blocks Install on Linux until the folder picker exists', () => {
+    const ports = makePorts();
+    ports.entries = ports.entries.map((item) =>
+      item.catalogId === 'qcat_aster'
+        ? {
+            ...item,
+            installable: false,
+            installBlockReason: 'folderPickerUnavailable' as const,
+          }
+        : item,
+    );
+    renderPorts(ports);
+
+    fireEvent.click(screen.getByTestId('port-tile-qcat_aster'));
+
+    expect(screen.getByTestId('port-install-btn')).toBeDisabled();
+    expect(screen.getByTestId('port-install-reason')).toHaveTextContent(
+      'The Linux folder picker is not available yet, so Install is disabled.',
+    );
+  });
+
   it('lists guided requirements with accepted versions, optional slots and the package option', async () => {
     renderPorts(makePorts());
 

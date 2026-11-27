@@ -109,24 +109,28 @@ fn linux_canonical(path: &str) -> Result<std::path::PathBuf, LocalError> {
     std::fs::canonicalize(path).map_err(|_| LocalError::InvalidTarget)
 }
 
+/// The identity a Linux launch compares: the file's device and inode (design D17). The execute bit
+/// is checked separately at launch, so an in-place rewrite, `touch` or `chmod` does not require a
+/// repair; a replaced file has a new inode and does.
 #[cfg(target_os = "linux")]
 pub(crate) fn linux_identity(path: &std::path::Path) -> Result<String, LocalError> {
-    use std::os::unix::{fs::MetadataExt, fs::PermissionsExt};
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::metadata(path).map_err(|_| LocalError::InvalidTarget)?;
+    if !metadata.is_file() {
+        return Err(LocalError::InvalidTarget);
+    }
+    Ok(format!("linux:{}:{}", metadata.dev(), metadata.ino()))
+}
+
+/// The launcher needs an execute bit; it is checked at launch, not stored in the identity.
+#[cfg(target_os = "linux")]
+fn ensure_linux_executable(path: &std::path::Path) -> Result<(), LocalError> {
+    use std::os::unix::fs::PermissionsExt;
     let metadata = std::fs::metadata(path).map_err(|_| LocalError::InvalidTarget)?;
     if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
         return Err(LocalError::InvalidTarget);
     }
-    Ok(format!(
-        "linux:{}:{}:{}:{}:{}:{}:{}:{}",
-        metadata.dev(),
-        metadata.ino(),
-        metadata.mode() & 0o7777,
-        metadata.len(),
-        metadata.mtime(),
-        metadata.mtime_nsec(),
-        metadata.ctime(),
-        metadata.ctime_nsec(),
-    ))
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -136,6 +140,7 @@ impl LinuxInstallations {
         if linux_identity(&executable)? != request.file_identity {
             return Err(LocalError::InvalidTarget);
         }
+        ensure_linux_executable(&executable)?;
         let working = linux_canonical(&request.working_directory)?;
         if !working.is_dir() {
             return Err(LocalError::InvalidTarget);
@@ -164,6 +169,7 @@ impl InstallationHost for LinuxInstallations {
         {
             let path = linux_canonical(executable)?;
             let file_identity = linux_identity(&path)?;
+            ensure_linux_executable(&path)?;
             let root = path
                 .parent()
                 .ok_or(LocalError::InvalidTarget)?
@@ -217,6 +223,7 @@ impl InstallationHost for LinuxInstallations {
             {
                 return Err(LocalError::InvalidTarget);
             }
+            ensure_linux_executable(&executable)?;
             let mut result = registration.clone();
             result.executable = executable.to_string_lossy().into_owned();
             result.root = root.to_string_lossy().into_owned();
@@ -1501,5 +1508,53 @@ mod linux_tests {
             Err(LocalError::InvalidTarget)
         );
         assert!(!missing_output.exists());
+    }
+
+    #[test]
+    fn in_place_changes_keep_the_linux_identity_until_the_file_is_replaced() {
+        let directory = tempfile::tempdir().unwrap();
+        let working = directory.path().join("game");
+        std::fs::create_dir(&working).unwrap();
+        let game = executable(&working, "game");
+        let host = LinuxInstallations;
+        let approved = host.inspect(game.to_str().unwrap()).unwrap();
+
+        // A rewrite in place, touch and chmod keep the same inode and stay launchable.
+        std::fs::write(&game, "#!/bin/sh\nexit 0\n").unwrap();
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
+        std::fs::File::options()
+            .write(true)
+            .open(&game)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+        let mut permissions = std::fs::metadata(&game).unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&game, permissions).unwrap();
+        assert!(host.validate_registration(&approved).is_ok());
+
+        // The execute bit is checked separately: removing it needs a repair even with the same inode.
+        let mut permissions = std::fs::metadata(&game).unwrap().permissions();
+        permissions.set_mode(0o600);
+        std::fs::set_permissions(&game, permissions).unwrap();
+        assert_eq!(
+            host.validate_registration(&approved),
+            Err(LocalError::InvalidTarget)
+        );
+        let mut permissions = std::fs::metadata(&game).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&game, permissions).unwrap();
+
+        // Replacing the file changes the inode, so the old registration needs a repair.
+        let replacement = directory.path().join("replacement");
+        std::fs::write(&replacement, "#!/bin/sh\nexit 0\n").unwrap();
+        let mut permissions = std::fs::metadata(&replacement).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&replacement, permissions).unwrap();
+        std::fs::rename(&replacement, &game).unwrap();
+        assert_eq!(
+            host.validate_registration(&approved),
+            Err(LocalError::InvalidTarget)
+        );
     }
 }

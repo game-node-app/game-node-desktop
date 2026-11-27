@@ -107,15 +107,13 @@ pub struct UserDataRoots {
 }
 
 impl UserDataRoots {
-    /// Resolves the folders the operating system reports.
+    /// Resolves the folders the operating system reports. Linux follows XDG (design D16).
     pub fn host() -> Result<Self, PlaceError> {
-        let roaming = dirs::config_dir().ok_or(PlaceError::UnresolvedRoot { root: "data" })?;
-        let local =
-            dirs::data_local_dir().ok_or(PlaceError::UnresolvedRoot { root: "localData" })?;
+        let (data, config, local_data) = super::placement::host_user_data_roots()?;
         Ok(Self {
-            data: roaming.clone(),
-            config: roaming,
-            local_data: local,
+            data,
+            config,
+            local_data,
         })
     }
 
@@ -142,9 +140,10 @@ pub trait ExecutableIdentity: Send + Sync {
 
 /// The identity an install records, in the form the platform's launch validation compares.
 ///
-/// On Windows it is the volume serial and file index; on Linux it is the device, inode, mode and
-/// timestamps the DRM-free installation host checks. The value written at the commit point must
-/// stay comparable after a restart, or the installed port would not launch.
+/// On Windows it is the volume serial and file index; on Linux it is the device and inode
+/// (design D17). The Linux execute bit is checked separately at launch, so an in-place update
+/// keeps the registration valid. The value written at the commit point must stay comparable
+/// after a restart, or the installed port would not launch.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SystemExecutableIdentity;
 
@@ -1514,8 +1513,68 @@ impl<'a> JobContext<'a> {
             if Path::new(&absolute).is_file() {
                 return Some((relative, absolute));
             }
+            // Upstream AppImages carry version and case in the name (design D12). The stored
+            // registration keeps the real casing found on disk.
+            #[cfg(target_os = "linux")]
+            if plan.platform == gamenode_core::ports::view::PortPlatform::Linux
+                && let Some(found) =
+                    Self::resolve_relative_case_insensitive(Path::new(&plan.target), &relative)
+            {
+                let stored = found
+                    .strip_prefix(&plan.target)
+                    .map(|path| path.to_string_lossy().replace('\\', "/"))
+                    .unwrap_or(relative);
+                return Some((stored, found.to_string_lossy().into_owned()));
+            }
         }
+
+        // A placed AppImage or bare binary is the only executable candidate; no picker is needed.
+        #[cfg(target_os = "linux")]
+        if plan.platform == gamenode_core::ports::view::PortPlatform::Linux
+            && super::linux_asset::kind(&plan.asset.format)
+                == Some(super::linux_asset::LinuxAssetKind::Executable)
+        {
+            let absolute = join_relative(&plan.target, &plan.asset.filename);
+            if Path::new(&absolute).is_file() {
+                return Some((plan.asset.filename.clone(), absolute));
+            }
+        }
+
         None
+    }
+
+    /// Finds `relative` below `root`, matching each component case-insensitively. Used on Linux, where
+    /// upstream AppImages carry version and case in the name (design D12).
+    #[cfg(target_os = "linux")]
+    fn resolve_relative_case_insensitive(root: &Path, relative: &str) -> Option<PathBuf> {
+        use std::path::Component;
+
+        let mut current = root.to_path_buf();
+        for component in Path::new(relative).components() {
+            let Component::Normal(name) = component else {
+                return None;
+            };
+            let name = name.to_str()?;
+            let exact = current.join(name);
+            if exact.exists() {
+                current = exact;
+                continue;
+            }
+            let mut found = None;
+            for entry in std::fs::read_dir(&current).ok()? {
+                let entry = entry.ok()?;
+                if entry
+                    .file_name()
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case(name)
+                {
+                    found = Some(entry.path());
+                    break;
+                }
+            }
+            current = found?;
+        }
+        current.is_file().then_some(current)
     }
 
     fn check_cancelled(&self) -> Result<(), InstallError> {

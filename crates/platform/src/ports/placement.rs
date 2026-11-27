@@ -46,15 +46,16 @@ pub struct CopyRoots {
 
 impl CopyRoots {
     /// Resolves the user-data roots from the host and uses `app` for the port's own folder.
+    ///
+    /// Linux follows XDG: `config` is `$XDG_CONFIG_HOME` and both `data` and `localData` are
+    /// `$XDG_DATA_HOME`. Windows keeps its roaming/local split (design D16).
     pub fn host(app: impl Into<PathBuf>) -> Result<Self, PlaceError> {
-        let roaming = dirs::config_dir().ok_or(PlaceError::UnresolvedRoot { root: "data" })?;
-        let local =
-            dirs::data_local_dir().ok_or(PlaceError::UnresolvedRoot { root: "localData" })?;
+        let (data, config, local_data) = host_user_data_roots()?;
         Ok(Self {
             app: app.into(),
-            data: roaming.clone(),
-            config: roaming,
-            local_data: local,
+            data,
+            config,
+            local_data,
         })
     }
 
@@ -67,6 +68,29 @@ impl CopyRoots {
             CopyRoot::LocalData => &self.local_data,
         }
     }
+}
+
+/// The OS user-data roots for a port: data, config and local data (design D16).
+pub(crate) fn host_user_data_roots() -> Result<(PathBuf, PathBuf, PathBuf), PlaceError> {
+    #[cfg(target_os = "linux")]
+    {
+        let config = dirs::config_dir().ok_or(PlaceError::UnresolvedRoot { root: "config" })?;
+        let data = dirs::data_dir().ok_or(PlaceError::UnresolvedRoot { root: "data" })?;
+        Ok(linux_roots(config, data))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let roaming = dirs::config_dir().ok_or(PlaceError::UnresolvedRoot { root: "data" })?;
+        let local =
+            dirs::data_local_dir().ok_or(PlaceError::UnresolvedRoot { root: "localData" })?;
+        Ok((roaming.clone(), roaming, local))
+    }
+}
+
+/// Linux has no roaming/local split: `data` and `localData` both use the XDG data root.
+#[cfg(target_os = "linux")]
+fn linux_roots(config: PathBuf, data: PathBuf) -> (PathBuf, PathBuf, PathBuf) {
+    (data.clone(), config, data)
 }
 
 /// One accepted slot, paired with the planned placement it belongs to.
@@ -969,5 +993,56 @@ mod tests {
         .unwrap_err();
         assert!(error.is_cancelled());
         assert!(!dir.path().join("app/dump.iso").exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_roots_put_config_and_data_under_xdg() {
+        let (data, config, local) = linux_roots(
+            PathBuf::from("/home/player/.config"),
+            PathBuf::from("/home/player/.local/share"),
+        );
+        assert_eq!(config, PathBuf::from("/home/player/.config"));
+        assert_eq!(data, PathBuf::from("/home/player/.local/share"));
+        assert_eq!(local, data, "Linux has no roaming/local split");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn host_roots_follow_the_xdg_variables_and_their_defaults() {
+        use std::sync::Mutex;
+
+        static ENV_LOCK: Mutex<()> = Mutex::new(());
+        let _guard = ENV_LOCK.lock().unwrap();
+        let old_config = std::env::var_os("XDG_CONFIG_HOME");
+        let old_data = std::env::var_os("XDG_DATA_HOME");
+
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", "/tmp/gamenode-xdg-config");
+            std::env::set_var("XDG_DATA_HOME", "/tmp/gamenode-xdg-data");
+        }
+        let (data, config, local) = host_user_data_roots().unwrap();
+        assert_eq!(config, PathBuf::from("/tmp/gamenode-xdg-config"));
+        assert_eq!(data, PathBuf::from("/tmp/gamenode-xdg-data"));
+        assert_eq!(local, data);
+
+        unsafe {
+            std::env::remove_var("XDG_CONFIG_HOME");
+            std::env::remove_var("XDG_DATA_HOME");
+        }
+        let (data, config, _) = host_user_data_roots().unwrap();
+        assert!(config.ends_with(".config"), "default config: {config:?}");
+        assert!(data.ends_with(".local/share"), "default data: {data:?}");
+
+        unsafe {
+            match old_config {
+                Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+            match old_data {
+                Some(value) => std::env::set_var("XDG_DATA_HOME", value),
+                None => std::env::remove_var("XDG_DATA_HOME"),
+            }
+        }
     }
 }

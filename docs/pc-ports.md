@@ -136,8 +136,8 @@ Top level:
 | Field | Required | Meaning |
 | --- | --- | --- |
 | `gamenode_game_id` | no | GameNode game id used as matching evidence. `0` is the "not authored yet" placeholder and is treated as absent. |
-| `launcher` | no | Launch executable relative to the install folder. It becomes both the executable and the launcher. |
-| `gameplay` | no | Gameplay executables relative to the install folder. `[]` clears the upstream list. |
+| `launcher` | no | Launch executable relative to the install folder. It becomes both the executable and the launcher. A scalar is Windows; `{ windows = "...", linux = "..." }` names each platform. |
+| `gameplay` | no | Gameplay executables relative to the install folder. `[]` clears the upstream list. A scalar list is Windows; `{ windows = [...], linux = [...] }` names each platform. |
 | `license` | no | The port project's licence. The upstream listing has no licence field. |
 | `release` | no | A release version to install instead of the upstream verified one. It must match a release `version` exactly. |
 | `edition` | no | An edition note carried on the merged entry. The current detail pane does not render it yet. |
@@ -155,7 +155,7 @@ Top level:
 | `kind` | no | `file` or `folder`. Defaults to `folder` when `contains` or `from_package` is present, else `file`. |
 | `required` | no | Defaults to `true`. An optional slot can be skipped. |
 | `destination` | no | Relative path under `root` where an accepted choice is copied. |
-| `root` | no | `app` (the port's folder), `data` (`%APPDATA%`), `config` (`%APPDATA%`) or `localData` (`%LOCALAPPDATA%`). Defaults to `app`; only applies with `destination`. |
+| `root` | no | `app` (the port's folder), `data` (Windows `%APPDATA%`, Linux `$XDG_DATA_HOME`), `config` (Windows `%APPDATA%`, Linux `$XDG_CONFIG_HOME`) or `localData` (Windows `%LOCALAPPDATA%`, Linux `$XDG_DATA_HOME`). Defaults to `app`; only applies with `destination`. |
 | `flag` | no | Pass the choice's path to the port after this flag. A flag ending in `=` joins the path (`--iso=<path>`). |
 | `positional` | no | Pass the choice's path as an argument of its own, before flags. Defaults to `false`. |
 | `env` | no | Environment variable the launch receives with the choice's path. |
@@ -647,8 +647,8 @@ records the launch executable's file identity at install time and rechecks it be
 launch. If a self-update replaces that executable file, the launch is refused as a changed
 target and **Locate executable** repairs it. On Windows, files overwritten in place keep
 their identity (volume serial and file index) and launch normally. On Linux the identity
-currently also includes size, mode and timestamps, so an in-place rewrite, `touch` or
-`chmod` is refused as well; see [Linux scope](#linux-scope).
+is device + inode, so an in-place rewrite, `touch` or `chmod` keeps launching; the execute
+bit is checked separately, and a replaced file asks for repair.
 
 ## Linux scope
 
@@ -670,6 +670,9 @@ What works on Linux:
 - Availability starts `declared` from `supportedOS` and becomes `native` or `blocked` when
   the release details load; a Linux entry whose release has no Linux asset is blocked with
   its own reason, and the platform filter moves it to Windows-only (task 1.1).
+- Recipe copies follow XDG on Linux: `config` uses `$XDG_CONFIG_HOME`, `data` and
+  `localData` use `$XDG_DATA_HOME`; Windows keeps `%APPDATA%`/`%LOCALAPPDATA%` (tasks 2.2,
+  3.10). Existing installs are not migrated.
 - Install is enabled for a reviewed native entry; the Linux folder and file pickers now use the
   Tauri dialog plugin, with a typed-path fallback when no picker opens (task 2.7).
 - The detail pane, the setup modal and the malware confirmation select the platform's
@@ -684,6 +687,9 @@ What works on Linux:
   bit; a recorded zip mode is kept and the registered executable gets `0o755` (task 3.5).
 - `.run` is refused in all three format lists, and an extensionless asset is accepted only
   when the recipe names it or its content is an executable (task 3.9).
+- Preferred executables match case-insensitively on Linux, and a placed AppImage/bare asset is
+  used when no preferred name exists; the overlay launcher and gameplay executables are per
+  platform (tasks 3.6, 3.7).
 - Guided setup runs on Linux only for a recipe marked `linux_reviewed`; a required
   package-only slot is blocked with the console-extraction reason, and the setup modal
   offers only the extracted folder (tasks 2.3, 3.8).
@@ -692,11 +698,7 @@ What works on Linux:
 
 Known gaps:
 
-- Preferred executables match exactly and case-sensitively (task 3.6).
-- Overlay launcher and gameplay executables are not per platform (task 3.7).
-- `data` and `config` both map to `~/.config` and `localData` to `~/.local/share`; the
-  proposed XDG mapping is pending (task 3.10).
-- The Linux launch identity includes size, mode and timestamps (task 3.11).
+None for the Linux scope described here; the remaining decisions live in the change's tasks.
 
 ## Implementation notes and spec divergences
 

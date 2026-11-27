@@ -435,7 +435,10 @@ fn entry(catalog_id: &str, name: &str, launcher: &str) -> CatalogEntry {
             },
             ..Default::default()
         },
-        gameplay_executables: vec![launcher.into()],
+        gameplay_executables: gamenode_core::ports::catalog::PerPlatform {
+            windows: Some(vec![launcher.into()]),
+            ..Default::default()
+        },
         ..CatalogEntry::default()
     }
 }
@@ -832,6 +835,81 @@ fn a_linux_tar_gz_port_without_a_recorded_mode_registers() {
         "tar.gz",
         bytes,
         "devilutionx",
+    );
+}
+
+/// Installs a placed AppImage whose on-disk name can differ from the recipe's preferred name.
+#[cfg(target_os = "linux")]
+fn install_linux_appimage_named(
+    job_id: &str,
+    preferred: &str,
+    installed: &str,
+    bytes: Vec<u8>,
+) -> (PortJobRow, Option<Box<InstallCompletion>>, String) {
+    let fixture = Fixture::new();
+    let entry = linux_entry(preferred);
+    let match_input = PortMatchInput::from_entry(&entry);
+    let plan = plan_install(&InstallPlanRequest {
+        platform: gamenode_core::ports::view::PortPlatform::Linux,
+        entry,
+        releases: vec![linux_release(&bytes, installed)],
+        withdrawn: Vec::new(),
+        parent: fixture.parent.display().to_string(),
+        job_id: job_id.into(),
+        target_empty: true,
+        free_space: u64::MAX,
+        library_roots: Vec::new(),
+        supplied: Vec::new(),
+        supplied_bytes: 0,
+        confirmed_risk: false,
+    })
+    .expect("a Linux AppImage plan");
+    let target = plan.target.clone();
+    let (runner, events) =
+        fixture.start(FakeFetcher::new(bytes), Arc::new(SystemExecutableIdentity));
+    runner
+        .enqueue(request(job_id, plan, Vec::new(), match_input))
+        .unwrap();
+    let (job, completion) = wait_for_finished(&events);
+    runner.shutdown();
+    (job, completion, target)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_mixed_case_appimage_registers_without_asking() {
+    let (job, completion, target) = install_linux_appimage_named(
+        "job-linux-case",
+        "devilutionx-linux-x86_64.appimage",
+        "DevilutionX-Linux-x86_64.AppImage",
+        b"binary".to_vec(),
+    );
+    assert_eq!(job.phase, PortJobPhase::Completed, "{:?}", job.error);
+    let completion = completion.expect("a completed install");
+    assert_eq!(
+        completion.registration.executable,
+        Path::new(&target)
+            .join("DevilutionX-Linux-x86_64.AppImage")
+            .to_string_lossy()
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_single_appimage_falls_back_when_the_preferred_name_misses() {
+    let (job, completion, target) = install_linux_appimage_named(
+        "job-linux-fallback",
+        "missing-name",
+        "port-x86_64.appimage",
+        b"binary".to_vec(),
+    );
+    assert_eq!(job.phase, PortJobPhase::Completed, "{:?}", job.error);
+    let completion = completion.expect("a completed install");
+    assert_eq!(
+        completion.registration.executable,
+        Path::new(&target)
+            .join("port-x86_64.appimage")
+            .to_string_lossy()
     );
 }
 

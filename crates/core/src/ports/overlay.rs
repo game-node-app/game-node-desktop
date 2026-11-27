@@ -11,17 +11,16 @@
 //! - an overlay `setup_file` list replaces the whole upstream `setupFiles` list, because partial
 //!   merging of recipe slots is too easy to get wrong;
 //! - `hidden = true` removes the entry from the list;
-//! - `launcher` becomes `Registration.executable` and `Registration.launchers`, and `gameplay`
-//!   becomes `Registration.gameplay`;
-//! - only entries that support Windows stay in the listable catalog.
+//! - `launcher` and `gameplay` become the registration executables, per platform (design D13);
+//! - the platform rule is applied by the view, not by this merge.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
 use crate::ports::catalog::{
-    AcceptedHash, CatalogEntry, CopyRoot, Extractor, FromPackage, LauncherRecipe, RecipeError,
-    SetupFile, SetupKind, is_safe_relative_path,
+    AcceptedHash, CatalogEntry, CopyRoot, Extractor, FromPackage, LauncherRecipe, PlatformValue,
+    RecipeError, SetupFile, SetupKind, is_safe_relative_path,
 };
 
 /// The overlay schema version this build understands.
@@ -51,10 +50,12 @@ pub struct Overlay {
 pub struct OverlayEntry {
     /// The GameNode game id used as matching evidence (design D11).
     pub gamenode_game_id: Option<u64>,
-    /// The launch executable, relative to the install folder.
-    pub launcher: Option<String>,
-    /// Gameplay executables; `[]` clears the upstream list.
-    pub gameplay: Option<Vec<String>>,
+    /// The launch executable, relative to the install folder. A scalar is Windows; a table names
+    /// each platform (design D13).
+    pub launcher: Option<PlatformValue<String>>,
+    /// Gameplay executables; `[]` clears the upstream list. A scalar list is Windows; a table names
+    /// each platform.
+    pub gameplay: Option<PlatformValue<Vec<String>>>,
     pub license: Option<String>,
     /// A release version to install instead of the upstream's verified one.
     pub release: Option<String>,
@@ -171,21 +172,25 @@ impl Overlay {
             if catalog_id.trim().is_empty() {
                 return Err(OverlayError::MissingCatalogId);
             }
-            if let Some(launcher) = &entry.launcher
-                && !is_safe_relative_path(launcher)
-            {
-                return Err(OverlayError::InvalidPath {
-                    entry: catalog_id.clone(),
-                    path: launcher.clone(),
-                });
-            }
-            if let Some(gameplay) = &entry.gameplay {
-                for executable in gameplay {
-                    if !is_safe_relative_path(executable) {
+            if let Some(launcher) = &entry.launcher {
+                for path in launcher.values() {
+                    if !is_safe_relative_path(path) {
                         return Err(OverlayError::InvalidPath {
                             entry: catalog_id.clone(),
-                            path: executable.clone(),
+                            path: path.clone(),
                         });
+                    }
+                }
+            }
+            if let Some(gameplay) = &entry.gameplay {
+                for executables in gameplay.values() {
+                    for executable in executables {
+                        if !is_safe_relative_path(executable) {
+                            return Err(OverlayError::InvalidPath {
+                                entry: catalog_id.clone(),
+                                path: executable.clone(),
+                            });
+                        }
                     }
                 }
             }
@@ -245,11 +250,11 @@ impl Overlay {
         if let Some(game_id) = overlay.gamenode_game_id.filter(|game_id| *game_id != 0) {
             merged.gamenode_game_id = Some(game_id);
         }
-        if let Some(launcher) = &overlay.launcher {
-            merged.launcher_executable = Some(launcher.clone());
+        if let Some(launcher) = overlay.launcher.clone() {
+            merged.launcher_executable = launcher.expand();
         }
-        if let Some(gameplay) = &overlay.gameplay {
-            merged.gameplay_executables = gameplay.clone();
+        if let Some(gameplay) = overlay.gameplay.clone() {
+            merged.gameplay_executables = gameplay.expand();
         }
         if let Some(license) = &overlay.license {
             merged.license = Some(license.clone());
@@ -416,8 +421,14 @@ from_package = {{ extractor = "ps4-pkg", title_id = "CUSA03173", needs_update = 
 
         let entry = &overlay.entry["qcat_lantern"];
         assert_eq!(entry.gamenode_game_id, Some(2100));
-        assert_eq!(entry.launcher.as_deref(), Some("Lantern Engine.exe"));
-        assert_eq!(entry.gameplay, Some(vec!["Bloodborne.exe".to_string()]));
+        assert_eq!(
+            entry.launcher.as_ref().and_then(PlatformValue::as_scalar),
+            Some(&"Lantern Engine.exe".to_string())
+        );
+        assert_eq!(
+            entry.gameplay.as_ref().and_then(PlatformValue::as_scalar),
+            Some(&vec!["Bloodborne.exe".to_string()])
+        );
         let slots = entry.setup_file.as_ref().expect("setup files");
         assert_eq!(slots.len(), 1);
         let slot = slots[0].to_setup_file();
@@ -555,6 +566,60 @@ from_package = {{ extractor = "ps4-pkg", title_id = "CUSA03173", needs_update = 
     }
 
     #[test]
+    fn a_windows_launcher_never_reaches_a_linux_install() {
+        use crate::ports::view::PortPlatform;
+
+        let overlay = Overlay::parse(&overlay_toml()).unwrap();
+        let merged = overlay.merge(upstream_entry()).unwrap();
+
+        let windows = merged.executable_roles_for(PortPlatform::Windows);
+        assert_eq!(windows.executable.as_deref(), Some("Lantern Engine.exe"));
+        assert_eq!(windows.gameplay, vec!["Bloodborne.exe".to_string()]);
+
+        // The scalar overlay fields are Windows-only (design D13).
+        let linux = merged.executable_roles_for(PortPlatform::Linux);
+        assert_eq!(linux.executable, None);
+        assert!(linux.launchers.is_empty());
+        assert!(linux.gameplay.is_empty());
+    }
+
+    #[test]
+    fn the_overlay_can_name_a_launcher_per_platform() {
+        use crate::ports::catalog::{PerPlatform, PlatformValue};
+        use crate::ports::view::PortPlatform;
+
+        let overlay = Overlay {
+            schema_version: 1,
+            entry: BTreeMap::from([(
+                "qcat_lantern".to_string(),
+                OverlayEntry {
+                    launcher: Some(PlatformValue::PerPlatform(PerPlatform {
+                        windows: Some("Lantern Engine.exe".into()),
+                        linux: Some("lantern-linux".into()),
+                        macos: None,
+                    })),
+                    gameplay: Some(PlatformValue::PerPlatform(PerPlatform {
+                        windows: Some(vec!["Game.exe".into()]),
+                        linux: Some(vec!["bb-probe".into()]),
+                        macos: None,
+                    })),
+                    ..OverlayEntry::default()
+                },
+            )]),
+            ..Overlay::default()
+        };
+        overlay.validate().unwrap();
+        let merged = overlay.merge(upstream_entry()).unwrap();
+
+        let linux = merged.executable_roles_for(PortPlatform::Linux);
+        assert_eq!(linux.executable.as_deref(), Some("lantern-linux"));
+        assert_eq!(linux.gameplay, vec!["bb-probe".to_string()]);
+        let windows = merged.executable_roles_for(PortPlatform::Windows);
+        assert_eq!(windows.executable.as_deref(), Some("Lantern Engine.exe"));
+        assert_eq!(windows.gameplay, vec!["Game.exe".to_string()]);
+    }
+
+    #[test]
     fn a_zero_game_id_is_a_placeholder_not_an_identity() {
         let overlay = Overlay {
             schema_version: 1,
@@ -579,8 +644,8 @@ from_package = {{ extractor = "ps4-pkg", title_id = "CUSA03173", needs_update = 
                 "qcat_lantern".to_string(),
                 OverlayEntry {
                     gamenode_game_id: Some(7),
-                    launcher: Some("Lantern.exe".into()),
-                    gameplay: Some(vec!["Game.exe".into()]),
+                    launcher: Some(PlatformValue::Scalar("Lantern.exe".into())),
+                    gameplay: Some(PlatformValue::Scalar(vec!["Game.exe".into()])),
                     license: Some("MIT".into()),
                     release: Some("v0.9.38".into()),
                     edition: Some("Director's Cut".into()),
@@ -591,8 +656,15 @@ from_package = {{ extractor = "ps4-pkg", title_id = "CUSA03173", needs_update = 
         };
         let merged = overlay.merge(upstream_entry()).unwrap();
         assert_eq!(merged.gamenode_game_id, Some(7));
-        assert_eq!(merged.launcher_executable.as_deref(), Some("Lantern.exe"));
-        assert_eq!(merged.gameplay_executables, vec!["Game.exe".to_string()]);
+        assert_eq!(
+            merged.launcher_executable.windows.as_deref(),
+            Some("Lantern.exe")
+        );
+        assert_eq!(merged.launcher_executable.linux, None);
+        assert_eq!(
+            merged.gameplay_executables.windows,
+            Some(vec!["Game.exe".to_string()])
+        );
         assert_eq!(merged.license.as_deref(), Some("MIT"));
         assert_eq!(merged.pinned_release.as_deref(), Some("v0.9.38"));
         assert_eq!(merged.edition.as_deref(), Some("Director's Cut"));
@@ -743,7 +815,10 @@ from_package = {{ extractor = "ps4-pkg", title_id = "CUSA03173", needs_update = 
             .entry
             .get("qcat_example_port")
             .expect("the example documents a fictional catalog entry");
-        assert_eq!(entry.launcher.as_deref(), Some("Example Game Launcher.exe"));
+        assert_eq!(
+            entry.launcher.as_ref().and_then(PlatformValue::as_scalar),
+            Some(&"Example Game Launcher.exe".to_string())
+        );
         let slot = entry
             .setup_file
             .as_ref()

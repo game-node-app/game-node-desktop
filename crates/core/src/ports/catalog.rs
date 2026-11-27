@@ -26,6 +26,82 @@
 
 use serde::{Deserialize, Serialize};
 
+/// One executable value per platform. The overlay accepts a scalar (read as Windows, design D13)
+/// or this table.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PlatformValue<T> {
+    Scalar(T),
+    PerPlatform(PerPlatform<T>),
+}
+
+impl<T: Clone> PlatformValue<T> {
+    /// Expands a scalar into the Windows slot and keeps a table as authored.
+    pub fn expand(self) -> PerPlatform<T> {
+        match self {
+            Self::Scalar(value) => PerPlatform {
+                windows: Some(value),
+                linux: None,
+                macos: None,
+            },
+            Self::PerPlatform(values) => values,
+        }
+    }
+}
+
+impl<T> PlatformValue<T> {
+    /// Every path the overlay names, whatever shape it used.
+    pub fn values(&self) -> impl Iterator<Item = &T> {
+        let values: [Option<&T>; 3] = match self {
+            Self::Scalar(value) => [Some(value), None, None],
+            Self::PerPlatform(values) => [
+                values.windows.as_ref(),
+                values.linux.as_ref(),
+                values.macos.as_ref(),
+            ],
+        };
+        values.into_iter().flatten()
+    }
+
+    /// The scalar value, when the overlay used the old single-platform shape.
+    pub fn as_scalar(&self) -> Option<&T> {
+        match self {
+            Self::Scalar(value) => Some(value),
+            Self::PerPlatform(_) => None,
+        }
+    }
+}
+
+/// Values for the three platforms the catalog knows (design D13).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PerPlatform<T> {
+    pub windows: Option<T>,
+    pub linux: Option<T>,
+    pub macos: Option<T>,
+}
+
+impl<T> Default for PerPlatform<T> {
+    fn default() -> Self {
+        Self {
+            windows: None,
+            linux: None,
+            macos: None,
+        }
+    }
+}
+
+impl<T> PerPlatform<T> {
+    /// The value this platform launches.
+    pub fn for_platform(&self, platform: crate::ports::view::PortPlatform) -> Option<&T> {
+        match platform {
+            crate::ports::view::PortPlatform::Windows => self.windows.as_ref(),
+            crate::ports::view::PortPlatform::Linux => self.linux.as_ref(),
+            crate::ports::view::PortPlatform::Macos => self.macos.as_ref(),
+        }
+    }
+}
+
 /// One catalog entry: a community native PC port or decompilation project.
 ///
 /// The upstream `catalogId` is the stable key that the overlay and the local database use. An entry
@@ -73,10 +149,11 @@ pub struct CatalogEntry {
     pub linux_reviewed: bool,
     /// A release version pinned by the overlay, installed instead of the verified one.
     pub pinned_release: Option<String>,
-    /// The launch executable named by the overlay, relative to the install folder.
-    pub launcher_executable: Option<String>,
-    /// Gameplay executables named by the overlay.
-    pub gameplay_executables: Vec<String>,
+    /// The launch executable named by the overlay, relative to the install folder. Windows reads
+    /// the old scalar; Linux uses its own value and never a Windows name (design D13).
+    pub launcher_executable: PerPlatform<String>,
+    /// Gameplay executables named by the overlay, per platform (design D13).
+    pub gameplay_executables: PerPlatform<Vec<String>>,
     /// Extraction tools pinned by the overlay for this entry's package slots.
     pub extractors: Vec<Extractor>,
 }
@@ -148,16 +225,22 @@ impl CatalogEntry {
             PortPlatform::Linux => &self.launcher.preferred_executables.linux,
             PortPlatform::Macos => &self.launcher.preferred_executables.macos,
         };
-        match &self.launcher_executable {
+        let overlay_launcher = self.launcher_executable.for_platform(platform);
+        let overlay_gameplay = self
+            .gameplay_executables
+            .for_platform(platform)
+            .cloned()
+            .unwrap_or_default();
+        match overlay_launcher {
             Some(launcher) => ExecutableRoles {
                 executable: Some(launcher.clone()),
                 launchers: vec![launcher.clone()],
-                gameplay: self.gameplay_executables.clone(),
+                gameplay: overlay_gameplay,
             },
             None => ExecutableRoles {
                 executable: preferred.first().cloned(),
                 launchers: preferred.clone(),
-                gameplay: self.gameplay_executables.clone(),
+                gameplay: overlay_gameplay,
             },
         }
     }

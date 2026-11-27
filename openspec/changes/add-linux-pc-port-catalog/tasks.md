@@ -94,7 +94,7 @@ table). Tasks 2.2, 2.4 and 2.5 were reopened, 1.7 was superseded, and sections 3
     (`.deb`, `.rpm`) and macOS stay refused. Tests:
     `tar_and_tar_gz_archives_extract`, `a_linux_tar_gz_release_plans_its_archive` and
     `a_linux_tar_gz_port_without_a_recorded_mode_registers`.
-- [ ] 2.2 Map `app`, `data`, `config` and `localData` to XDG placement roots, register the result
+- [x] 2.2 Map `app`, `data`, `config` and `localData` to XDG placement roots, register the result
   as an ordinary DRM-free entry, and validate the Linux launcher/executable before launch.
   - Completion (2026-11-22): `UserDataRoots::host`/`CopyRoots::host` already resolve XDG
     (`dirs::config_dir` and `data_local_dir`), and the Linux plan uses the recipe's
@@ -106,6 +106,9 @@ table). Tasks 2.2, 2.4 and 2.5 were reopened, 1.7 was superseded, and sections 3
     `~/.config` and only `localData` to `~/.local/share` (design D16, task 3.10). Launch
     validation was never exercised (it moved to 2.6), and the identity it compares breaks on
     in-place updates (D17, task 3.11).
+  - Closed (2026-11-26): 3.10 maps `config` to `$XDG_CONFIG_HOME` and `data`/`localData` to
+    `$XDG_DATA_HOME`. Registration as an ordinary DRM-free entry and the executable bit are
+    covered by the AppImage/zip/7z/tar runner tests; native launch acceptance stays in 2.6.
 - [x] 2.3 Support Linux guided setup only for overlay recipes explicitly reviewed for Linux. A
   recipe requiring the Windows PS4 PKG extractor is reported unavailable; never fetch or run that
   tool on Linux.
@@ -219,12 +222,22 @@ unchanged (D7).
     plus the registration bit. Tests: `a_port_zip_keeps_its_recorded_unix_mode`,
     `a_linux_zip_port_without_a_recorded_mode_registers` and
     `a_linux_7z_port_without_a_recorded_mode_registers` (both with `SystemExecutableIdentity`).
-- [ ] 3.6 Match preferred executables case-insensitively on Linux and fall back to the single
+- [x] 3.6 Match preferred executables case-insensitively on Linux and fall back to the single
   installed AppImage/bare executable (D12, confirm first). Test: a versioned, mixed-case AppImage
   name registers without `AwaitingExecutable`.
-- [ ] 3.7 Make the overlay's `launcher_executable` and `gameplay_executables` per platform, reading
+  - Completion (2026-11-26, D12 confirmed): `find_executable` matches each path component
+    case-insensitively on Linux and stores the real casing; when no preferred name exists and the
+    placed asset is an AppImage/bare executable, that file is used. Archives still ask. Tests:
+    `a_mixed_case_appimage_registers_without_asking` and
+    `a_single_appimage_falls_back_when_the_preferred_name_misses`.
+- [x] 3.7 Make the overlay's `launcher_executable` and `gameplay_executables` per platform, reading
   the old scalar fields as Windows (D13, confirm the schema first). Test: an overlay with
   `Lantern.exe` does not affect a Linux install or its playtime tracking.
+  - Completion (2026-11-26, D13 confirmed): `PerPlatform<T>` holds windows/linux/macos values for
+    both fields; the overlay accepts the old scalar shape (read as Windows) or a per-platform
+    table, and `executable_roles_for` reads only the running platform. Tests:
+    `a_windows_launcher_never_reaches_a_linux_install` and
+    `the_overlay_can_name_a_launcher_per_platform`.
 - [x] 3.8 Add the Linux-review mark to overlay recipes and block unreviewed guided recipes and
   package-only slots in availability, not only at plan time (D14, D5; closes 2.3 with the
   extractor rule). Test: a Windows-authored recipe is blocked in the catalog on Linux with the
@@ -246,12 +259,21 @@ unchanged (D7).
     `linux_bare_executable_names_need_no_declared_format`,
     `native_linux_binaries_are_bare_executables` and
     `linux_formats_split_into_executables_and_archives`.
-- [ ] 3.10 **Decision needed (D16).** Map Linux `config` to `$XDG_CONFIG_HOME` and `data`/
+- [x] 3.10 **Decision needed (D16).** Map Linux `config` to `$XDG_CONFIG_HOME` and `data`/
   `localData` to `$XDG_DATA_HOME` in `CopyRoots::host` and `UserDataRoots::host`; Windows
   unchanged. Test with the `XDG_*` variables set and unset.
-- [ ] 3.11 **Decision needed (D17).** Compare only device + inode in the Linux launch identity and
+  - Completion (2026-11-26, D16 confirmed): both hosts use the shared resolver in
+    `ports/placement.rs`. On Linux `config` is `$XDG_CONFIG_HOME` and `data`/`localData` share
+    `$XDG_DATA_HOME`; Windows keeps its roaming/local split. Tests:
+    `linux_roots_put_config_and_data_under_xdg` and
+    `host_roots_follow_the_xdg_variables_and_their_defaults` (set, unset and defaults).
+- [x] 3.11 **Decision needed (D17).** Compare only device + inode in the Linux launch identity and
   check the execute bit separately; update the identity sentence in `docs/pc-ports.md`. Test: an
   in-place rewrite, `touch` and `chmod` keep the entry launchable; a replaced file asks for repair.
+  - Completion (2026-11-26, D17 confirmed): `linux_identity` is `linux:<dev>:<ino>`; the execute
+    bit is checked by `ensure_linux_executable` in `inspect`, `validate_registration` and the
+    custom launch. `docs/pc-ports.md` records the new behavior. Test:
+    `in_place_changes_keep_the_linux_identity_until_the_file_is_replaced`.
 - [x] 3.12 Remove the duplicated `#[cfg(not(any(windows, target_os = "linux")))]` block in
   `SystemExecutableIdentity::identity` (`crates/platform/src/ports/job_runner.rs`) and record the
   Linux PC ports scope in `docs/linux-verification.md`. Check: `cargo check` for a target that is

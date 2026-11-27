@@ -717,7 +717,12 @@ sets the mark. Adding the mark is a reviewed data change, not a UI toggle.
 
 Known gaps:
 
-None for the Linux scope described here; the remaining decisions live in the change's tasks.
+- The detail pane says *"This port does not need any files from you"* whenever the catalog
+  recipe declares no setup slots. That reports the recipe, not a guarantee: ports such as
+  DevilutionX need the player's own game data while the upstream entry lists no slot. The
+  sentence should say that the entry requests no files, and the missing requirement belongs in
+  the overlay (and upstream). Recorded here as a wording/catalog gap, not changed in this
+  session.
 
 ## Implementation notes and spec divergences
 

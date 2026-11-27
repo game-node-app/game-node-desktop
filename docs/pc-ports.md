@@ -616,6 +616,19 @@ recorded here so they are not mistaken for tasks of the Linux change:
 Changing any of these behaviors needs its own OpenSpec change; they are not part of
 `add-pc-port-catalog` or `add-linux-pc-port-catalog`.
 
+## Download cache: possible relocation
+
+The release archive and the pinned extraction tools are cached under
+`<data_dir>/ports/cache`: `%LOCALAPPDATA%\GameNode\Desktop` on Windows and
+`~/.local/share/gamenode-desktop` on Linux. The path is fixed. Settings → Tools shows
+its size and offers **Clear cache**, but neither platform can move it.
+
+A user can install a large port (including the game files copied into its folder) on
+another volume by choosing the parent folder, yet the download cache still lives on the
+system drive. A future change could let Settings choose the cache folder, or default it
+to the volume of the install parent. This is recorded as an improvement, not a task of
+the Linux change.
+
 ## Self-updating ports
 
 Some ports, including Lantern Engine, update themselves through their own launcher.

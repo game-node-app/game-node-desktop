@@ -281,3 +281,6 @@ unchanged (D7).
 - Malware-gate hardening (warning verdicts, scan links, unknown-verdict badges, local scanning)
   is recorded in `docs/pc-ports.md` under "Malware gate: possible hardening". It needs its own
   change and is not a task here.
+- Relocating the port download cache (Settings or the install parent's volume) is recorded in
+  `docs/pc-ports.md` under "Download cache: possible relocation". It needs its own change and is
+  not a task here.

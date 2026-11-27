@@ -123,9 +123,9 @@ its fields and read schedule are documented in `steam-playtime-counter.md`.
 The global Store preference uses that counter; Internal uses measured sessions.
 Providers without a supported counter always use measured sessions.
 
-## DRM-free registrations (Windows)
+## DRM-free registrations (Windows and Linux)
 
-The bundled manual provider reads approved Windows-user registrations rather than
+The bundled manual provider reads approved local registrations rather than
 searching a store. Pending discovery candidates and removed registrations are
 excluded. An unavailable executable retains its entry and offers Locate executable;
 there is no Install action or store playtime counter. Provider-local UUIDs remain
@@ -135,7 +135,7 @@ sessions use source `manual`, platform 6.
 ```toml
 id = "manual"
 name = "DRM-free"
-platforms = ["windows"]
+platforms = ["windows", "linux"]
 source = "manual"
 scan = { native = "manual" }
 launch = { executable = "manual" }
@@ -144,9 +144,9 @@ launch = { executable = "manual" }
 The executable declaration is reserved for this bundled provider. Other providers
 use URI templates. The application reads the approved executable, working directory
 and argument vector from local storage and revalidates the target before launching
-on a worker. Manifest text cannot supply executable commands. Windows file identity
-prevents a replaced target from silently receiving approval. No shell interprets the
-stored arguments. Linux omits the manual provider.
+on a worker. Manifest text cannot supply executable commands. The platform's file
+identity prevents a replaced target from silently receiving approval. No shell
+interprets the stored arguments.
 
 ## Linux package discovery
 

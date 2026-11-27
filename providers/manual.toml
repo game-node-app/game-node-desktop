@@ -1,6 +1,6 @@
 id = "manual"
 name = "DRM-free"
-platforms = ["windows"]
+platforms = ["windows", "linux"]
 source = "manual"
 scan = { native = "manual" }
 launch = { executable = "manual" }

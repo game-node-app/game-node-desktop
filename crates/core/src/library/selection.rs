@@ -324,6 +324,19 @@ impl LibraryMachine {
         self.selection.select(key, mode, &visible);
     }
 
+    /// Selects the pending entry once it appears in the visible rows. A provider scan may still
+    /// be filling the library when the user asks to reveal an entry.
+    pub(super) fn reveal_pending(&mut self) {
+        let Some(key) = self.pending_reveal.clone() else {
+            return;
+        };
+        if self.visible_keys().iter().any(|visible| visible == &key) {
+            self.pending_reveal = None;
+            self.select(&key, SelectMode::Replace);
+            self.update_layout(|layout| layout.detail_open = true);
+        }
+    }
+
     pub(super) fn select_all(&mut self) {
         let visible = self.visible_keys();
         self.selection.select_all(&visible);

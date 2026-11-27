@@ -567,20 +567,17 @@ fn the_example_in_the_providers_doc_loads() {
 }
 
 #[test]
-fn manual_provider_is_windows_only_and_executable_actions_are_restricted() {
+fn manual_provider_is_available_on_windows_and_linux() {
     let text = include_str!("../../../../../providers/manual.toml");
-    let loaded = load(&[("manual.toml", text)], Platform::Windows);
-    assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
-    let provider = loaded.get("manual").unwrap();
-    assert!(provider.is_manual_executable());
-    assert!(provider.has_launch());
-    assert!(!provider.has_install());
-    assert!(provider.external_category().is_none());
-    assert!(
-        load(&[("manual.toml", text)], Platform::Linux)
-            .providers
-            .is_empty()
-    );
+    for platform in [Platform::Windows, Platform::Linux] {
+        let loaded = load(&[("manual.toml", text)], platform);
+        assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+        let provider = loaded.get("manual").unwrap();
+        assert!(provider.is_manual_executable());
+        assert!(provider.has_launch());
+        assert!(!provider.has_install());
+        assert!(provider.external_category().is_none());
+    }
     let invalid = text.replace("id = \"manual\"", "id = \"other\"");
     assert!(
         !load(&[("other.toml", &invalid)], Platform::Windows)

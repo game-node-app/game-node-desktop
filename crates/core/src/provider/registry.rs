@@ -437,7 +437,7 @@ fn validate(
         && (manifest.id != "manual"
             || manifest.source != "manual"
             || manifest.scan.native != "manual"
-            || manifest.platforms != [Platform::Windows]
+            || manifest.platforms != [Platform::Windows, Platform::Linux]
             || manifest.playtime.is_some()
             || manifest.install.is_some()
             || !matches!(&manifest.launch, Some(super::manifest::UriAction::Executable { executable }) if executable == "manual"))

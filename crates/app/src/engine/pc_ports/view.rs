@@ -176,7 +176,7 @@ pub fn entry_view(
     // Windows keeps its listing-time optimism (design D7): Install is available from the listing
     // and the loaded detail can only turn it off. Linux needs the release assets, so it starts
     // `declared` and only a loaded detail can confirm `native` or `blocked` (design D1).
-    let (availability, installable, install_block_reason) = if !supported {
+    let (mut availability, installable, install_block_reason) = if !supported {
         (
             PortAvailability::Blocked,
             false,
@@ -225,6 +225,11 @@ pub fn entry_view(
     } else {
         (PortAvailability::Native, true, None)
     };
+    // A catalog reload clears the detail-derived facts; an installed entry is already proof that
+    // the asset worked, so keep it native instead of showing "declared" again.
+    if installed_registration_key.is_some() && supported {
+        availability = PortAvailability::Native;
+    }
     PortEntryView {
         catalog_id: entry.catalog_id.clone(),
         slug: entry.slug.clone(),
@@ -1582,6 +1587,23 @@ mod tests {
         assert_eq!(
             view.install_block_reason,
             Some(PortInstallBlockReason::ConsoleExtraction)
+        );
+    }
+
+    #[test]
+    fn an_installed_linux_entry_stays_native_after_a_catalog_reload() {
+        let mut native = entry();
+        native.supported_os = vec!["linux".into()];
+        let view = entry_view(
+            &native,
+            Some("drmfree:reg-1".into()),
+            None,
+            PortPlatform::Linux,
+        );
+        assert_eq!(view.availability, PortAvailability::Native);
+        assert_eq!(
+            view.installed_registration_key.as_deref(),
+            Some("drmfree:reg-1")
         );
     }
 

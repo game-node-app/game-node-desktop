@@ -39,6 +39,19 @@ mod tests {
     }
 
     #[test]
+    fn the_manual_provider_is_bundled_on_windows_and_linux() {
+        for platform in [Platform::Windows, Platform::Linux] {
+            let loaded = load_bundled_for_tests(platform);
+            let provider = loaded.get("manual").expect("the manual provider");
+            assert!(
+                provider.is_manual_executable(),
+                "manual launches local registrations on {platform:?}"
+            );
+            assert!(provider.has_launch());
+        }
+    }
+
+    #[test]
     fn bundled_plugin_backends_come_from_descriptors() {
         for platform in [Platform::Windows, Platform::Linux] {
             let loaded = load_bundled_for_tests(platform);

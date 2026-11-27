@@ -1230,12 +1230,11 @@ impl Engine {
     /// Feeds an input to the library and launches its effects. Never blocks on I/O.
     pub fn library_input(&self, input: LibInput) {
         // PC ports speaks `drmfree:<id>` (the UI contract) while the DRM-free provider's own
-        // entry keys are `manual:<id>`. Translate a selection coming from the catalog so "Open in
-        // library" finds the entry.
+        // entry keys are `manual:<id>`. A selection from the catalog reveals the entry even when
+        // its provider scan is still running.
         let input = match input {
-            LibInput::Select { key, mode } if key.starts_with("drmfree:") => LibInput::Select {
+            LibInput::Select { key, .. } if key.starts_with("drmfree:") => LibInput::RevealEntry {
                 key: format!("manual:{}", key.trim_start_matches("drmfree:")),
-                mode,
             },
             other => other,
         };

@@ -2076,6 +2076,32 @@ fn a_reinstalled_provider_keeps_the_users_chosen_match() {
 }
 
 #[test]
+fn revealing_an_entry_waits_for_the_provider_scan() {
+    let (mut machine, effects) = loaded(false, LibraryCache::default());
+    let (op, _) = scan_ops(&effects)[0].clone();
+
+    // The entry is not in the library yet: the request is remembered, not lost.
+    assert!(
+        machine
+            .handle(Input::RevealEntry {
+                key: "steam:new".into()
+            })
+            .is_empty()
+    );
+    assert!(machine.selected_keys().is_empty());
+
+    scanned(
+        &mut machine,
+        op,
+        "steam",
+        Ok(vec![record("new", "Diablo", "/games/Diablo")]),
+        10,
+    );
+    assert_eq!(machine.selected_keys(), vec!["steam:new".to_owned()]);
+    assert!(machine.layout.detail_open);
+}
+
+#[test]
 fn cached_entries_of_a_provider_that_is_not_loaded_stay_hidden() {
     let cache = LibraryCache {
         entries: vec![stored("shop", "1", "Shop One", true)],

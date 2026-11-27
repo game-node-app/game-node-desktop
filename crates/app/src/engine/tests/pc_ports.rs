@@ -1350,7 +1350,10 @@ async fn a_completed_install_appears_in_the_library_without_a_manual_rescan() {
         shared.ports.local_games = Some(local_store.clone());
         shared.ports.port_store = Some(ports_store.clone());
         shared.state.get_mut().unwrap().library = gamenode_core::library::LibraryMachine::new(
-            crate::providers::load_bundled(gamenode_core::provider::Platform::Windows).providers,
+            crate::providers::load_bundled(
+                gamenode_core::provider::Platform::current().expect("a supported platform"),
+            )
+            .providers,
             Default::default(),
         );
     }

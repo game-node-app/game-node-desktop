@@ -318,6 +318,11 @@ pub enum Input {
     },
     /// Ask every provider with a catalog to sync now.
     RequestCatalog,
+    /// Show an entry even if it is filtered out or its provider scan is still in flight. The
+    /// library clears search, scope and filters, then selects the entry when it becomes visible.
+    RevealEntry {
+        key: String,
+    },
     /// Replace the toolbar filters.
     SetFilters(LibraryFilters),
     /// A plugin's display-name override of an entry was stored (or cleared with `None`) at this
@@ -750,6 +755,8 @@ pub struct LibraryMachine {
     /// The search box text. Not part of the layout: it starts empty on every launch.
     pub(super) search: String,
     pub(super) selection: Selection,
+    /// An entry to select as soon as it becomes visible (the provider scan may still be running).
+    pub(super) pending_reveal: Option<String>,
     pub(super) grid_columns: usize,
     /// What GameNode last said about each matched game, read when its entry is selected.
     pub(super) membership: BTreeMap<u64, Membership>,
@@ -850,6 +857,7 @@ impl LibraryMachine {
             favorite_pushes: BTreeMap::new(),
             search: String::new(),
             selection: Selection::default(),
+            pending_reveal: None,
             grid_columns: 1,
             membership: BTreeMap::new(),
             account_entries: BTreeMap::new(),
@@ -1395,10 +1403,22 @@ impl LibraryMachine {
             Input::MarkEntryNoGame { key, now } => self.mark_entry_no_game(&key, now),
             Input::ClearMatch => self.clear_match(),
             Input::Select { key, mode } => {
+                self.pending_reveal = None;
                 self.select(&key, mode);
                 vec![]
             }
+            Input::RevealEntry { key } => {
+                self.search.clear();
+                self.update_layout(|layout| {
+                    layout.scope = LibraryScope::All;
+                    layout.filters = LibraryFilters::default();
+                });
+                self.pending_reveal = Some(key);
+                self.reveal_pending();
+                vec![]
+            }
             Input::Move { direction, extend } => {
+                self.pending_reveal = None;
                 self.step(direction, extend);
                 vec![]
             }
@@ -1407,6 +1427,7 @@ impl LibraryMachine {
                 vec![]
             }
             Input::SetSearch(text) => {
+                self.pending_reveal = None;
                 self.search = text;
                 vec![]
             }
@@ -2223,6 +2244,7 @@ impl LibraryMachine {
         };
         self.merge_scan(&provider, &outcome, now);
         self.prune_selection();
+        self.reveal_pending();
         let mut effects = vec![Effect::PersistScan {
             provider,
             outcome,

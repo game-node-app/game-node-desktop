@@ -1000,10 +1000,11 @@ impl<'a> JobContext<'a> {
                 total: plan.asset.size,
             },
         );
-        crate::archive::extract_asset_to_dir(
+        crate::archive::extract_port_asset_to_dir(
             &cached.path,
             staging,
             PORTS_MAX_TOTAL_EXTRACTED_BYTES,
+            plan.platform == gamenode_core::ports::view::PortPlatform::Linux,
         )
         .map_err(|error| InstallError::Extract(error.to_string()))?;
         // A Linux AppImage or bare binary is copied without its executable bit; the launch
@@ -1445,6 +1446,12 @@ impl<'a> JobContext<'a> {
         &self,
         absolute: &str,
     ) -> Result<(Registration, PortInstallation), InstallError> {
+        // A zip/7z Linux port may ship an executable without an execute bit (design D11). Set it
+        // before the identity is read, so the launch validator accepts the registered file.
+        if self.request.plan.platform == gamenode_core::ports::view::PortPlatform::Linux {
+            super::linux_asset::normalize_executable(Path::new(absolute))
+                .map_err(|error| InstallError::Io(format!("{absolute}: {error}")))?;
+        }
         let file_identity = self
             .config
             .identity

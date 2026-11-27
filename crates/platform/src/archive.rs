@@ -181,6 +181,18 @@ pub fn extract_archive_to_dir_with_cap(
     dest_dir: &Path,
     max_total_bytes: u64,
 ) -> Result<Vec<ArchiveEntry>, ToolError> {
+    extract_archive_inner(archive_path, dest_dir, max_total_bytes, false)
+}
+
+/// The shared implementation. `apply_unix_modes` is only used by the PC port installer on Linux,
+/// where a zip entry's recorded Unix mode must survive extraction (design D11); everywhere else
+/// the platform default stays, as before.
+fn extract_archive_inner(
+    archive_path: &Path,
+    dest_dir: &Path,
+    max_total_bytes: u64,
+    apply_unix_modes: bool,
+) -> Result<Vec<ArchiveEntry>, ToolError> {
     let archive_type = detect_archive_type(archive_path)?;
     std::fs::create_dir_all(dest_dir).map_err(|e| ToolError::Io(e.to_string()))?;
 
@@ -319,6 +331,9 @@ pub fn extract_archive_to_dir_with_cap(
                             .write_all(&buf[..n])
                             .map_err(|e| ToolError::Io(e.to_string()))?;
                     }
+                    if apply_unix_modes {
+                        apply_recorded_mode(&target, zip_file.unix_mode())?;
+                    }
                     entries.push(ArchiveEntry {
                         relative_path: clean.to_string_lossy().replace('\\', "/"),
                         size_bytes: file_size,
@@ -347,6 +362,44 @@ pub fn extract_asset_to_dir(
         }
         AssetType::BareExecutable => copy_bare_executable(asset_path, dest_dir, max_total_bytes),
     }
+}
+
+/// Extracts a PC port release asset into `dest_dir`. When `apply_unix_modes` is true (the Linux
+/// install path), a zip entry's recorded Unix mode is applied to the extracted file; 7z records no
+/// mode, so archives of that type keep the platform default (design D11).
+pub fn extract_port_asset_to_dir(
+    asset_path: &Path,
+    dest_dir: &Path,
+    max_total_bytes: u64,
+    apply_unix_modes: bool,
+) -> Result<Vec<ArchiveEntry>, ToolError> {
+    match detect_asset_type(asset_path)? {
+        AssetType::SevenZip | AssetType::Zip => {
+            extract_archive_inner(asset_path, dest_dir, max_total_bytes, apply_unix_modes)
+        }
+        AssetType::BareExecutable => copy_bare_executable(asset_path, dest_dir, max_total_bytes),
+    }
+}
+
+/// Applies a zip entry's recorded Unix mode, dropping the file-type bits and any setuid, setgid or
+/// sticky bit. A recorded `0o000` keeps the platform default.
+#[cfg(unix)]
+fn apply_recorded_mode(path: &Path, mode: Option<u32>) -> Result<(), ToolError> {
+    use std::os::unix::fs::PermissionsExt;
+    let Some(mode) = mode else {
+        return Ok(());
+    };
+    let mode = mode & 0o777;
+    if mode == 0 {
+        return Ok(());
+    }
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+        .map_err(|e| ToolError::Io(e.to_string()))
+}
+
+#[cfg(not(unix))]
+fn apply_recorded_mode(_: &Path, _: Option<u32>) -> Result<(), ToolError> {
+    Ok(())
 }
 
 fn copy_bare_executable(

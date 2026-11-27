@@ -22,6 +22,9 @@ pub const PORTS_MAX_TOTAL_EXTRACTED_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 pub enum ArchiveType {
     SevenZip,
     Zip,
+    /// A tar stream, optionally compressed with gzip ([`ArchiveType::TarGz`]).
+    Tar,
+    TarGz,
 }
 
 /// Kind of release asset that can be placed into an install folder.
@@ -29,6 +32,8 @@ pub enum ArchiveType {
 pub enum AssetType {
     SevenZip,
     Zip,
+    Tar,
+    TarGz,
     /// A bare executable that is copied into the folder as-is.
     BareExecutable,
 }
@@ -44,12 +49,24 @@ pub fn detect_archive_type(path: &Path) -> Result<ArchiveType, ToolError> {
             if n >= 4 && (&magic[..4] == b"PK\x03\x04" || &magic[..4] == b"PK\x05\x06") {
                 return Ok(ArchiveType::Zip);
             }
+            if n >= 2 && magic[..2] == [0x1f, 0x8b] {
+                return Ok(ArchiveType::TarGz);
+            }
         }
     }
 
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if name.ends_with(".tar.gz") || name.ends_with(".tgz") {
+        return Ok(ArchiveType::TarGz);
+    }
     match file_extension(path).as_str() {
         "7z" => Ok(ArchiveType::SevenZip),
         "zip" => Ok(ArchiveType::Zip),
+        "tar" => Ok(ArchiveType::Tar),
         _ => Err(ToolError::ExtractionFailed(format!(
             "Unsupported or unrecognized archive format for: {}",
             path.display()
@@ -59,24 +76,59 @@ pub fn detect_archive_type(path: &Path) -> Result<ArchiveType, ToolError> {
 
 /// Detects how a release asset is placed into an install folder.
 ///
-/// Archives are extracted; a bare `.exe` is copied as-is.
+/// Archives are extracted; a bare executable is copied as-is. Windows ships `.exe`; a native Linux
+/// port ships an AppImage, a `bin`, an architecture-suffixed name such as `game.x86_64`, or an
+/// extensionless executable. An unknown extension is only accepted when the file starts with an
+/// executable magic, so an arbitrary extensionless file is not mistaken for a port (design D8).
 pub fn detect_asset_type(path: &Path) -> Result<AssetType, ToolError> {
     match detect_archive_type(path) {
         Ok(ArchiveType::SevenZip) => Ok(AssetType::SevenZip),
         Ok(ArchiveType::Zip) => Ok(AssetType::Zip),
+        Ok(ArchiveType::Tar) => Ok(AssetType::Tar),
+        Ok(ArchiveType::TarGz) => Ok(AssetType::TarGz),
         Err(error) => {
-            // A bare executable is copied, not unpacked. Windows ships `.exe`; a native Linux port
-            // ships an AppImage or a bare binary under one of these names.
-            if matches!(
-                file_extension(path).as_str(),
-                "exe" | "appimage" | "bin" | "run"
-            ) {
+            let extension = file_extension(path);
+            // `.run` is not a supported Linux release format. The list of accepted names must
+            // agree with `SUPPORTED_LINUX_FORMATS` and `linux_asset::kind` (task 3.9).
+            if extension == "run" {
+                return Err(ToolError::ExtractionFailed(format!(
+                    "`.run` is not a supported Linux release format: {}",
+                    path.display()
+                )));
+            }
+            if matches!(extension.as_str(), "exe" | "appimage" | "bin")
+                || gamenode_core::ports::plan::BARE_EXECUTABLE_SUFFIXES
+                    .contains(&extension.as_str())
+                || looks_like_executable(path)
+            {
                 Ok(AssetType::BareExecutable)
             } else {
                 Err(error)
             }
         }
     }
+}
+
+/// True when the file starts with an ELF, PE or Mach-O magic. Checked only for names without a
+/// known extension.
+fn looks_like_executable(path: &Path) -> bool {
+    let Ok(mut file) = File::open(path) else {
+        return false;
+    };
+    let mut magic = [0u8; 4];
+    if file.read(&mut magic).ok() != Some(magic.len()) {
+        return false;
+    }
+    magic == *b"\x7fELF"
+        || (magic[0] == b'M' && magic[1] == b'Z')
+        || matches!(
+            magic,
+            [0xFE, 0xED, 0xFA, 0xCE]
+                | [0xFE, 0xED, 0xFA, 0xCF]
+                | [0xCE, 0xFA, 0xED, 0xFE]
+                | [0xCF, 0xFA, 0xED, 0xFE]
+                | [0xCA, 0xFE, 0xBA, 0xBE]
+        )
 }
 
 fn file_extension(path: &Path) -> String {
@@ -163,10 +215,46 @@ pub fn list_archive_entries(archive_path: &Path) -> Result<Vec<ArchiveEntry>, To
             }
             Ok(entries)
         }
+        ArchiveType::Tar => {
+            let file = File::open(archive_path).map_err(|e| ToolError::Io(e.to_string()))?;
+            list_tar_entries(file)
+        }
+        ArchiveType::TarGz => {
+            let file = File::open(archive_path).map_err(|e| ToolError::Io(e.to_string()))?;
+            list_tar_entries(flate2::read::GzDecoder::new(file))
+        }
     }
 }
 
-/// Safely extracts a `.7z` or `.zip` archive into `dest_dir` with the default 2 GiB cap.
+fn list_tar_entries<R: Read>(reader: R) -> Result<Vec<ArchiveEntry>, ToolError> {
+    let mut archive = tar::Archive::new(reader);
+    let mut entries = Vec::new();
+    for item in archive
+        .entries()
+        .map_err(|e| ToolError::ExtractionFailed(e.to_string()))?
+    {
+        let entry = item.map_err(|e| ToolError::ExtractionFailed(e.to_string()))?;
+        let raw = entry
+            .path()
+            .map_err(|e| ToolError::ExtractionFailed(e.to_string()))?
+            .to_string_lossy()
+            .replace('\\', "/");
+        let clean = validate_archive_entry_path(&raw)?;
+        if clean.as_os_str().is_empty() {
+            continue;
+        }
+        let kind = entry.header().entry_type();
+        entries.push(ArchiveEntry {
+            relative_path: clean.to_string_lossy().replace('\\', "/"),
+            size_bytes: entry.header().size().unwrap_or(0),
+            is_dir: kind.is_dir(),
+        });
+    }
+    Ok(entries)
+}
+
+/// Safely extracts a `.7z`, `.zip`, `.tar` or `.tar.gz` archive into `dest_dir` with the default
+/// 2 GiB cap.
 pub fn extract_archive_to_dir(
     archive_path: &Path,
     dest_dir: &Path,
@@ -342,9 +430,115 @@ fn extract_archive_inner(
                 }
             }
         }
+        ArchiveType::Tar => {
+            let file = File::open(archive_path).map_err(|e| ToolError::Io(e.to_string()))?;
+            extract_tar_to_dir(
+                file,
+                dest_dir,
+                max_total_bytes,
+                apply_unix_modes,
+                &mut entries,
+                &mut total_bytes,
+            )?;
+        }
+        ArchiveType::TarGz => {
+            let file = File::open(archive_path).map_err(|e| ToolError::Io(e.to_string()))?;
+            let decoder = flate2::read::GzDecoder::new(file);
+            extract_tar_to_dir(
+                decoder,
+                dest_dir,
+                max_total_bytes,
+                apply_unix_modes,
+                &mut entries,
+                &mut total_bytes,
+            )?;
+        }
     }
 
     Ok(entries)
+}
+
+/// Extracts a tar stream with the same traversal, link and size rules as the archive formats.
+fn extract_tar_to_dir<R: Read>(
+    reader: R,
+    dest_dir: &Path,
+    max_total_bytes: u64,
+    apply_unix_modes: bool,
+    entries: &mut Vec<ArchiveEntry>,
+    total_bytes: &mut u64,
+) -> Result<(), ToolError> {
+    let limit_message = extraction_limit_message(max_total_bytes);
+    let mut archive = tar::Archive::new(reader);
+    let items = archive
+        .entries()
+        .map_err(|e| ToolError::ExtractionFailed(e.to_string()))?;
+    for item in items {
+        let mut entry = item.map_err(|e| ToolError::ExtractionFailed(e.to_string()))?;
+        let kind = entry.header().entry_type();
+        // Links and device nodes never come from a port release; only files and directories do.
+        if !kind.is_file() && !kind.is_dir() {
+            return Err(ToolError::ExtractionFailed(format!(
+                "Special entry rejected in tar: {}",
+                entry
+                    .path()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_default()
+            )));
+        }
+        let raw = entry
+            .path()
+            .map_err(|e| ToolError::ExtractionFailed(e.to_string()))?
+            .to_string_lossy()
+            .replace('\\', "/");
+        let clean = validate_archive_entry_path(&raw)?;
+        if clean.as_os_str().is_empty() {
+            continue;
+        }
+        let target = dest_dir.join(&clean);
+        if kind.is_dir() {
+            std::fs::create_dir_all(&target).map_err(|e| ToolError::Io(e.to_string()))?;
+            entries.push(ArchiveEntry {
+                relative_path: clean.to_string_lossy().replace('\\', "/"),
+                size_bytes: 0,
+                is_dir: true,
+            });
+            continue;
+        }
+        if !kind.is_file() {
+            continue;
+        }
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| ToolError::Io(e.to_string()))?;
+        }
+        let mut out_file = File::create(&target).map_err(|e| ToolError::Io(e.to_string()))?;
+        let mut buf = [0u8; 64 * 1024];
+        let mut file_size = 0u64;
+        loop {
+            let n = entry
+                .read(&mut buf)
+                .map_err(|e| ToolError::ExtractionFailed(e.to_string()))?;
+            if n == 0 {
+                break;
+            }
+            *total_bytes += n as u64;
+            if *total_bytes > max_total_bytes {
+                return Err(ToolError::ExtractionFailed(limit_message.clone()));
+            }
+            file_size += n as u64;
+            out_file
+                .write_all(&buf[..n])
+                .map_err(|e| ToolError::Io(e.to_string()))?;
+        }
+        if apply_unix_modes {
+            apply_recorded_mode(&target, entry.header().mode().ok())?;
+        }
+        entries.push(ArchiveEntry {
+            relative_path: clean.to_string_lossy().replace('\\', "/"),
+            size_bytes: file_size,
+            is_dir: false,
+        });
+    }
+    Ok(())
 }
 
 /// Extracts an archive asset or copies a bare `.exe` into `dest_dir`, enforcing
@@ -360,6 +554,8 @@ pub fn extract_asset_to_dir(
         AssetType::SevenZip | AssetType::Zip => {
             extract_archive_to_dir_with_cap(asset_path, dest_dir, max_total_bytes)
         }
+        AssetType::Tar => extract_archive_inner(asset_path, dest_dir, max_total_bytes, false),
+        AssetType::TarGz => extract_archive_inner(asset_path, dest_dir, max_total_bytes, false),
         AssetType::BareExecutable => copy_bare_executable(asset_path, dest_dir, max_total_bytes),
     }
 }
@@ -374,7 +570,7 @@ pub fn extract_port_asset_to_dir(
     apply_unix_modes: bool,
 ) -> Result<Vec<ArchiveEntry>, ToolError> {
     match detect_asset_type(asset_path)? {
-        AssetType::SevenZip | AssetType::Zip => {
+        AssetType::SevenZip | AssetType::Zip | AssetType::Tar | AssetType::TarGz => {
             extract_archive_inner(asset_path, dest_dir, max_total_bytes, apply_unix_modes)
         }
         AssetType::BareExecutable => copy_bare_executable(asset_path, dest_dir, max_total_bytes),
@@ -460,15 +656,36 @@ mod tests {
     #[test]
     fn native_linux_binaries_are_bare_executables() {
         let dir = tempfile::tempdir().unwrap();
-        for name in ["port.AppImage", "port.bin", "port.run"] {
+        for name in ["port.AppImage", "port.bin", "game.x86_64"] {
             let path = dir.path().join(name);
-            std::fs::write(&path, b"not an archive").unwrap();
+            std::fs::write(&path, b"\x7fELFnot a real binary").unwrap();
             assert_eq!(
                 detect_asset_type(&path).unwrap(),
                 AssetType::BareExecutable,
                 "{name}"
             );
         }
+
+        // An extensionless file is accepted only when its content looks executable.
+        let extensionless = dir.path().join("devilutionx");
+        std::fs::write(&extensionless, b"\x7fELFnot a real binary").unwrap();
+        assert_eq!(
+            detect_asset_type(&extensionless).unwrap(),
+            AssetType::BareExecutable
+        );
+
+        let arbitrary = dir.path().join("LICENSE");
+        std::fs::write(&arbitrary, b"MIT License").unwrap();
+        assert!(
+            detect_asset_type(&arbitrary).is_err(),
+            "an arbitrary extensionless file is not an executable"
+        );
+
+        // `.run` is not a supported Linux format, even with an executable magic.
+        let run = dir.path().join("port.run");
+        std::fs::write(&run, b"\x7fELFnot a real binary").unwrap();
+        assert!(detect_asset_type(&run).is_err());
+
         let unknown = dir.path().join("port.deb");
         std::fs::write(&unknown, b"not an archive").unwrap();
         assert!(detect_asset_type(&unknown).is_err());
@@ -567,6 +784,99 @@ mod tests {
             other => panic!("Expected ExtractionFailed, got: {other:?}"),
         }
         assert!(!dest.join("escape").exists());
+    }
+
+    fn tar_bytes(entries: &[(&str, &[u8], u32)]) -> Vec<u8> {
+        let mut builder = tar::Builder::new(Vec::new());
+        for (name, bytes, mode) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(bytes.len() as u64);
+            header.set_mode(*mode);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, name, std::io::Cursor::new(bytes))
+                .unwrap();
+        }
+        builder.into_inner().unwrap()
+    }
+
+    fn gzip(bytes: &[u8]) -> Vec<u8> {
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(bytes).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    #[test]
+    fn tar_and_tar_gz_archives_extract() {
+        let temp = tempfile::tempdir().unwrap();
+        let tar = tar_bytes(&[
+            ("game", b"binary", 0o755),
+            ("data/config.txt", b"cfg", 0o644),
+        ]);
+
+        let tar_path = temp.path().join("port.tar");
+        std::fs::write(&tar_path, &tar).unwrap();
+        let dest = temp.path().join("tar");
+        extract_archive_to_dir(&tar_path, &dest).unwrap();
+        assert_eq!(std::fs::read(dest.join("game")).unwrap(), b"binary");
+        assert_eq!(std::fs::read(dest.join("data/config.txt")).unwrap(), b"cfg");
+
+        let gz_path = temp.path().join("port.tar.gz");
+        std::fs::write(&gz_path, gzip(&tar)).unwrap();
+        let dest = temp.path().join("gz");
+        extract_asset_to_dir(&gz_path, &dest, PORTS_MAX_TOTAL_EXTRACTED_BYTES).unwrap();
+        assert_eq!(std::fs::read(dest.join("game")).unwrap(), b"binary");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let dest = temp.path().join("modes");
+            extract_port_asset_to_dir(&tar_path, &dest, PORTS_MAX_TOTAL_EXTRACTED_BYTES, true)
+                .unwrap();
+            let mode = std::fs::metadata(dest.join("game"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o755);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_port_zip_keeps_its_recorded_unix_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("port.zip");
+        {
+            let file = File::create(&archive).unwrap();
+            let mut zip = zip::ZipWriter::new(file);
+            let options = zip::write::SimpleFileOptions::default().unix_permissions(0o755);
+            zip.start_file("port", options).unwrap();
+            zip.write_all(b"binary").unwrap();
+            zip.finish().unwrap();
+        }
+
+        let dest = temp.path().join("out");
+        extract_port_asset_to_dir(&archive, &dest, PORTS_MAX_TOTAL_EXTRACTED_BYTES, true).unwrap();
+        let mode = std::fs::metadata(dest.join("port"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o755);
+
+        // The shared extractor used by game tools and the extractor cache stays unchanged.
+        let plain = temp.path().join("plain");
+        extract_asset_to_dir(&archive, &plain, PORTS_MAX_TOTAL_EXTRACTED_BYTES).unwrap();
+        let mode = std::fs::metadata(plain.join("port"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o111,
+            0,
+            "the default extraction does not apply the recorded mode"
+        );
     }
 
     #[test]

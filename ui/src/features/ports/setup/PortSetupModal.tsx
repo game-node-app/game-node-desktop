@@ -19,6 +19,7 @@ import {
   type PortSetupSlot,
   type PortSuppliedChoice,
 } from '../../../api/ports';
+import { useAppInfo } from '../../../api/useSnapshot';
 import { useI18n } from '../../../i18n';
 import { formatI18n } from '../../library/formatters';
 import { formatBytes, formatPortDate } from '../catalog/format';
@@ -61,12 +62,18 @@ function blockReasonMessage(
       return t('Ports::This port was withdrawn upstream.');
     case 'noVerifiedRelease':
       return t('Ports::No verified release is available, so Install is unavailable.');
-    case 'folderPickerUnavailable':
-      return t('Ports::The Linux folder picker is not available yet, so Install is disabled.');
+    case 'notReviewed':
+      return t('Ports::This recipe has not been reviewed for Linux.');
+    case 'consoleExtraction':
+      return t(
+        'Ports::This recipe needs the Windows console-package extractor, which is not available on Linux.',
+      );
     case 'installerOnly':
       return t('Ports::The Windows download is an installer, which GameNode does not run.');
     case 'noWindowsAsset':
       return t('Ports::No Windows download is available.');
+    case 'noLinuxAsset':
+      return t('Ports::No native Linux download is available.');
     case 'missingAsset':
       return t('Ports::The Windows download is missing from the release.');
     case 'noExecutable':
@@ -230,6 +237,8 @@ interface RequirementRowProps {
   onPick: (slot: PortSetupSlot, kind: 'file' | 'folder' | 'package', update?: boolean) => void;
   onModeChange: (slot: PortSetupSlot, mode: 'direct' | 'package') => void;
   onClear: (slotId: string) => void;
+  /** Linux offers only the extracted folder: the pinned console extractor is Windows-only. */
+  allowPackages?: boolean;
 }
 
 const RequirementRow: React.FC<RequirementRowProps> = ({
@@ -243,9 +252,12 @@ const RequirementRow: React.FC<RequirementRowProps> = ({
   onPick,
   onModeChange,
   onClear,
+  allowPackages = true,
 }) => {
   const { t } = useI18n();
-  const packageOption: PortPackageOption | null = slot.packageOption;
+  const packageOption: PortPackageOption | null = allowPackages
+    ? slot.packageOption
+    : null;
   // A slot that can extract console packages opens in package mode. The extracted folder stays
   // available as the other segment, and switching between them clears the old choice.
   const packageMode =
@@ -491,6 +503,10 @@ export const PortSetupModal: React.FC = () => {
   const { t, locale } = useI18n();
   const { open, catalogId, retryJobId, session, pluginRequestId } = usePortSetupStore();
   const ports = usePortsView();
+  const appInfo = useAppInfo();
+  // Only the host-reported platform counts: while AppInfo is still loading the modal keeps the
+  // Windows behavior instead of briefly hiding package mode on every platform.
+  const linux = appInfo?.data?.platform === 'linux';
   const detailQuery = usePortDetail(open ? catalogId : null);
 
   const entry = catalogId
@@ -504,6 +520,8 @@ export const PortSetupModal: React.FC = () => {
   const [parentFolder, setParentFolder] = useState<string | null>(
     () => ports.preferences.lastParentFolder,
   );
+  const [typedParent, setTypedParent] = useState('');
+  const [pickerError, setPickerError] = useState<string | null>(null);
   const [selections, setSelections] = useState<
     Record<string, SlotSelection | undefined>
   >({});
@@ -526,6 +544,11 @@ export const PortSetupModal: React.FC = () => {
     }
   }, [parentFolder, ports.preferences.lastParentFolder]);
 
+  // Keep the typed fallback in step with the picker and the remembered folder.
+  useEffect(() => {
+    setTypedParent(parentFolder ?? '');
+  }, [parentFolder]);
+
   // A new session (another entry) starts from a clean form and a fresh progress key.
   useEffect(() => {
     setSelections({});
@@ -536,6 +559,7 @@ export const PortSetupModal: React.FC = () => {
     setStartError(null);
     setStarting(false);
     setInteracted(false);
+    setPickerError(null);
   }, [session]);
 
   if (!open) return null;
@@ -673,6 +697,7 @@ export const PortSetupModal: React.FC = () => {
   };
 
   const handleChooseParent = async () => {
+    setPickerError(null);
     try {
       const folder = await commands.portsPickParent(parentFolder);
       if (!folder) return;
@@ -682,8 +707,26 @@ export const PortSetupModal: React.FC = () => {
         .portsSetPreferences({ lastParentFolder: folder })
         .catch(() => undefined);
     } catch {
-      // The native picker is unavailable in a plain browser; the row keeps the old value.
+      // The native picker is unavailable in a plain browser; the row keeps the old value and the
+      // typed fallback below takes over.
+      setPickerError(
+        t(
+          'Ports::The folder picker could not open. Type the folder path instead.',
+        ),
+      );
     }
+  };
+
+  /** Applies a typed absolute path; the host validates it again when the install is planned. */
+  const applyTypedParent = () => {
+    const value = typedParent.trim();
+    if (!value || value === parentFolder) return;
+    setParentFolder(value);
+    setPickerError(null);
+    setStartError(null);
+    void commands
+      .portsSetPreferences({ lastParentFolder: value })
+      .catch(() => undefined);
   };
 
   const handleStart = async () => {
@@ -838,6 +881,31 @@ export const PortSetupModal: React.FC = () => {
                 {parentFolder ? t('Ports::Change folder') : t('Ports::Choose folder')}
               </button>
             </div>
+            <input
+              type="text"
+              data-testid="port-setup-folder-input"
+              aria-label={t('Ports::Or type the folder path')}
+              placeholder={t('Ports::Or type the folder path')}
+              value={typedParent}
+              onChange={(event) => setTypedParent(event.currentTarget.value)}
+              onBlur={applyTypedParent}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  applyTypedParent();
+                }
+              }}
+              className="rounded-sm border border-border-subtle bg-raised px-sm py-compact text-sm text-text-default focus-visible:ring-2 focus-visible:ring-brand focus-visible:outline-none"
+            />
+            {pickerError && (
+              <p
+                data-testid="port-setup-picker-error"
+                role="alert"
+                className="text-xs text-warning"
+              >
+                {pickerError}
+              </p>
+            )}
             <p className={hintClass}>
               {t('Ports::The port is installed in a new subfolder inside this folder.')}
             </p>
@@ -856,13 +924,14 @@ export const PortSetupModal: React.FC = () => {
                     setStartError(null);
                     setPickErrors((previous) => ({ ...previous, [slot.id]: undefined }));
                     setSelections((previous) => {
-                      const mode = previous[slot.id]?.mode ?? (slot.packageOption ? 'package' : 'direct');
+                      const mode = previous[slot.id]?.mode ?? (!linux && slot.packageOption ? 'package' : 'direct');
                       const current = previous[slot.id] ?? { mode, path: null, updatePath: null };
                       return { ...previous, [slot.id]: { ...current, ...(update ? { updatePath: source.path } : { path: source.path }) } };
                     });
                   }}
                   key={slot.id}
                   slot={slot}
+                  allowPackages={!linux}
                   selection={selections[slot.id]}
                   error={pickErrors[slot.id]}
                   busy={busySlot === slot.id}

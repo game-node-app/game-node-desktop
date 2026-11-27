@@ -123,8 +123,24 @@ pub struct PortLink {
 pub enum PortNoAssetReason {
     InstallerOnly,
     NoWindowsAsset,
+    /// The release has no native Linux asset for the running Linux build.
+    NoLinuxAsset,
     MissingAsset,
     NoExecutable,
+}
+
+/// How far the host has confirmed an entry's installability on the running platform (design D1).
+///
+/// The catalog listing has no release assets, so an entry starts `Declared` from `supportedOS`.
+/// Once its release details load it becomes `Native` when a supported asset exists and the recipe
+/// can run, or `Blocked` with a reason. Install is enabled only for `Native`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PortAvailability {
+    #[default]
+    Declared,
+    Native,
+    Blocked,
 }
 
 /// Why Install is unavailable for an entry.
@@ -135,10 +151,13 @@ pub enum PortInstallBlockReason {
     WindowsOnly,
     Withdrawn,
     NoVerifiedRelease,
-    /// The platform has no working folder picker, so no install can choose its folder.
-    FolderPickerUnavailable,
+    /// A guided recipe with required slots was not reviewed for Linux (design D14).
+    NotReviewed,
+    /// A required slot can only be produced by the Windows console-package extractor (design D5).
+    ConsoleExtraction,
     InstallerOnly,
     NoWindowsAsset,
+    NoLinuxAsset,
     MissingAsset,
     NoExecutable,
 }
@@ -148,6 +167,7 @@ impl From<PortNoAssetReason> for PortInstallBlockReason {
         match reason {
             PortNoAssetReason::InstallerOnly => Self::InstallerOnly,
             PortNoAssetReason::NoWindowsAsset => Self::NoWindowsAsset,
+            PortNoAssetReason::NoLinuxAsset => Self::NoLinuxAsset,
             PortNoAssetReason::MissingAsset => Self::MissingAsset,
             PortNoAssetReason::NoExecutable => Self::NoExecutable,
         }
@@ -244,6 +264,8 @@ pub struct PortEntryView {
     pub no_asset_reason: Option<PortNoAssetReason>,
     pub installable: bool,
     pub install_block_reason: Option<PortInstallBlockReason>,
+    /// Declared, native or blocked on the running platform (design D1).
+    pub availability: PortAvailability,
     pub art: PortArtView,
     pub project: Option<PortLink>,
     pub source: Option<PortLink>,
@@ -538,6 +560,7 @@ mod tests {
             no_asset_reason: None,
             installable: true,
             install_block_reason: None,
+            availability: PortAvailability::Native,
             art: PortArtView {
                 capsule: true,
                 hero: false,

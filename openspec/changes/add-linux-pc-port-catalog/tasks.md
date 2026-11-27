@@ -9,7 +9,7 @@ table). Tasks 2.2, 2.4 and 2.5 were reopened, 1.7 was superseded, and sections 3
 
 ## 1. Phase 1 — Linux catalog (Coming Soon state superseded by 2.5)
 
-- [ ] 1.1 Derive per-entry platform availability from the selected release's verified assets and
+- [x] 1.1 Derive per-entry platform availability from the selected release's verified assets and
   the recipe's tool requirements, not from `supportedOS` alone. Expose declared/native/blocked and
   the reason in the catalog view model (design D1): `declared` until the lazy release details
   load, then `native` or `blocked`. Pass the platform into `entry_view`'s asset reason instead of
@@ -18,6 +18,15 @@ table). Tasks 2.2, 2.4 and 2.5 were reopened, 1.7 was superseded, and sections 3
   expected availability.
   - Review note (2026-11-24): 1.4, 1.5 and 2.5 were completed on top of the declared
     `supportedOS`; their filtering and blocking must be rechecked once this lands.
+  - Completion (2026-11-26): `PortAvailability` (declared/native/blocked) is in the catalog view.
+    `entry_view` takes `Option<&EntryFacts>`: Linux is `declared` with Install off until the detail
+    loads, then `native` or `blocked` from the platform's selected asset; Windows keeps its
+    listing-time optimism (D7). The no-Linux-asset reason is its own value, and the Linux filter
+    moves an entry declaring Linux without a Linux asset to Windows-only. Recipe/tool blocking
+    arrives with 3.8. Tests: `linux_is_declared_until_the_release_details_load`,
+    `a_declared_linux_entry_without_a_linux_asset_is_blocked`,
+    `windows_stays_optimistic_before_the_details_load`, and the UI's `marks an entry as declared
+    until its release details load` plus the platform-filter case.
 - [x] 1.2 Start the PC ports catalog service on signed-in Linux builds in read-only mode while the
   install service stays Windows-only. Keep the existing Windows catalog path unchanged.
   - Completion (2026-11-22): `main.rs` now starts `PortsService` on every platform and builds
@@ -65,7 +74,7 @@ table). Tasks 2.2, 2.4 and 2.5 were reopened, 1.7 was superseded, and sections 3
 
 ## 2. Phase 2 — native Linux installs
 
-- [ ] 2.1 Select a native Linux release asset (AppImage, tar, zip or bare executable where the
+- [x] 2.1 Select a native Linux release asset (AppImage, tar, zip or bare executable where the
   recipe allows it), verify its checksum and normalize the executable bit. Reject Windows-only
   assets and unsupported formats explicitly.
   - Progress (2026-11-22): `select_asset_for(platform, ...)` in `crates/core/src/ports/plan.rs`
@@ -79,6 +88,12 @@ table). Tasks 2.2, 2.4 and 2.5 were reopened, 1.7 was superseded, and sections 3
     Linux identity the launch validation compares. An end-to-end runner test installs an AppImage
     and asserts the file, mode, and registration. Remaining for the task: tar support. Phase 2.2
     and 2.5 (enabling the Linux service and per-entry availability in the UI) are still open.
+  - Completion (2026-11-26): `tar`, `tar.gz` and `tgz` are selected and extracted in process with
+    the same traversal, special-entry and 16 GiB cap rules as zip/7z; the Linux install applies
+    the recorded tar mode and the runner normalizes the executable. Unsupported package formats
+    (`.deb`, `.rpm`) and macOS stay refused. Tests:
+    `tar_and_tar_gz_archives_extract`, `a_linux_tar_gz_release_plans_its_archive` and
+    `a_linux_tar_gz_port_without_a_recorded_mode_registers`.
 - [ ] 2.2 Map `app`, `data`, `config` and `localData` to XDG placement roots, register the result
   as an ordinary DRM-free entry, and validate the Linux launcher/executable before launch.
   - Completion (2026-11-22): `UserDataRoots::host`/`CopyRoots::host` already resolve XDG
@@ -91,13 +106,17 @@ table). Tasks 2.2, 2.4 and 2.5 were reopened, 1.7 was superseded, and sections 3
     `~/.config` and only `localData` to `~/.local/share` (design D16, task 3.10). Launch
     validation was never exercised (it moved to 2.6), and the identity it compares breaks on
     in-place updates (D17, task 3.11).
-- [ ] 2.3 Support Linux guided setup only for overlay recipes explicitly reviewed for Linux. A
+- [x] 2.3 Support Linux guided setup only for overlay recipes explicitly reviewed for Linux. A
   recipe requiring the Windows PS4 PKG extractor is reported unavailable; never fetch or run that
   tool on Linux.
-- [ ] 2.4 Extend the port job runner for Linux assets and placement: cancellation, crash recovery,
+  - Completion (2026-11-26): the `linux_reviewed` mark and the `packages_only` slot rule from 3.8
+    block unreviewed and package-only recipes in availability; the plan refuses a package-only
+    slot and any `Packages` source on Linux before download, and the setup modal never offers the
+    Windows extractor there. No extractor is fetched or run on Linux.
+- [x] 2.4 Extend the port job runner for Linux assets and placement: cancellation, crash recovery,
   no partial registration, journaled paths and no game-file deletion. Keep the Windows branch
   unchanged.
-  - Completion (2026-11-22): the runner detects AppImage/bin/run as a bare executable, copies it
+  - Completion (2026-11-26): the runner detects AppImage/bin/run as a bare executable, copies it
     into staging, sets `0o755`, and keeps the shared journaling, cancellation and startup
     recovery paths unchanged. `ports::linux_asset` classifies executable versus archive formats.
     The end-to-end test `a_native_linux_appimage_installs_and_becomes_executable` covers download,
@@ -107,7 +126,11 @@ table). Tasks 2.2, 2.4 and 2.5 were reopened, 1.7 was superseded, and sections 3
     extractor ignores the zip `unix_mode`, 7z records none, and `linux_identity` rejects a file
     without an execute bit, so a zip/7z Linux port ends in `InvalidTarget` (design D11, task 3.5).
     `.run` is detected here but is not a supported Linux format (task 3.9).
-- [ ] 2.5 Remove the Coming Soon block for native Linux entries; keep Windows-only entries blocked
+  - Closed (2026-11-26): 3.5 applies the recorded zip mode and the runner sets `0o755` before the
+    identity is read; `a_linux_zip_port_without_a_recorded_mode_registers` and
+    `a_linux_7z_port_without_a_recorded_mode_registers` cover both archive formats end to end.
+    3.9 made `.run` unsupported in all three format lists.
+- [x] 2.5 Remove the Coming Soon block for native Linux entries; keep Windows-only entries blocked
   with their own reason. Add en/pt-BR strings, mocks and tests for the mixed catalog.
   - Completion (2026-11-22): `supports_installs` now covers Windows and Linux, so the service
     starts the install runner on Linux. `entry_view` blocks only entries that do not declare the
@@ -120,11 +143,14 @@ table). Tasks 2.2, 2.4 and 2.5 were reopened, 1.7 was superseded, and sections 3
     overlay still drops Linux-only entries, so the native-Linux path mostly sees mixed entries
     (3.1); and Install is enabled while the folder picker cannot work (2.7, 3.2), which regresses
     the phase-1 guarantee of no misleading Install.
+  - Closed (2026-11-26): 1.1 derives availability from the selected asset, 3.1 lists Linux-only
+    entries, and 3.2 keeps Install off until the folder picker lands. The mixed-catalog strings,
+    mocks and tests from the original completion still hold.
 - [ ] 2.6 Run focused Linux install fixtures and a packaged Linux acceptance with at least one
   native port built from the user's own files. Record the evidence separately from Windows
   acceptance.
 
-- [ ] 2.7 **Linux folder and file pickers (acceptance blocker, documented 2026-11-22).** The setup
+- [x] 2.7 **Linux folder and file pickers (acceptance blocker, documented 2026-11-22).** The setup
   modal's **Escolher pasta** does nothing on Linux, so a native install cannot choose its
   destination and **Iniciar instalação** stays unavailable.
   - Symptom: with `diablo-devilutionx` (Diablo, 1.5.5) and `diablo-iii-reaper-of-souls-...-sanctuaryport`
@@ -139,6 +165,14 @@ table). Tasks 2.2, 2.4 and 2.5 were reopened, 1.7 was superseded, and sections 3
     available and a clear message when the picker cannot open. Never start an install with an empty
     parent folder.
   - Status: documented only, deliberately not fixed yet. It blocks 2.6 native acceptance.
+  - Completion (2026-11-26): the app injects a `PortFilePicker` into `ports_pick_parent`,
+    `ports_pick_supplied` and `ports_pick_executable`. On Linux it uses the Tauri dialog plugin
+    (desktop portal/native dialog); Windows keeps its system dialogs. The setup modal adds a
+    typed-path fallback and a clear message when the picker cannot open, and Start still requires
+    a non-empty parent. The temporary "folder picker unavailable" block is gone, so a reviewed
+    native entry is installable again. Tests: `accepts a typed parent folder when the picker
+    cannot open`, `offers only the extracted folder on Linux`; native dialog behavior belongs to
+    the 2.6 packaged run.
 
 ## 3. Review fixes (2026-11-24)
 
@@ -175,31 +209,59 @@ unchanged (D7).
     `best_by_architecture`; when nothing is installable it still reports the problem on the
     best-ranked file, so the existing error messages and Windows tests are unchanged. Test:
     `an_installable_format_wins_over_the_best_ranked_one`.
-- [ ] 3.5 After zip/7z extraction on Linux apply the recorded zip mode and set `0o755` on the
+- [x] 3.5 After zip/7z extraction on Linux apply the recorded zip mode and set `0o755` on the
   registered executable (D11). Test: end-to-end runner install of a zip and a 7z Linux port whose
   binary has no recorded execute bit.
+  - Completion (2026-11-26): `extract_port_asset_to_dir` applies a zip entry's recorded Unix mode
+    (masked to `0o777`, no setuid/setgid/sticky) during a Linux port install; the shared
+    extractor keeps the platform default. The runner sets `0o755` on the executable it registers,
+    covering the preferred, picked and fallback paths. 7z records no mode, so it gets the default
+    plus the registration bit. Tests: `a_port_zip_keeps_its_recorded_unix_mode`,
+    `a_linux_zip_port_without_a_recorded_mode_registers` and
+    `a_linux_7z_port_without_a_recorded_mode_registers` (both with `SystemExecutableIdentity`).
 - [ ] 3.6 Match preferred executables case-insensitively on Linux and fall back to the single
   installed AppImage/bare executable (D12, confirm first). Test: a versioned, mixed-case AppImage
   name registers without `AwaitingExecutable`.
 - [ ] 3.7 Make the overlay's `launcher_executable` and `gameplay_executables` per platform, reading
   the old scalar fields as Windows (D13, confirm the schema first). Test: an overlay with
   `Lantern.exe` does not affect a Linux install or its playtime tracking.
-- [ ] 3.8 Add the Linux-review mark to overlay recipes and block unreviewed guided recipes and
+- [x] 3.8 Add the Linux-review mark to overlay recipes and block unreviewed guided recipes and
   package-only slots in availability, not only at plan time (D14, D5; closes 2.3 with the
   extractor rule). Test: a Windows-authored recipe is blocked in the catalog on Linux with the
   not-reviewed reason; a package-only slot is blocked with the console-extraction reason.
-- [ ] 3.9 Make `detect_asset_type`, `SUPPORTED_LINUX_FORMATS` and `linux_asset::kind` agree on
+  - Completion (2026-11-26): the overlay entry gains `linux_reviewed` and an overlay setup slot
+    gains `packages_only` (schema 1, both default false). Availability reports `notReviewed` for a
+    required guided recipe without the mark and `consoleExtraction` for a required package-only
+    slot; the plan refuses the package-only slot on Linux and the setup modal hides package mode
+    there. Tests: `the_overlay_marks_linux_review_and_package_only_slots`,
+    `a_guided_linux_recipe_needs_a_review_and_a_package_only_slot_is_blocked`,
+    `linux_refuses_a_package_only_slot` and the UI's `offers only the extracted folder on Linux`.
+- [x] 3.9 Make `detect_asset_type`, `SUPPORTED_LINUX_FORMATS` and `linux_asset::kind` agree on
   `.run`, and recognize extensionless and `.x86_64` bare executables (D8). Test per format.
+  - Completion (2026-11-26): `BARE_EXECUTABLE_SUFFIXES` (core) maps architecture suffixes such as
+    `x86_64` to `bin` for selection; an extensionless asset is a bare executable only when the
+    recipe names it as a Linux preferred executable. `detect_asset_type` rejects `.run`, accepts
+    the same suffixes and sniffs ELF/PE/Mach-O for names without a known extension;
+    `linux_asset::kind` accepts the suffixes and still refuses `.run`. Tests:
+    `linux_bare_executable_names_need_no_declared_format`,
+    `native_linux_binaries_are_bare_executables` and
+    `linux_formats_split_into_executables_and_archives`.
 - [ ] 3.10 **Decision needed (D16).** Map Linux `config` to `$XDG_CONFIG_HOME` and `data`/
   `localData` to `$XDG_DATA_HOME` in `CopyRoots::host` and `UserDataRoots::host`; Windows
   unchanged. Test with the `XDG_*` variables set and unset.
 - [ ] 3.11 **Decision needed (D17).** Compare only device + inode in the Linux launch identity and
   check the execute bit separately; update the identity sentence in `docs/pc-ports.md`. Test: an
   in-place rewrite, `touch` and `chmod` keep the entry launchable; a replaced file asks for repair.
-- [ ] 3.12 Remove the duplicated `#[cfg(not(any(windows, target_os = "linux")))]` block in
+- [x] 3.12 Remove the duplicated `#[cfg(not(any(windows, target_os = "linux")))]` block in
   `SystemExecutableIdentity::identity` (`crates/platform/src/ports/job_runner.rs`) and record the
   Linux PC ports scope in `docs/linux-verification.md`. Check: `cargo check` for a target that is
   neither Windows nor Linux compiles that function.
+  - Completion (2026-11-26): the duplicate block is gone and
+    `docs/linux-verification.md` records what the automated suites cover and what the native
+    packaged run (2.6/2.7) still owes. The full crate cannot be checked for a third target on this
+    host (`aws-lc-sys` compiles its C sources against the host headers and fails for FreeBSD), so
+    the exact cfg shape was compiled standalone with `rustc --target x86_64-unknown-freebsd`; it
+    emits metadata without errors.
 
 ## 4. Artifacts and archive
 

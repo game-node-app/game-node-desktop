@@ -65,6 +65,7 @@ function entry(overrides: Partial<PortEntryView> & { catalogId: string }): PortE
     noAssetReason: null,
     installable: true,
     installBlockReason: null,
+    availability: 'native',
     art: { capsule: true, hero: true },
     project: null,
     source: null,
@@ -133,6 +134,7 @@ function makeEntries(): PortEntryView[] {
       version: '2.0.0-alpha.3',
       installable: false,
       installBlockReason: 'noVerifiedRelease',
+      availability: 'blocked',
     }),
     entry({
       catalogId: 'qcat_distant',
@@ -142,6 +144,7 @@ function makeEntries(): PortEntryView[] {
       withdrawn: true,
       installable: false,
       installBlockReason: 'withdrawn',
+      availability: 'blocked',
     }),
     entry({
       catalogId: 'qcat_emberfall',
@@ -159,6 +162,7 @@ function makeEntries(): PortEntryView[] {
       noAssetReason: 'installerOnly',
       installable: false,
       installBlockReason: 'installerOnly',
+      availability: 'blocked',
       art: { capsule: false, hero: false },
     }),
   ];
@@ -282,10 +286,18 @@ describe('Ports catalog', () => {
         supportedOS: ['windows'],
         installable: false,
         installBlockReason: 'windowsOnly',
+        availability: 'blocked',
       }),
       entry({
         catalogId: 'qcat_native',
         supportedOS: ['linux'],
+      }),
+      entry({
+        catalogId: 'qcat_noasset',
+        supportedOS: ['linux'],
+        installable: false,
+        installBlockReason: 'noLinuxAsset',
+        availability: 'blocked',
       }),
     ];
     ports.preferences.filters.platform = 'nativeLinux';
@@ -293,6 +305,9 @@ describe('Ports catalog', () => {
 
     expect(screen.getByTestId('port-tile-qcat_linux')).toBeInTheDocument();
     expect(screen.getByTestId('port-tile-qcat_native')).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('port-tile-qcat_noasset'),
+    ).not.toBeInTheDocument();
     expect(screen.queryByTestId('port-tile-qcat_windows')).not.toBeInTheDocument();
 
     // The control persists the choice; the host answers with a new snapshot.
@@ -307,8 +322,34 @@ describe('Ports catalog', () => {
     ports.preferences.filters.platform = 'windowsOnly';
     renderPorts(ports);
     expect(screen.getByTestId('port-tile-qcat_windows')).toBeInTheDocument();
+    expect(screen.getByTestId('port-tile-qcat_noasset')).toBeInTheDocument();
     expect(screen.queryByTestId('port-tile-qcat_linux')).not.toBeInTheDocument();
     expect(screen.queryByTestId('port-tile-qcat_native')).not.toBeInTheDocument();
+  });
+
+  it('marks an entry as declared until its release details load', () => {
+    const ports = makePorts();
+    ports.entries = ports.entries.map((item) =>
+      item.catalogId === 'qcat_beyond'
+        ? {
+            ...item,
+            installable: false,
+            installBlockReason: null,
+            availability: 'declared' as const,
+          }
+        : item,
+    );
+    renderPorts(ports);
+
+    fireEvent.click(screen.getByTestId('port-tile-qcat_beyond'));
+
+    expect(screen.getByTestId('port-detail-availability')).toHaveTextContent(
+      'Declared (loading release details)',
+    );
+    expect(screen.getByTestId('port-install-btn')).toBeDisabled();
+    expect(screen.getByTestId('port-install-reason')).toHaveTextContent(
+      'Checking the release files before enabling Install.',
+    );
   });
 
   it('hides the platform filter on Windows', async () => {
@@ -488,6 +529,7 @@ describe('Ports catalog', () => {
             supportedOS: ['windows'],
             installable: false,
             installBlockReason: 'windowsOnly' as const,
+            availability: 'blocked',
           }
         : item,
     );
@@ -500,27 +542,6 @@ describe('Ports catalog', () => {
       'This port is Windows-only. Proton support is future work.',
     );
     expect(screen.getByTestId('port-detail-platforms')).toHaveTextContent('Windows');
-  });
-
-  it('blocks Install on Linux until the folder picker exists', () => {
-    const ports = makePorts();
-    ports.entries = ports.entries.map((item) =>
-      item.catalogId === 'qcat_aster'
-        ? {
-            ...item,
-            installable: false,
-            installBlockReason: 'folderPickerUnavailable' as const,
-          }
-        : item,
-    );
-    renderPorts(ports);
-
-    fireEvent.click(screen.getByTestId('port-tile-qcat_aster'));
-
-    expect(screen.getByTestId('port-install-btn')).toBeDisabled();
-    expect(screen.getByTestId('port-install-reason')).toHaveTextContent(
-      'The Linux folder picker is not available yet, so Install is disabled.',
-    );
   });
 
   it('lists guided requirements with accepted versions, optional slots and the package option', async () => {

@@ -86,15 +86,11 @@ pub fn build(input: ViewInput<'_>) -> PortsView {
         .iter()
         .filter(|entry| lists_entry(entry, input.platform))
         .map(|entry| {
-            let facts = input
-                .facts
-                .get(&entry.catalog_id)
-                .cloned()
-                .unwrap_or_default();
+            let facts = input.facts.get(&entry.catalog_id);
             entry_view(
                 entry,
                 installed_keys.get(&entry.catalog_id).cloned(),
-                &facts,
+                facts,
                 input.platform,
             )
         })
@@ -148,11 +144,12 @@ pub fn catalog_status(status: CatalogStatus) -> PortCatalogStatus {
     }
 }
 
-/// One merged catalog entry as the UI shows it.
+/// One merged catalog entry as the UI shows it. `facts` is `None` until the lazy release details
+/// have loaded, which is what makes the Linux entry `declared` instead of `native` (design D1).
 pub fn entry_view(
     entry: &CatalogEntry,
     installed_registration_key: Option<String>,
-    facts: &EntryFacts,
+    facts: Option<&EntryFacts>,
     platform: gamenode_core::ports::view::PortPlatform,
 ) -> PortEntryView {
     let pinned = entry
@@ -167,38 +164,66 @@ pub fn entry_view(
             .as_ref()
             .map(|release| release.version.clone())
     });
-    let withdrawn = !entry.withdrawn.is_empty() || facts.withdrawn;
-    let no_asset_reason = facts.no_asset_reason;
-    use gamenode_core::ports::view::PortPlatform;
+    let withdrawn = !entry.withdrawn.is_empty() || facts.is_some_and(|facts| facts.withdrawn);
+    use gamenode_core::ports::view::{PortAvailability, PortPlatform};
+    let no_asset_reason = facts.and_then(|facts| facts.no_asset_reason);
     let supported = match platform {
         PortPlatform::Windows => entry.supports_windows(),
         PortPlatform::Linux => entry.supports_linux(),
         PortPlatform::Macos => false,
     };
-    // Design D9: Linux has no folder or file picker until task 2.7, so the setup could never choose
-    // the folder an install needs. Until it lands, a Linux build offers no enabled Install.
-    let picker_unavailable = matches!(platform, PortPlatform::Linux);
-    // The detail-derived reason comes from the Windows asset selection. Until the equivalent
-    // Linux fact is computed (1.1), a Linux build trusts the declared platform and lets the plan
-    // refuse a release without a usable asset.
-    let asset_reason = (platform == PortPlatform::Windows)
-        .then_some(no_asset_reason)
-        .flatten();
-    let installable = supported
-        && !withdrawn
-        && (verified || pinned.is_some())
-        && asset_reason.is_none()
-        && !picker_unavailable;
-    let install_block_reason = if !supported {
-        Some(PortInstallBlockReason::WindowsOnly)
+    let has_release = verified || pinned.is_some();
+    // Windows keeps its listing-time optimism (design D7): Install is available from the listing
+    // and the loaded detail can only turn it off. Linux needs the release assets, so it starts
+    // `declared` and only a loaded detail can confirm `native` or `blocked` (design D1).
+    let (availability, installable, install_block_reason) = if !supported {
+        (
+            PortAvailability::Blocked,
+            false,
+            Some(PortInstallBlockReason::WindowsOnly),
+        )
+    } else if platform == PortPlatform::Windows {
+        let installable = !withdrawn && has_release && no_asset_reason.is_none();
+        let reason = if withdrawn {
+            Some(PortInstallBlockReason::Withdrawn)
+        } else if !has_release {
+            Some(PortInstallBlockReason::NoVerifiedRelease)
+        } else {
+            no_asset_reason.map(PortInstallBlockReason::from)
+        };
+        (
+            if installable {
+                PortAvailability::Native
+            } else {
+                PortAvailability::Blocked
+            },
+            installable,
+            reason,
+        )
+    } else if facts.is_none() {
+        (PortAvailability::Declared, false, None)
+    } else if let Some(reason) = no_asset_reason {
+        (
+            PortAvailability::Blocked,
+            false,
+            Some(PortInstallBlockReason::from(reason)),
+        )
     } else if withdrawn {
-        Some(PortInstallBlockReason::Withdrawn)
-    } else if !verified && pinned.is_none() {
-        Some(PortInstallBlockReason::NoVerifiedRelease)
-    } else if picker_unavailable {
-        Some(PortInstallBlockReason::FolderPickerUnavailable)
+        (
+            PortAvailability::Blocked,
+            false,
+            Some(PortInstallBlockReason::Withdrawn),
+        )
+    } else if !has_release {
+        (
+            PortAvailability::Blocked,
+            false,
+            Some(PortInstallBlockReason::NoVerifiedRelease),
+        )
+    } else if let Some(reason) = linux_recipe_block(entry) {
+        (PortAvailability::Blocked, false, Some(reason))
     } else {
-        asset_reason.map(PortInstallBlockReason::from)
+        (PortAvailability::Native, true, None)
     };
     PortEntryView {
         catalog_id: entry.catalog_id.clone(),
@@ -216,6 +241,7 @@ pub fn entry_view(
         no_asset_reason,
         installable,
         install_block_reason,
+        availability,
         art: art_view(entry),
         project: project_link(entry),
         // The upstream model has no original-game URL, so the optional Source row stays empty.
@@ -229,6 +255,24 @@ pub fn entry_view(
         requirements: setup_slots(entry),
         installed_registration_key,
     }
+}
+
+/// Design D5/D14: a required guided slot runs on Linux only when the overlay reviewed the recipe.
+/// A slot with no direct input path needs the Windows console extractor and cannot run at all.
+fn linux_recipe_block(entry: &CatalogEntry) -> Option<PortInstallBlockReason> {
+    let required = entry
+        .launcher
+        .setup_files
+        .iter()
+        .filter(|slot| slot.required)
+        .collect::<Vec<_>>();
+    if required.is_empty() {
+        return None;
+    }
+    if required.iter().any(|slot| slot.packages_only) {
+        return Some(PortInstallBlockReason::ConsoleExtraction);
+    }
+    (!entry.linux_reviewed).then_some(PortInstallBlockReason::NotReviewed)
 }
 
 /// The setup slots of a merged recipe, in recipe order.
@@ -687,10 +731,10 @@ fn no_asset_reason(
     };
     match select_asset_for(platform, entry, release) {
         Ok(_) => PortNoAssetReason::NoExecutable,
-        Err(gamenode_core::ports::plan::PlanError::NoWindowsAsset)
-        | Err(gamenode_core::ports::plan::PlanError::NoLinuxAsset) => {
+        Err(gamenode_core::ports::plan::PlanError::NoWindowsAsset) => {
             PortNoAssetReason::NoWindowsAsset
         }
+        Err(gamenode_core::ports::plan::PlanError::NoLinuxAsset) => PortNoAssetReason::NoLinuxAsset,
         Err(gamenode_core::ports::plan::PlanError::NoMatchingAsset { .. })
         | Err(gamenode_core::ports::plan::PlanError::NoChecksum) => PortNoAssetReason::MissingAsset,
         Err(gamenode_core::ports::plan::PlanError::UnknownAssetFormat { .. })
@@ -845,7 +889,7 @@ mod tests {
         AcceptedHash, CatalogProject, HashAlgorithm, LauncherRecipe, PreferredExecutables,
         ReleaseScan, ScanVerdict, SetupFile, VerifiedRelease, WithdrawnRelease,
     };
-    use gamenode_core::ports::view::PortPlatform;
+    use gamenode_core::ports::view::{PortAvailability, PortPlatform};
 
     fn entry() -> CatalogEntry {
         CatalogEntry {
@@ -1062,7 +1106,7 @@ mod tests {
         let view = entry_view(
             &withdrawn,
             None,
-            &EntryFacts::default(),
+            Some(&EntryFacts::default()),
             gamenode_core::ports::view::PortPlatform::Windows,
         );
         assert_eq!(
@@ -1073,7 +1117,7 @@ mod tests {
         let view = entry_view(
             &entry(),
             None,
-            &facts,
+            Some(&facts),
             gamenode_core::ports::view::PortPlatform::Windows,
         );
         assert_eq!(
@@ -1398,7 +1442,7 @@ mod tests {
         let view = entry_view(
             &entry,
             None,
-            &facts,
+            Some(&facts),
             gamenode_core::ports::view::PortPlatform::Windows,
         );
         assert!(!view.installable);
@@ -1409,37 +1453,135 @@ mod tests {
     }
 
     #[test]
-    fn linux_install_waits_for_the_folder_picker() {
+    fn linux_per_platform_install_availability() {
         use gamenode_core::ports::view::PortPlatform;
 
         // The fixture declares Windows only.
         let view = entry_view(
             &entry(),
             None,
-            &EntryFacts::default(),
+            Some(&EntryFacts::default()),
             PortPlatform::Windows,
         );
         assert!(view.installable);
         assert_eq!(view.install_block_reason, None);
 
-        let view = entry_view(&entry(), None, &EntryFacts::default(), PortPlatform::Linux);
+        let view = entry_view(
+            &entry(),
+            None,
+            Some(&EntryFacts::default()),
+            PortPlatform::Linux,
+        );
         assert!(!view.installable);
         assert_eq!(
             view.install_block_reason,
             Some(PortInstallBlockReason::WindowsOnly)
         );
 
-        // A native Linux entry is listed, but Install stays off until task 2.7 lands the picker.
+        // A reviewed native Linux entry with its asset is installable now that 2.7 has a picker.
         let mut native = entry();
         native.supported_os = vec!["linux".into()];
-        let view = entry_view(&native, None, &EntryFacts::default(), PortPlatform::Linux);
-        assert!(
-            !view.installable,
-            "no enabled Install without a folder picker"
+        native.linux_reviewed = true;
+        let view = entry_view(
+            &native,
+            None,
+            Some(&EntryFacts::default()),
+            PortPlatform::Linux,
         );
+        assert!(view.installable);
+        assert_eq!(view.install_block_reason, None);
+    }
+
+    #[test]
+    fn linux_is_declared_until_the_release_details_load() {
+        let mut native = entry();
+        native.supported_os = vec!["linux".into()];
+        native.linux_reviewed = true;
+
+        let view = entry_view(&native, None, None, PortPlatform::Linux);
+        assert_eq!(view.availability, PortAvailability::Declared);
+        assert!(!view.installable);
+        assert_eq!(view.install_block_reason, None);
+
+        let view = entry_view(
+            &native,
+            None,
+            Some(&EntryFacts::default()),
+            PortPlatform::Linux,
+        );
+        assert_eq!(view.availability, PortAvailability::Native);
+        assert!(view.installable);
+        assert_eq!(view.install_block_reason, None);
+    }
+
+    #[test]
+    fn a_declared_linux_entry_without_a_linux_asset_is_blocked() {
+        let mut native = entry();
+        native.supported_os = vec!["linux".into()];
+        let facts = EntryFacts {
+            no_asset_reason: Some(PortNoAssetReason::NoLinuxAsset),
+            withdrawn: false,
+        };
+
+        let view = entry_view(&native, None, Some(&facts), PortPlatform::Linux);
+        assert_eq!(view.availability, PortAvailability::Blocked);
         assert_eq!(
             view.install_block_reason,
-            Some(PortInstallBlockReason::FolderPickerUnavailable)
+            Some(PortInstallBlockReason::NoLinuxAsset)
+        );
+        assert!(!view.installable);
+    }
+
+    #[test]
+    fn windows_stays_optimistic_before_the_details_load() {
+        let view = entry_view(&entry(), None, None, PortPlatform::Windows);
+        assert!(view.installable);
+        assert_eq!(view.availability, PortAvailability::Native);
+        assert_eq!(view.install_block_reason, None);
+    }
+
+    #[test]
+    fn a_guided_linux_recipe_needs_a_review_and_a_package_only_slot_is_blocked() {
+        let mut guided = entry();
+        guided.supported_os = vec!["linux".into()];
+        guided.linux_reviewed = false;
+
+        let view = entry_view(
+            &guided,
+            None,
+            Some(&EntryFacts::default()),
+            PortPlatform::Linux,
+        );
+        assert_eq!(view.availability, PortAvailability::Blocked);
+        assert_eq!(
+            view.install_block_reason,
+            Some(PortInstallBlockReason::NotReviewed)
+        );
+
+        guided.linux_reviewed = true;
+        let view = entry_view(
+            &guided,
+            None,
+            Some(&EntryFacts::default()),
+            PortPlatform::Linux,
+        );
+        assert!(
+            view.installable,
+            "a reviewed recipe with a direct folder choice can install"
+        );
+        assert_eq!(view.install_block_reason, None);
+
+        guided.launcher.setup_files[0].packages_only = true;
+        let view = entry_view(
+            &guided,
+            None,
+            Some(&EntryFacts::default()),
+            PortPlatform::Linux,
+        );
+        assert_eq!(view.availability, PortAvailability::Blocked);
+        assert_eq!(
+            view.install_block_reason,
+            Some(PortInstallBlockReason::ConsoleExtraction)
         );
     }
 

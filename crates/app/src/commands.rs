@@ -2808,24 +2808,105 @@ pub async fn ports_detail(
     Ok(engine.ports_detail(catalog_id).await?)
 }
 
+/// The picker the port setup uses. Windows keeps its system dialogs; Linux uses the Tauri dialog,
+/// which goes through the desktop portal or an equivalent native dialog (task 2.7).
+fn port_file_picker(
+    app: &tauri::AppHandle,
+) -> std::sync::Arc<dyn gamenode_platform::installations::PortFilePicker> {
+    #[cfg(target_os = "linux")]
+    {
+        std::sync::Arc::new(tauri_file_picker::TauriFilePicker { app: app.clone() })
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = app;
+        std::sync::Arc::new(gamenode_platform::installations::PlatformFilePicker)
+    }
+}
+
+/// Linux pickers through the Tauri dialog plugin. The blocking calls run on the installer's
+/// worker thread, never the main thread.
+#[cfg(target_os = "linux")]
+mod tauri_file_picker {
+    use gamenode_core::drm_free::LocalError;
+    use gamenode_platform::installations::PortFilePicker;
+    use tauri_plugin_dialog::{DialogExt, FilePath};
+
+    pub struct TauriFilePicker {
+        pub app: tauri::AppHandle,
+    }
+
+    fn path(value: FilePath) -> Result<String, LocalError> {
+        value
+            .into_path()
+            .map(|path| path.to_string_lossy().into_owned())
+            .map_err(|error| LocalError::Failed(error.to_string()))
+    }
+
+    impl PortFilePicker for TauriFilePicker {
+        fn folder(&self, initial: Option<&str>) -> Result<Option<String>, LocalError> {
+            let mut dialog = self.app.dialog().file();
+            if let Some(initial) = initial.filter(|path| !path.trim().is_empty()) {
+                dialog = dialog.set_directory(initial);
+            }
+            dialog.blocking_pick_folder().map(path).transpose()
+        }
+
+        fn file(
+            &self,
+            extensions: &[String],
+            initial: Option<&str>,
+        ) -> Result<Option<String>, LocalError> {
+            let mut dialog = self.app.dialog().file();
+            if let Some(initial) = initial.filter(|path| !path.trim().is_empty()) {
+                dialog = dialog.set_directory(initial);
+            }
+            let extensions = extensions
+                .iter()
+                .map(|extension| extension.trim().trim_start_matches('.'))
+                .filter(|extension| !extension.is_empty())
+                .collect::<Vec<_>>();
+            if !extensions.is_empty() {
+                dialog = dialog.add_filter("Supported files", &extensions);
+            }
+            dialog.blocking_pick_file().map(path).transpose()
+        }
+
+        fn executable(&self, initial: Option<&str>) -> Result<Option<String>, LocalError> {
+            let mut dialog = self.app.dialog().file();
+            if let Some(initial) = initial.filter(|path| !path.trim().is_empty()) {
+                dialog = dialog.set_directory(initial);
+            }
+            // A Linux executable often has no extension, so the picker accepts any file.
+            dialog.blocking_pick_file().map(path).transpose()
+        }
+    }
+}
+
 /// Native parent-folder picker. Returns `None` when the user cancels.
 #[tauri::command]
 pub async fn ports_pick_parent(
+    app: tauri::AppHandle,
     engine: tauri::State<'_, Engine>,
     initial_folder: Option<String>,
 ) -> Result<Option<String>, PortCommandError> {
     require_ports(&engine)?;
-    Ok(engine.ports_pick_parent(initial_folder).await?)
+    Ok(engine
+        .ports_pick_parent(initial_folder, port_file_picker(&app))
+        .await?)
 }
 
 /// Native picker plus host validation of one guided-setup slot.
 #[tauri::command]
 pub async fn ports_pick_supplied(
+    app: tauri::AppHandle,
     engine: tauri::State<'_, Engine>,
     request: crate::engine::pc_ports::PortPickSuppliedRequest,
 ) -> Result<Option<crate::engine::pc_ports::PortSuppliedPick>, PortCommandError> {
     require_ports(&engine)?;
-    Ok(engine.ports_pick_supplied(request).await?)
+    Ok(engine
+        .ports_pick_supplied(request, port_file_picker(&app))
+        .await?)
 }
 
 /// Starts a background install. Returns the job id, or `None` when the request was refused.
@@ -2883,11 +2964,14 @@ pub async fn ports_set_preferences(
 /// Follow-up for a completed install whose preferred executable is missing.
 #[tauri::command]
 pub async fn ports_pick_executable(
+    app: tauri::AppHandle,
     engine: tauri::State<'_, Engine>,
     job_id: String,
 ) -> Result<Option<String>, PortCommandError> {
     require_ports(&engine)?;
-    Ok(engine.ports_pick_executable(job_id).await?)
+    Ok(engine
+        .ports_pick_executable(job_id, port_file_picker(&app))
+        .await?)
 }
 
 /// The Settings Tools panel's helper-tools and download-cache block.

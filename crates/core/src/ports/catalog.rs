@@ -69,6 +69,8 @@ pub struct CatalogEntry {
     pub license: Option<String>,
     /// An edition note from the overlay, such as `Requires the Director's Cut edition`.
     pub edition: Option<String>,
+    /// True when the overlay marks this guided recipe as reviewed for Linux (design D14).
+    pub linux_reviewed: bool,
     /// A release version pinned by the overlay, installed instead of the verified one.
     pub pinned_release: Option<String>,
     /// The launch executable named by the overlay, relative to the install folder.
@@ -330,6 +332,9 @@ pub struct SetupFile {
     pub hash_file: Option<String>,
     /// Overlay only: the slot can be produced by extracting console packages (design D8).
     pub from_package: Option<FromPackage>,
+    /// Overlay only: the slot has no direct input path and needs the console-package extractor,
+    /// so a Linux install cannot fill it (design D5, D14).
+    pub packages_only: bool,
 }
 
 impl Default for SetupFile {
@@ -350,6 +355,7 @@ impl Default for SetupFile {
             accepted: Vec::new(),
             hash_file: None,
             from_package: None,
+            packages_only: false,
         }
     }
 }
@@ -442,6 +448,11 @@ impl SetupFile {
             && package.extractor.trim().is_empty()
         {
             return Err(RecipeError::Unnamed {
+                slot: self.id.clone(),
+            });
+        }
+        if self.packages_only && self.from_package.is_none() {
+            return Err(RecipeError::PackageOnlyWithoutPackage {
                 slot: self.id.clone(),
             });
         }
@@ -779,6 +790,8 @@ pub enum RecipeError {
     Unnamed { slot: String },
     #[error("setup file {slot:?} is a file slot and cannot be produced from packages")]
     PackageOnFile { slot: String },
+    #[error("setup file {slot:?} has no direct input path but names no package extractor")]
+    PackageOnlyWithoutPackage { slot: String },
 }
 
 /// True when `path` is a relative path that cannot escape its base folder.

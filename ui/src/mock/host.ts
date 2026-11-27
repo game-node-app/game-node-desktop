@@ -1617,6 +1617,7 @@ function createMockPortEntries(): PortEntryView[] {
       noAssetReason: null,
       installable: true,
       installBlockReason: null,
+      availability: 'native',
       art: { capsule: true, hero: true },
       project: {
         label: 'Aster Vale Revival',
@@ -1675,6 +1676,7 @@ function createMockPortEntries(): PortEntryView[] {
       noAssetReason: null,
       installable: true,
       installBlockReason: null,
+      availability: 'native',
       art: { capsule: true, hero: false },
       project: {
         label: 'Beyond the Pines port',
@@ -1701,6 +1703,7 @@ function createMockPortEntries(): PortEntryView[] {
       noAssetReason: null,
       installable: false,
       installBlockReason: 'noVerifiedRelease',
+      availability: 'blocked',
       art: { capsule: false, hero: true },
       project: {
         label: 'Clockwork Harbor nightly builds',
@@ -1727,6 +1730,7 @@ function createMockPortEntries(): PortEntryView[] {
       noAssetReason: null,
       installable: false,
       installBlockReason: 'withdrawn',
+      availability: 'blocked',
       art: { capsule: false, hero: false },
       project: {
         label: 'Distant Skies recompilation',
@@ -1753,6 +1757,7 @@ function createMockPortEntries(): PortEntryView[] {
       noAssetReason: null,
       installable: true,
       installBlockReason: null,
+      availability: 'native',
       art: { capsule: true, hero: true },
       project: {
         label: 'Emberfall Iron Trail',
@@ -1782,6 +1787,7 @@ function createMockPortEntries(): PortEntryView[] {
       noAssetReason: 'installerOnly',
       installable: false,
       installBlockReason: 'installerOnly',
+      availability: 'blocked',
       art: { capsule: true, hero: false },
       project: {
         label: 'Glass Garden Enhanced',
@@ -1808,6 +1814,7 @@ function createMockPortEntries(): PortEntryView[] {
       noAssetReason: null,
       installable: true,
       installBlockReason: null,
+      availability: 'native',
       art: { capsule: false, hero: false },
       project: {
         label: 'Hollow Mountain Deep Delve',
@@ -1885,13 +1892,15 @@ function createMockPortsView(
   platform: 'windows' | 'linux',
 ): PortsView {
   const entries = createMockPortEntries();
-  // A Linux build cannot choose an install folder until task 2.7 lands (design D9), and a
-  // Windows-only entry is blocked there anyway, so the fixture never offers Install on Linux.
+  // A Windows-only entry stays visible but blocked on Linux; a Linux entry can install now that
+  // the picker exists (tasks 2.7, 3.2).
   if (platform === 'linux') {
     for (const entry of entries) {
       const linux = entry.supportedOS.some((os) => os.trim().toLowerCase() === 'linux');
-      entry.installable = false;
-      entry.installBlockReason = linux ? 'folderPickerUnavailable' : 'windowsOnly';
+      if (!linux) {
+        entry.installable = false;
+        entry.installBlockReason = 'windowsOnly';
+      }
     }
   }
   const unavailable = scenario === 'unavailable';

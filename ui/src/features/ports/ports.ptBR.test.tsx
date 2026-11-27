@@ -58,6 +58,7 @@ function makeEntry(overrides: Partial<PortEntryView> & { catalogId: string }): P
     noAssetReason: null,
     installable: true,
     installBlockReason: null,
+    availability: 'native',
     art: { capsule: true, hero: true },
     project: null,
     source: null,

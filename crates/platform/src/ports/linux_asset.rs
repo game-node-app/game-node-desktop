@@ -15,13 +15,17 @@ pub enum LinuxAssetKind {
     Archive,
 }
 
-/// The install kind for a normalized Linux asset format.
+/// The install kind for a normalized Linux asset format. An architecture suffix such as
+/// `x86_64` names a bare executable, matching the selection rule (design D8).
 pub fn kind(format: &str) -> Option<LinuxAssetKind> {
     match format.trim().to_ascii_lowercase().as_str() {
         "appimage" | "bin" => Some(LinuxAssetKind::Executable),
         // Tar is classified here for the platform helper, but selection refuses it until the
         // in-process tar extractor lands.
         "tar" | "tar.gz" | "tgz" | "zip" | "7z" => Some(LinuxAssetKind::Archive),
+        other if gamenode_core::ports::plan::BARE_EXECUTABLE_SUFFIXES.contains(&other) => {
+            Some(LinuxAssetKind::Executable)
+        }
         _ => None,
     }
 }
@@ -51,8 +55,10 @@ mod tests {
     fn linux_formats_split_into_executables_and_archives() {
         assert_eq!(kind("AppImage"), Some(LinuxAssetKind::Executable));
         assert_eq!(kind(" bin "), Some(LinuxAssetKind::Executable));
+        assert_eq!(kind("x86_64"), Some(LinuxAssetKind::Executable));
         assert_eq!(kind("tar.gz"), Some(LinuxAssetKind::Archive));
         assert_eq!(kind("7z"), Some(LinuxAssetKind::Archive));
+        assert_eq!(kind("run"), None);
         assert_eq!(kind("deb"), None);
         assert_eq!(kind(""), None);
     }

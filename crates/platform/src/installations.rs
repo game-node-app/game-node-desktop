@@ -663,6 +663,48 @@ pub fn pick_file_with_extensions(
     pick_file_starting_at(false, Some(extensions), initial)
 }
 
+/// Native pickers used by the PC port installer.
+///
+/// Windows uses the system dialogs through [`PlatformFilePicker`]. Linux injects a Tauri dialog
+/// picker from the app, because the platform crate has no window handle (task 2.7).
+pub trait PortFilePicker: Send + Sync {
+    /// A folder, optionally starting at `initial`.
+    fn folder(&self, initial: Option<&str>) -> Result<Option<String>, LocalError>;
+    /// A file limited to `extensions` (empty accepts any file).
+    fn file(
+        &self,
+        extensions: &[String],
+        initial: Option<&str>,
+    ) -> Result<Option<String>, LocalError>;
+    /// An executable inside the port's install folder.
+    fn executable(&self, initial: Option<&str>) -> Result<Option<String>, LocalError>;
+}
+
+/// The system dialogs. Only Windows implements them; other platforms report `Unsupported`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PlatformFilePicker;
+
+impl PortFilePicker for PlatformFilePicker {
+    fn folder(&self, initial: Option<&str>) -> Result<Option<String>, LocalError> {
+        pick_folder_starting_at(initial)
+    }
+
+    fn file(
+        &self,
+        extensions: &[String],
+        initial: Option<&str>,
+    ) -> Result<Option<String>, LocalError> {
+        pick_file_with_extensions(extensions, initial)
+    }
+
+    fn executable(&self, initial: Option<&str>) -> Result<Option<String>, LocalError> {
+        match initial.filter(|folder| !folder.trim().is_empty()) {
+            Some(folder) => pick_executable_in(folder),
+            None => pick_executable(),
+        }
+    }
+}
+
 fn pick_file(executable: bool) -> Result<Option<String>, LocalError> {
     pick_file_starting_at(executable, None, None)
 }

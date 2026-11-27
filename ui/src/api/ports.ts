@@ -114,15 +114,20 @@ export type PortOperatingSystem = 'windows' | 'linux' | 'macos';
 export type PortNoAssetReason =
   | 'installerOnly'
   | 'noWindowsAsset'
+  | 'noLinuxAsset'
   | 'missingAsset'
   | 'noExecutable';
+
+/** How far the host has confirmed an entry's installability (design D1). */
+export type PortAvailability = 'declared' | 'native' | 'blocked';
 
 /** Why Install is unavailable for an entry. */
 export type PortInstallBlockReason =
   | 'windowsOnly'
   | 'withdrawn'
   | 'noVerifiedRelease'
-  | 'folderPickerUnavailable'
+  | 'notReviewed'
+  | 'consoleExtraction'
   | PortNoAssetReason;
 
 export type PortSetupKind = 'file' | 'folder';
@@ -217,6 +222,8 @@ export interface PortEntryView {
   /** Whether Install can start; the detail pane shows `installBlockReason` when false. */
   installable: boolean;
   installBlockReason: PortInstallBlockReason | null;
+  /** Declared, native or blocked on the running platform (design D1). */
+  availability: PortAvailability;
   art: PortArtView;
   /** The port project (repository or homepage). */
   project: PortLink | null;

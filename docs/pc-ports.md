@@ -141,6 +141,7 @@ Top level:
 | `license` | no | The port project's licence. The upstream listing has no licence field. |
 | `release` | no | A release version to install instead of the upstream verified one. It must match a release `version` exactly. |
 | `edition` | no | An edition note carried on the merged entry. The current detail pane does not render it yet. |
+| `linux_reviewed` | no | `true` marks a guided recipe as reviewed for Linux. A required recipe without it is blocked on Linux with the not-reviewed reason. Release-only entries need no review. Defaults to `false`. |
 | `hidden` | no | `true` removes the entry from the list. Defaults to `false`. |
 | `setup_file` | no | Replaces the upstream setup-file list. |
 
@@ -163,6 +164,7 @@ Top level:
 | `accepted` | no | Any one of these hashes accepts the choice: a table with `algo` (`sha256` or `sha1`), `value` (hex) and `label` (the dump's name). |
 | `hash_file` | no | Folder file the accepted hashes apply to. Defaults to the first `contains` entry. |
 | `from_package` | no | `{ extractor = "<id>", title_id = "...", needs_update = "..." }` lets console packages produce the folder. |
+| `packages_only` | no | `true` means the slot has no direct input path and needs the console-package extractor. Linux blocks the entry with the console-extraction reason. Defaults to `false`. |
 
 A slot uses exactly one of `destination`, `flag`, `positional` and `env`. With none of
 them the port asks for the choice itself; GameNode only validates it and passes nothing.
@@ -378,8 +380,8 @@ queued:
   system, then by architecture: x86-64 first, unknown next, anything else last. An asset
   without a declared operating system is not assumed to belong to the running platform.
   The detail pane, the setup modal and the malware confirmation use the same selection.
-  Only `zip`, `7z` and a bare `.exe` (or a Linux AppImage/bare executable) are
-  installable; an installer-only entry is listed but Install is unavailable.
+  Only `zip`, `7z`, `tar`/`tar.gz`/`tgz` and a bare `.exe` (or a Linux AppImage/bare
+  executable) are installable; an installer-only entry is listed but Install is unavailable.
 - The file needs a checksum. A file whose verified checksum changed upstream, or that a
   malware scan flagged, needs the explicit confirmations the modal asks for. With no
   checksum at all, the install cannot be planned.
@@ -652,29 +654,33 @@ What works on Linux:
 - The platform rule lives in the view: Linux lists Linux or Windows entries, so Linux-only
   entries appear and Windows-only entries stay visible and blocked with a Proton note
   (task 3.1).
-- Install is disabled on every Linux entry with a "folder picker unavailable" reason until
-  task 2.7 lands (task 3.2).
+- Availability starts `declared` from `supportedOS` and becomes `native` or `blocked` when
+  the release details load; a Linux entry whose release has no Linux asset is blocked with
+  its own reason, and the platform filter moves it to Windows-only (task 1.1).
+- Install is enabled for a reviewed native entry; the Linux folder and file pickers now use the
+  Tauri dialog plugin, with a typed-path fallback when no picker opens (task 2.7).
 - The detail pane, the setup modal and the malware confirmation select the platform's
   asset (task 3.3).
 - Asset selection filters to an installable format before ranking architecture, so an
-  unsupported tarball cannot win over an AppImage (task 3.4).
-- An AppImage or `.bin` asset is copied into the install folder, made executable and
-  registered (end-to-end runner test).
+  unsupported package format cannot win over an AppImage (task 3.4).
+- tar, tar.gz and tgz archives install on Linux with the same checks and mode handling as
+  zip/7z (task 2.1).
+- An AppImage, `.bin` or architecture-suffixed/extensionless executable is copied into the
+  install folder, made executable and registered (end-to-end runner test).
+- A zip or 7z Linux port installs and registers even when the archive records no execute
+  bit; a recorded zip mode is kept and the registered executable gets `0o755` (task 3.5).
+- `.run` is refused in all three format lists, and an extensionless asset is accepted only
+  when the recipe names it or its content is an executable (task 3.9).
+- Guided setup runs on Linux only for a recipe marked `linux_reviewed`; a required
+  package-only slot is blocked with the console-extraction reason, and the setup modal
+  offers only the extracted folder (tasks 2.3, 3.8).
 - The Windows PS4 package extractor is never run on Linux; a `Packages` source is refused
   at plan time.
 
 Known gaps:
 
-- Availability uses the declared `supportedOS`, not the release assets (task 1.1).
-- The folder and file pickers are Windows-only, so Install stays disabled on Linux
-  (task 2.7) and **Pick executable** cannot recover a missing executable.
-- Asset selection prefers an installable format, but tar archives are not supported yet
-  (task 2.1).
-- zip/7z installs fail launch validation because the extracted executable has no execute
-  bit (task 3.5).
 - Preferred executables match exactly and case-sensitively (task 3.6).
 - Overlay launcher and gameplay executables are not per platform (task 3.7).
-- Windows-authored guided recipes can run on Linux (tasks 2.3, 3.8).
 - `data` and `config` both map to `~/.config` and `localData` to `~/.local/share`; the
   proposed XDG mapping is pending (task 3.10).
 - The Linux launch identity includes size, mode and timestamps (task 3.11).

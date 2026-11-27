@@ -685,8 +685,12 @@ impl PortsService {
     }
 
     /// Opens the native parent-folder picker and remembers a picked folder. Blocking.
-    pub fn pick_parent(&self, initial: Option<&str>) -> Result<Option<String>, PortsError> {
-        let picked = gamenode_platform::installations::pick_folder_starting_at(initial)?;
+    pub fn pick_parent(
+        &self,
+        initial: Option<&str>,
+        picker: &dyn gamenode_platform::installations::PortFilePicker,
+    ) -> Result<Option<String>, PortsError> {
+        let picked = picker.folder(initial)?;
         if let Some(folder) = &picked {
             let mut preferences = self.config.store.preferences()?;
             preferences.last_parent = Some(folder.clone());
@@ -700,24 +704,13 @@ impl PortsService {
     pub fn pick_supplied(
         self: &Arc<Self>,
         request: &PortPickSuppliedRequest,
+        picker: &dyn gamenode_platform::installations::PortFilePicker,
     ) -> Result<Option<PortSuppliedPick>, PortsError> {
         self.wait_ready();
         let path = match request.kind {
-            PortSuppliedPickKind::File => {
-                gamenode_platform::installations::pick_file_with_extensions(
-                    &request.extensions,
-                    None,
-                )
-            }
-            PortSuppliedPickKind::Folder => {
-                gamenode_platform::installations::pick_folder_starting_at(None)
-            }
-            PortSuppliedPickKind::Package => {
-                gamenode_platform::installations::pick_file_with_extensions(
-                    &["pkg".to_owned()],
-                    None,
-                )
-            }
+            PortSuppliedPickKind::File => picker.file(&request.extensions, None),
+            PortSuppliedPickKind::Folder => picker.folder(None),
+            PortSuppliedPickKind::Package => picker.file(&["pkg".to_owned()], None),
         }?;
         let Some(path) = path else {
             return Ok(None);
@@ -858,7 +851,11 @@ impl PortsService {
     }
 
     /// The executable follow-up for a job whose recipe had no launchable file. Blocking.
-    pub fn pick_executable(&self, job_id: &str) -> Result<Option<String>, PortsError> {
+    pub fn pick_executable(
+        &self,
+        job_id: &str,
+        picker: &dyn gamenode_platform::installations::PortFilePicker,
+    ) -> Result<Option<String>, PortsError> {
         if !self.is_supported() {
             return Err(PortsError::Unsupported);
         }
@@ -880,7 +877,7 @@ impl PortsService {
             .install_folder
             .clone()
             .ok_or_else(|| PortsError::Invalid("the install has no folder yet".into()))?;
-        let Some(picked) = gamenode_platform::installations::pick_executable_in(&folder)? else {
+        let Some(picked) = picker.executable(Some(&folder))? else {
             return Ok(None);
         };
         let relative = relative_inside(&folder, &picked)?;
@@ -1764,24 +1761,28 @@ impl Engine {
     pub async fn ports_pick_parent(
         &self,
         initial_folder: Option<String>,
+        picker: std::sync::Arc<dyn gamenode_platform::installations::PortFilePicker>,
     ) -> Result<Option<String>, PortsError> {
         let Some(service) = self.ports_service() else {
             return Err(PortsError::Unsupported);
         };
-        tokio::task::spawn_blocking(move || service.pick_parent(initial_folder.as_deref()))
-            .await
-            .map_err(|_| PortsError::NotReady)?
+        tokio::task::spawn_blocking(move || {
+            service.pick_parent(initial_folder.as_deref(), picker.as_ref())
+        })
+        .await
+        .map_err(|_| PortsError::NotReady)?
     }
 
     /// Guided-setup picker and validation. Hashing runs on a worker thread and reports progress.
     pub async fn ports_pick_supplied(
         &self,
         request: PortPickSuppliedRequest,
+        picker: std::sync::Arc<dyn gamenode_platform::installations::PortFilePicker>,
     ) -> Result<Option<PortSuppliedPick>, PortsError> {
         let Some(service) = self.ports_service() else {
             return Err(PortsError::Unsupported);
         };
-        tokio::task::spawn_blocking(move || service.pick_supplied(&request))
+        tokio::task::spawn_blocking(move || service.pick_supplied(&request, picker.as_ref()))
             .await
             .map_err(|_| PortsError::NotReady)?
     }
@@ -1815,11 +1816,12 @@ impl Engine {
     pub async fn ports_pick_executable(
         &self,
         job_id: String,
+        picker: std::sync::Arc<dyn gamenode_platform::installations::PortFilePicker>,
     ) -> Result<Option<String>, PortsError> {
         let Some(service) = self.ports_service() else {
             return Err(PortsError::Unsupported);
         };
-        tokio::task::spawn_blocking(move || service.pick_executable(&job_id))
+        tokio::task::spawn_blocking(move || service.pick_executable(&job_id, picker.as_ref()))
             .await
             .map_err(|_| PortsError::NotReady)?
     }

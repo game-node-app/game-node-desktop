@@ -190,6 +190,7 @@ export const PortDetailPane: React.FC<PortDetailPaneProps> = ({ entry, onClose }
   const releaseWithdrawn = release?.withdrawn ?? entry.withdrawn;
   const releaseDate = formatPortDate(release?.releasedAt, locale);
   const blockReason = installBlockReasonText(entry.installBlockReason, t);
+  const declared = entry.availability === 'declared';
 
   return (
     <aside
@@ -292,6 +293,19 @@ export const PortDetailPane: React.FC<PortDetailPaneProps> = ({ entry, onClose }
               </span>
             </div>
           )}
+          <div
+            data-testid="port-detail-availability"
+            className="flex flex-wrap gap-1"
+          >
+            <span className="text-text-dimmed">{t('Ports::Availability')}</span>
+            <span className="min-w-0 break-words text-text-default">
+              {entry.availability === 'declared'
+                ? t('Ports::Declared (loading release details)')
+                : entry.availability === 'native'
+                  ? t('Ports::Native')
+                  : t('Ports::Blocked')}
+            </span>
+          </div>
           {detail?.developer && (
             <div className="flex flex-wrap gap-1">
               <span className="text-text-dimmed">{t('Ports::Developer')}</span>
@@ -521,7 +535,10 @@ export const PortDetailPane: React.FC<PortDetailPaneProps> = ({ entry, onClose }
               </button>
               {!entry.installable && (
                 <div data-testid="port-install-reason" className={reasonClass}>
-                  {blockReason ?? t('Ports::Install is unavailable for this entry.')}
+                  {blockReason ??
+                    (declared
+                      ? t('Ports::Checking the release files before enabling Install.')
+                      : t('Ports::Install is unavailable for this entry.'))}
                 </div>
               )}
             </>

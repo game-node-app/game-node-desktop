@@ -25,11 +25,19 @@ pub const EXTRACTED_SIZE_ESTIMATE: u64 = 2;
 pub const SUPPORTED_FORMATS: [&str; 3] = ["zip", "7z", "exe"];
 
 /// The native Linux formats the installer handles: an AppImage or bare executable is placed and
-/// marked executable, a zip or 7z archive is extracted. A package format (`.deb`, `.rpm`) is not
-/// an install input here; the recipe would have to name its own extractor, which is a separate
-/// review. Tar archives need the in-process tar extractor and stay unsupported until it lands, so
-/// selection refuses them explicitly instead of failing after the download.
-pub const SUPPORTED_LINUX_FORMATS: [&str; 4] = ["appimage", "zip", "7z", "bin"];
+/// marked executable, a zip, 7z or tar archive (optionally gzip-compressed) is extracted. A package
+/// format (`.deb`, `.rpm`) is not an install input here; the recipe would have to name its own
+/// extractor, which is a separate review.
+pub const SUPPORTED_LINUX_FORMATS: [&str; 7] =
+    ["appimage", "zip", "7z", "bin", "tar", "tar.gz", "tgz"];
+
+/// File-name suffixes that name a bare executable's architecture rather than a container format,
+/// such as Godot's `game.x86_64`. A release asset with one of these suffixes and no declared
+/// format is placed as a bare executable (`bin`). The same list is applied by the platform's
+/// `detect_asset_type` and `linux_asset::kind`, so selection and placement agree (design D8).
+pub const BARE_EXECUTABLE_SUFFIXES: [&str; 10] = [
+    "x86_64", "x86-64", "x86", "i386", "i686", "amd64", "aarch64", "arm64", "armv7", "armhf",
+];
 
 /// The bytes an install needs before it starts: the download, its extraction and the copies of
 /// supplied files.
@@ -235,14 +243,14 @@ pub fn select_asset_for(
         .iter()
         .copied()
         .filter(|asset| {
-            asset_format(asset).is_some_and(|format| formats.contains(&format.as_str()))
+            asset_format(entry, asset).is_some_and(|format| formats.contains(&format.as_str()))
         })
         .collect();
     if installable.is_empty() {
         // No candidate can be installed. Report the problem on the best-ranked one, which is the
         // file the old architecture-first order would have chosen, so the message stays specific.
         let asset = best_by_architecture(candidates.iter().copied()).ok_or(missing)?;
-        let format = asset_format(asset).ok_or_else(|| PlanError::UnknownAssetFormat {
+        let format = asset_format(entry, asset).ok_or_else(|| PlanError::UnknownAssetFormat {
             filename: asset.filename.clone(),
         })?;
         return Err(PlanError::UnsupportedFormat { format });
@@ -268,15 +276,52 @@ fn best_by_architecture<'a>(assets: impl Iterator<Item = &'a PortAsset>) -> Opti
     best
 }
 
-/// The asset's file format in lowercase, from its declared format or its file extension.
-fn asset_format(asset: &PortAsset) -> Option<String> {
-    asset.normalized_format().or_else(|| {
-        asset
-            .filename
-            .rsplit_once('.')
-            .map(|(_, extension)| extension.trim().to_ascii_lowercase())
-            .filter(|extension| !extension.is_empty())
-    })
+/// The asset's install format. A declared format wins; otherwise the file name decides: a known
+/// archive/executable extension is used as-is, an architecture suffix is a bare executable
+/// (`bin`), and an extensionless file is one only when the recipe names it as a preferred Linux
+/// executable. That last rule keeps arbitrary extensionless files from being mistaken for
+/// executables (design D8).
+fn asset_format(entry: &CatalogEntry, asset: &PortAsset) -> Option<String> {
+    if let Some(format) = asset.normalized_format() {
+        return Some(bare_suffix_format(format));
+    }
+    let name = file_name(&asset.filename);
+    let lower = name.to_ascii_lowercase();
+    if lower.ends_with(".tar.gz") {
+        return Some("tar.gz".to_string());
+    }
+    if lower.ends_with(".tgz") {
+        return Some("tgz".to_string());
+    }
+    match name.rsplit_once('.') {
+        Some((_, extension)) if !extension.trim().is_empty() => {
+            Some(bare_suffix_format(extension.trim().to_ascii_lowercase()))
+        }
+        _ => preferred_executable(entry, name).then(|| "bin".to_string()),
+    }
+}
+
+/// Architecture suffixes describe the executable, not a container, so they become `bin`.
+fn bare_suffix_format(format: String) -> String {
+    if BARE_EXECUTABLE_SUFFIXES.contains(&format.as_str()) {
+        "bin".to_string()
+    } else {
+        format
+    }
+}
+
+fn file_name(path: &str) -> &str {
+    path.rsplit(['/', '\\']).next().unwrap_or(path)
+}
+
+/// True when the recipe lists `filename` as a Linux executable it launches.
+fn preferred_executable(entry: &CatalogEntry, filename: &str) -> bool {
+    entry
+        .launcher
+        .preferred_executables
+        .linux
+        .iter()
+        .any(|preferred| file_name(preferred.trim()).eq_ignore_ascii_case(filename))
 }
 
 /// Everything the host knows before an install can be planned.
@@ -651,6 +696,12 @@ pub fn plan_install(request: &InstallPlanRequest) -> Result<PortInstallPlan, Pla
             slot: slot.id.clone(),
             reason: error.to_string(),
         })?;
+        if request.platform == PortPlatform::Linux && slot.packages_only {
+            return Err(PlanError::InvalidSlot {
+                slot: slot.id.clone(),
+                reason: "console package extraction is not available on Linux".into(),
+            });
+        }
         let placement = slot.placement().map_err(|error| PlanError::InvalidSlot {
             slot: slot.id.clone(),
             reason: error.to_string(),
@@ -776,7 +827,7 @@ pub fn plan_install(request: &InstallPlanRequest) -> Result<PortInstallPlan, Pla
         gameplay: roles.gameplay,
         launchers: roles.launchers,
     };
-    let format = asset_format(&asset).unwrap_or_default();
+    let format = asset_format(entry, &asset).unwrap_or_default();
 
     Ok(PortInstallPlan {
         platform: request.platform,
@@ -1000,35 +1051,64 @@ mod tests {
 
         for asset in &mut release.assets {
             if asset.is_linux() {
-                asset.filename = "bloodborne.tar.gz".into();
-                asset.format = Some("tar.gz".into());
+                asset.filename = "bloodborne.rpm".into();
+                asset.format = Some("rpm".into());
             }
         }
         assert_eq!(
             select_asset_for(PortPlatform::Linux, &entry(), &release),
             Err(PlanError::UnsupportedFormat {
-                format: "tar.gz".into()
+                format: "rpm".into()
             })
         );
     }
 
     #[test]
+    fn a_linux_tar_gz_release_plans_its_archive() {
+        use crate::ports::view::PortPlatform;
+        let mut entry = linux_entry();
+        entry.launcher.preferred_executables.linux = vec!["devilutionx".into()];
+        let release = PortRelease {
+            release_id: "rel".into(),
+            version: "1.5.5".into(),
+            released_at: 1,
+            assets: vec![PortAsset {
+                id: "linux".into(),
+                filename: "devilutionx-linux-x86_64.tar.gz".into(),
+                url: "https://example.com/devilutionx.tar.gz".into(),
+                os: Some("linux".into()),
+                architecture: Some("x86_64".into()),
+                format: Some("tar.gz".into()),
+                size: 2_000,
+                checksum: Some(format!("sha256:{}", digest('e'))),
+                ..PortAsset::default()
+            }],
+            ..PortRelease::default()
+        };
+        let mut request = request(entry, vec![release]);
+        request.platform = PortPlatform::Linux;
+        request.parent = "/home/player/Ports".into();
+        let plan = plan_install(&request).expect("a tar archive plan");
+        assert_eq!(plan.asset.format, "tar.gz");
+    }
+
+    #[test]
     fn an_installable_format_wins_over_the_best_ranked_one() {
         use crate::ports::view::PortPlatform;
-        // Both assets rank as x86_64; the tar is first upstream. Selection must skip it because
-        // tar is not installable and pick the AppImage (design D8).
+        // Both assets rank as x86_64; the deb is first upstream. Selection must skip it because a
+        // package format is not installable and pick the AppImage (design D8).
         let release = PortRelease {
             release_id: "rel".into(),
             version: "1.0.0".into(),
             released_at: 1,
             assets: vec![
                 PortAsset {
-                    id: "tar".into(),
-                    filename: "devilutionx-linux-x86_64.tar.gz".into(),
-                    url: "https://example.com/devilutionx.tar.gz".into(),
+                    id: "deb".into(),
+                    filename: "devilutionx-linux-x86_64.deb".into(),
+                    url: "https://example.com/devilutionx.deb".into(),
                     os: Some("linux".into()),
                     architecture: Some("x86_64".into()),
-                    format: Some("tar.gz".into()),
+                    format: Some("deb".into()),
                     size: 1_000,
                     checksum: Some(format!("sha256:{}", digest('a'))),
                     ..PortAsset::default()
@@ -1122,6 +1202,31 @@ mod tests {
     }
 
     #[test]
+    fn linux_refuses_a_package_only_slot() {
+        use crate::ports::view::PortPlatform;
+        let mut entry = linux_entry();
+        entry.launcher.setup_files = vec![crate::ports::catalog::SetupFile {
+            id: "game".into(),
+            label: "Game".into(),
+            kind: SetupKind::Folder,
+            from_package: Some(FromPackage {
+                extractor: "ps4-pkg".into(),
+                title_id: None,
+                needs_update: None,
+            }),
+            packages_only: true,
+            ..crate::ports::catalog::SetupFile::default()
+        }];
+        let mut request = request(entry, vec![linux_release()]);
+        request.platform = PortPlatform::Linux;
+        request.parent = "/home/player/Ports".into();
+        assert!(matches!(
+            plan_install(&request),
+            Err(PlanError::InvalidSlot { slot, .. }) if slot == "game"
+        ));
+    }
+
+    #[test]
     fn a_native_linux_release_plans_its_appimage() {
         let mut request = request(linux_entry(), vec![linux_release()]);
         request.platform = crate::ports::view::PortPlatform::Linux;
@@ -1138,6 +1243,62 @@ mod tests {
             plan.registration.executable.as_deref(),
             Some("devilutionx-linux-x86_64.appimage"),
             "the Linux preferred executable, not the Windows one"
+        );
+    }
+
+    #[test]
+    fn linux_bare_executable_names_need_no_declared_format() {
+        use crate::ports::view::PortPlatform;
+
+        let release = |filename: &str| PortRelease {
+            release_id: "rel".into(),
+            version: "1.5.5".into(),
+            released_at: 1,
+            assets: vec![PortAsset {
+                id: "linux".into(),
+                url: format!("https://example.com/{filename}"),
+                filename: filename.into(),
+                os: Some("linux".into()),
+                architecture: Some("x86_64".into()),
+                format: None,
+                size: 10,
+                checksum: Some(format!("sha256:{}", digest('f'))),
+                ..PortAsset::default()
+            }],
+            ..PortRelease::default()
+        };
+        let plan_for = |entry: CatalogEntry, filename: &str| {
+            let mut request = request(entry, vec![release(filename)]);
+            request.platform = PortPlatform::Linux;
+            request.parent = "/home/player/Ports".into();
+            plan_install(&request)
+        };
+
+        // An architecture suffix is a bare executable without the recipe naming it.
+        let plan = plan_for(linux_entry(), "game.x86_64").expect("an architecture suffix");
+        assert_eq!(plan.asset.format, "bin");
+
+        // An extensionless file needs the recipe to name it as a preferred executable.
+        let mut named = linux_entry();
+        named.launcher.preferred_executables.linux = vec!["devilutionx".into()];
+        let plan = plan_for(named, "devilutionx").expect("the recipe names it");
+        assert_eq!(plan.asset.format, "bin");
+
+        let mut unnamed = linux_entry();
+        unnamed.launcher.preferred_executables.linux.clear();
+        assert_eq!(
+            plan_for(unnamed, "devilutionx"),
+            Err(PlanError::UnknownAssetFormat {
+                filename: "devilutionx".into()
+            })
+        );
+
+        // `.run` is refused by every list (design D8).
+        assert_eq!(
+            plan_for(linux_entry(), "game.run"),
+            Err(PlanError::UnsupportedFormat {
+                format: "run".into()
+            })
         );
     }
 

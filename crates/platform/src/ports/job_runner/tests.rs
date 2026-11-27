@@ -694,6 +694,11 @@ fn linux_entry(launcher: &str) -> CatalogEntry {
 
 #[cfg(target_os = "linux")]
 fn linux_release(bytes: &[u8], filename: &str) -> PortRelease {
+    linux_release_as(bytes, filename, "appimage")
+}
+
+#[cfg(target_os = "linux")]
+fn linux_release_as(bytes: &[u8], filename: &str, format: &str) -> PortRelease {
     PortRelease {
         release_id: "rel-1.5.5".into(),
         version: "1.5.5".into(),
@@ -704,13 +709,156 @@ fn linux_release(bytes: &[u8], filename: &str) -> PortRelease {
             filename: filename.into(),
             os: Some("linux".into()),
             architecture: Some("x86_64".into()),
-            format: Some("appimage".into()),
+            format: Some(format.into()),
             size: bytes.len() as u64,
             checksum: Some(format!("sha256:{}", compute_bytes_sha256(bytes))),
             ..PortAsset::default()
         }],
         ..PortRelease::default()
     }
+}
+
+/// A zip whose entries carry no recorded Unix mode, like a Windows tool zipping a Linux port.
+#[cfg(target_os = "linux")]
+fn zip_asset(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut cursor = Cursor::new(Vec::new());
+    {
+        let mut zip = zip::ZipWriter::new(&mut cursor);
+        let options = zip::write::SimpleFileOptions::default();
+        for (name, bytes) in entries {
+            zip.start_file(*name, options).unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+    cursor.into_inner()
+}
+
+/// A 7z with one entry at the archive root; 7z records no Unix mode.
+#[cfg(target_os = "linux")]
+fn seven_zip_asset(name: &str, bytes: &[u8]) -> Vec<u8> {
+    let source = tempfile::tempdir().unwrap();
+    let file = source.path().join(name);
+    fs::write(&file, bytes).unwrap();
+    let archive = source.path().join("asset.7z");
+    sevenz_rust2::compress_to_path(&file, &archive).unwrap();
+    fs::read(archive).unwrap()
+}
+
+/// Installs a Linux archive with the real identity check: the entry has no execute bit, so the
+/// job only completes when the runner normalizes the registered executable (design D11).
+#[cfg(target_os = "linux")]
+fn install_linux_archive(
+    job_id: &str,
+    asset_filename: &str,
+    format: &str,
+    bytes: Vec<u8>,
+    executable: &str,
+) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new();
+    let entry = linux_entry(executable);
+    let match_input = PortMatchInput::from_entry(&entry);
+    let plan = plan_install(&InstallPlanRequest {
+        platform: gamenode_core::ports::view::PortPlatform::Linux,
+        entry,
+        releases: vec![linux_release_as(&bytes, asset_filename, format)],
+        withdrawn: Vec::new(),
+        parent: fixture.parent.display().to_string(),
+        job_id: job_id.into(),
+        target_empty: true,
+        free_space: u64::MAX,
+        library_roots: Vec::new(),
+        supplied: Vec::new(),
+        supplied_bytes: 0,
+        confirmed_risk: false,
+    })
+    .expect("a Linux archive plan");
+    let install_folder = plan.target.clone();
+
+    let (runner, events) =
+        fixture.start(FakeFetcher::new(bytes), Arc::new(SystemExecutableIdentity));
+    runner
+        .enqueue(request(job_id, plan, Vec::new(), match_input))
+        .unwrap();
+    let (job, completion) = wait_for_finished(&events);
+    runner.shutdown();
+
+    assert_eq!(
+        job.phase,
+        PortJobPhase::Completed,
+        "the archive install failed: {:?}",
+        job.error
+    );
+    let installed = Path::new(&install_folder).join(executable);
+    let mode = fs::metadata(&installed).unwrap().permissions().mode();
+    assert_eq!(
+        mode & 0o111,
+        0o111,
+        "the registered executable is executable"
+    );
+    let completion = completion.expect("a completed install");
+    assert_eq!(
+        completion.registration.executable,
+        installed.to_string_lossy()
+    );
+}
+
+/// A tar.gz with one entry at the archive root and no execute bit, like a release tarball.
+#[cfg(target_os = "linux")]
+fn tar_gz_asset(name: &str, bytes: &[u8]) -> Vec<u8> {
+    let mut builder = tar::Builder::new(Vec::new());
+    let mut header = tar::Header::new_gnu();
+    header.set_size(bytes.len() as u64);
+    header.set_mode(0o644);
+    header.set_cksum();
+    builder
+        .append_data(&mut header, name, std::io::Cursor::new(bytes))
+        .unwrap();
+    let tar = builder.into_inner().unwrap();
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(&tar).unwrap();
+    encoder.finish().unwrap()
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_linux_tar_gz_port_without_a_recorded_mode_registers() {
+    let bytes = tar_gz_asset("devilutionx", b"binary without an execute bit");
+    install_linux_archive(
+        "job-linux-tar",
+        "devilutionx-linux-x86_64.tar.gz",
+        "tar.gz",
+        bytes,
+        "devilutionx",
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_linux_zip_port_without_a_recorded_mode_registers() {
+    let bytes = zip_asset(&[("devilutionx", b"binary without an execute bit")]);
+    install_linux_archive(
+        "job-linux-zip",
+        "devilutionx-linux-x86_64.zip",
+        "zip",
+        bytes,
+        "devilutionx",
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_linux_7z_port_without_a_recorded_mode_registers() {
+    let bytes = seven_zip_asset("devilutionx", b"binary without an execute bit");
+    install_linux_archive(
+        "job-linux-7z",
+        "devilutionx-linux-x86_64.7z",
+        "7z",
+        bytes,
+        "devilutionx",
+    );
 }
 
 #[cfg(target_os = "linux")]

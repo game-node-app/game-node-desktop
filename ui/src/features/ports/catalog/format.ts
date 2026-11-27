@@ -42,11 +42,16 @@ export function filterPortEntries(
       const native = entry.supportedOS.some(
         (os) => os.trim().toLowerCase() === 'linux',
       );
-      if (!native) return false;
+      // A declared Linux entry whose release has no Linux asset belongs to Windows-only.
+      if (!native || entry.installBlockReason === 'noLinuxAsset') return false;
     }
     if (filters.platform === 'windowsOnly') {
       const declared = entry.supportedOS.map((os) => os.trim().toLowerCase());
-      if (!declared.includes('windows') || declared.includes('linux')) return false;
+      const windowsOnly =
+        declared.includes('windows') && !declared.includes('linux');
+      if (!windowsOnly && entry.installBlockReason !== 'noLinuxAsset') {
+        return false;
+      }
     }
     if (filters.guided && !entry.guided) return false;
     if (filters.verified && !entry.verified) return false;
@@ -97,18 +102,27 @@ export function installBlockReasonText(
   t: Translate,
 ): string | null {
   switch (reason) {
+    case null:
+    case undefined:
+      return null;
     case 'windowsOnly':
       return t('Ports::This port is Windows-only. Proton support is future work.');
     case 'withdrawn':
       return t('Ports::This port was withdrawn upstream.');
     case 'noVerifiedRelease':
       return t('Ports::No verified release is available, so Install is unavailable.');
-    case 'folderPickerUnavailable':
-      return t('Ports::The Linux folder picker is not available yet, so Install is disabled.');
+    case 'notReviewed':
+      return t('Ports::This recipe has not been reviewed for Linux.');
+    case 'consoleExtraction':
+      return t(
+        'Ports::This recipe needs the Windows console-package extractor, which is not available on Linux.',
+      );
     case 'installerOnly':
       return t('Ports::The Windows download is an installer, which GameNode does not run.');
     case 'noWindowsAsset':
       return t('Ports::No Windows download is available.');
+    case 'noLinuxAsset':
+      return t('Ports::No native Linux download is available.');
     case 'missingAsset':
       return t('Ports::The Windows download is missing from the release.');
     case 'noExecutable':

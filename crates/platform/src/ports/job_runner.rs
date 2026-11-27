@@ -182,11 +182,6 @@ impl ExecutableIdentity for SystemExecutableIdentity {
                 info.dwVolumeSerialNumber, info.nFileIndexHigh, info.nFileIndexLow
             ))
         }
-        #[cfg(not(any(windows, target_os = "linux")))]
-        {
-            let _ = executable;
-            Err("PC port installs are not supported on this platform".into())
-        }
     }
 }
 

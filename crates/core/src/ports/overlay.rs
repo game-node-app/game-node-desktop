@@ -60,6 +60,9 @@ pub struct OverlayEntry {
     pub release: Option<String>,
     /// An edition note shown in the detail pane.
     pub edition: Option<String>,
+    /// Marks a guided recipe as reviewed for Linux (design D14). Required setup files run on
+    /// Linux only when this is true; a release-only recipe needs no review.
+    pub linux_reviewed: Option<bool>,
     /// Removes the entry from the list. Installed copies stay in the library.
     pub hidden: bool,
     /// Replaces the upstream `setupFiles` list. `[]` removes guided setup.
@@ -90,6 +93,9 @@ pub struct OverlaySetupFile {
     pub accepted: Vec<AcceptedHash>,
     pub hash_file: Option<String>,
     pub from_package: Option<FromPackage>,
+    /// True when the slot has no direct input path and needs the console-package extractor
+    /// (design D5).
+    pub packages_only: Option<bool>,
 }
 
 impl OverlaySetupFile {
@@ -119,6 +125,7 @@ impl OverlaySetupFile {
             accepted: self.accepted.clone(),
             hash_file: self.hash_file.clone(),
             from_package: self.from_package.clone(),
+            packages_only: self.packages_only.unwrap_or(false),
         }
     }
 }
@@ -252,6 +259,9 @@ impl Overlay {
         }
         if let Some(edition) = &overlay.edition {
             merged.edition = Some(edition.clone());
+        }
+        if let Some(reviewed) = overlay.linux_reviewed {
+            merged.linux_reviewed = reviewed;
         }
         if let Some(slots) = &overlay.setup_file {
             let launcher = std::mem::take(&mut merged.launcher);
@@ -509,6 +519,39 @@ from_package = {{ extractor = "ps4-pkg", title_id = "CUSA03173", needs_update = 
         assert_eq!(roles.executable.as_deref(), Some("Bloodborne.exe"));
         assert_eq!(roles.launchers, vec!["Bloodborne.exe".to_string()]);
         assert!(roles.gameplay.is_empty());
+    }
+
+    #[test]
+    fn the_overlay_marks_linux_review_and_package_only_slots() {
+        let overlay = Overlay {
+            schema_version: 1,
+            entry: BTreeMap::from([(
+                "qcat_lantern".to_string(),
+                OverlayEntry {
+                    linux_reviewed: Some(true),
+                    ..OverlayEntry::default()
+                },
+            )]),
+            ..Overlay::default()
+        };
+        overlay.validate().unwrap();
+        let merged = overlay.merge(upstream_entry()).unwrap();
+        assert!(merged.linux_reviewed);
+
+        let slot = OverlaySetupFile {
+            id: "game".into(),
+            label: Some("Game".into()),
+            from_package: Some(crate::ports::catalog::FromPackage {
+                extractor: "ps4-pkg".into(),
+                title_id: None,
+                needs_update: None,
+            }),
+            packages_only: Some(true),
+            ..OverlaySetupFile::default()
+        };
+        let merged = slot.to_setup_file();
+        assert!(merged.packages_only);
+        assert_eq!(merged.kind, SetupKind::Folder);
     }
 
     #[test]

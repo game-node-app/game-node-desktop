@@ -173,3 +173,33 @@ protocol preparation after uninstall, rather than only restoring an existing
 session. It is not a pristine OS/user installation or validation of other Linux
 environments. Graphical error dialogs and the remaining unchecked manual cases
 in the implementation plan still need acceptance.
+
+## PC ports scope
+
+The native Linux PC ports change (`add-linux-pc-port-catalog`) is covered by
+automated checks on this host; its packaged acceptance is still open.
+
+Automated:
+
+- `cargo test --locked -p gamenode-app pc_ports` covers the catalog view, the
+  platform rule, the Linux Install block until the folder picker exists, and the
+  running platform's asset selection.
+- `cargo test --locked -p gamenode-platform ports::` covers the plan hand-off,
+  AppImage/zip/7z installs (including a recorded zip mode and an archive whose
+  executable has no execute bit), cancellation, recovery and the launch identity.
+- `cargo test --locked -p gamenode-core ports::` covers asset selection, the
+  format lists, `.run` refusal and extensionless/architecture-suffixed
+  executables.
+- `pnpm --dir ui test --run` covers the catalog, the platform filter, the blocked
+  Install reasons and the setup modal.
+
+Still requires a native Linux packaged run (task 2.6, blocked by 2.7):
+
+- Install a native port from the user's own files and launch it from the library.
+- Choose the install folder through the Linux picker once task 2.7 lands.
+- Confirm an AppImage, a zip and a 7z install end to end, including playtime and
+  removal.
+- Record the results here separately from the Windows acceptance.
+
+WSL and isolated test directories do not establish these packaged results.
+

@@ -66,6 +66,7 @@ function makeEntry(overrides: Partial<PortEntryView> = {}): PortEntryView {
     noAssetReason: null,
     installable: true,
     installBlockReason: null,
+    availability: 'native',
     art: { capsule: true, hero: true },
     project: null,
     source: null,
@@ -201,6 +202,13 @@ describe('Port guided setup', () => {
     resetUiStore();
     resetPortSetup();
     vi.restoreAllMocks();
+    // The fixture installs a Windows port; Linux hides the console-package choice.
+    vi.spyOn(commands, 'getAppInfo').mockResolvedValue({
+      locale: 'en',
+      version: 'test',
+      backgroundSupported: true,
+      platform: 'windows',
+    });
   });
 
   it.each(['en', 'pt-BR'])('reviews a host-issued plugin request and associates approved candidates in %s', async (locale) => {
@@ -526,6 +534,7 @@ describe('Port guided setup', () => {
       withdrawn: true,
       installable: false,
       installBlockReason: 'withdrawn',
+      availability: 'blocked',
     });
     vi.spyOn(commands, 'portsDetail').mockResolvedValue(
       makeDetail(entry, {
@@ -543,6 +552,66 @@ describe('Port guided setup', () => {
       'This port was withdrawn upstream.',
     );
     expect(screen.getByTestId('port-setup-start')).toBeDisabled();
+  });
+
+  it('accepts a typed parent folder when the picker cannot open', async () => {
+    const entry = makeEntry({ requirements: [] });
+    vi.spyOn(commands, 'portsPickParent').mockRejectedValue(new Error('no portal'));
+    renderHost(makeSnapshot([entry]));
+    act(() => openPortSetup(entry.catalogId));
+
+    clickTestId('port-setup-choose-folder');
+    await waitFor(() =>
+      expect(screen.getByTestId('port-setup-picker-error')).toHaveTextContent(
+        'The folder picker could not open. Type the folder path instead.',
+      ),
+    );
+
+    const input = screen.getByTestId('port-setup-folder-input');
+    fireEvent.change(input, { target: { value: '/home/player/Ports' } });
+    fireEvent.blur(input);
+    await waitFor(() =>
+      expect(screen.getByTestId('port-setup-folder-value')).toHaveTextContent(
+        '/home/player/Ports',
+      ),
+    );
+    expect(screen.getByTestId('port-setup-start')).not.toBeDisabled();
+  });
+
+  it('offers only the extracted folder on Linux', async () => {
+    vi.spyOn(commands, 'getAppInfo').mockResolvedValue({
+      locale: 'en',
+      version: 'test',
+      backgroundSupported: false,
+      platform: 'linux',
+    });
+    const required = makeSlot({
+      id: 'game-package',
+      label: 'Aster Vale packages',
+      kind: 'folder',
+      required: true,
+      packageOption: {
+        extractorId: 'ps4-pkg',
+        toolName: 'Mock PKG Extractor',
+        toolSourceUrl: null,
+        toolLicense: 'GPL-3.0',
+        titleId: 'CUSA10101',
+        updateVersion: '01.04',
+        requiresUpdate: true,
+      },
+    });
+    const entry = makeEntry({ requirements: [required], supportedOS: ['linux'] });
+    vi.spyOn(commands, 'portsPickParent').mockResolvedValue('/home/ports');
+
+    renderHost(makeSnapshot([entry]));
+    act(() => openPortSetup(entry.catalogId));
+
+    // The pinned console extractor is Windows-only, so Linux never offers package mode.
+    await waitFor(() =>
+      expect(screen.queryByTestId('port-setup-mode-game-package')).toBeNull(),
+    );
+    expect(screen.queryByTestId('port-setup-pick-game-package-base')).toBeNull();
+    expect(screen.getByTestId('port-setup-pick-game-package')).toBeVisible();
   });
 
   it('uses the package option for a slot and requires the update package', async () => {
@@ -686,6 +755,13 @@ describe('Port job results', () => {
     resetUiStore();
     resetPortSetup();
     vi.restoreAllMocks();
+    // The fixture installs a Windows port; Linux hides the console-package choice.
+    vi.spyOn(commands, 'getAppInfo').mockResolvedValue({
+      locale: 'en',
+      version: 'test',
+      backgroundSupported: true,
+      platform: 'windows',
+    });
   });
 
   it('toasts a completed job once per result transition', async () => {

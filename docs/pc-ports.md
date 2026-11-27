@@ -696,6 +696,25 @@ What works on Linux:
 - The Windows PS4 package extractor is never run on Linux; a `Packages` source is refused
   at plan time.
 
+### Guided recipes not reviewed for Linux
+
+The catalog is authored for Windows. A guided recipe with required setup files runs on Linux
+only when the overlay marks the entry `linux_reviewed = true` (design D14). Until then the
+entry stays listed but **blocked**: the detail pane shows *Disponibilidade: Bloqueada*, the
+Install button is disabled, and the reason is *"This recipe has not been reviewed for Linux."*
+(`notReviewed` in the view contract). This is a safety gate, not a missing asset: the release
+can be verified and the install button is still withheld.
+
+The review confirms that every required slot can be filled on Linux (a direct folder or file,
+no Windows-only extractor), that placements use the XDG roots, and that the launch and gameplay
+executables are the Linux ones. Release-only entries need no review. To unblock, review the
+recipe and add `linux_reviewed = true` to its overlay entry; because the overlay `setup_file`
+list replaces the upstream one, the reviewed slots must be restated there.
+
+"Bomberman 64: The Second Attack!" is an example: its N64 ROM slot is cross-platform, but the
+upstream recipe is Windows-authored, so it stays blocked until someone reviews the slot and
+sets the mark. Adding the mark is a reviewed data change, not a UI toggle.
+
 Known gaps:
 
 None for the Linux scope described here; the remaining decisions live in the change's tasks.

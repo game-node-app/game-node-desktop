@@ -66,3 +66,26 @@ kind = "folder"
 contains = ["eboot.bin", "sce_sys/param.sfo"]
 destination = "CUSA03173"
 from_package = { extractor = "ps4-pkg", needs_update = "01.09" }
+
+# --- Diablo, DevilutionX ---------------------------------------------------------------------
+#
+# The upstream release is the engine only and refuses to start without the player's own
+# DIABDAT.MPQ. DevilutionX reads game data from `SDL_GetPrefPath("diasurgical", "devilution")`:
+# `$XDG_DATA_HOME/diasurgical/devilution` on Linux and `%APPDATA%\diasurgical\devilution` on
+# Windows. That is the `data` root on both platforms. The file is copied, so the player's
+# installation is never moved or modified. Reviewed for Linux: the file slot and `data` root are
+# ordinary cross-platform placement.
+
+[entry."qcat_93d3d262-262c-4094-9cf1-fd0011a101cf"]
+linux_reviewed = true
+
+[[entry."qcat_93d3d262-262c-4094-9cf1-fd0011a101cf".setup_file]]
+id = "diabdat"
+label = "Diablo data file (DIABDAT.MPQ)"
+prompt = "Choose DIABDAT.MPQ from your own Diablo installation. It is copied to the game's data folder; GameNode never downloads it."
+kind = "file"
+required = true
+extensions = ["mpq"]
+root = "data"
+destination = "diasurgical/devilution/DIABDAT.MPQ"
+

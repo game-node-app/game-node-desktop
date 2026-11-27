@@ -620,6 +620,27 @@ from_package = {{ extractor = "ps4-pkg", title_id = "CUSA03173", needs_update = 
     }
 
     #[test]
+    fn the_bundled_overlay_reviews_the_diablo_data_slot_for_linux() {
+        let overlay = Overlay::parse(include_str!("../../../../ports/overlay.toml"))
+            .expect("the bundled overlay is valid");
+        let entry = &overlay.entry["qcat_93d3d262-262c-4094-9cf1-fd0011a101cf"];
+        assert_eq!(entry.linux_reviewed, Some(true));
+        let slot = entry
+            .setup_file
+            .as_ref()
+            .and_then(|slots| slots.first())
+            .expect("the DIABDAT.MPQ slot")
+            .to_setup_file();
+        assert!(slot.required);
+        assert_eq!(slot.extensions, vec!["mpq".to_string()]);
+        assert_eq!(slot.root, Some(CopyRoot::Data));
+        assert_eq!(
+            slot.destination.as_deref(),
+            Some("diasurgical/devilution/DIABDAT.MPQ")
+        );
+    }
+
+    #[test]
     fn a_zero_game_id_is_a_placeholder_not_an_identity() {
         let overlay = Overlay {
             schema_version: 1,
